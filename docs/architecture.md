@@ -1,12 +1,13 @@
 # decompanion: the plugin seams
 
 The rules (`rules/*.py`) and the ledger (`ledger/*.py`) are generic. Everything that depends on the container,
-the object format, the toolchain or the instruction set lives behind one of four seams, each a package with a
-registry (`FORMATS` / `TOOLCHAINS` / `ISAS` and a `register` decorator in its `__init__.py`; the package
-imports its plugins, each plugin module registers itself, so adding a plugin touches only its own package).
-VC6 / PE32 / COFF / x86-32 are the only implementations so far.
+the object format, the toolchain, the instruction set or the third-party analyzer lives behind one of five seams,
+each a package with a registry (`FORMATS` / `TOOLCHAINS` / `ISAS` / `ANALYZERS` and a `register` decorator in its
+`__init__.py`; the package imports its plugins, each plugin module registers itself, so adding a plugin touches
+only its own package). VC6 / PE32 / COFF / x86-32 are the only implementations of the first four so far; the
+analyzers are Ghidra, saved REA files and none.
 
-## The four seams
+## The five seams
 
 | seam | package | selected by | implementation |
 |---|---|---|---|
@@ -14,10 +15,13 @@ VC6 / PE32 / COFF / x86-32 are the only implementations so far.
 | ObjectFormat | `objfmt/base.py` | `Toolchain.object_format` | `objfmt/coff.py` |
 | Toolchain | `toolchains/base.py` | `[toolchain] plugin =` (default: the only registered one) | `toolchains/vc6/` |
 | Isa | `isa/base.py` | `[[target]] isa =` (default: `Image.default_isa`, the machine type's) | `isa/x86.py` (capstone) |
+| Analyzer | `analyzers/base.py` | `[analyzer] plugin =` (default: `ghidra`; `dcp init` writes the installation it finds, else `none`) | `analyzers/ghidra.py`, `rea.py`, `none.py` |
 
 `Project.image`, `Project.objfmt`, `Project.toolchain` and `Project.isa` hand the selected plugins to the rules.
-The source of every plugin package and the selection are an input of every rule run (`plugins`, next to the
-image), so editing a plugin reruns the rules that read it.
+The source of every plugin package of the first four and the selection are an input of every rule run
+(`plugins`, next to the image), so editing a plugin reruns the rules that read it. `Project.analyzer` is no
+input of any rule: no rule runs the tool or asks the plugin. `dcp setup` runs the export (build/analyzer.py) and
+stores its entries (ledger/drafts.py); the rules read the stored entries through the input `drafts`.
 
 ### Image (image/base.py)
 
@@ -76,7 +80,10 @@ image), so editing a plugin reruns the rules that read it.
   - `probe_grid()` -> [(group, alternatives)], `probe_defaults()` (the tie-break)
 - Milestone 4, drafting: `declaring_header(name)` (the system header that declares a C library function; VC6:
   the first header of VC98/Include declaring it `__cdecl`, the C89 headers first), `import_header(dll)` (VC6:
-  `windows.h` for every system DLL)
+  `windows.h` for every system DLL); the language beyond standard C that a draft is spelled in: `keywords`
+  (VC6: `__cdecl __stdcall __fastcall __thiscall __int64 __declspec __asm`), `default_convention` (the
+  skeleton's prototype; VC6: `__cdecl`), `sized_conventions` (the conventions whose decorated name carries the
+  parameters' size, so a declaration needs the whole prototype; VC6: `__stdcall __fastcall __thiscall`)
 
 ### Isa (isa/base.py)
 
@@ -96,15 +103,54 @@ image), so editing a plugin reruns the rules that read it.
   the skeleton of `dcp draft`); `numbers(text)` -> (start, end, value) of every number in such a text (where
   `dcp disasm` puts the ledger's name of an address)
 
+### Analyzer (analyzers/base.py)
+
+A third-party tool that reads the image and hands back opinions: function starts, names, a pseudocode body per
+function. Neither a toolchain nor a language property; its answers are declarations (level declared, reason
+`<key> analysis`), never derived or proven. Constructed like a Toolchain with its table (`[analyzer]`) and the
+project's path expansion.
+
+- `key`: `ghidra` | `rea` | `none`: the `[analyzer] plugin` value, the `how` of its start facts, the
+  `decl:analyzer:<key>:<file>` producer of L.analyzer's facts, the origin `analyzer` of its names
+- `available()` -> Install (`where`, `detail`; `ok`, else `reason`): Ghidra looks for its installation and the
+  JDK (`[analyzer] root` / `java_home`, `$GHIDRA_INSTALL_DIR` / `$JAVA_HOME`, the newest `C:/Tools/ghidra_*` /
+  JDK 21); REA for its files (`[analyzer] file`, a path or a list); none is always there
+- `script_hash()`: what makes the export besides the image and our starts (Ghidra: the post-script
+  `data/ghidra/DcpExport.java`; REA: the files' contents); part of the export key
+- `export(install, image, isa_key, starts, out_dir)` -> Export: `entries` (Entry: `start`, `end`, `ranges`,
+  `size`, `name`, `body` (the pseudocode), `seeded` (made at one of our starts on our request: no claim of the
+  tool's), `requested`, `source`, `analyzer`), `failed` (one message per item), `digest` (the analysed binary's
+  sha256), `ms`, `out`, `log`, `skipped` (files about another binary). Ghidra: `analyzeHeadless` with the
+  post-script, the language from the instruction set (`LANGUAGES`: `x86` -> `x86:LE:32:default`), project and
+  log in `out_dir` = `build/ghidra/<target>/`; REA: reads the files; none: nothing
+- The dialect, what `dcp draft` reads (source/draft.py composes it with the toolchain's language out):
+  `is_placeholder(name)` (names the ledger never adopts; Ghidra: `FUN_` / `LAB_` / `SUB_` / `DAT_` / `PTR_` /
+  `thunk_FUN_` + hex), `rewrite(body, own, names, labels)` (its labels to our names: `own` = the drafted
+  function's (theirs, ours), `names` = how a draft spells a function / datum at an address, `labels` = the
+  tool's name -> address of every function it named), `data_labels(body)` -> {address: C type} (Ghidra: by the
+  label prefix, `PTR_` `undefined *`, `s_` / `u_` `char []`, ...), `unknown_data_type` (Ghidra: `undefined4`),
+  `types_header` (the shipped header of its type names; Ghidra: `data/dcp_ghidra.h`; none: None)
+- `analyzers.dialect(key)`: the plugin without configuration, for reading stored entries of any analyzer
+  (`ledger/names.py`, `source/draft.py`); the REA plugin subclasses Ghidra's dialect (REA's decompiler is Ghidra)
+
+The run (`build/analyzer.py`, inside `dcp setup` after the rules): when `available()` and the export key
+sha256(key, image sha256, `script_hash()`, our starts) differs from the store's meta `drafts.export` (or
+`--analyzer-force`), `export` and `ledger/drafts.py replace` (the store's drafts become exactly the export's
+entries: blobs of kind `drafts` keyed by image and start, meta `drafts` their hash = the input `drafts`), then
+the rules again: L.analyzer (its starts) and L9 read the input, the rules that need every start (L4, L5) follow.
+Our starts are every start fact but L.analyzer's and every walked or placed function, inner labels excluded.
+
 ## What the rules may and may not know
 
 May: facts and their vocabulary (kinds, skinds, levels), the seams' interfaces above, C-language conventions
 (NUL-terminated strings, `.c` / `.cpp` / `.h` paths in `__FILE__` literals), and the walk's generic
-conventions W1..W4. Docstrings may cite the VC6 / PE32 / COFF / x86 answers as the example of a convention.
+conventions W1..W4. Docstrings may cite the VC6 / PE32 / COFF / x86 / Ghidra answers as the example of a
+convention.
 
 May not: section names, characteristic bits, file offsets beyond a Section's raw range, relocation type
 numbers, COFF storage classes or symbol prefixes, byte patterns, instruction encodings or mnemonics,
-mnemonic-level idioms, toolchain paths and file names, decorated entry names, address widths as literals.
+mnemonic-level idioms, toolchain paths and file names, decorated entry names, address widths as literals, an
+analyzer's name, its label spellings, its type names or its output format (the rules read the entries).
 
 Kept in place on purpose: the region names (`pe.header`, ...) and the section fact's `chars`, `raw_lo`,
 `raw_hi` are what the image plugin reports (fact values, unchanged); `S.strings` reads a string's bytes up
@@ -147,8 +193,10 @@ the C, stdcall and fastcall spellings of `f`; the probe grid `/O1 /O2 /Ox` x `/G
 x `/Gy` x `/GF /Gf` x `/Ob0 /Ob1 /Ob2` with the defaults `/GB /Oy /GF /Ob1`; LINK's `.def` syntax
 `LIBRARY name` / `EXPORTS f @ordinal`.
 
-Where the layout tooling lives (milestone 4): `build/ghidra.py` (runs Ghidra headless; the post-script
-`data/ghidra/DcpExport.java`), `ledger/names.py` (one C name per address by a fixed order of origins),
+Where the layout tooling lives (milestone 4): `analyzers/` (the Analyzer seam; Ghidra's post-script
+`data/ghidra/DcpExport.java` and types header `data/dcp_ghidra.h` are referenced only from
+`analyzers/ghidra.py`), `build/analyzer.py` (the export inside `dcp setup`), `ledger/drafts.py` (the stored
+entries), `ledger/names.py` (one C name per address by a fixed order of origins),
 `source/draft.py` / `source/units.py` / `source/edit.py` (the files `dcp draft`, `dcp unit new|join|rename` and
 `dcp rename` write; names.log), `repo/session.py` (the session gate's record and the computed report),
 `cli_read.py` / `cli_draft.py` / `cli_layout.py` / `cli_session.py` (the commands), `skills/` (the agent skills).

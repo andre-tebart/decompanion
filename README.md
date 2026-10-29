@@ -26,7 +26,7 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
   rule's code (and of the helpers it names), its version, the output of every rule it needs and every
   external input it declares; a rule cannot read what it did not declare. `dcp rules -v` prints the graph
   with every criterion.
-- **Loaders** (`L.decl`, `L.src`, `L.ghidra`) are the only rules that turn typed state into facts: they emit
+- **Loaders** (`L.decl`, `L.src`, `L.analyzer`) are the only rules that turn typed state into facts: they emit
   `declared` facts whose producer is a file line, and refuse a missing reason. Declared facts are re-checked
   by the computed rules on every run, never trusted.
 - **Targets** (`decompanion.toml [[target]]`): one project may hold several binaries of one codebase; the
@@ -38,13 +38,16 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
   (else `[libs] archives`).
 
 - **Seams** (docs/architecture.md): the rules (`rules/`, `ledger/`) know no container, object format,
-  toolchain or instruction set. They ask four plugin kinds, each a package with a registry its plugins
-  register into: `image/` (Image: sections, imports, exports, relocations, its own region vocabulary;
+  toolchain, instruction set or analyzer. They ask five plugin kinds, each a package with a registry its
+  plugins register into: `image/` (Image: sections, imports, exports, relocations, its own region vocabulary;
   PE32), `objfmt/` (ObjectFormat: archive objects, relocations as absolute / relative / absolute-rva with a
   width and `resolve`; COFF), `toolchains/` (Toolchain: fill forms, import stubs and their placement,
-  function alignment, user entry names, Rich vocabulary, default archives; VC6) and `isa/` (Isa: a decoder of
-  compact instruction records with flow kinds, table shapes; x86-32 through capstone). A target selects
-  `image` and `isa` in its table (the ISA defaults to the image's machine type), the project its toolchain.
+  function alignment, user entry names, Rich vocabulary, default archives; VC6), `isa/` (Isa: a decoder of
+  compact instruction records with flow kinds, table shapes; x86-32 through capstone) and `analyzers/`
+  (Analyzer: a third-party tool's opinions, function starts, names and pseudocode per function, and the
+  dialect of that pseudocode; Ghidra headless, saved REA files, none). A target selects `image` and `isa` in
+  its table (the ISA defaults to the image's machine type), the project its toolchain and its analyzer
+  (`[analyzer] plugin`, default `ghidra`).
 
 ## Phases
 
@@ -54,12 +57,15 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
    names those members' relocations prove (`S.crt.refs`: the user's `DllMain`, CRT data), import thunks
    (`S.thunk`: only where LINK's layout makes `jmp [iat]` an import-library contribution; elsewhere it is a
    compiled tail call), strings, a recursive-descent code walk with tail-call and inner-label handling
-   (`rules/walk.py`), fill, and a total byte map (`S.unknown` closes it).
+   (`rules/walk.py`), fill, and a total byte map (`S.unknown` closes it). Then the configured analyzer's
+   export when its key (analyzer, image, script, our starts) changed: Ghidra headless decompiles every
+   function, seeded at our starts; its starts become declared facts (`L.analyzer`), its pseudocode the drafts
+   of `dcp draft` (`--no-analyzer` skips it, `--analyzer-force` exports again).
 2. **layout** (`dcp layout ...`): declarations (`decl/*.dcl`, `ledger/decl.py`), address comments in one
-   file per function (`ledger/srcscan.py`), Ghidra drafts (`dcp ghidra import`), boundary evidence
+   file per function (`ledger/srcscan.py`), the analyzer's drafts (`ledger/drafts.py`), boundary evidence
    (`L.analyze`: literal first users, fill before a start, leaked source paths), unit extents and status
-   (`L.unit.extent`), and the checks L1, L3..L11 (`rules/layout.py`). The layout tooling (milestone 4): Ghidra
-   headless drafts for every function (`dcp ghidra export`), the reading commands (`dcp disasm`, `dump`, `refs`,
+   (`L.unit.extent`), and the checks L1, L3..L11 (`rules/layout.py`). The layout tooling (milestone 4): a
+   draft for every function from the analyzer (`dcp setup`, `dcp report`), the reading commands (`dcp disasm`, `dump`, `refs`,
    `layout literals`, `layout starts`), drafting (`dcp unit new|join|rename`, `dcp draft`, `dcp rename`,
    `names.log`), the session protocol (`dcp session start|wrap`) and the agent skill `dcp-layout`. See
    [docs/layout.md](docs/layout.md).
@@ -80,7 +86,7 @@ uv sync                                   # in this repo: the venv (Python 3.15,
 uv run dcp init ../guild-server "C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll" \
     --toolchain-root C:/Tools/MSVC600-SP5PP       # required: the toolchain installation (VC6: holds VC98/)
 cd ../guild-server && uv sync             # the target project depends on decompanion by path
-uv run dcp setup -v                       # run every rule, print the report
+uv run dcp setup -v                       # run every rule and the analyzer's export, print the report
 uv run dcp why 0x10008cb0 --refs          # everything known about an address
 uv run dcp map 0x10008c00..0x10008e00     # the byte map of a range
 uv run dcp facts 0x10008cb0..0x10008d20 --kind name
@@ -134,6 +140,18 @@ cflags = ["/O2", "/Gy"]
 reason = "picked at target add from the Rich header: ... (Utc12_2_C 9044 x157), ... (Linker600 8447 x53); verify"
 ```
 
+`dcp init` also writes the project's analyzer, the third-party tool `dcp setup` runs for a draft of every
+function: Ghidra with the installation it found, else `plugin = "none"` (drafts are then `@rough` skeletons).
+Saved REA `batch_decompile` results instead of a run: `plugin = "rea"`, `file = "..."` (or a list).
+
+```toml
+[analyzer]
+plugin = "ghidra"                                   # ghidra | rea | none
+root = "C:/Tools/ghidra_12.1.4_PUBLIC"              # else $GHIDRA_INSTALL_DIR, else the newest C:/Tools/ghidra_*
+java_home = "C:/Program Files/Eclipse Adoptium/jdk-21.0.12.101-hotspot"   # else $JAVA_HOME, else the newest JDK 21
+timeout = 60                                        # seconds per function for Ghidra's decompiler
+```
+
 Layout:
 
 ```
@@ -142,17 +160,15 @@ uv run dcp layout units [-v]                   # the unit table: range, status, 
 uv run dcp layout unit propose 0x10008cb0..0x10008d20 --name dllmain --by guess --why "DllMain, Init, Exit"
                                                # runs L3/L4/L7/L8 on the proposal, writes the boundary lines
 uv run dcp decl add "0x1000f3a0..0x1000f3b8 bytes dead -- unreachable epilogue copy"
-uv run dcp ghidra export                       # Ghidra headless: a draft for every function ([ghidra] root / java_home)
-uv run dcp ghidra status                       # drafts, starts only Ghidra / only we have, L9
-uv run dcp ghidra import batch1.json ...       # saved REA batch_decompile results
-uv run dcp ghidra show 0x10008d20
+uv run dcp report [-v]                         # with the analyzer line: drafts, starts only it / only we have, L9
+uv run dcp draft 0x10008d20 --show             # the analyzer's draft as stored
 uv run dcp disasm 0x10008cc0                   # the original with the ledger's names (--ours NAME: our object)
 uv run dcp dump 0x10027d08 0x20 --str          # bytes, strings, dwords (--dword), floats (--float)
 uv run dcp refs Init                           # everything that names a function or datum
 uv run dcp layout starts 0x10008c00..0x10009000     # every start with its evidence
 uv run dcp layout literals 0x10008c00..0x10009000   # the literal-pool view (B-LIT): first users, blocks, interleaving
 uv run dcp unit new NAME --range 0xA..0xB --by guess --why "..."   # propose + head.c, include/NAME.h, open.md
-uv run dcp draft --next                        # the next function's fragment (Ghidra's pseudocode or a @rough skeleton)
+uv run dcp draft --next                        # the next function's fragment (the analyzer's pseudocode or a @rough skeleton)
 uv run dcp unit join A B --why "..."           # B into A (grades must not change)
 uv run dcp unit rename OLD NEW --by leaked|tag|guess --why "..."
 uv run dcp rename OLD NEW --why "..."          # one identifier; names.log
@@ -178,10 +194,10 @@ Output is one record per line, `key=value` tokens, addresses `0x%08x`, intervals
 ```
 src/decompanion/
   cli.py cli_match.py cli_read.py cli_draft.py cli_layout.py cli_session.py config.py init.py
-  ledger/   fact.py store.py query.py decl.py srcscan.py ghidra.py layoutview.py grades.py names.py
+  ledger/   fact.py store.py query.py decl.py srcscan.py drafts.py layoutview.py grades.py names.py
   rules/    engine.py setup.py walk.py checks.py layout.py match.py match_data.py grade.py   # generic: the seams only
-  build/    amalg.py compile.py link.py probe.py ghidra.py   # the tools run here (one process per unit), never in a rule
-  data/     ghidra/DcpExport.java dcp_ghidra.h   # the Ghidra post-script, Ghidra's type names for drafts
+  build/    amalg.py compile.py link.py probe.py analyzer.py   # the tools run here (one process per unit), never in a rule
+  data/     ghidra/DcpExport.java dcp_ghidra.h   # the Ghidra post-script, Ghidra's type names (analyzers/ghidra.py)
   match/    compare.py diffclass.py              # masked compare, instruction diff and hunk classes
   repo/     wt.py session.py         # worktrees and seed; the session record and report
   source/   lint.py draft.py units.py edit.py   # clang; the files dcp draft / unit / rename write
@@ -189,6 +205,7 @@ src/decompanion/
   objfmt/   __init__ (registry) base.py coff.py         # ObjectFormat seam: archives, objects, relocation view
   toolchains/ __init__ (registry) base.py vc6/          # Toolchain seam: fill, stubs, entries, Rich, defaults
   isa/      __init__ (registry) base.py x86.py          # Isa seam: instruction records, flow kinds, table shapes
+  analyzers/ __init__ (registry) base.py ghidra.py rea.py none.py   # Analyzer seam: starts, names, pseudocode, dialect
 tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / clang tests when installed
 docs/                                # plan.md, layout.md, match.md, architecture.md
 skills/                              # dcp-layout/SKILL.md (installed into a project's .claude/skills/)

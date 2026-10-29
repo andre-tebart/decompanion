@@ -24,8 +24,12 @@ Hard rules
 ## 1. Start
 
 1. `uv run dcp session start`. It is the gate (clean working tree, every unit compiles, no error conflict, the
-   link ok) and prints the overview: units, the first open function (`next=`), the toolchain level. On `gate:
-   FAIL` fix what it lists (or revert), commit, and start again; do not work on a failing gate.
+   link ok) and prints the overview: units, the first open function (`next=`), the toolchain level, the
+   analyzer (`analyzer=ghidra  drafts=678`). On `gate: FAIL` fix what it lists (or revert), commit, and start
+   again; do not work on a failing gate. The drafts come from the project's analyzer (`[analyzer]` in
+   decompanion.toml, a third-party tool `uv run dcp setup` runs when its export is stale); with `analyzer=none`
+   or `drafts=0` every draft is a `@rough` skeleton (`uv run dcp report` says why: `export=`, and setup prints
+   `analyzer=ghidra unavailable: <reason>` when the tool is missing).
 2. Start the timer at once: Bash with `run_in_background: true`, command
    `sleep 1800; echo "TIME UP - session over: finish or revert the function in progress, then run the wrap-up (section 5). The wrap-up is not timed."`
    This command is the only clock of the session: when it exits, the harness re-invokes you with its output -
@@ -41,8 +45,9 @@ Hard rules
 Always work the first open function; never skip one, never stop early, never end the turn to wait.
 
 1. `uv run dcp layout next` - the first function of the game code without a fragment, with its evidence: its
-   start (`how=`: export, call, tail, immediate, fptr, ghidra, decl ...), its callers and their units, the fill
-   before it, the literals it uses first, leaked source paths, whether a Ghidra draft exists.
+   start (`how=`: export, call, tail, immediate, fptr, decl, the analyzer's key such as `ghidra` ...), its
+   callers and their units, the fill before it, the literals it uses first, leaked source paths, whether the
+   analyzer has a draft (`analyzed=`; `uv run dcp draft 0xADDR --show` prints it unchanged).
    - It lies in a unit (`unit=NAME`): go on with step 2.
    - It lies in no unit (`unit=-`): decide the unit first (section 3): extend the previous unit (move its end
      boundary: edit the `boundary end` line in `decl/text.dcl`, keep the file sorted) or declare a new one with
@@ -53,10 +58,10 @@ Always work the first open function; never skip one, never stop early, never end
    - `kind=unknown` (code no start explains): find the start (`uv run dcp disasm 0xADDR`, `uv run dcp layout
      starts LO..HI`) and declare it (`uv run dcp decl add "0xADDR start -- why"`), or declare dead bytes (section 3).
 2. `uv run dcp draft --next` - writes `src/<unit>/f_<addr>.c`: line 1 `/* 0x10001234, <unit>_10001234 */`, the
-   body from Ghidra's draft with the ledger's names (callees that the ledger names are spelled that way, others
-   as placeholders `<unit>_<addr>` / `unk_<addr>`, data as `DAT_<addr>`), the prototype in `include/<unit>.h`,
-   the includes and K&R declarations it needs in `src/<unit>/head.c`. Without a Ghidra draft it writes a
-   `@rough` skeleton with the disassembly as a comment: fill it from `uv run dcp disasm 0xADDR`.
+   body from the analyzer's draft with the ledger's names (callees that the ledger names are spelled that way,
+   others as placeholders `<unit>_<addr>` / `unk_<addr>`, data as `DAT_<addr>`), the prototype in
+   `include/<unit>.h`, the includes and K&R declarations it needs in `src/<unit>/head.c`. Without a draft it
+   writes a `@rough` skeleton with the disassembly as a comment: fill it from `uv run dcp disasm 0xADDR`.
 3. `uv run dcp build` - compile. Fix what the compiler says in the fragment (section 2.1). Then give the
    function a description in its address comment (`/* 0x10001234, sends the login reply */`) and better names
    for what you understood (section 4).
@@ -68,6 +73,7 @@ Always work the first open function; never skip one, never stop early, never end
 
 ### 2.1 Making a Ghidra draft compile (VC6, C89)
 
+Ghidra-specific advice: the analyzer is Ghidra (`analyzer=ghidra`, or `rea`, whose files are Ghidra output).
 What `dcp build` typically says about a fresh draft and what to do:
 - `'sockaddr' : undeclared identifier` and the like: Ghidra writes struct types without `struct`; write
   `struct sockaddr`.

@@ -119,8 +119,9 @@ R5): a `source` fact {what: dead, unit} over the range, so the byte map gives th
 error, one in no unit a warning.
 
 Checks added in milestone 4 (warnings: `dcp check --strict` fails on them, `dcp check` does not):
-- **L9** a Ghidra function of the game code whose body (its address ranges, from `dcp ghidra export`) holds
-  one of our starts other than its own entry: Ghidra merged two functions, its draft holds both.
+- **L9** an analyzer's function of the game code whose body (its address ranges, which Ghidra's export
+  reports) holds one of our starts other than its own entry: the analyzer merged two functions, its draft
+  holds both.
 - **L10** code inside a unit that a fragment claims but nothing explains: (a) a fragment whose start the walk
   does not know (a declared start in unknown code) and that does not byte-match owns no bytes, its code stays
   open; (b) a byte-matched fragment whose walk runs past its compiled section (rare: R1's tail check).
@@ -130,26 +131,35 @@ Checks added in milestone 4 (warnings: `dcp check --strict` fails on them, `dcp 
 Everything a layout session needs; the skill `dcp-layout` (skills/dcp-layout/SKILL.md, installed into a
 project's `.claude/skills/` by `dcp init` and `dcp skills install`) runs a session with these commands.
 
-### Ghidra drafts for every function
+### Drafts for every function: the analyzer
 
 ```
-uv run dcp ghidra export [--force]      # analyzeHeadless + data/ghidra/DcpExport.java, then the import
-uv run dcp ghidra status [-v]           # drafts, starts only Ghidra has (and where), starts only we have, L9
-uv run dcp ghidra show 0x10008cc0       # one draft
+uv run dcp setup [--no-analyzer] [--analyzer-force]   # the rules, the analyzer's export when stale, the rules again
+uv run dcp report [-v]                                # the analyzer line: drafts, starts only it / only we have, L9
+uv run dcp draft 0x10008cc0 --show                    # one draft as the analyzer wrote it
 ```
 
-`dcp ghidra export` runs Ghidra headless on the target's binary (project under `build/ghidra/<target>/`, log
-`headless.log`), creates a function at every start of ours Ghidra lacks (tagged `DCP_SEEDED`: they are ours,
-no Ghidra claim, no `start how=ghidra` fact), decompiles every function and imports the JSON (the shape `dcp
-ghidra import` reads from a saved REA `batch_decompile`, plus each function's body). Keyed by (image sha256,
-script, our starts): a second export does nothing unless `--force`. Ghidra and its JDK: `[ghidra] root =`,
-`java_home =`, `timeout =` in decompanion.toml, else `$GHIDRA_INSTALL_DIR` / `$JAVA_HOME`, else the newest
-`C:/Tools/ghidra_*` / `C:/Program Files/Eclipse Adoptium/jdk-21*`; missing: a clear error, nothing else
-changes. On server.dll: 678 functions in ~22 to 30 s (fresh), ~10 s again (the project keeps the analysis).
+The drafts come from the project's analyzer (`[analyzer] plugin`, src/decompanion/analyzers/, docs/architecture.md),
+a third-party tool whose opinions are declarations: `ghidra` (the default), `rea` (saved REA `batch_decompile`
+results, `file = "..."` or a list) or `none` (no drafts: `dcp draft` writes `@rough` skeletons). `dcp setup` runs
+the rules, then the export when its key (analyzer, image sha256, script, our starts) differs from the last one,
+then the rules again (only `L.analyzer` and what reads its facts rerun); a second setup does nothing,
+`--analyzer-force` exports again, `--no-analyzer` skips the step. A missing installation is one warning line
+(`analyzer=ghidra unavailable: <reason>`); setup still exits 0.
+
+Ghidra: headless on the target's binary (project under `build/ghidra/<target>/`, log `headless.log`, the
+language from the target's instruction set: `x86` -> `x86:LE:32:default`), the post-script
+`data/ghidra/DcpExport.java` creates a function at every start of ours Ghidra lacks (tagged `DCP_SEEDED`: they
+are ours, no claim of Ghidra's, no `start how=ghidra` fact), decompiles every function and writes the REA
+`batch_decompile` shape plus each function's body (its ranges, for L9). Ghidra and its JDK: `[analyzer] root =`,
+`java_home =`, `timeout =` in decompanion.toml (`dcp init` writes what it finds), else `$GHIDRA_INSTALL_DIR` /
+`$JAVA_HOME`, else the newest `C:/Tools/ghidra_*` / `C:/Program Files/Eclipse Adoptium/jdk-21*`. On server.dll:
+678 functions in ~22 to 30 s (fresh), ~10 s again (the project keeps the analysis).
 
 ```
-target=server  drafts=678  export=up-to-date  game_functions=311  with_draft=311  ghidra_only=6  ours_only=0  l9=0
-  ghidra_only=0x10018dc4  name=FUN_10018dc4  size=231  where=unknown.code  game=no
+analyzer=ghidra  drafts=678  export=up-to-date  game_functions=311  with_draft=311  analyzer_only=6  ours_only=0  l9=0
+  analyzer_only by place: inside=1  unknown.code=5
+  analyzer_only=0x10018dc4  name=FUN_10018dc4  size=231  where=unknown.code  game=no
 ```
 
 ### Reading
@@ -158,7 +168,7 @@ target=server  drafts=678  export=up-to-date  game_functions=311  with_draft=311
 uv run dcp disasm 0x10008cc0 [LEN|..END]     # the original, the ledger's names after every address operand
 uv run dcp disasm --ours Init                # our compiled function, relocations named
 uv run dcp dump 0x10027d08 0x20 --str        # hex + latin-1 per row with the symbols starting there; --dword --float
-uv run dcp refs Init                         # definition, name facts, starts, Ghidra, refs to / from, source lines
+uv run dcp refs Init                         # definition, name facts, starts, the draft, refs to / from, source lines
 uv run dcp layout starts 0x10008c00..0x10009000
 uv run dcp layout literals 0x10008c00..0x10009000     # or a UNIT; default: the game code
 ```
@@ -166,7 +176,7 @@ uv run dcp layout literals 0x10008c00..0x10009000     # or a UNIT; default: the 
 ```
    0x10008cc7  68208d0010       push 0x10008d20 <ServerThread>
    0x10008ccc  e8240e0100       call 0x10019af5 <_beginthread>
-start=0x10008cc0  how=export,ghidra  callers=0  size=48  extent=0x10008cc0..0x10008ce4  fill=nop  unit=-  drafted=no  ghidra=yes  name=Init
+start=0x10008cc0  how=export,ghidra  callers=0  size=48  extent=0x10008cc0..0x10008ce4  fill=nop  unit=-  drafted=no  analyzed=yes  name=Init
   fn=0x10008d20  unit=-  section=.data  first_used=10  block=0x10027ad8..0x10027d7d  jump=+0xf4
   lit=0x10027d10  section=.data  kind=string  first=0x10008d20  first_unit=-  first_in_range=yes  users=1  data_refs=-  pooled=yes  text=GamePath
   unit_block=server  section=.data  range=0x10027ad8..0x10027d7d  literals=10  interleaves=-
@@ -177,8 +187,9 @@ has them, else the walk's operands), with its first user in the whole image and 
 the block of literals it is the first user of and the `jump=` from the highest literal first used by an earlier
 function (a big forward jump skips another unit's block); per unit the block of its pooled literals (strings and
 read-only constants reached from code only) and the units whose blocks it interleaves with. `layout starts`:
-every start with every `how` (export, entry, crt, libref, call, tail, immediate, fptr, ghidra, decl, source), the
-code sites that reach it, the size to the next start, the walk's extent, B-FILL, the unit, drafted, Ghidra.
+every start with every `how` (export, entry, crt, libref, call, tail, immediate, fptr, decl, source, the
+analyzer's key), the code sites that reach it, the size to the next start, the walk's extent, B-FILL, the unit,
+drafted (a fragment), analyzed (a draft of the analyzer).
 
 ### Drafting
 
@@ -195,14 +206,15 @@ uv run dcp rename OLD NEW --why "..."         # one identifier
 
 `dcp draft` writes `src/<unit>/f_<addr>.c` (source/draft.py): line 1 `/* 0x10001000, <name> */`, the name the
 ledger registers for the address (a declaration, an export, the user entry) else the placeholder
-`<unit>_<addr>`; the body is Ghidra's pseudocode with the ledger's names (callees: source, decl, export, entry,
-library and import names, else the placeholder of the callee's unit, else `unk_<addr>`; data labels: the
-ledger's name, else `DAT_<addr>`), or, without a Ghidra draft, a `@rough` skeleton holding the disassembly. The
-prototype goes into `include/<unit>.h`; head.c gets `#include "dcp_ghidra.h"` (Ghidra's type names, written
-into include/), the system header of every import and C library function it calls
-(Toolchain.import_header / declaring_header), the header of every unit that declares a callee, and for the rest
-a K&R declaration (Ghidra's return type) or `extern` (the type from Ghidra's label prefix) in a `/* dcp draft:
-... */` block. Every other placeholder spelling of the drafted address in src/ and include/ is renamed to the new
+`<unit>_<addr>`; the body is the analyzer's pseudocode with the ledger's names (its dialect in:
+Analyzer.rewrite; callees: source, decl, export, entry, library and import names, else the placeholder of the
+callee's unit, else `unk_<addr>`; data labels: the ledger's name, else `DAT_<addr>`), or, without a draft, a
+`@rough` skeleton holding the disassembly. The prototype goes into `include/<unit>.h`; head.c gets the
+analyzer's types header (Ghidra: `#include "dcp_ghidra.h"`, its type names, written into include/), the system
+header of every import and C library function it calls (Toolchain.import_header / declaring_header), the header
+of every unit that declares a callee, and for the rest a K&R declaration (the analyzer's return type; the whole
+prototype for a convention whose decorated name needs the parameters, Toolchain.sized_conventions) or `extern`
+(the type from the analyzer's label, Analyzer.data_labels) in a `/* dcp draft: ... */` block. Every other placeholder spelling of the drafted address in src/ and include/ is renamed to the new
 name (one address, one name) and its K&R lines leave the dcp blocks.
 
 ```
@@ -241,7 +253,9 @@ uv run dcp session wrap      # build, link, check, promote (main), the computed 
 uv run dcp skills install    # the skills into .claude/skills/ (dcp init does it for a new project)
 ```
 
-`session start` records the base commit in `.dcp/session.json`; `session wrap` computes the report from git (the
-base against the working tree), the store and names.log: errors / fragments / byte / readable / units before ->
-after, units declared / joined / renamed, the boundary lines added and removed, the functions drafted with
-their grades, the renames, the units touched with their boundary levels, the next item, the baseline promoted.
+`session start` records the base commit in `.dcp/session.json` and prints per target the overview: the units, the
+next open function, the toolchain level and the analyzer (`analyzer=ghidra  drafts=678`, or `analyzer=none`);
+`session wrap` computes the report from git (the base against the working tree), the store and names.log: errors
+/ fragments / byte / readable / units before -> after, units declared / joined / renamed, the boundary lines added
+and removed, the functions drafted with their grades, the renames, the units touched with their boundary levels,
+the next item, the baseline promoted.
