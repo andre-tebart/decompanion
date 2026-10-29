@@ -448,3 +448,39 @@ prints the analyzer. Shown on a fresh scratch project of server.dll: cold setup 
 31 s, the second rule pass 4 rules in 53 ms), 678 drafts, every one of the 311 game functions drafted, 6
 analyzer-only starts in library code, l9=0, the export byte-identical with the last round's; warm setup ~0.39 s
 (~0.37 s without the analyzer step); the setup facts of m5 / m2 byte-identical.
+
+Amended 2026-10-29, guided decisions (user decision). decompanion must guide the user through every decision of the
+decompilation, not take decisions for them: "`dcp init` declares nothing. Every human decision is an **obligation**
+that the tool names when it becomes due, with the evidence it has, the command that resolves it, and the check that
+verifies it afterwards. Init only records the binary." The reason: `dcp init` required `--toolchain-root`,
+pre-filled compiler / linker / cflags from the Rich header with a "verify" reason, and defaulted the archives to
+LIBC although server.dll links LIBCMT (the user had to be told to hand-edit the toml). As built: `dcp init DIR
+BINARY [--target-name N]` writes the `[[target]]` (name, path, sha256, image, isa: computed) and the `[analyzer]`
+the machine has (unconfirmed), nothing else; `dcp target add` likewise. obligations.py computes the obligations
+from the configuration and the store (never stored): toolchain.compiler, toolchain.linker, toolchain.root,
+toolchain.cflags, libs.archives (due once the root is declared), analyzer, layout, match; `dcp status` prints the
+phase and the open ones in order, `dcp setup`, `dcp session start` and every declaration print it as their tail;
+the toolchain and libs obligations fail `dcp session start` and `dcp check`. The declarations `dcp toolchain
+declare KEY=VALUE... --why`, `dcp libs declare ARCHIVE... --why`, `dcp analyzer declare PLUGIN [KEY=VALUE...]
+--why` write `reason.<key>` per key (tomledit.py keeps the comments; the older `reason = "..."` still reads as
+every key's) and rerun the rules. The evidence: `dcp toolchain` (the declarations per key with level and reason,
+the installs the toolchain plugin finds with the versions of their tools, the Rich candidates with the build names,
+the PE linker version and time stamp, the CRT strings) and `dcp libs candidates` (build/libcand.py: every run-time
+archive of the root placed on its own with S.crt.code's search, now `place_members` in rules/setup.py, cached per
+image and archive). The setup runs in two stages: an input absent until declared makes its rules wait
+(rules/engine.py: an empty run keyed by the obligations, `waiting:` in `dcp rules`); S.rich reads the new input
+`archives` (the declared archives or none), so the Rich candidates are there before any declaration. Found on the
+way: CL.EXE reports 12.00.8804 in both installs (the driver); the Rich compiler build is the back end's, C2.DLL's
+(SP5 + PP 13.00.9044, SP6 12.00.9782), so the installs are read from the version resources of CL / C1 / C2 / LINK,
+not by running them; the debug CRTs place members too (LIBCMTD 21, LIBCD 19: the assembly routines are
+byte-identical), LIBCMT 109 and LIBC 75 conflict on 6 places; the stage-1 export seeded Ghidra at starts the CRT
+placement later removes, and a reused Ghidra project kept those functions (682 drafts, two declared sizes changed),
+so an export whose previous seed is no longer a subset of our starts is now `fresh` (meta `drafts.starts`; the
+project is imported and analysed again). Shown on a fresh scratch project of server.dll on the user's path
+(build/scratch/m6.sh): cold setup 29 s (the rules 1.6 s, Ghidra 27 s, 7 obligations, 8 rules waiting, 8 C.overlap
+errors in the unplaced library code), the toolchain declaration reruns 12 rules in 0.3 s, `dcp libs candidates` 1.0
+s cold / 0.3 s cached, the libs declaration 34 rules in 1.4 s, the next setup 27 s (the fresh export, 678 drafts),
+warm setup 0.35 s, `dcp session start` gate ok, the m4b layout sequence to `dcp session wrap` gate ok; its facts
+equal the last round's m4b apart from the four object hashes of M.compile (the objects hold the compile time stamp
+and the project directory, m6 vs m4b), its conflicts (16 warnings) and unit table byte-identical; the setup facts
+of m5 / m2 byte-identical.

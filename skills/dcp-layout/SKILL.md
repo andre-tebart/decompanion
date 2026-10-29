@@ -23,10 +23,17 @@ Hard rules
 
 ## 1. Start
 
-1. `uv run dcp session start`. It is the gate (clean working tree, every unit compiles, no error conflict, the
-   link ok) and prints the overview: units, the first open function (`next=`), the toolchain level, the
-   analyzer (`analyzer=ghidra  drafts=678`). On `gate: FAIL` fix what it lists (or revert), commit, and start
-   again; do not work on a failing gate. The drafts come from the project's analyzer (`[analyzer]` in
+1. `uv run dcp session start`. It is the gate (no open toolchain or libs obligation, clean working tree, every
+   unit compiles, no error conflict, the link ok) and prints the overview: units, the first open function
+   (`next=`), the toolchain level, the analyzer (`analyzer=ghidra  drafts=678`), then the status tail (`---
+   dcp status`: the phase and the open obligations in order, one `obligation=` line each with what is missing,
+   the evidence and the command that resolves it). On `gate: FAIL` fix what it lists (or revert), commit, and
+   start again; do not work on a failing gate. An `obligation=toolchain.*` or `obligation=libs.archives` line
+   under the FAIL is a human decision (the compiler, linker, root, flags, static libraries): never declare it
+   yourself; stop and hand the line to the user (`uv run dcp status`, `uv run dcp toolchain` and `uv run dcp
+   libs candidates` show the evidence; `dcp toolchain declare` / `dcp libs declare` resolve it, always with
+   `--why`). An open `obligation=analyzer` does not block the session: mention it in the wrap-up. The drafts
+   come from the project's analyzer (`[analyzer]` in
    decompanion.toml, a third-party tool `uv run dcp setup` runs when its export is stale); with `analyzer=none`
    or `drafts=0` every draft is a `@rough` skeleton (`uv run dcp report` says why: `export=`, and setup prints
    `analyzer=ghidra unavailable: <reason>` when the tool is missing).

@@ -34,15 +34,22 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
   (`ledger/store.py`), `build/<target>.sqlite`, holding runs, facts, conflicts, blobs and the materialised
   byte map. A store is a cache: delete it and the next command recomputes. A worktree (`dcp wt new`) overlays
   main's store of the same target. Each target declares its own toolchain (`compiler`, `linker`, `cflags`,
-  `reason`; `[toolchain]` holds the plugin, its root and defaults) and may name its own library `archives`
-  (else `[libs] archives`).
+  `archives`, each with `reason.<key>`; `[toolchain]` holds the plugin, the root and defaults a target
+  inherits).
+- **Obligations** (`obligations.py`): decompanion takes no decision of the decompilation. `dcp init` declares
+  nothing; every human decision (the compiler and linker builds, the toolchain root, the flags, the static
+  libraries, the analyzer) is an obligation computed from the configuration and the store, named by `dcp
+  status` when it is due with the evidence known so far and the command that resolves it. A declaration (`dcp
+  toolchain declare`, `dcp libs declare`, `dcp analyzer declare`) needs `--why`, is level declared, and the
+  rules raise it. Rules whose input is not declared yet wait (`dcp rules`: `waiting: toolchain.root`).
 
 - **Seams** (docs/architecture.md): the rules (`rules/`, `ledger/`) know no container, object format,
   toolchain, instruction set or analyzer. They ask five plugin kinds, each a package with a registry its
   plugins register into: `image/` (Image: sections, imports, exports, relocations, its own region vocabulary;
   PE32), `objfmt/` (ObjectFormat: archive objects, relocations as absolute / relative / absolute-rva with a
   width and `resolve`; COFF), `toolchains/` (Toolchain: fill forms, import stubs and their placement,
-  function alignment, user entry names, Rich vocabulary, default archives; VC6), `isa/` (Isa: a decoder of
+  function alignment, user entry names, Rich vocabulary, installs and their versions, run-time archives;
+  VC6), `isa/` (Isa: a decoder of
   compact instruction records with flow kinds, table shapes; x86-32 through capstone) and `analyzers/`
   (Analyzer: a third-party tool's opinions, function starts, names and pseudocode per function, and the
   dialect of that pseudocode; Ghidra headless, saved REA files, none). A target selects `image` and `isa` in
@@ -60,7 +67,11 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
    (`rules/walk.py`), fill, and a total byte map (`S.unknown` closes it). Then the configured analyzer's
    export when its key (analyzer, image, script, our starts) changed: Ghidra headless decompiles every
    function, seeded at our starts; its starts become declared facts (`L.analyzer`), its pseudocode the drafts
-   of `dcp draft` (`--no-analyzer` skips it, `--analyzer-force` exports again).
+   of `dcp draft` (`--no-analyzer` skips it, `--analyzer-force` exports again). Setup runs in two stages
+   around the toolchain obligation: a rule whose input is not declared yet waits (the library placement
+   `S.crt.*`, `S4`, `C.toolchain`, `S2`, `M.compile`, `M.flags.proven`), so the first `dcp setup` runs the
+   rest and prints the obligations; `dcp toolchain declare` and `dcp libs declare` end the waits and rerun the
+   rules at once (docs/architecture.md, the obligation model).
 2. **layout** (`dcp layout ...`): declarations (`decl/*.dcl`, `ledger/decl.py`), address comments in one
    file per function (`ledger/srcscan.py`), the analyzer's drafts (`ledger/drafts.py`), boundary evidence
    (`L.analyze`: literal first users, fill before a start, leaked source paths), unit extents and status
@@ -81,19 +92,122 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
 
 ## Use
 
+The workflow: `dcp init` -> `dcp setup` -> follow `dcp status` (declare the toolchain, the libraries, the
+analyzer) -> `dcp session start`. decompanion takes none of the decisions: every one is an obligation `dcp
+status` names when it is due, with the evidence it has and the command that resolves it; every declaration needs
+`--why`.
+
+### Quick start: server.dll (outputs trimmed, real numbers)
+
+1. Create the project. Init records the binary only (name, path, sha256, image format, ISA) and the analyzer the
+   machine has (unconfirmed):
+
 ```
 uv sync                                   # in this repo: the venv (Python 3.15, capstone)
-uv run dcp init ../guild-server "C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll" \
-    --toolchain-root C:/Tools/MSVC600-SP5PP       # required: the toolchain installation (VC6: holds VC98/)
+uv run dcp init ../guild-server "C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll" --target-name server
+  computed: image=pe32 isa=x86; declared: nothing (toolchain, libraries, analyzer: the obligations of dcp status)
+  analyzer (to confirm): plugin = "ghidra"  root = "C:/Tools/ghidra_12.1.4_PUBLIC"  java_home = "..."
 cd ../guild-server && uv sync             # the target project depends on decompanion by path
-uv run dcp setup -v                       # run every rule and the analyzer's export, print the report
+git add -A && git commit -m init
+```
+
+2. The first setup runs every rule that needs no declaration and the analyzer's export (Ghidra: 27 s), and ends
+   with the open obligations. The rules that read an undeclared input wait (`dcp rules -v`: `waiting:
+   libs.archives`); their facts are missing until then, so the walk runs through the library code unplaced:
+
+```
+uv run dcp setup                          # 29 s cold (the rules 1.6 s, Ghidra 27 s)
+waiting=8  rules=C.toolchain,M.compile,M.flags.proven,S.crt.code,S.crt.data,S.crt.refs,S2.rich.members,S4.import.libs  on=toolchain.compiler,toolchain.linker,libs.archives
+conflicts: error=8                        # C.overlap in library code the archives will explain
+--- dcp status
+status=server  phase=setup  open=7
+obligation=toolchain.compiler  target=server  missing="the compiler build that made the user's objects (missing)"  evidence='Rich compilers cl 12.00.8047 x125, cl 12.00.9044 x37, cl 12.00.8047 x1 C++; built 2003-10-01; CRT strings 3 (__MSVCRT_HEAP_SELECT)'  resolve='dcp toolchain declare compiler="<one of the Rich compilers>" --why "..."'
+obligation=toolchain.linker  target=server  missing='the linker build (missing)'  evidence='Rich linkers link 6.00.8447 x1; PE linker version 6.00'  resolve=...
+obligation=toolchain.root  target=-  missing='the installation of that toolchain (missing)'  evidence='installs found: C:/Tools/MSVC600 (cl 12.00.8804 c2 12.00.9782 link 6.00.8447; makes a Rich linker (8447)); C:/Tools/MSVC600-SP5PP (cl 12.00.8804 c2 13.00.9044 link 6.00.8447; makes a Rich compiler (9044) and a Rich linker (8447))'  resolve='dcp toolchain declare root=DIR --why "..."'
+obligation=toolchain.cflags  target=server  missing='the compiler flags (missing)'  evidence="the vc6 project wizard's release flags /O2 /Gy; dcp toolchain probe proves flags once functions byte-match"  resolve=...
+obligation=libs.archives  target=server  waits=toolchain.root  missing='the static libraries linked into the image (missing)'  resolve='dcp libs candidates; dcp libs declare ARCHIVE... --why "..."'
+obligation=analyzer  target=-  missing='the analyzer whose pseudocode the drafts start from (computed, not confirmed)'  evidence='[analyzer] plugin=ghidra as dcp init found it (found at C:/Tools/ghidra_12.1.4_PUBLIC); drafts=616'  resolve='dcp analyzer declare ghidra|rea|none [root=DIR] [file=PATH] --why "..."'
+obligation=layout  target=server  missing='311 of 311 functions of the game code without a fragment; units open=0 separated=0'  evidence='next=0x10001000 kind=func size=304 unit=- start=immediate analyzed=yes (dcp layout next: the evidence)'  resolve=...
+```
+
+3. The evidence for the toolchain, in full:
+
+```
+uv run dcp toolchain
+  installs found=2  (the vc6 plugin's places)
+    C:/Tools/MSVC600 (cl 12.00.8804 c2 12.00.9782 link 6.00.8447; makes a Rich linker (8447))
+    C:/Tools/MSVC600-SP5PP (cl 12.00.8804 c2 13.00.9044 link 6.00.8447; makes a Rich compiler (9044) and a Rich linker (8447))
+  pe_linker=6.00  built=2003-10-01  timestamp=0x3f7a8411
+  crt strings=3  ('__MSVCRT_HEAP_SELECT', 'runtime error ', 'Microsoft Visual C++ Runtime Library')
+  compiler candidates=3  (derived, rule:S.rich@2)
+    cl 12.00.8047 (Utc12_C C x125)  [VC6 pre-release build used for the shipped CRT / SDK libraries]
+    cl 12.00.9044 (Utc12_2_C C x37)  [VC6 SP5 and SP5 + Processor Pack (cl 12.00.9044, C2 13.00.9044)]
+    cl 12.00.8047 (Utc12_CPP C++ x1)  [VC6 pre-release build used for the shipped CRT / SDK libraries]
+  linker candidates=1  (derived, rule:S.rich@2)
+    link 6.00.8447 (Linker600 - x1)  [VC6 RTM linker (link 6.00.8447)]
+  C.toolchain: waiting: toolchain.compiler, toolchain.linker
+```
+
+4. Declare the toolchain (any subset of keys per call; the reason is stored per key). The rules run again at
+   once and the next obligation shows:
+
+```
+uv run dcp toolchain declare compiler="cl 12.00.9044" linker="link 6.00.8447" root="C:\Tools\MSVC600-SP5PP" cflags="/O2 /Gy" \
+    --why "Rich: Utc12_2_C 9044 x37 is the one compiler build the CRT's 8047 objects do not explain, ..."
+  root=C:/Tools/MSVC600-SP5PP  available=yes  cl=12.00.8804  c1=12.00.8867  c2=13.00.9044  link=6.00.8447
+C.toolchain: ok
+status=server  phase=setup  open=3
+obligation=libs.archives  target=server  missing='the static libraries linked into the image (missing)'  evidence='not placed yet: dcp libs candidates places every run-time archive of the root'  resolve=...
+```
+
+5. The evidence for the libraries: every run-time archive of the root placed on its own (S.crt.code's search,
+   cached per image and archive: 1.0 s, then 0.3 s), sorted by placed bytes, with the archives that conflict:
+
+```
+uv run dcp libs candidates
+target=server  root=C:/Tools/MSVC600-SP5PP  archives=13  cached=0  ms=870
+  archive=LIBCMT.LIB  members=637  placed=109  bytes=32851  declared=-
+  archive=LIBC.LIB  members=637  placed=75  bytes=23514  declared=-
+  archive=LIBCMTD.LIB  members=637  placed=21  bytes=4312  declared=-
+  archive=LIBCD.LIB  members=637  placed=19  bytes=3847  declared=-
+  archive=MSVCRT.LIB  members=104  placed=6  bytes=495  declared=-
+  ...                                     # MSVCRTD 4, the C++ libraries and OLDNAMES 0
+  conflict=LIBCMT.LIB,LIBC.LIB  overlaps=6  first=0x10019028
+uv run dcp libs declare LIBCMT --why "dcp libs candidates: LIBCMT places 109 members against LIBC's 75 ...; Init starts its thread with _beginthread"
+  placed: LIBCMT.LIB=109  (S.crt.code)
+status=server  phase=layout  open=2
+```
+
+6. Setup again: the waiting rules have run (CRT placement, CRT refs and data, C.toolchain, S5); the starts of
+   ours changed, so the analyzer exports again, afresh (27 s); then warm setup is 0.35 s:
+
+```
+uv run dcp setup
+functions: 586 (proven 212, derived 374); library members placed: 109 LIBCMT.LIB=109
+analyzer=ghidra  drafts=678  export=up-to-date  game_functions=311  with_draft=311  analyzer_only=6  ours_only=0  l9=0
+conflicts: warn=8
+status=server  phase=layout  open=2
+obligation=analyzer  ...                  # confirm it: dcp analyzer declare ghidra --why "..."
+obligation=layout  target=server  missing='311 of 311 functions of the game code without a fragment; units open=0 separated=0'  ...
+git add -A && git commit -m "toolchain and libraries declared"
+uv run dcp session start                  # gate: ok (an open toolchain or libs obligation fails it)
+```
+
+Reading and checking:
+
+```
+uv run dcp status                         # the phase and the open obligations (every command's tail)
 uv run dcp why 0x10008cb0 --refs          # everything known about an address
 uv run dcp map 0x10008c00..0x10008e00     # the byte map of a range
 uv run dcp facts 0x10008cb0..0x10008d20 --kind name
 uv run dcp conflicts                      # contradictions
-uv run dcp check                          # the gate (every target, loaders included)
-uv run dcp rules -v                       # the rule graph with criteria and timings
-uv run dcp toolchain                      # per target: the declaration, the Rich candidates, C.toolchain
+uv run dcp check                          # the gate (every target, loaders included, no open toolchain / libs obligation)
+uv run dcp rules -v                       # the rule graph with criteria, timings and what waits
+uv run dcp toolchain                      # per target: the declarations, installs, Rich candidates, C.toolchain
+uv run dcp toolchain declare KEY=VALUE... --why "..."   # compiler= linker= root= cflags= plugin=
+uv run dcp libs candidates                # every run-time archive of the root placed on its own
+uv run dcp libs declare ARCHIVE... --why "..."          # LIBCMT, LIBCMT.LIB or a path
+uv run dcp analyzer declare ghidra|rea|none [root= java_home= file= timeout=] --why "..."
 ```
 
 Match (docs/match.md):
@@ -116,14 +230,14 @@ Targets:
 
 ```
 uv run dcp target list
-uv run dcp target add exe "C:/Program Files/GOG Galaxy/Games/The Guild Gold/GildeGold.exe"
+uv run dcp target add exe "C:/Program Files/GOG Galaxy/Games/The Guild Gold/GildeGold.exe"   # declares nothing
+uv run dcp --target exe toolchain declare compiler=... linker=... cflags=... --why "..."     # its own obligations
 uv run dcp --target exe setup             # or: uv run dcp setup --target exe
 uv run dcp setup --all-targets            # every target in config order (also: dcp report --all-targets)
 ```
 
-`dcp init` and `dcp target add` pre-fill the target's toolchain declaration from its Rich header (the compiler
-entry with the most objects that no configured archive object was built with, the linker entry with the most
-objects) and say so in the reason; verify it with `dcp toolchain`. A target's table, e.g. the exe linking the
+`dcp init` and `dcp target add` declare nothing: the declarations land in the target's table (the compiler,
+linker, flags and archives) and in `[toolchain]` (the root), each key with its reason, e.g. the exe linking the
 DirectInput library:
 
 ```toml
@@ -133,15 +247,20 @@ path = "C:/Program Files/GOG Galaxy/Games/The Guild Gold/GildeGold.exe"
 sha256 = "d6f20fda..."
 image = "pe32"
 isa = "x86"
-archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", "{toolchain.root}/VC98/Lib/DINPUT.LIB"]
 compiler = "cl 12.00.9044"
 linker = "link 6.00.8447"
 cflags = ["/O2", "/Gy"]
-reason = "picked at target add from the Rich header: ... (Utc12_2_C 9044 x157), ... (Linker600 8447 x53); verify"
+reason.compiler = "Rich: Utc12_2_C 9044 x157 ..."
+reason.linker = "..."
+reason.cflags = "..."
+archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", "{toolchain.root}/VC98/Lib/DINPUT.LIB"]
+reason.archives = "dcp libs candidates: ..."
 ```
 
 `dcp init` also writes the project's analyzer, the third-party tool `dcp setup` runs for a draft of every
-function: Ghidra with the installation it found, else `plugin = "none"` (drafts are then `@rough` skeletons).
+function: Ghidra with the installation it found, else `plugin = "none"` (drafts are then `@rough` skeletons). It
+stays the obligation `analyzer` until `dcp analyzer declare ghidra|rea|none [root= file=] --why "..."` confirms
+or changes it.
 Saved REA `batch_decompile` results instead of a run: `plugin = "rea"`, `file = "..."` (or a list).
 
 ```toml
@@ -193,10 +312,11 @@ Output is one record per line, `key=value` tokens, addresses `0x%08x`, intervals
 
 ```
 src/decompanion/
-  cli.py cli_match.py cli_read.py cli_draft.py cli_layout.py cli_session.py config.py init.py
+  cli.py cli_match.py cli_read.py cli_draft.py cli_layout.py cli_session.py cli_decide.py config.py init.py
+  obligations.py tomledit.py         # the guided decisions: obligations, dcp status; declarations into decompanion.toml
   ledger/   fact.py store.py query.py decl.py srcscan.py drafts.py layoutview.py grades.py names.py
   rules/    engine.py setup.py walk.py checks.py layout.py match.py match_data.py grade.py   # generic: the seams only
-  build/    amalg.py compile.py link.py probe.py analyzer.py   # the tools run here (one process per unit), never in a rule
+  build/    amalg.py compile.py link.py probe.py analyzer.py libcand.py   # the tools run here (one process per unit), never in a rule
   data/     ghidra/DcpExport.java dcp_ghidra.h   # the Ghidra post-script, Ghidra's type names (analyzers/ghidra.py)
   match/    compare.py diffclass.py              # masked compare, instruction diff and hunk classes
   repo/     wt.py session.py         # worktrees and seed; the session record and report

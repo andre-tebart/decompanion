@@ -61,8 +61,17 @@ stores its entries (ledger/drafts.py); the rules read the stored entries through
   layout convention, prose cited by S.thunk)
 - `user_entry_names()`: decorated user entry -> C name; `crt_entry_symbols()`, `crt_user_entry(symbol)`
 - `archive_tools(stamps)`: tool stamps decoded to Rich (prodid, build)
-- `rich_product`, `rich_candidates`, `declare`, `prefill`, `build_name`: the Rich header vocabulary
-- `library_archives()`, `default_archives()`, `default_cflags()`, `import_library_name(dll)`
+- `rich_product`, `rich_candidates`, `declare`, `build_name`: the Rich header vocabulary (nothing is picked)
+- `library_archives()`, `import_library_name(dll)`
+- The guided decisions (milestone 6; evidence only, the plugin never declares): `installs()` (the installations
+  found on this machine: Install `root`, `versions`, `compiler_build`, `linker_build`, `ok`; VC6: `$VC6_ROOT`,
+  `C:/Tools/*`, Program Files `Microsoft Visual Studio`, each holding `VC98/Bin/CL.EXE`), `install(root)` (VC6:
+  the version resources of CL.EXE, C1.DLL, C2.DLL and LINK.EXE; the compiler build is C2's, the back end's,
+  which is what a Rich compiler entry records: CL.EXE reports 12.00.8804 in SP5 + PP and SP6 alike),
+  `crt_strings(image)` (VC6: `Microsoft Visual C++ Runtime Library`, `__MSVCRT_HEAP_SELECT`, `runtime error `),
+  `library_candidates()` (VC6: LIBC, LIBCD, LIBCMT, LIBCMTD, MSVCRT(D), the C++ libraries, OLDNAMES present
+  under `VC98/Lib`), `archive_spec(name)` (`LIBCMT` -> `{toolchain.root}/VC98/Lib/LIBCMT.LIB`),
+  `wizard_cflags()` (VC6: `/O2 /Gy`, the release wizard's)
 - Milestone 3, the tools themselves:
   - `available()`: the compiler is installed (else nothing compiles and the match rules warn)
   - `compile(src, obj, flags, include_dirs, cwd)` -> CompileResult (`ok`, `log`, `diagnostics` as Diagnostic
@@ -117,7 +126,7 @@ project's path expansion.
   JDK 21); REA for its files (`[analyzer] file`, a path or a list); none is always there
 - `script_hash()`: what makes the export besides the image and our starts (Ghidra: the post-script
   `data/ghidra/DcpExport.java`; REA: the files' contents); part of the export key
-- `export(install, image, isa_key, starts, out_dir)` -> Export: `entries` (Entry: `start`, `end`, `ranges`,
+- `export(install, image, isa_key, starts, out_dir, fresh)` -> Export: `entries` (Entry: `start`, `end`, `ranges`,
   `size`, `name`, `body` (the pseudocode), `seeded` (made at one of our starts on our request: no claim of the
   tool's), `requested`, `source`, `analyzer`), `failed` (one message per item), `digest` (the analysed binary's
   sha256), `ms`, `out`, `log`, `skipped` (files about another binary). Ghidra: `analyzeHeadless` with the
@@ -138,7 +147,49 @@ sha256(key, image sha256, `script_hash()`, our starts) differs from the store's 
 `--analyzer-force`), `export` and `ledger/drafts.py replace` (the store's drafts become exactly the export's
 entries: blobs of kind `drafts` keyed by image and start, meta `drafts` their hash = the input `drafts`), then
 the rules again: L.analyzer (its starts) and L9 read the input, the rules that need every start (L4, L5) follow.
+When a start the last export was seeded with is no longer ours (meta `drafts.starts`; the typical case is the
+first `dcp setup`, which runs before the library archives are declared), the export is `fresh`: Ghidra imports
+and analyses again instead of reusing its project, so no function seeded at a stale start stays in it and the
+drafts do not depend on the order of the declarations (milestone 6).
 Our starts are every start fact but L.analyzer's and every walked or placed function, inner labels excluded.
+
+## The obligation model (milestone 6: guided decisions)
+
+decompanion guides the user through every decision of the decompilation and takes none of them. `dcp init`
+declares nothing: it writes the `[[target]]` with what the file gives (name, path, sha256, image format, ISA) and
+the `[analyzer]` table with the plugin this machine has (ghidra when found, else none), unconfirmed. Every human
+decision is an **obligation** (`obligations.py`), computed on every call from the configuration and the store,
+never stored:
+
+| id | open while | evidence | resolved by | checked by |
+|---|---|---|---|---|
+| `toolchain.compiler` / `.linker` | no build declared, or no reason | the Rich candidates (S.rich), the PE linker version, the time stamp, the CRT strings | `dcp toolchain declare compiler= linker=` | C.toolchain (the build is a Rich candidate) |
+| `toolchain.root` | no root declared, or no reason | the installs found (Toolchain.installs: versions, which declared or Rich builds each makes) | `dcp toolchain declare root=` | M.compile (warns when nothing compiles) |
+| `toolchain.cflags` | no flags declared, or no reason | the wizard's flags; the probe | `dcp toolchain declare cflags=` | M.flags.proven (`dcp toolchain probe`) |
+| `libs.archives` (due once the root is declared) | no archives declared, or no reason | `dcp libs candidates` (build/libcand.py: every run-time archive placed on its own, cached per image and archive) | `dcp libs declare ARCHIVE...` | S.crt.code places the members, S2 / S5 count what is missing |
+| `analyzer` | `[analyzer]` has no reason | the plugin, whether it is installed, the drafts | `dcp analyzer declare` | L.analyzer, L9 |
+| `layout` | functions without a fragment, open units | the first open function | `dcp session start`, `dcp layout next` | L1..L11 |
+| `match` | fragments below byte + readable | the first item of the base queue | `dcp next` | the grades |
+
+A declaration always carries a reason (`--why`, refused without one) and lands in decompanion.toml as `key =
+value` plus `reason.<key> = "..."` in the same table (`tomledit.py`, a line editor that keeps the comments); it is
+level declared, and the rules raise it. The older one-reason form `reason = "..."` still reads as the reason of
+every key of its table. `dcp status` prints the phase (setup / layout / match / done) and the open obligations in
+order, one record each (`obligation= target= missing= evidence= resolve=`, `waits=` for one not due yet);
+`dcp setup`, `dcp session start` and every declaration print it as their tail. The toolchain and libs
+obligations are a gate: `dcp session start` and `dcp check` fail on them.
+
+How a declaration feeds the rules: an external input may be absent until declared (`Project.waiting`): `libs`
+waits for `libs.archives` (and for `toolchain.root` when the archives are spelled under it), `toolchain` for
+`toolchain.compiler` and `toolchain.linker`. A rule reading a waiting input waits (rules/engine.py): its
+criterion does not run, the engine records an empty run keyed by the obligations, the rules that need it run
+on nothing from it, and `dcp rules` prints `waiting: <obligation>`. So setup runs in two stages around the
+toolchain obligation: the first `dcp setup` runs every rule that needs no declaration (headers, sections, data
+directories, imports, exports, relocations, the Rich candidates (S.rich reads `archives`, the declared archives
+or none), strings, fill, the walk) and the analyzer's export, and prints the obligations; the declarations end
+the waits (S.crt.code / refs / data, S4, C.toolchain, S2, M.compile, M.flags.proven), and the declare command
+reruns the rules at once (the walk and everything downstream follow the placed library code). A declaration
+made before the first `dcp setup` only writes (no store yet).
 
 ## What the rules may and may not know
 
@@ -181,7 +232,8 @@ Thunk (S.thunk, derived level; toolchains/vc6):
 
 Other VC6 facts the plugin states: the CRT start-up symbols and the user entries they call (`_DllMain@12` ->
 DllMain, `_WinMain@16` -> WinMain, `_main` -> main, the wide variants), `@comp.id` = prodid << 16 | build,
-`<DLL>.LIB` import libraries under `VC98/Lib`, the default archive `VC98/Lib/LIBC.LIB` and flags `/O2 /Gy`.
+`<DLL>.LIB` import libraries under `VC98/Lib`, the release wizard's flags `/O2 /Gy` (evidence for the cflags
+obligation, never written).
 
 The match phase (milestone 3; docs/match.md) adds: CL and LINK run with `VC98/Bin` and `Common/MSDev98/Bin` on
 PATH, `VC98/Include` on INCLUDE and `VC98/Lib` on LIB (`[toolchain] include_dirs` / `lib_dirs` first); one CL
