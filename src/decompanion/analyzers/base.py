@@ -96,7 +96,7 @@ class Analyzer:
     def script_hash(self) -> str:
         return ""
 
-    def export(self, install: Install, image, isa_key: str, starts: list[int], out_dir: Path) -> Export:
+    def export(self, install: Install, image, isa_key: str, starts: list[int], out_dir: Path, fresh: bool = False) -> Export:
         return Export()
 
     def is_placeholder(self, name: str) -> bool:

@@ -17,6 +17,7 @@ from .store import Store, canonical, sha256
 
 KIND = "drafts"
 EXPORT = "drafts.export"
+STARTS = "drafts.starts"          # the starts the last export was seeded with (build/analyzer.py: fresh or not)
 
 
 def key(image_sha: str, start: int) -> str:

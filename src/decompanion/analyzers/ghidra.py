@@ -10,7 +10,8 @@ Where Ghidra and its JDK are (first hit wins):
 The run: `analyzeHeadless <out_dir> <name> -import <binary> -processor <language> -overwrite -scriptPath
 <package>/data/ghidra -postScript DcpExport.java <out_dir>/export.json <timeout> starts.txt` (out_dir is
 build/ghidra/<target>, name its last part); when the project already holds the binary, `-process <binary
-name> -noanalysis` instead (the analysis is kept in the project). The language comes from our instruction set
+name> -noanalysis` instead (the analysis is kept in the project), unless the export is `fresh` (build/analyzer.py:
+a start seeded before is no longer ours, so the project would keep a function that is not). The language comes from our instruction set
 (LANGUAGES). starts.txt lists our function starts: where Ghidra has no function the script creates one, so
 every function of ours gets a draft; those are marked `seeded` (tag DCP_SEEDED in the Ghidra project) and are
 no claim of Ghidra's. The script (src/decompanion/data/ghidra/DcpExport.java) writes the REA batch_decompile
@@ -141,8 +142,10 @@ class Ghidra(GhidraDialect):
     def script_hash(self) -> str:
         return file_hash(SCRIPT)
 
-    def export(self, install: Install, image, isa_key: str, starts: list[int], out_dir: Path) -> Export:
-        """Run analyzeHeadless with the export script (import and analyse, or reuse the project's analysis)."""
+    def export(self, install: Install, image, isa_key: str, starts: list[int], out_dir: Path, fresh: bool = False) -> Export:
+        """Run analyzeHeadless with the export script (import and analyse, or reuse the project's analysis; `fresh`:
+        import and analyse again although the project holds the binary, so no function seeded at a start that is
+        no longer ours stays in it)."""
         lang = LANGUAGES.get(isa_key)
         if lang is None:
             raise AnalyzerError(f"no Ghidra language for the instruction set {isa_key!r} (analyzers/ghidra.py LANGUAGES)")
@@ -155,7 +158,8 @@ class Ghidra(GhidraDialect):
         for attempt in (0, 1):
             if out.exists():
                 out.unlink()
-            have = (d / f"{name}.gpr").exists() and (rep / "idata").exists() and any((rep / "idata").rglob("*.prp"))
+            have = (not fresh and (d / f"{name}.gpr").exists() and (rep / "idata").exists()
+                    and any((rep / "idata").rglob("*.prp")))
             args = [str(install.detail["headless"]), str(d), name]
             args += ["-process", binary.name, "-noanalysis"] if have else ["-import", str(binary), "-processor", lang, "-overwrite"]
             st = d / "starts.txt"

@@ -43,7 +43,7 @@ class Rea(GhidraDialect):
             h.update(p.name.encode() + b"\0" + (p.read_bytes() if p.exists() else b"-") + b"\1")
         return h.hexdigest()
 
-    def export(self, install: Install, image, isa_key: str, starts: list[int], out_dir: Path) -> Export:
+    def export(self, install: Install, image, isa_key: str, starts: list[int], out_dir: Path, fresh: bool = False) -> Export:
         ex = Export()
         for p in install.detail["files"]:
             try:

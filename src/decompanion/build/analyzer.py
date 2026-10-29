@@ -5,7 +5,10 @@ the rules, then this, then the rules again (only L.analyzer and what reads its f
 The export key: sha256(analyzer key, image sha256, Analyzer.script_hash(), our starts). Our starts are the
 function starts in the code sections (every start fact but the analyzer's own, every walked or placed function;
 no inner label): the analyzer is told about them (Ghidra creates a function at each it lacks), so a new start
-of ours exports again. The output directory is build/<analyzer key>/<target>/.
+of ours exports again. The output directory is build/<analyzer key>/<target>/. When a start the last export was
+seeded with is no longer ours (meta `drafts.starts`; the first `dcp setup` runs before the library archives are
+declared, so its walk has starts the placed library code later explains), the export is `fresh`: the tool's
+project is built anew instead of reused, so the drafts do not depend on the order the declarations came in.
 """
 from __future__ import annotations
 
@@ -74,8 +77,10 @@ def run(project, force: bool = False) -> Outcome:
     project.__dict__["_export_key"] = key
     if not force and project.store.meta(drafts.EXPORT) == key:
         return Outcome(az.key, "up-to-date", where=inst.where, note=inst.note)
+    prev = project.store.meta(drafts.STARTS)
+    fresh = prev is not None and not {int(x, 16) for x in prev.split(",") if x} <= set(starts)
     try:
-        ex = az.export(inst, project.image, project.isa_name, starts, out_dir(project))
+        ex = az.export(inst, project.image, project.isa_name, starts, out_dir(project), fresh=fresh)
     except AnalyzerError as e:
         return Outcome(az.key, "failed", str(e), inst.where)
     if ex.digest and ex.digest != project.image.sha256:
@@ -83,5 +88,6 @@ def run(project, force: bool = False) -> Outcome:
                                          f"{project.image.sha256[:16]}", inst.where, export=ex)
     n = drafts.replace(project.store, project.image.sha256, ex.entries)
     project.store.set_meta(drafts.EXPORT, key)
+    project.store.set_meta(drafts.STARTS, ",".join(f"{a:x}" for a in starts))
     project.forget_input("drafts")
     return Outcome(az.key, "exported", where=inst.where, stored=n, export=ex, note=inst.note)
