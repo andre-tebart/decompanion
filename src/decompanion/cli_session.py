@@ -125,7 +125,20 @@ def cmd_session_start(args):
         overview(p)
         status_tail(p)
     S.save(root, {"base": head, "started": S.now(), "states": states})
-    print("gate: ok. Start the timer now: a background shell `sleep 1800` (the skill's contract), then `dcp layout next`.")
+    print(f"gate: ok. The session clock runs ({S.MINUTES} minutes): `dcp session status`, and the first line of "
+          "`dcp layout next`; wrap up once it says over=yes.")
+    return 0
+
+
+def cmd_session_status(args):
+    """The session's clock (repo/session.py clock): base commit, start time, minutes elapsed and left of
+    --minutes; `over=yes` once they are used up."""
+    from .repo import session as S
+    p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
+    c = S.clock(p0.root, args.minutes)
+    if c is None:
+        return err("session status", "no session started (dcp session start)")
+    print(record(**c))
     return 0
 
 

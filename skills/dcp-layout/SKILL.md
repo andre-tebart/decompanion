@@ -1,6 +1,6 @@
 ---
 name: dcp-layout
-description: Run one layout session of a decompanion project - for 30 minutes (timer) find translation-unit boundaries and draft source for every function of each unit in address order, then wrap up. Use when the user says "layout", "/layout", "dcp-layout", "start a layout pass" or "layout round".
+description: Run one layout session of a decompanion project - for 30 minutes (the session clock) find translation-unit boundaries and draft source for every function of each unit in address order, then wrap up. Use when the user says "layout", "/layout", "dcp-layout", "start a layout pass" or "layout round".
 ---
 
 # Layout session: 30 minutes, the main checkout
@@ -37,21 +37,20 @@ Hard rules
    decompanion.toml, a third-party tool `uv run dcp setup` runs when its export is stale); with `analyzer=none`
    or `drafts=0` every draft is a `@rough` skeleton (`uv run dcp report` says why: `export=`, and setup prints
    `analyzer=ghidra unavailable: <reason>` when the tool is missing).
-2. Start the timer at once: Bash with `run_in_background: true`, command
-   `sleep 1800; echo "TIME UP - session over: finish or revert the function in progress, then run the wrap-up (section 5). The wrap-up is not timed."`
-   This command is the only clock of the session: when it exits, the harness re-invokes you with its output -
-   automatically, even if your turn has ended, so the notification cannot be missed. Until it arrives, the
-   session is not over and no time information exists: no `date` checks, no polling, no estimating (every
-   estimate is wrong, and a check that finds time remaining changes nothing). The 30 minutes bound the work loop
-   only: the wrap-up after the notification has no time limit. The only failure is ending the turn before the
-   notification arrives (a complete layout is the one exception, below), not the timer firing mid-function.
+2. The clock started with the gate: `dcp session start` recorded the start time, and from now on the first
+   line of every `uv run dcp layout next` is the clock (`session=running  elapsed=12m  left=18m  over=no`;
+   `uv run dcp session status` prints the same line). It is the only clock of the session: no timer, no `date`
+   checks, no estimating. Until a clock line says `over=yes` the session is not over. The 30 minutes bound the
+   work loop only: the wrap-up has no time limit. The only failure is ending the turn before `over=yes` (a
+   complete layout is the one exception, below), not the clock running out mid-function.
 3. Read `src/<unit>/open.md` of the unit the `next=` line names (its **Open work** first) when it exists.
 
-## 2. Work loop (until the timer notification)
+## 2. Work loop (until the clock says over=yes)
 
 Always work the first open function; never skip one, never stop early, never end the turn to wait.
 
-1. `uv run dcp layout next` - the first function of the game code without a fragment, with its evidence: its
+1. `uv run dcp layout next` - first the clock line (`over=yes`: go to section 5 now), then the first function of
+   the game code without a fragment, with its evidence: its
    start (`how=`: export, call, tail, immediate, fptr, decl, the analyzer's key such as `ghidra` ...), its
    callers and their units, the fill before it, the literals it uses first, leaked source paths, whether the
    analyzer has a draft (`analyzed=`; `uv run dcp draft 0xADDR --show` prints it unchanged).
@@ -83,7 +82,9 @@ Always work the first open function; never skip one, never stop early, never end
 Ghidra-specific advice: the analyzer is Ghidra (`analyzer=ghidra`, or `rea`, whose files are Ghidra output).
 What `dcp build` typically says about a fresh draft and what to do:
 - `'sockaddr' : undeclared identifier` and the like: Ghidra writes struct types without `struct`; write
-  `struct sockaddr`.
+  `struct sockaddr`. Windows types are the common case: Ghidra spells the struct tag (`_EXCEPTION_POINTERS`,
+  `_MEMORY_BASIC_INFORMATION`), windows.h's typedef drops the underscore (`EXCEPTION_POINTERS`,
+  `MEMORY_BASIC_INFORMATION`); a C2065 on such a name in a signature means: use the typedef.
 - `left of '._2_4_' must have struct/union type`: Ghidra's partial access to a field; rewrite it as a cast of
   the field's address or as the real fields (`*(int *)&local_20.sa_data[2]`), or use the real struct.
 - `illegal indirection` on a `DAT_` name: the datum is a pointer or an array; change its declaration in the
@@ -120,11 +121,15 @@ Proof is often impossible; spend effort only on contrary evidence. Each kind and
    literal blocks do not interleave. `uv run dcp layout literals 0xLO..0xHI` (or `UNIT`): per function the
    block of literals it uses first and the `jump=` from the earlier functions' highest literal (a big forward
    jump skips another unit's block: a boundary candidate; a backward jump: this function belongs to an earlier
-   unit's block), per unit its block and `interleaves=`. A contradiction is the error L3.
+   unit's block; `between=` names the later functions, and their units, whose literals fill the gap: the
+   objects the link order puts in between, even when their code sits far away), per unit its block and
+   `interleaves=`. A contradiction is the error L3.
 3. **fill**: `uv run dcp layout starts 0xLO..0xHI`, column `fill=`: `cc` is the linker's padding between two
    objects (a boundary right there), `nop` is the compiler's alignment inside one object (proves nothing).
-4. **registration tables**: a table of function pointers in data (`uv run dcp dump 0xADDR 0x40 --dword`, the
-   `fptr` starts of `dcp layout starts`) usually lists the functions of one unit.
+4. **registration tables**: a table of function pointers in data usually lists the functions of one unit.
+   `uv run dcp layout fptrs UNIT` (or a code range: the functions pointed to; a data range: the sites) lists
+   every function pointer in data with its function's name and unit; a repeating `delta=` is a table of
+   structs (zlib's configuration_table: stride 12, deflate_stored / deflate_fast / deflate_slow).
 5. **codegen coupling**: a function that matches only with a neighbour's code above it (found in the match
    phase): the two are one unit.
 6. **guess**: what the functions do (`--by guess`, the reason says why).
@@ -165,7 +170,7 @@ A helper the original inlined everywhere (so no address) lives in `src/<unit>/u_
   depends on; add, do not change (an alias type, a second view, a cast macro local to the fragment).
 - Never rename struct fields or types in a layout session.
 
-## 5. Wrap up (when the timer notification arrives)
+## 5. Wrap up (when the clock says over=yes)
 
 1. Finish or revert the function in progress; `uv run dcp build` exits 0.
 2. `uv run dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the

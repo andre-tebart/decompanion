@@ -115,6 +115,8 @@ def register(sub, cmd):
     ses = sub.add_parser("session", help="the session protocol").add_subparsers(dest="sub", required=True)
     cmd(ses, "start", SE.cmd_session_start, "the session gate (clean tree, built, checked, linked) and the overview")
     cmd(ses, "wrap", SE.cmd_session_wrap, "build, link, check, promote, and the computed session report")
+    s = cmd(ses, "status", SE.cmd_session_status, "the session clock: base, start time, minutes elapsed and left, over")
+    s.add_argument("--minutes", type=int, default=30, help="the session length (default 30)")
     sk = sub.add_parser("skills", help="the agent skills").add_subparsers(dest="sub", required=True)
     s = cmd(sk, "install", SE.cmd_skills_install, "install the decompanion skills into .claude/skills/")
     s.add_argument("--force", action="store_true", help="overwrite every skill file")

@@ -95,7 +95,9 @@ def cmd_grade(args):
             print_function(r)
         why = "" if unit["readability"] == "readable" else (
             "  (unit name origin guess)" if unit["named_by"] in ("guess", "-") and all(r["readability"] == "readable" for r in fs) else "")
-        print(record(unit=unit["unit"], functions=len(fs), code=unit["code"], readability=unit["readability"], named_by=unit["named_by"]) + why)
+        c = Counter(r["code"] for r in fs)
+        print(record(unit=unit["unit"], functions=len(fs), code=unit["code"], readability=unit["readability"], named_by=unit["named_by"],
+                     byte=c["byte"], shape=c["shape"], draft=c["draft"], readable=sum(r["readability"] == "readable" for r in fs)) + why)
         return 0
     r = find_function(p, args.what)
     if r is None:

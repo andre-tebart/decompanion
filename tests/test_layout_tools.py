@@ -78,6 +78,14 @@ def test_layout_starts_and_literals(tiny):
     line = next(l for l in out.splitlines() if l.startswith("start=0x10001050"))
     assert "how=fptr" in line and "callers=1" in line and "drafted=no" in line
     assert "fill=nop" in next(l for l in out.splitlines() if l.startswith("start=0x10001020"))
+    code, out2 = dcp(tiny, "layout", "starts", "0x10001000", "0x10001060")          # LO HI as two words
+    assert code == 0 and out2.splitlines()[1:] == dcp(tiny, "layout", "starts", "0x10001000..0x10001060")[1].splitlines()[1:]
+    # the table of pointers in .data: one function pointer, to f4
+    code, out = dcp(tiny, "layout", "fptrs")
+    assert code == 0 and "fptrs=1" in out, out
+    row = next(l for l in out.splitlines() if l.startswith("  site="))
+    assert "section=.data" in row and "to=0x10001050" in row and "delta=-" in row
+    assert "fptrs=0" in dcp(tiny, "layout", "fptrs", "0x10001000..0x10001040")[1]
     code, out = dcp(tiny, "layout", "literals", "0x10001000..0x10001060")
     assert code == 0, out
     lit = next(l for l in out.splitlines() if l.startswith("  lit=0x10002030"))
@@ -278,6 +286,9 @@ def test_session_start_and_wrap(tiny):
     code, out = dcp(tiny, "session", "start")
     assert code == 0 and "gate: ok" in out and "next=0x10001000" in out, out
     assert (tiny / ".dcp/session.json").exists()
+    code, out = dcp(tiny, "session", "status")
+    assert code == 0 and "session=running" in out and "elapsed=0m" in out and "over=no" in out, out
+    assert dcp(tiny, "layout", "next")[1].splitlines()[0].startswith("session=running")
     assert dcp(tiny, "unit", "new", "net", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "all")[0] == 0
     code, out = dcp(tiny, "session", "start")
     assert code == 1 and "dirty" in out                      # the gate wants a clean tree
@@ -295,7 +306,7 @@ def test_skills_install(tiny):
     assert code == 0, out
     skill = tiny / ".claude/skills/dcp-layout/SKILL.md"
     assert skill.exists() and skill.read_text().startswith("---\nname: dcp-layout\n")
-    assert "sleep 1800" in skill.read_text()
+    assert "dcp session status" in skill.read_text() and "sleep 1800" not in skill.read_text()
     code, out = dcp(tiny, "skills", "install")
     assert "skills=0" in out                                 # nothing changed
 
@@ -359,11 +370,24 @@ def test_rename_leaves_strings_and_includes():
     assert "/* socket_net: f calls socket_net */" in new
 
 
+def test_draft_keeps_analyzer_comments_off_the_signature():
+    from decompanion.source import draft as DR
+    text = "\r\n/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */\r\n\r\nvoid f(int a)\r\n\r\n{\r\n  return;\r\n}\r\n"
+    assert DR.split(text)[0] == "void f(int a)"
+    assert DR.lead_comments(text) == ["/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */"]
+
+
 def test_rename_collides_only_with_code(tiny):
     write(tiny, "src/a/head.c", '/* adler32: the checksum */\n#include "adler32.h"\n')
     write(tiny, "src/a/f_10001000.c", "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return 0;\n}\n")
     code, out = dcp(tiny, "rename", "a_10001000", "adler32", "--why", "zlib's name")
     assert code == 0, out
     assert "int adler32(void)" in (tiny / "src/a/f_10001000.c").read_text()
+    # renamed by hand already (the placeholder is gone, adler32 is the ledger's name of 0x10001000): recorded only
+    code, out = dcp(tiny, "rename", "a_10001000", "adler32", "--why", "written by hand")
+    assert code == 0 and "recorded=a_10001000" in out, out
+    assert (tiny / "names.log").read_text().splitlines()[-1].split(" ", 1)[1].startswith(
+        "0x10001000 func a_10001000 -> adler32 by:main why:written by hand")
+    assert dcp(tiny, "rename", "a_10001040", "crc32", "--why", "x")[0] == 1      # nowhere, and not the ledger's name
     write(tiny, "src/a/f_10001020.c", "/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return 1;\n}\n")
     assert dcp(tiny, "rename", "a_10001020", "adler32", "--why", "x")[0] == 1

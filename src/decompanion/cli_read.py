@@ -332,7 +332,8 @@ def cmd_layout_literals(args):
     range refer to, in address order per section, with its first user (the lowest function start among all its
     users in the image) and that user's unit; the block of each function (the lowest and highest literal it is
     the first user of, and the jump from the highest literal first used by an earlier function: a big forward
-    jump skips another unit's block); per unit the block of its first-used pooled literals (strings and
+    jump skips another unit's block, and `between=` names the later functions (and their units) whose literals
+    fill the gap: the objects the link order puts in between); per unit the block of its first-used pooled literals (strings and
     constants of read-only sections, reached from code only) and whether it interleaves with a neighbour's.
     VC6 /GF + LINK: pooled literals sit with their first user in link order, so neighbouring units' blocks do
     not interleave."""
@@ -379,8 +380,11 @@ def cmd_layout_literals(args):
             ts = [t for t in own if targets[t]["section"] == sec]
             earlier = [t for t, r in targets.items() if r["section"] == sec and pooled(t, r) and min(r["users"]) < fs]
             jump = ts[0] - max(earlier) if earlier else None
+            gap = sorted({min(r["users"]) for t, r in targets.items() if r["section"] == sec and pooled(t, r)
+                          and earlier and max(earlier) < t < ts[0]})
+            between = ",".join(f"{g:#010x}({utu(g) or '-'})" for g in gap[:4]) + (f",+{len(gap) - 4}" if len(gap) > 4 else "")
             print("  " + record(fn=fs, unit=utu(fs), section=sec, first_used=len(ts), block=(ts[0], ts[-1] + 1),
-                                jump=(f"{jump:+#x}" if jump is not None else None)))
+                                jump=(f"{jump:+#x}" if jump is not None else None), between=between or None))
     for t in mine:
         r = targets[t]
         first = min(r["users"])
@@ -413,6 +417,63 @@ def cmd_layout_literals(args):
     return 0
 
 
+# ------------------------------------------------------------------------------------------------ layout fptrs
+def cmd_layout_fptrs(args):
+    """Every function pointer in data: a relocated address field (a `ref` reloc fact) outside the code sections
+    whose target is a known function start, in site order, with the function's name and unit and the distance
+    to the previous site of the same section (`delta=`: a repeating delta is the stride of a table of structs,
+    such as zlib's configuration_table). A unit or a code range selects by the functions pointed to, a data
+    range by the sites; default: every function pointer."""
+    from .ledger import layoutview as LV
+    from .ledger.names import Names
+    from .rules import layout as L
+    p, e = open_project(args)
+    refresh(p, e)
+    v = LV.View.load(p, p.store)
+    img = p.image
+    names = Names(p, p.store)
+    starts = set(all_starts(p))
+    uat = L.unit_index(v.units)
+    by_site, by_target = None, None
+    if args.what is None:
+        pass
+    elif args.what.lower().startswith("0x"):
+        lo, hi = parse_range(args.what)
+        sec = img.section_of(lo)
+        if sec is not None and sec.holds_code:
+            by_target = (lo, hi)
+        else:
+            by_site = (lo, hi)
+    else:
+        unit = next((u for u in v.units if u.tu == args.what), None)
+        if unit is None:
+            return err("layout fptrs", f"no unit {args.what!r} (dcp layout units), and not a range 0xLO..0xHI")
+        by_target = (unit.lo, unit.hi)
+    rows = []
+    for f in p.store.facts(Kind.ref):
+        if f.value["rkind"] != "reloc" or f.value["to"] not in starts:
+            continue
+        sec = img.section_of(f.lo)
+        if sec is None or sec.holds_code:
+            continue
+        rows.append((f.lo, sec.name, f.value["to"]))
+    rows.sort()
+    prev = {}
+    out = []
+    for site, sec, to in rows:
+        delta = site - prev[sec] if sec in prev else None
+        prev[sec] = site
+        if by_site and not by_site[0] <= site < by_site[1] or by_target and not by_target[0] <= to < by_target[1]:
+            continue
+        i = uat(to)
+        out.append(record(site=site, section=sec, to=to, name=names.name(to), unit=v.units[i].tu if i is not None else None,
+                          delta=delta))
+    print(record(target=p.target_name, fptrs=len(out), what=args.what))
+    for line in out:
+        print("  " + line)
+    return 0
+
+
 # ------------------------------------------------------------------------------------------------ layout starts
 def cmd_layout_starts(args):
     """Every function start in a range (default: the game code) with its evidence: every `how` of its start
@@ -428,7 +489,7 @@ def cmd_layout_starts(args):
     v = LV.View.load(p, p.store)
     names = Names(p, p.store)
     glo, ghi, _ = v.game
-    lo, hi = parse_range(args.range) if args.range else (glo, ghi)
+    lo, hi = parse_range("..".join(args.range)) if args.range else (glo, ghi)
     starts = {}
     for a, fs in v.starts.items():
         for f in fs:

@@ -217,7 +217,8 @@ def cmd_rename(args):
     """Rename one identifier: every whole-word occurrence in src/ and include/ (comments and strings too), an
     unlinked fragment's file u_<old>.c, the `name` declarations of decl/*.dcl; refused when NEW occurs anywhere
     already (a collision) or OLD nowhere. names.log records the event, with the address the ledger knows for OLD
-    (a name fact, or the address a placeholder spells)."""
+    (a name fact, or the address a placeholder spells). The rename done by hand already (OLD nowhere, NEW the
+    ledger's name of OLD's address) is only recorded: names.log gets the event, no file changes."""
     from .ledger import srcscan
     from .ledger.names import Names
     from .source import edit as E
@@ -225,11 +226,6 @@ def cmd_rename(args):
     refresh(p, e)
     if not E.IDENT.match(args.new) or not E.IDENT.match(args.old):
         return err("rename", "OLD and NEW are C identifiers")
-    if not E.uses(p.root, args.old):
-        return err("rename", f"{args.old} occurs nowhere in src/ or include/")
-    clash = E.code_uses(p.root, args.new)
-    if clash:
-        return err("rename", f"{args.new} exists already ({clash[0][0]}:{clash[0][1]}): refused (a collision)")
     names = Names(p, p.store)
     hits = names.by_name.get(args.old)
     ph = srcscan.PLACEHOLDER_ADDR.fullmatch(args.old)
@@ -240,6 +236,16 @@ def cmd_rename(args):
         sk = sym.value.get("skind") if sym is not None else None
         starts = {f.lo for f in p.store.facts(Kind.start, a, a + 1)}
         kind = "func" if sk in ("func", "thunk") and (sym.lo == a or a in starts) else "data"
+    if not E.uses(p.root, args.old):
+        if a is not None and a in names.by_name.get(args.new, ()):
+            E.log_names(p.root, [(a, kind, args.old, args.new)], args.why)
+            print(record(recorded=args.old, to=args.new, kind=kind, at=a, files=0) + "  (renamed by hand already: names.log only)")
+            return 0
+        return err("rename", f"{args.old} occurs nowhere in src/ or include/" + (
+            f" and {args.new} is not the ledger's name of {a:#x}" if a is not None else ""))
+    clash = E.code_uses(p.root, args.new)
+    if clash:
+        return err("rename", f"{args.new} exists already ({clash[0][0]}:{clash[0][1]}): refused (a collision)")
     n = E.rename_words(p.root, {args.old: args.new})
     for f in sorted((p.root / "src").glob(f"*/u_{args.old}.c")):
         E.move(p.root, f, f.with_name(f"u_{args.new}.c"))

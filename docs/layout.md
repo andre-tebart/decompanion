@@ -171,6 +171,7 @@ uv run dcp dump 0x10027d08 0x20 --str        # hex + latin-1 per row with the sy
 uv run dcp refs Init                         # definition, name facts, starts, the draft, refs to / from, source lines
 uv run dcp layout starts 0x10008c00..0x10009000
 uv run dcp layout literals 0x10008c00..0x10009000     # or a UNIT; default: the game code
+uv run dcp layout fptrs deflate                       # or a code range (targets) / a data range (sites)
 ```
 
 ```
@@ -185,11 +186,15 @@ start=0x10008cc0  how=export,ghidra  callers=0  size=48  extent=0x10008cc0..0x10
 `layout literals`: every data address the range's functions refer to (through base relocations when the image
 has them, else the walk's operands), with its first user in the whole image and that user's unit; per function
 the block of literals it is the first user of and the `jump=` from the highest literal first used by an earlier
-function (a big forward jump skips another unit's block); per unit the block of its pooled literals (strings and
+function (a big forward jump skips another unit's block; `between=` names the later functions whose literals
+fill the gap, with their units: the objects the link order puts in between); per unit the block of its pooled literals (strings and
 read-only constants reached from code only) and the units whose blocks it interleaves with. `layout starts`:
 every start with every `how` (export, entry, crt, libref, call, tail, immediate, fptr, decl, source, the
 analyzer's key), the code sites that reach it, the size to the next start, the walk's extent, B-FILL, the unit,
-drafted (a fragment), analyzed (a draft of the analyzer).
+drafted (a fragment), analyzed (a draft of the analyzer); `LO HI` works as well as `LO..HI`. `layout fptrs`:
+every relocated address field outside the code sections whose target is a known function start, in site
+order, with the function's name and unit and `delta=` to the previous site of its section (a repeating delta
+is the stride of a table of structs).
 
 ### Drafting
 
@@ -249,11 +254,13 @@ counts them), get no grade (no address) and are listed by `dcp layout units -v`.
 
 ```
 uv run dcp session start     # gate: clean tree, every unit compiles, no error, every link ok; then the overview
+uv run dcp session status    # the session clock: started, elapsed, left, over (also line 1 of dcp layout next)
 uv run dcp session wrap      # build, link, check, promote (main), the computed report (build/session/report.md)
 uv run dcp skills install    # the skills into .claude/skills/ (dcp init does it for a new project)
 ```
 
-`session start` records the base commit in `.dcp/session.json` and prints per target the overview: the units, the
+`session start` records the base commit and the start time in `.dcp/session.json` (the session clock: 30
+minutes, `dcp session status` and the first line of `dcp layout next` while a session runs) and prints per target the overview: the units, the
 next open function, the toolchain level and the analyzer (`analyzer=ghidra  drafts=678`, or `analyzer=none`);
 `session wrap` computes the report from git (the base against the working tree), the store and names.log: errors
 / fragments / byte / readable / units before -> after, units declared / joined / renamed, the boundary lines added

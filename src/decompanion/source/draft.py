@@ -57,6 +57,7 @@ from . import edit as E
 C_KEYWORDS = frozenset("""if while for switch return sizeof do else case default goto break continue typedef struct union enum
 static extern const volatile register auto unsigned signed int char short long float double void""".split())
 IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
+COMMENT = re.compile(r"/\*.*?\*/", re.S)
 CANONICAL = ("decl", "export", "entry")
 
 
@@ -107,9 +108,16 @@ def data_name(names, a: int) -> str:
 
 
 def split(text: str) -> tuple[str, str]:
-    """(the signature on one line, the body from its opening brace on)."""
+    """(the signature on one line without the analyzer's comments before it, the body from its opening brace
+    on)."""
     head, sep, body = text.partition("{")
-    return " ".join(head.split()), sep + body
+    return " ".join(COMMENT.sub(" ", head).split()), sep + body
+
+
+def lead_comments(text: str) -> list[str]:
+    """The analyzer's comments before the signature (Ghidra's `/* WARNING: ... */`), each for a line of its own:
+    a comment on the signature's line hides the definition from the fragment scan."""
+    return [" ".join(c.split()) for c in COMMENT.findall(text.partition("{")[0])]
 
 
 def conventions(tc) -> re.Pattern | None:
@@ -217,7 +225,8 @@ def draft(p, view, names, a: int, unit: str | None = None) -> Draft:
     rel = f"src/{tu}/f_{a:08x}.c"
     path = root / rel
     if path.exists():
-        raise DraftError(f"{rel} exists (it does not parse as a fragment: dcp conflicts)")
+        why = [f"{e.file}:{e.line}: {e.check} {e.message}" for e in srcscan.scan(root).errors if e.file == rel]
+        raise DraftError(f"{rel} exists but does not parse as a fragment: " + ("; ".join(why) or "dcp conflicts"))
     d = Draft(a, tu, name, rel, "skeleton")
     entry = G.draft(p.store, p.image.sha256, a)
     all_entries = G.entries(p.store)
@@ -244,7 +253,8 @@ def draft(p, view, names, a: int, unit: str | None = None) -> Draft:
         d.uses = uses
         shipped = analyzers.dialect(entry.analyzer).types_header
         include = ensure_types_header(root, head, tu, shipped, d) if shipped is not None else None
-        E.write(path, f"/* {a:#010x}, {name} */\n{sig}\n{body.strip(chr(10))}\n")
+        lead = "".join(c + "\n" for c in lead_comments(text))
+        E.write(path, f"/* {a:#010x}, {name} */\n{lead}{sig}\n{body.strip(chr(10))}\n")
         if E.add_to_header(header, tu, sig + ";", name):
             d.declared.append(f"include/{tu}.h: {sig};")
         if include is not None and E.ensure_after_guard(header, tu, include):

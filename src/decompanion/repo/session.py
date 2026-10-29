@@ -101,3 +101,18 @@ def changes(root: Path, base: str) -> Changes:
 
 def now() -> str:
     return datetime.datetime.now().replace(microsecond=0).isoformat()
+
+
+MINUTES = 30                # the length of a session
+
+
+def clock(root: Path, minutes: int = MINUTES) -> dict | None:
+    """The session's clock from .dcp/session.json (None without a started session): started, minutes elapsed and
+    left, over once they are used up. The only clock of a session: `dcp session status`, and the first line of
+    `dcp layout next` while a session runs."""
+    rec = load(root)
+    if not rec or not rec.get("started"):
+        return None
+    elapsed = (datetime.datetime.now() - datetime.datetime.fromisoformat(rec["started"])).total_seconds() / 60
+    return {"session": "running", "base": (rec.get("base") or "")[:8] or None, "started": rec["started"],
+            "elapsed": f"{elapsed:.0f}m", "left": f"{max(0.0, minutes - elapsed):.0f}m", "over": elapsed >= minutes}

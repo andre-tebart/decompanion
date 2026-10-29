@@ -505,6 +505,10 @@ def cmd_layout_next(args):
         for r in recs:
             print(json.dumps(jsonable(r)))
         return
+    from .repo import session as S
+    c = S.clock(p.root)
+    if c is not None:
+        print(record(**c) + ("  (session over: finish or revert the function in progress, then wrap up)" if c["over"] else ""))
     print(record(target=p.target_name, game=v.game[:2], units=len(v.units), undrafted_in_units=len(und), shown=len(recs)))
     if not recs:
         print("nothing open: every function of the game code has a source fragment")
@@ -605,7 +609,8 @@ def cmd_layout_propose(args):
     bys = {f"decl:{rel}:{i}" for i, line in enumerate(path.read_text().splitlines(), 1) if f"tu={args.name} " in line + " "}
     bad = [x for x in p2.store.conflicts() if x.severity.value in ("bug", "error")]
     mine = [x for x in bad if x.a in bys or x.b in bys]
-    print(f"check: {len(mine)} error(s) of the proposal's lines, {len(bad)} in all" + ("" if not bad else " (dcp check lists them)"))
+    print(record(proposal="ok" if not mine else "FAIL", proposal_errors=len(mine), other_errors=len(bad) - len(mine))
+          + ("  (the other errors are not the proposal's: dcp check lists them)" if len(bad) > len(mine) else ""))
     for x in mine:
         print(x.line())
     return 1 if mine else 0
@@ -743,8 +748,11 @@ def main(argv=None):
     from . import cli_read as CR
     s = cmd(lay, "literals", CR.cmd_layout_literals, "the literal-pool view of a unit or range: first users, blocks, interleaving (B-LIT)")
     s.add_argument("what", nargs="?", metavar="UNIT|LO..HI", help="default: the game code")
+    s = cmd(lay, "fptrs", CR.cmd_layout_fptrs, "every function pointer in data (tables of functions) with its unit")
+    s.add_argument("what", nargs="?", metavar="UNIT|LO..HI", help="a unit or code range: the functions pointed to; "
+                   "a data range: the sites; default: all")
     s = cmd(lay, "starts", CR.cmd_layout_starts, "every function start in a range with its evidence")
-    s.add_argument("range", nargs="?", metavar="LO..HI", help="default: the game code")
+    s.add_argument("range", nargs="*", metavar="LO..HI", help="LO..HI or LO HI; default: the game code")
     u = lay.add_parser("unit", help="unit commands").add_subparsers(dest="sub2", required=True)
     s = cmd(u, "propose", cmd_layout_propose, "check a unit proposal (L3/L4/L7/L8) and write its boundary lines")
     s.add_argument("range", help="0xSTART..0xEND (END exclusive) or 0xSTART")

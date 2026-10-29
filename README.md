@@ -77,8 +77,8 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
    (`L.analyze`: literal first users, fill before a start, leaked source paths), unit extents and status
    (`L.unit.extent`), and the checks L1, L3..L11 (`rules/layout.py`). The layout tooling (milestone 4): a
    draft for every function from the analyzer (`dcp setup`, `dcp report`), the reading commands (`dcp disasm`, `dump`, `refs`,
-   `layout literals`, `layout starts`), drafting (`dcp unit new|join|rename`, `dcp draft`, `dcp rename`,
-   `names.log`), the session protocol (`dcp session start|wrap`) and the agent skill `dcp-layout`. See
+   `layout literals`, `layout starts`, `layout fptrs`), drafting (`dcp unit new|join|rename`, `dcp draft`, `dcp rename`,
+   `names.log`), the session protocol (`dcp session start|status|wrap`) and the agent skill `dcp-layout`. See
    [docs/layout.md](docs/layout.md).
 3. **match** (`dcp build`, `grade`, `next`, `link`, `check`): one amalgamation per unit and target (head.c +
    fragments in address order behind `#line`), one CL.EXE per stale unit in a pool (stale = source, flags or
@@ -349,12 +349,14 @@ uv run dcp dump 0x10027d08 0x20 --str          # bytes, strings, dwords (--dword
 uv run dcp refs Init                           # everything that names a function or datum
 uv run dcp layout starts 0x10008c00..0x10009000     # every start with its evidence
 uv run dcp layout literals 0x10008c00..0x10009000   # the literal-pool view (B-LIT): first users, blocks, interleaving
+uv run dcp layout fptrs UNIT                        # function pointers in data (tables) with their units
 uv run dcp unit new NAME --range 0xA..0xB --by guess --why "..."   # propose + head.c, include/NAME.h, open.md
 uv run dcp draft --next                        # the next function's fragment (the analyzer's pseudocode or a @rough skeleton)
 uv run dcp unit join A B --why "..."           # B into A (grades must not change)
 uv run dcp unit rename OLD NEW --by leaked|tag|guess --why "..."
 uv run dcp rename OLD NEW --why "..."          # one identifier; names.log
-uv run dcp session start                       # the gate and the overview
+uv run dcp session start                       # the gate and the overview; starts the session clock
+uv run dcp session status                      # the clock: elapsed, left, over
 uv run dcp session wrap                        # build, link, check, promote, the computed report
 uv run dcp skills install                      # the skills into .claude/skills/ (dcp init installs them)
 ```
