@@ -9,9 +9,15 @@ What a plugin answers (the rules ask, they never know the answers themselves):
                          bytes, import_stub_size their size, stub_placement the linker's layout convention
   user_entry_names()     the decorated symbols of the user's entry functions -> their C names
   archive_tools(stamps)  the objects' tool stamps (objfmt tool_stamps) decoded to Rich (prodid, build)
-  rich_product / rich_candidates / declare / prefill / build_name   the Rich header vocabulary
-  default_archives()     the static library archives of a new project; default_cflags() its assumed flags
+  rich_product / rich_candidates / declare / build_name   the Rich header vocabulary
   import_library_name(dll)   the import library a DLL is linked through
+The guided decisions (obligations.py; the plugin hands over evidence, it never declares anything):
+  installs()             the installations found on this machine (Install: root, versions, builds)
+  install(root)          what one root holds (versions of its tools, the compiler / linker builds they make)
+  crt_strings(image)     the run-time library's own strings found in the image (evidence of the CRT)
+  library_candidates()   the static run-time archives of the installation (`dcp libs candidates` places each)
+  archive_spec(name)     how `dcp libs declare NAME` spells an archive in decompanion.toml
+  wizard_cflags()        the flags the toolchain's project wizard writes (evidence for toolchain.cflags)
 The match phase (milestone 3) adds the tools themselves:
   compile(src, obj, flags, include_dirs, cwd)   one compiler process for one translation unit -> CompileResult
                          (ok, the full log, the diagnostics with file and line, the flags it refused)
@@ -70,6 +76,18 @@ class CompileResult:
     @property
     def warnings(self):
         return [d for d in self.diagnostics if d.severity == "warning"]
+
+
+@dataclass(frozen=True)
+class Install:
+    """One installation of a toolchain: its root, the versions of its tools ({tool: version}), the compiler and
+    linker builds it makes (what a Rich entry and a declaration name; None when unknown), and whether the
+    plugin can run it."""
+    root: Path
+    versions: dict
+    compiler_build: int | None
+    linker_build: int | None
+    ok: bool
 
 
 @dataclass
@@ -158,28 +176,6 @@ class Toolchain:
                 "compilers": [e for e in order if e["family"] == "compiler"],
                 "linkers": [e for e in order if e["family"] == "linker"]}
 
-    def prefill(self, cands: dict, when: str) -> tuple[str, str, str]:
-        """(compiler, linker, reason) to write into a new target's declaration: the compiler entry with the most
-        objects among those no configured archive object was built with (all compiler entries when every one
-        is), the linker entry with the most objects. A pre-filled declaration, for a human to verify."""
-        comps = cands.get("compilers") or []
-        links = cands.get("linkers") or []
-        own = [e for e in comps if not e["archive_objects"]]
-        why = []
-        compiler = linker = ""
-        if comps:
-            c = (own or comps)[0]
-            compiler = self.declare(c)
-            why.append(f"the compiler entry with the most objects{' no configured archive object was built with' if own else ''} "
-                       f"({c['tool']} {c['build']} x{c['count']})")
-        if links:
-            k = links[0]
-            linker = self.declare(k)
-            why.append(f"the linker entry with the most objects ({k['tool']} {k['build']} x{k['count']})")
-        if not why:
-            return compiler, linker, f"declared at {when}: the image has no Rich header; verify"
-        return compiler, linker, f"picked at {when} from the Rich header: " + ", ".join(why) + "; flags assumed; verify"
-
     def crt_entry_symbols(self) -> dict[str, str]:
         """CRT entry symbols -> what they start: {'_DllMainCRTStartup@12': 'dll', '_WinMainCRTStartup': 'gui', ...}."""
         return {}
@@ -197,13 +193,32 @@ class Toolchain:
         """Every library archive of the toolchain installation."""
         return []
 
-    def default_archives(self) -> list[str]:
-        """The static library archives a new project places members of (S.crt.code), as config strings
-        (`{toolchain.root}` stands for the toolchain root)."""
+    # -------------------------------------------------------------- evidence for the guided decisions
+    def installs(self) -> list["Install"]:
+        """Every installation of the toolchain found on this machine (the plugin knows its usual places)."""
         return []
 
-    def default_cflags(self) -> list[str]:
-        """The compiler flags a new target's declaration assumes until they are probed (for a human to verify)."""
+    def install(self, root: Path) -> "Install":
+        """What one installation root holds: the versions its tools report and the builds they make."""
+        return Install(Path(root), {}, None, None, False)
+
+    def crt_strings(self, image) -> list[tuple[int, str]]:
+        """(address, text) of the run-time library's own strings found in the image's sections."""
+        return []
+
+    def library_candidates(self) -> list[Path]:
+        """The static run-time archives of the installation at `root` that `dcp libs candidates` places, one
+        by one (no import libraries: they hold no code to place)."""
+        return []
+
+    def archive_spec(self, name: str) -> str:
+        """The decompanion.toml spelling of an archive a human names (`dcp libs declare NAME`): a path stays a
+        path, a bare name is the toolchain's archive of that name under `{toolchain.root}`."""
+        return name
+
+    def wizard_cflags(self) -> list[str]:
+        """The flags the toolchain's project wizard writes for a release build: evidence for the obligation
+        toolchain.cflags, never written by the tool."""
         return []
 
     def import_library_name(self, dll: str) -> str:

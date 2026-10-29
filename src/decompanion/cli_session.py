@@ -33,23 +33,29 @@ def state(p) -> dict:
 
 
 def gate(args, quiet=False) -> tuple[bool, list, dict]:
-    """Build, check and link every target: (ok, [(target, project, link report)], {target: state})."""
+    """No open toolchain or libs obligation (obligations.py); then build, check and link every target: (ok,
+    [(target, project, link report)], {target: state})."""
     from .build import link as L
+    from .obligations import gate_failures
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
     ok, out, states = True, [], {}
     for t in p0.targets:
         p, e, rep = build_target(args, t.name, quiet=True)
+        obls = gate_failures(p)
         bad_builds = [f.value["tu"] for f in p.store.facts(Kind.build) if not f.value["ok"]]
         errors = [x for x in p.store.conflicts() if x.severity.value in ("bug", "error")]
         lr = L.full_link(p) if p.store.facts(Kind.build) and p.toolchain.available() else None
-        good = not bad_builds and not errors and (lr is None or lr.ok)
+        good = not obls and not bad_builds and not errors and (lr is None or lr.ok)
         ok = ok and good
         states[t.name] = state(p)
         out.append((t.name, p, lr))
         if not quiet:
             print("  " + record(target=t.name, built=rep.units, failed=",".join(bad_builds) or None, errors=len(errors),
                                 link=("skipped" if lr is None else ("ok" if lr.ok else "failed")),
-                                undrafted=len((lr.unresolved or {}).get("undrafted", [])) if lr else None, gate="ok" if good else "FAIL"))
+                                undrafted=len((lr.unresolved or {}).get("undrafted", [])) if lr else None,
+                                obligations=len(obls) or None, gate="ok" if good else "FAIL"))
+            for o in obls:
+                print("    " + record(**o.fields()))
             for x in errors[:10]:
                 print("    " + x.line())
             if lr is not None and not lr.ok:
@@ -94,8 +100,9 @@ def overview(p):
 
 
 def cmd_session_start(args):
-    """The session gate: a clean working tree, every unit compiles, no bug or error conflict, every link ok; then
-    per target the overview (units, the first open function, the toolchain level). Records .dcp/session.json
+    """The session gate: no open toolchain or libs obligation, a clean working tree, every unit compiles, no bug or
+    error conflict, every link ok; then per target the overview (units, the first open function, the toolchain
+    level) and the status tail (the open obligations: the analyzer, layout, match). Records .dcp/session.json
     (the base commit) for `dcp session wrap`. Exit 1 when the gate fails."""
     from .repo import session as S
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
@@ -110,10 +117,13 @@ def cmd_session_start(args):
     ok, targets, states = gate(args)
     ok = ok and not d
     if not ok:
-        print("gate: FAIL (commit or revert the working tree, fix the errors above, then start again)")
+        print("gate: FAIL (resolve the obligations above (dcp status), commit or revert the working tree, fix the errors "
+              "above, then start again)")
         return 1
+    from .cli_decide import status_tail
     for name, p, lr in targets:
         overview(p)
+        status_tail(p)
     S.save(root, {"base": head, "started": S.now(), "states": states})
     print("gate: ok. Start the timer now: a background shell `sleep 1800` (the skill's contract), then `dcp layout next`.")
     return 0

@@ -60,7 +60,7 @@ def analyzer_overview(p):
 def print_analyzer(p, verbose=False):
     """The analyzer lines of `dcp report`: how many functions have drafts, the export's state, the starts only the
     analyzer has (and where they lie), the game-code starts only we have, L9 (an analyzer's function spanning one
-    of our starts)."""
+    of our starts). Returns the layout view it loaded (the status tail reuses it)."""
     from .build import analyzer as AX
     v, ents, a_only, o_only, l9 = analyzer_overview(p)
     glo, ghi, _ = v.game
@@ -81,6 +81,7 @@ def print_analyzer(p, verbose=False):
         print("  " + c.line())
     if not verbose and max(len(a_only), len(o_only), len(l9)) > 20:
         print("  (-v lists all)")
+    return v
 
 
 # ------------------------------------------------------------------------------------------------ parser

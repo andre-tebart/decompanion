@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import dcp
+from conftest import dcp, declare_vc6
 
 SERVER = Path("C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll")
 TOOLCHAIN = Path("C:/Tools/MSVC600-SP5PP")
@@ -42,9 +42,8 @@ DECL = ("0x10008cb0 boundary start by=guess tu=dllmain -- DllMain, Init and Exit
 def server(tmp_path_factory):
     from decompanion.init import init_project
     d = tmp_path_factory.mktemp("m3-server")
-    init_project(d, SERVER, str(TOOLCHAIN), target_name="server")
-    cfg = d / "decompanion.toml"
-    cfg.write_text(cfg.read_text().replace("VC98/Lib/LIBC.LIB", "VC98/Lib/LIBCMT.LIB"), newline="\n")
+    init_project(d, SERVER, target_name="server")
+    declare_vc6(d, ("LIBCMT",))
     (d / "decl" / "text.dcl").write_text("# code\n" + DECL, newline="\n")
     for rel, text in FILES.items():
         (d / rel).parent.mkdir(parents=True, exist_ok=True)

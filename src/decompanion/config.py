@@ -3,16 +3,19 @@ toolchain plugin, one store per target, the named external inputs with their con
 
 decompanion.toml
   [[target]]     name = "server"  path = "...server.dll"  sha256 = "..."  image = "pe32"  isa = "x86"
-                 compiler = "cl 12.00.9044"  linker = "link 6.00.8447"  cflags = ["/O2", "/Gy"]  reason = "..."
-                 (image: the image-format plugin, default the only registered one; isa: the instruction-set
-                 plugin, default the one the image's machine type implies)
-                 archives = [...]            (optional: this target's library archives instead of [libs])
-                 (one table per binary built from the codebase; the first is the default target; the toolchain
+                 (computed by `dcp init` / `dcp target add` from the file: image is the image-format plugin that
+                 reads it, isa the instruction set its machine type implies)
+                 compiler = "cl 12.00.9044"  linker = "link 6.00.8447"  cflags = ["/O2", "/Gy"]
+                 archives = ["{toolchain.root}/VC98/Lib/LIBCMT.LIB"]
+                 reason.compiler = "..."  reason.linker = "..."  reason.cflags = "..."  reason.archives = "..."
+                 (declarations: written by `dcp toolchain declare` / `dcp libs declare`, each with its reason;
+                 never by the tool on its own. The older form `reason = "..."` covers every key of its table.
+                 One table per binary built from the codebase; the first is the default target; the toolchain
                  declaration is per target: binaries of one tree may still differ in what built them)
-  [toolchain]    plugin = "vc6"  root = "C:/Tools/MSVC600-SP5PP"
-                 (plugin default: the only registered one; compiler / linker / cflags / reason here are
-                 defaults a target without its own inherits)
-  [libs]         archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", ...]     (the default of every target)
+  [toolchain]    plugin = "vc6"  root = "C:/Tools/MSVC600-SP5PP"  reason.root = "..."
+                 (plugin default: the only registered one; compiler / linker / cflags here are defaults a
+                 target without its own inherits, with their reasons)
+  [libs]         archives = [...]  reason = "..."     (the default of every target without its own archives)
   [sources]      roots = ["src"]  include = ["include"]
   [analyzer]     plugin = "ghidra"  root = "C:/Tools/ghidra_12.1.4_PUBLIC"  java_home = "..."  timeout = 60
                  (the third-party analyzer `dcp setup` runs for drafts; default: ghidra; plugin "rea" reads
@@ -54,8 +57,18 @@ class ConfigError(RuntimeError):
     pass
 
 
-TOOLCHAIN_KEYS = ("compiler", "linker", "cflags", "reason")
-TARGET_KEYS = ("name", "path", "sha256", "image", "isa", "archives", *TOOLCHAIN_KEYS)
+TOOLCHAIN_KEYS = ("compiler", "linker", "cflags")
+TARGET_KEYS = ("name", "path", "sha256", "image", "isa", "archives", *TOOLCHAIN_KEYS, "reason")
+REASON_KEYS = (*TOOLCHAIN_KEYS, "archives", "root", "plugin")    # the keys a `reason.<key>` may name
+
+
+def reason_of(table: dict, key: str) -> str:
+    """The reason a table gives for one of its keys: `reason.<key>`, or the older form `reason = "..."` (one
+    reason for every key of the table); '' when it gives none."""
+    r = (table or {}).get("reason")
+    if isinstance(r, dict):
+        r = r.get(key, "")
+    return str(r or "").strip()
 
 
 @dataclass(frozen=True)
@@ -68,6 +81,7 @@ class Target:
     toolchain: tuple = ()      # ((key, value), ...) of the toolchain keys the target table declares itself
     archives: tuple | None = None   # the target's own library archives (strings as written), else None
     isa: str | None = None     # the instruction-set plugin as declared (None: the image's machine type decides)
+    reasons: tuple = ()        # ((key, reason), ...) the target table gives for its own declarations
 
 
 def find_root(start: Path | None = None) -> Path:
@@ -106,9 +120,17 @@ def parse_targets(cfg: dict, expand) -> list[Target]:
         archives = tab.get("archives")
         if archives is not None and not (isinstance(archives, list) and all(isinstance(a, str) for a in archives)):
             raise ConfigError(f"{CONFIG_NAME}: target {name!r}: archives is not a list of paths")
+        r = tab.get("reason")
+        if isinstance(r, dict):
+            bad = sorted(set(r) - set(REASON_KEYS))
+            if bad:
+                raise ConfigError(f"{CONFIG_NAME}: target {name!r}: reason.{bad[0]} names no declaration (known: {', '.join(REASON_KEYS)})")
+        elif r is not None and not isinstance(r, str):
+            raise ConfigError(f"{CONFIG_NAME}: target {name!r}: reason is neither a string nor reason.<key> = ...")
         tc = tuple((k, tuple(tab[k]) if isinstance(tab[k], list) else tab[k]) for k in TOOLCHAIN_KEYS if k in tab)
+        reasons = tuple((k, reason_of(tab, k)) for k in (*TOOLCHAIN_KEYS, "archives") if reason_of(tab, k))
         out.append(Target(name, path, tab.get("sha256", ""), tab.get("image") or image_plugins.default_key(), legacy, tc,
-                          tuple(archives) if archives is not None else None, tab.get("isa")))
+                          tuple(archives) if archives is not None else None, tab.get("isa"), reasons))
     if not out:
         raise ConfigError(f"{CONFIG_NAME}: the [[target]] list is empty")
     return out
@@ -271,7 +293,7 @@ class Project:
         """The library archives of a target: its own `archives` list, else the project's [libs] archives."""
         t = self.target(name)
         own = t.archives is not None
-        libs = list(t.archives) if own else ((self.cfg.get("libs") or {}).get("archives") or [])
+        libs = self.archives_decl_for(name)["archives"] or []
         out = []
         for s in libs:
             p = self.expand(s)
@@ -287,23 +309,62 @@ class Project:
         return self.lib_archives_of()
 
     def toolchain_decl_for(self, name: str | None = None) -> dict:
-        """The toolchain declaration of a target: plugin and root from [toolchain]; compiler, linker, cflags and
-        reason from the target's own table, else the [toolchain] defaults. `from` names where each of the four
-        came from (target | toolchain | missing)."""
+        """The toolchain declaration of a target: plugin and root from [toolchain]; compiler, linker and cflags
+        from the target's own table, else the [toolchain] defaults. `from` names where each came from (target |
+        toolchain | missing), `reasons` the reason of each declared key (from the same table; '' when it gives
+        none)."""
         tc = self.cfg.get("toolchain") or {}
-        own = dict(self.target(name).toolchain)
+        t = self.target(name)
+        own, own_reasons = dict(t.toolchain), dict(t.reasons)
         out = {"plugin": toolchain_plugin_key(tc), "root": tc.get("root", "")}
-        src = {}
+        src = {"root": "toolchain" if tc.get("root") else "missing"}
+        reasons = {"root": reason_of(tc, "root") if tc.get("root") else ""}
         for k in TOOLCHAIN_KEYS:
             if k in own:
-                v, src[k] = own[k], "target"
+                v, src[k], reasons[k] = own[k], "target", own_reasons.get(k, "")
             elif k in tc:
-                v, src[k] = tc[k], "toolchain"
+                v, src[k], reasons[k] = tc[k], "toolchain", reason_of(tc, k)
             else:
-                v, src[k] = ([] if k == "cflags" else ""), "missing"
+                v, src[k], reasons[k] = ([] if k == "cflags" else ""), "missing", ""
             out[k] = list(v) if isinstance(v, (list, tuple)) else v
         out["from"] = src
+        out["reasons"] = reasons
         return out
+
+    def archives_decl_for(self, name: str | None = None) -> dict:
+        """The library-archive declaration of a target: `archives` (the strings as written, None when nothing
+        declares any), `from` (target | libs | missing) and `reason`."""
+        t = self.target(name)
+        if t.archives is not None:
+            return {"archives": list(t.archives), "from": "target", "reason": dict(t.reasons).get("archives", "")}
+        libs = self.cfg.get("libs") or {}
+        if "archives" in libs:
+            return {"archives": list(libs["archives"] or []), "from": "libs", "reason": reason_of(libs, "archives")}
+        return {"archives": None, "from": "missing", "reason": ""}
+
+    def waiting(self, name: str) -> tuple[str, ...]:
+        """The obligations (obligations.py) an external input waits on: absent until a human declares it. A rule
+        reading a waiting input does not run (rules/engine.py); `libs` waits for the archives (and for the
+        toolchain root when they are spelled under it), `toolchain` for the compiler and linker builds."""
+        cache = self.__dict__.setdefault("_waiting", {})
+        if name in cache:
+            return cache[name]
+        out: tuple[str, ...] = ()
+        if name == "libs":
+            d = self.archives_decl_for()
+            if d["archives"] is None:
+                out = ("libs.archives",)
+            elif not (self.cfg.get("toolchain") or {}).get("root") and any("{toolchain.root}" in a for a in d["archives"]):
+                out = ("toolchain.root",)
+        elif name == "toolchain":
+            d = self.toolchain_decl
+            out = tuple(f"toolchain.{k}" for k in ("compiler", "linker") if not d[k])
+        cache[name] = out
+        return out
+
+    def waiting_for(self, inputs) -> tuple[str, ...]:
+        """Every obligation the given inputs wait on, in order, once."""
+        return tuple(dict.fromkeys(w for i in inputs for w in self.waiting(i)))
 
     @property
     def toolchain_decl(self) -> dict:
@@ -318,8 +379,11 @@ class Project:
             h = file_hash(self.image_path)
         elif name == "config":
             h = file_hash(self.config_path)
-        elif name == "libs":
-            h = hashlib.sha256(b"".join(f"{p.name}:{file_hash(p)}\n".encode() for p in self.lib_archives)).hexdigest()
+        elif name in ("libs", "archives"):
+            # archives: the declared archives or none while `libs` waits (S.rich reads it, the Rich candidates
+            # need no archive; their archive_objects counts do)
+            libs = [] if self.waiting("libs") else self.lib_archives
+            h = hashlib.sha256(b"".join(f"{p.name}:{file_hash(p)}\n".encode() for p in libs)).hexdigest()
         elif name == "decl":
             h = self.tree_hash([self.root / "decl"], ("*.dcl",))
         elif name == "src":
@@ -372,6 +436,8 @@ class Project:
             return self.cfg
         if name == "libs":
             return self.lib_archives
+        if name == "archives":
+            return [] if self.waiting("libs") else self.lib_archives
         if name == "decl":
             return sorted((self.root / "decl").glob("*.dcl")) if (self.root / "decl").exists() else []
         if name == "src":

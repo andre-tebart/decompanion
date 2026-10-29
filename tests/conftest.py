@@ -119,6 +119,7 @@ def build_pe(path: Path, variant: int = 0, rich=None) -> Path:
     return path
 
 
+NO_VC6 = 'root = "C:/nowhere/vc6"\n'       # the toolchain root of the synthetic projects (tests needing VC6 replace it)
 CONFIG = '''[[target]]
 name = "{n1}"
 path = "{p1}"
@@ -126,6 +127,7 @@ image = "pe32"
 {second}
 [toolchain]
 plugin = "vc6"
+root = "C:/nowhere/vc6"
 compiler = "cl 12.00.9044"
 linker = "link 6.00.8447"
 cflags = ["/O2"]
@@ -133,6 +135,7 @@ reason = "test project"
 
 [libs]
 archives = []
+reason = "test project: no static library"
 
 [analyzer]
 plugin = "none"
@@ -182,3 +185,18 @@ def dcp(root: Path, *args) -> tuple[int, str]:
     with contextlib.redirect_stdout(buf):
         code = main(["--root", str(root), *args])
     return code, buf.getvalue()
+
+
+VC6 = Path("C:/Tools/MSVC600-SP5PP")
+
+
+def declare_vc6(root: Path, archives=("LIBC",), target: str | None = None, with_root: bool = True):
+    """What a human declares for a project of The Guild Gold after `dcp init` (the real-binary tests): the VC6
+    SP5 + PP builds, the root, the release flags, the static archives; each with a reason."""
+    pre = ["--target", target] if target else []
+    pairs = ["compiler=cl 12.00.9044", "linker=link 6.00.8447", "cflags=/O2 /Gy"] + ([f"root={VC6.as_posix()}"] if with_root else [])
+    steps = [("toolchain", "declare", *pairs, "--why", "test: the Rich builds 9044 / 8447, VC6 SP5 + PP"),
+             ("libs", "declare", *archives, "--why", "test: the static CRT the image links")]
+    for step in (steps if with_root else steps[::-1]):     # the root declared: the archives first, one walk less
+        code, out = dcp(root, *pre, *step)
+        assert code == 0, out

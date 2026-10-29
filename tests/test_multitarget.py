@@ -69,7 +69,9 @@ def test_toolchain_declaration_per_target(tiny2):
     assert not conflicts(tiny2, "other", "C.toolchain")
     code, out = dcp(tiny2, "toolchain")
     assert "target=tiny" in out and "target=other" in out and "C.toolchain: 1 error(s)" in out and "C.toolchain: ok" in out
-    assert "cl 13.00.9178 (Utc13_C C x1)" in out and "inherited from [toolchain]: cflags, linker" in out
+    assert "cl 13.00.9178 (Utc13_C C x1)" in out
+    assert "key=linker  value='link 6.00.8447'  level=declared  source=toolchain" in out
+    assert "key=compiler  value='cl 13.00.9178'  level=declared  source=target  why='the VC7 object, on purpose'" in out
     code, out = dcp(tiny2, "--target", "other", "toolchain")
     assert "target=tiny" not in out and "target=other" in out
 
@@ -80,9 +82,15 @@ def test_toolchain_missing_reason_and_compiler(tiny2):
     target_table(tiny2, "other", 'compiler = "cl 12.00.9044"\nreason = "declared"')
     code, out = dcp(tiny2, "check")
     assert code == 1
-    msgs = [c.message for c in conflicts(tiny2, "tiny", "C.toolchain")]
-    assert any("no reason" in m for m in msgs) and any("no compiler declared" in m for m in msgs)
-    assert not conflicts(tiny2, "other", "C.toolchain")
+    # tiny: no compiler at all -> C.toolchain waits, the obligation fails the gate; the linker has no reason
+    assert not conflicts(tiny2, "tiny", "C.toolchain")
+    assert "obligation=toolchain.compiler  target=tiny  missing=\"the compiler build that made the user's objects (missing)\"" in out
+    assert "obligation=toolchain.linker  target=tiny  missing='the linker build (declared without a reason)'" in out
+    code, rules = dcp(tiny2, "rules")
+    assert "C.toolchain        v2   proven    waiting" in rules and "waiting: toolchain.compiler  (dcp status)" in rules
+    # other: its own compiler with a reason; the inherited linker and cflags have none -> C.toolchain errors
+    msgs = [c.message for c in conflicts(tiny2, "other", "C.toolchain")]
+    assert msgs == ["target other: the cflags declaration has no reason", "target other: the linker declaration has no reason"]
 
 
 def test_unknown_target_key(tiny2):
@@ -107,7 +115,7 @@ def test_archives_per_target(tiny2):
         assert any(r.ran for r in res) is reran, name
     assert crt("other")["archive_objects"] == 1
     code, out = dcp(tiny2, "--target", "other", "toolchain")
-    assert "archives: crt.lib (own list)" in out
+    assert "archives=crt.lib  source=target" in out
 
 
 # ------------------------------------------------------------------------------------------------ setup, report, memo

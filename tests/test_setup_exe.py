@@ -1,12 +1,12 @@
 """server.dll and GildeGold.exe as two targets of one project (skipped when the GOG install is absent): the
-pre-filled toolchain declarations pass C.toolchain on both, the exe comes clean, and its known landmarks hold
+declared toolchains pass C.toolchain on both, the exe comes clean, and its known landmarks hold
 (game code to the dinput.lib tables at 0x5dd3e0, the CRT from 0x5de4a0, tail calls through the import table
 inside functions)."""
 from pathlib import Path
 
 import pytest
 
-from conftest import dcp
+from conftest import dcp, declare_vc6
 
 GAME = Path("C:/Program Files/GOG Galaxy/Games/The Guild Gold")
 SERVER, EXE = GAME / "server" / "server.dll", GAME / "GildeGold.exe"
@@ -20,13 +20,10 @@ pytestmark = pytest.mark.skipif(not (SERVER.exists() and EXE.exists() and TOOLCH
 def guild(tmp_path_factory):
     from decompanion.init import init_project
     d = tmp_path_factory.mktemp("guild")
-    init_project(d, SERVER, str(TOOLCHAIN), target_name="server")
+    init_project(d, SERVER, target_name="server")
     assert dcp(d, "target", "add", "exe", str(EXE))[0] == 0
-    cfg = d / "decompanion.toml"
-    text = cfg.read_text()
-    text = text.replace('name = "exe"\n', 'name = "exe"\narchives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", '
-                                          '"{toolchain.root}/VC98/Lib/DINPUT.LIB"]\n', 1)
-    cfg.write_text(text, newline="\n")
+    declare_vc6(d)
+    declare_vc6(d, ("LIBC", "DINPUT"), target="exe", with_root=False)
     code, out = dcp(d, "setup", "--all-targets", "--no-analyzer")      # a Ghidra export of the exe takes minutes
     assert code == 0, out
     return d

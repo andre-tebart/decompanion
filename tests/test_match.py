@@ -34,7 +34,7 @@ def write(root: Path, rel: str, text: str):
 
 def with_vc6(root: Path):
     cfg = root / "decompanion.toml"
-    cfg.write_text(cfg.read_text().replace('plugin = "vc6"\n', f'plugin = "vc6"\nroot = "{VC6.as_posix()}"\n', 1), newline="\n")
+    cfg.write_text(cfg.read_text().replace('root = "C:/nowhere/vc6"\n', f'root = "{VC6.as_posix()}"\n', 1), newline="\n")
 
 
 # ------------------------------------------------------------------------------------------------ amalgamation

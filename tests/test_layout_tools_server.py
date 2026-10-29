@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import dcp
+from conftest import dcp, declare_vc6
 
 
 SERVER = Path("C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll")
 TOOLCHAIN = Path("C:/Tools/MSVC600-SP5PP")
-pytestmark = pytest.mark.skipif(not SERVER.exists(), reason="server.dll not installed")
+pytestmark = pytest.mark.skipif(not (SERVER.exists() and TOOLCHAIN.exists()), reason="server.dll or VC6 not installed")
 
 
 def ghidra_ready() -> bool:
@@ -22,11 +22,8 @@ def ghidra_ready() -> bool:
 def srv(tmp_path_factory):
     from decompanion.init import init_project
     root = tmp_path_factory.mktemp("srv") / "proj"
-    init_project(root, SERVER, TOOLCHAIN.as_posix(), target_name="server")
-    cfg = root / "decompanion.toml"
-    text = cfg.read_text()
-    text = text.replace('reason = "picked at init', 'archives = ["{toolchain.root}/VC98/Lib/LIBCMT.LIB"]\nreason = "picked at init', 1)
-    cfg.write_text(text, newline="\n")
+    init_project(root, SERVER, target_name="server")
+    declare_vc6(root, ("LIBCMT",))
     assert dcp(root, "setup", "--no-analyzer")[0] == 0
     return root
 

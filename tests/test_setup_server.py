@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import declare_vc6
+
 SERVER = Path("C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll")
 TOOLCHAIN = Path("C:/Tools/MSVC600-SP5PP")
 
@@ -16,7 +18,8 @@ def project(tmp_path_factory):
     from decompanion.config import Project
     from decompanion.init import init_project
     d = tmp_path_factory.mktemp("guild-server")
-    init_project(d, SERVER, str(TOOLCHAIN))
+    init_project(d, SERVER)
+    declare_vc6(d)
     return Project(d)
 
 
@@ -53,9 +56,9 @@ def test_setup_total_map(project):
     assert comps[("Utc12_2_C", 9044)]["count"] == 37 and comps[("Utc12_2_C", 9044)]["archive_objects"] == 0
     assert comps[("Utc12_C", 8047)]["archive_objects"] > 0          # the static CRT's objects carry @comp.id 8047
     assert 8447 in {k["build"] for k in tc["linkers"]}
-    # the pre-filled declaration (dcp init) picks the user's compiler, not the CRT's more numerous objects
+    # the declarations of `dcp toolchain declare`, one reason per key
     decl = project.toolchain_decl
-    assert decl["compiler"] == "cl 12.00.9044" and decl["linker"] == "link 6.00.8447" and "verify" in decl["reason"]
+    assert decl["compiler"] == "cl 12.00.9044" and decl["linker"] == "link 6.00.8447" and decl["reasons"]["compiler"].startswith("test:")
     # a second run runs nothing
     res = e.run()
     assert not any(r.ran for r in res)

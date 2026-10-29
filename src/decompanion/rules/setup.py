@@ -10,6 +10,7 @@ toolchain (toolchains/base.py). Docstrings cite the VC6 / PE32 / COFF plugin's a
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 from ..ledger.fact import Fact, Kind, Level, Severity
 from ..objfmt.base import ABSOLUTE, RELATIVE
@@ -117,30 +118,31 @@ def relocs(ctx: RuleContext):
 
 
 # ---------------------------------------------------------------------------------------------------- rich
-@rule("S.rich", version="2", ceiling=D, outputs=("toolchain",), inputs=("libs",))
+@rule("S.rich", version="2", ceiling=D, outputs=("toolchain",), inputs=("archives",))
 def rich(ctx: RuleContext):
     """The Rich header decoded with the toolchain's product table (Toolchain.rich_candidates): every entry with
     its tool, family, language, build and object count, and how many objects of the target's configured
     archives carry the same (prodid, build) in their tool stamp (ObjectFormat.tool_stamps decoded by
     Toolchain.archive_tools; COFF / VC6: the @comp.id symbol) (those entries are library objects the archives
-    explain). The candidates are listed, never picked: every compiler entry is a compiler candidate, every
-    linker entry a linker candidate; which one built the user's objects is the target's declaration
-    ([[target]] compiler / linker), checked by C.toolchain. The fact spans the whole image; its level is
-    derived (the product table is the community's reconstruction of Microsoft's ids)."""
+    explain; before the archives are declared every count is 0). The candidates are listed, never picked: every
+    compiler entry is a compiler candidate, every linker entry a linker candidate; which one built the user's
+    objects is the target's declaration ([[target]] compiler / linker), checked by C.toolchain. The fact spans
+    the whole image; its level is derived (the product table is the community's reconstruction of Microsoft's
+    ids)."""
     img, tc = ctx.image, ctx.project.toolchain
     entries = img.rich()
     if not entries:
         return
-    tools = tc.archive_tools(ctx.project.objfmt.tool_stamps(ctx.input("libs")))
+    tools = tc.archive_tools(ctx.project.objfmt.tool_stamps(ctx.input("archives")))
     yield ctx.fact(img.base, img.end, Kind.toolchain, tc.rich_candidates(entries, tools), D)
 
 
 # ---------------------------------------------------------------------------------------------------- libraries
-def _lib_sections(ctx):
-    """[(lib name, Obj, Section)] of every code section with data of every object of the configured archives."""
+def lib_sections(objfmt, libs) -> list:
+    """[(lib name, Obj, Section)] of every code section with data of every object of the archives `libs`."""
     out = []
-    for lib in ctx.input("libs"):
-        for o in ctx.project.objfmt.archive_objects(lib):
+    for lib in libs:
+        for o in objfmt.archive_objects(lib):
             for s in o.code_sections:
                 out.append((lib.name, o, s))
     return out
@@ -167,19 +169,23 @@ def _masked_equal(a: bytes, b: bytes, mask: bytes) -> bool:
     return all(m or x == y for x, y, m in zip(a, b, mask))
 
 
-@rule("S.crt.code", version="1", ceiling=P, outputs=("symbol", "start", "name", "unit"), inputs=("libs",), needs=("S.relocs",))
-def crt_code(ctx: RuleContext):
-    """A code section of a library member is placed at the one position in a code section of the image where
-    its bytes equal the image's with the relocation fields masked (Section.mask: every byte a relocation of
-    a known kind rewrites; COFF: DIR32 / DIR32NB / REL32, 4 bytes each), every absolute relocation site of
-    the section is a base-relocation site of the image when the image has a relocation directory, and no
-    base-relocation site falls on an unmasked byte. Sections shorter than 8 unmasked bytes are not searched.
-    A section found at two or more positions is listed (warn S.crt.ambiguous) and places nothing. The placed
-    section owns its bytes as one `func` symbol named by its first external symbol; every further named
-    symbol of the section (external or file-static) is a start and a name; the unit is lib:<archive>/<member>."""
-    img = ctx.image
+@dataclass(frozen=True)
+class Placement:
+    """One placed group of identical library sections (place_members)."""
+    lo: int
+    hi: int
+    name: str           # the first external symbol of the section, `a|b` for a group of several members
+    unit: str           # lib:<archive>/<member>, `|`-joined for a group
+    lib: str            # the archive of the group's first member
+    members: int        # the members of the group (1: the identity is proven)
+    values: tuple       # ((offset, (names...)), ...) every named symbol inside the section
+
+
+def place_members(img, sections, reloc_sites: set[int]):
+    """S.crt.code's search over `sections` (lib_sections): yields Placement for every placed group, and
+    ("ambiguous" | "duplicate", lo, hi, message) for a group that places nothing (its criterion: S.crt.code's
+    docstring). `dcp libs candidates` runs the same search per archive."""
     code_secs = [s for s in img.sections if s.holds_code]
-    reloc_sites = {f.lo for f in ctx.facts(Kind.ref) if f.value["rkind"] == "reloc"}
     has_relocs = bool(reloc_sites)
     placed: list[tuple[int, int, str]] = []   # (lo, hi, label)
 
@@ -190,7 +196,7 @@ def crt_code(ctx: RuleContext):
     # one object) are one group: a group's hits are its members' code, the identity is proven only for a group
     # of one, else the names are listed (a|b) and the sources decide later.
     groups: dict[tuple[bytes, bytes], list] = {}
-    for libname, o, sec in sorted(_lib_sections(ctx), key=lambda t: (t[0], t[1].name, t[2].num)):
+    for libname, o, sec in sorted(sections, key=lambda t: (t[0], t[1].name, t[2].num)):
         data, mask = sec.data, sec.mask()
         if sum(1 for m in mask if not m) < 8:
             continue
@@ -228,8 +234,8 @@ def crt_code(ctx: RuleContext):
         if not ok:
             continue
         if len(ok) > len(members):
-            yield ctx.conflict(Severity.warn, "S.crt.ambiguous", ok[0], ok[0] + len(data),
-                               f"{'|'.join(labels)} matches at {len(ok)} positions: " + ", ".join(f"{x:#x}" for x in ok[:6]))
+            yield ("ambiguous", ok[0], ok[0] + len(data),
+                   f"{'|'.join(labels)} matches at {len(ok)} positions: " + ", ".join(f"{x:#x}" for x in ok[:6]))
             continue
         names = sorted({sec_name(sec) for _, _, sec in members})
         units = sorted({f"lib:{lib}/{o.name}" for lib, o, _ in members})
@@ -244,18 +250,40 @@ def crt_code(ctx: RuleContext):
         for va in ok:
             hi = va + len(data)
             if overlaps(va, hi):
-                yield ctx.conflict(Severity.warn, "S.crt.duplicate", va, hi, f"{'|'.join(labels)} matches where another member is placed")
+                yield ("duplicate", va, hi, f"{'|'.join(labels)} matches where another member is placed")
                 continue
             placed.append((va, hi, "|".join(labels)))
-            v = {"skind": "func", "name": name, "extent": "proven", "unit": unit}
-            if len(members) > 1:
-                v["candidates"] = len(members)
-            yield ctx.fact(va, hi, Kind.symbol, v, P)
-            yield ctx.fact(va, hi, Kind.unit, {"tu": unit, "lib": members[0][0]}, P)
-            for value, ns in sorted(values.items()):
-                a = va + value
-                yield ctx.fact(a, a + 1, Kind.start, {"skind": "func", "how": "crt"}, P)
-                yield ctx.fact(a, a + 1, Kind.name, {"name": "|".join(sorted(ns)), "origin": "lib", "unit": unit}, P)
+            yield Placement(va, hi, name, unit, members[0][0], len(members),
+                            tuple((value, tuple(sorted(ns))) for value, ns in sorted(values.items())))
+
+
+@rule("S.crt.code", version="1", ceiling=P, outputs=("symbol", "start", "name", "unit"), inputs=("libs",), needs=("S.relocs",),
+      helpers=(lib_sections, _longest_run, _masked_equal, place_members))
+def crt_code(ctx: RuleContext):
+    """A code section of a library member is placed at the one position in a code section of the image where
+    its bytes equal the image's with the relocation fields masked (Section.mask: every byte a relocation of
+    a known kind rewrites; COFF: DIR32 / DIR32NB / REL32, 4 bytes each), every absolute relocation site of
+    the section is a base-relocation site of the image when the image has a relocation directory, and no
+    base-relocation site falls on an unmasked byte. Sections shorter than 8 unmasked bytes are not searched.
+    A section found at two or more positions is listed (warn S.crt.ambiguous) and places nothing. The placed
+    section owns its bytes as one `func` symbol named by its first external symbol; every further named
+    symbol of the section (external or file-static) is a start and a name; the unit is lib:<archive>/<member>.
+    Waits for the declared archives (`dcp libs declare`)."""
+    reloc_sites = {f.lo for f in ctx.facts(Kind.ref) if f.value["rkind"] == "reloc"}
+    for pl in place_members(ctx.image, lib_sections(ctx.project.objfmt, ctx.input("libs")), reloc_sites):
+        if not isinstance(pl, Placement):
+            what, lo, hi, msg = pl
+            yield ctx.conflict(Severity.warn, f"S.crt.{what}", lo, hi, msg)
+            continue
+        v = {"skind": "func", "name": pl.name, "extent": "proven", "unit": pl.unit}
+        if pl.members > 1:
+            v["candidates"] = pl.members
+        yield ctx.fact(pl.lo, pl.hi, Kind.symbol, v, P)
+        yield ctx.fact(pl.lo, pl.hi, Kind.unit, {"tu": pl.unit, "lib": pl.lib}, P)
+        for value, ns in pl.values:
+            a = pl.lo + value
+            yield ctx.fact(a, a + 1, Kind.start, {"skind": "func", "how": "crt"}, P)
+            yield ctx.fact(a, a + 1, Kind.name, {"name": "|".join(ns), "origin": "lib", "unit": pl.unit}, P)
 
 
 @rule("S.crt.refs", version="1", ceiling=P, outputs=("name", "start"), inputs=("libs",), needs=("S.crt.code",))

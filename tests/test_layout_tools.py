@@ -248,7 +248,7 @@ def test_unit_status_rule():
 @needs_vc6
 def test_unlinked_helper_builds_without_a_grade(tiny):
     cfg = tiny / "decompanion.toml"
-    cfg.write_text(cfg.read_text().replace('plugin = "vc6"\n', f'plugin = "vc6"\nroot = "{VC6.as_posix()}"\n', 1), newline="\n")
+    cfg.write_text(cfg.read_text().replace('root = "C:/nowhere/vc6"\n', f'root = "{VC6.as_posix()}"\n', 1), newline="\n")
     write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start by=guess tu=net -- test\n0x10001030 boundary end tu=net -- test\n")
     write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\nint twice(int x);\n")
     write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n")

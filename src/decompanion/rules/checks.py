@@ -63,18 +63,20 @@ def declared_build(decl: str) -> int | None:
 
 @rule("C.toolchain", version="2", ceiling=Level.proven, needs=("S.rich",), inputs=("toolchain",), helpers=(declared_build,))
 def toolchain(ctx: RuleContext):
-    """The target's toolchain declaration ([[target]] compiler / linker / reason, or the [toolchain] defaults it
-    inherits) against the Rich header's candidates (S.rich): a declaration without a reason is an error; when
-    the Rich header lists compiler entries, the declared compiler must name the build of one of them (the last
-    number of the declaration), and a missing compiler declaration is an error; the same for the linker and
-    the linker entries."""
+    """The target's toolchain declaration ([[target]] compiler / linker with reason.compiler / reason.linker, or
+    the [toolchain] defaults it inherits; written by `dcp toolchain declare`) against the Rich header's
+    candidates (S.rich): a declared compiler, linker or cflags without a reason is an error; when the Rich
+    header lists compiler entries, the declared compiler must name the build of one of them (the last number of
+    the declaration); the same for the linker and the linker entries. Waits until both are declared (the
+    obligations toolchain.compiler / toolchain.linker)."""
     decl = ctx.input("toolchain")
     img = ctx.image
     t = ctx.project.target_name
     by = f"decl:decompanion.toml:{t}"
-    if not str(decl.get("reason", "")).strip():
-        yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1,
-                           f"target {t}: the toolchain declaration has no reason", a=by)
+    for key in ("compiler", "linker", "cflags"):
+        if decl.get(key) and not str((decl.get("reasons") or {}).get(key, "")).strip():
+            yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1,
+                               f"target {t}: the {key} declaration has no reason", a=by)
     rich = next(iter(ctx.facts(Kind.toolchain)), None)
     if rich is None:
         return

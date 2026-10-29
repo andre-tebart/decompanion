@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import register
-from ..base import CompileResult, LinkJob, LinkResult, RichProduct, Toolchain
+from ..base import CompileResult, Install, LinkJob, LinkResult, RichProduct, Toolchain
 from . import cl, rich
+from . import install as places
 from .link import run_link
 
 C89_HEADERS = frozenset(("assert.h", "ctype.h", "errno.h", "float.h", "limits.h", "locale.h", "math.h", "setjmp.h", "signal.h",
@@ -39,12 +40,19 @@ ENTRIES = (
 CRT_ENTRIES = {crt: kind for crt, kind, _, _ in ENTRIES}
 USER_ENTRIES = {user: cname for _, _, user, cname in ENTRIES}
 
-# The static CRT a new project's targets place members of (S.crt.code), under the toolchain root.
+# The libraries of an installation, under the toolchain root.
 LIB_DIR = ("VC98", "Lib")
-DEFAULT_ARCHIVES = ("LIBC.LIB",)
-# The release flags of a VC6 project wizard (/O2: maximise speed; /Gy: function-level linking), assumed until
-# `dcp toolchain probe` distinguishes them (milestone 3).
-DEFAULT_CFLAGS = ("/O2", "/Gy")
+# The run-time archives of VC6 that hold code (`dcp libs candidates` places each): the C run time single- and
+# multi-threaded, release and debug (LIBC / LIBCMT / LIBCD / LIBCMTD), the DLL run time's static start-up part
+# (MSVCRT / MSVCRTD), the C++ library (LIBCP*, MSVCPRT*) and OLDNAMES. Import libraries hold no code to place.
+CRT_ARCHIVES = ("LIBC.LIB", "LIBCD.LIB", "LIBCMT.LIB", "LIBCMTD.LIB", "MSVCRT.LIB", "MSVCRTD.LIB", "LIBCP.LIB", "LIBCPD.LIB",
+                "LIBCPMT.LIB", "LIBCPMTD.LIB", "MSVCPRT.LIB", "MSVCPRTD.LIB", "OLDNAMES.LIB")
+# The release flags of a VC6 project wizard (/O2: maximise speed; /Gy: function-level linking): evidence for the
+# cflags obligation until `dcp toolchain probe` distinguishes them (milestone 3); never written by the tool.
+WIZARD_CFLAGS = ("/O2", "/Gy")
+# Strings of VC6's C run time (crt0msg.c, the heap selection of heapinit.c): their presence in an image is
+# evidence that it links the static CRT.
+CRT_STRINGS = (b"Microsoft Visual C++ Runtime Library", b"__MSVCRT_HEAP_SELECT", b"runtime error ")
 
 # `dcp toolchain probe`: the flags varied, one group at a time against the best combination. /Gy is fixed
 # (function-level linking is what puts each function into a section of its own, the compare reads it). /GB
@@ -143,11 +151,47 @@ class VC6(Toolchain):
         p = self.root.joinpath(*LIB_DIR, name)
         return p if p.exists() else None
 
-    def default_archives(self) -> list[str]:
-        return ["{toolchain.root}/" + "/".join(LIB_DIR) + "/" + a for a in DEFAULT_ARCHIVES]
+    # -------------------------------------------------------------- evidence for the guided decisions
+    def installs(self) -> list[Install]:
+        """The roots of places.candidates() ($VC6_ROOT, C:/Tools/*, Program Files/Microsoft Visual Studio)."""
+        return [self.install(r) for r in places.candidates()]
 
-    def default_cflags(self) -> list[str]:
-        return list(DEFAULT_CFLAGS)
+    def install(self, root: Path) -> Install:
+        """The versions of CL.EXE, C1.DLL, C2.DLL and LINK.EXE (version resources); the compiler build is C2's
+        (the back end's build is what a Rich compiler entry records), the linker build LINK's."""
+        v = places.versions(Path(root))
+        build = lambda s: int(s.rsplit(".", 1)[1]) if s else None  # noqa: E731
+        return Install(Path(root), v, build(v.get("c2")), build(v.get("link")), "cl" in v)
+
+    def crt_strings(self, image) -> list[tuple[int, str]]:
+        """Every occurrence of CRT_STRINGS in the raw data of the image's sections."""
+        out = []
+        for s in image.sections:
+            raw = image.section_data(s)
+            for needle in CRT_STRINGS:
+                p = raw.find(needle)
+                while p >= 0:
+                    out.append((s.va + p, needle.decode("ascii")))
+                    p = raw.find(needle, p + 1)
+        return sorted(out)
+
+    def library_candidates(self) -> list[Path]:
+        """CRT_ARCHIVES present under VC98/Lib of the root."""
+        if self.root is None:
+            return []
+        d = self.root.joinpath(*LIB_DIR)
+        have = {p.name.upper(): p for p in d.glob("*")} if d.is_dir() else {}
+        return [have[a] for a in CRT_ARCHIVES if a in have]
+
+    def archive_spec(self, name: str) -> str:
+        """LIBCMT or LIBCMT.LIB -> {toolchain.root}/VC98/Lib/LIBCMT.LIB; a name with a slash is a path."""
+        if "/" in name or "\\" in name:
+            return Path(name).as_posix()
+        n = name.upper() if name.upper().endswith(".LIB") else name.upper() + ".LIB"
+        return "{toolchain.root}/" + "/".join(LIB_DIR) + "/" + n
+
+    def wizard_cflags(self) -> list[str]:
+        return list(WIZARD_CFLAGS)
 
     def import_library_name(self, dll: str) -> str:
         """KERNEL32.dll -> kernel32.lib."""

@@ -23,6 +23,11 @@ A rule is a function decorated with @rule:
 - The run key is sha256(code of the function, version, out_hash of each needed run, hash of each input). A
   rule whose key matches a stored run is skipped; `dcp rules` shows which ran and how long they took.
   `helpers` (functions or modules the rule calls) join the code hash, so editing a helper reruns the rule.
+- An input may be absent until a human declares it (Project.waiting: `libs` until the archives are declared,
+  `toolchain` until the compiler and linker builds are). A rule reading such an input waits: its criterion does
+  not run, the engine records an empty run keyed by the obligations it waits on (obligations.py), so the rules
+  that need it run on nothing from it; `dcp rules` shows `waiting: <obligation>`. The declaration changes the
+  key, the rule runs, and everything downstream reruns as usual.
 - A `loader` rule (L.decl, L.src, L.analyzer) turns typed state written by a human or an external tool (a
   declarations file, the sources, the analyzer's drafts) into facts. It is the only kind of rule that may
   emit facts whose producer is a file line (`decl:<file>:<line>`, `src:<file>:<line>`) instead of the rule:
@@ -150,6 +155,7 @@ class RunResult:
     ms: int
     facts: int
     conflicts: int
+    waiting: tuple = ()      # the obligations the rule waits on (it did not run its criterion)
 
 
 class Engine:
@@ -205,10 +211,34 @@ class Engine:
             parts.append(f"{name}={self.project.input_hash(name)}")
         return sha256(*parts)
 
+    def waiting(self, r: Rule) -> tuple[str, ...]:
+        """The obligations a rule waits on: those of its inputs that are absent until a human declares them
+        (Project.waiting; obligations.py names them)."""
+        w = getattr(self.project, "waiting_for", None)      # a project without declarations waits on nothing
+        return w(r.inputs) if w is not None else ()
+
     def run(self, ids: Iterable[str] | None = None, force: bool = False, log=None) -> list[RunResult]:
         results = []
         for r in self.order(ids):
             needed = self.resolve_needs(r)
+            waits = self.waiting(r)
+            if waits:
+                # an empty run keyed by what it waits on: the rules that need it run on its (empty) output, and
+                # the declaration that ends the wait changes the key
+                ih = sha256(r.code_hash, r.version, "waiting", *waits)
+                found = self.store.find_run(r.id, ih)
+                if found is not None:
+                    where, run_id, _ = found
+                    cur = self.store.current_run(r.id)
+                    if cur is None or cur[0] != run_id or where != "main":
+                        self.store.make_current(r.id, where, run_id)
+                    results.append(RunResult(r.id, False, 0, 0, 0, waits))
+                    continue
+                self.store.record_run(r.id, r.version, r.code_hash, ih, [], [], 0)
+                results.append(RunResult(r.id, True, 0, 0, 0, waits))
+                if log:
+                    log(f"waiting {r.id}: {', '.join(waits)}")
+                continue
             ih = self.input_hash(r, needed)
             found = None if force else self.store.find_run(r.id, ih)
             if found is not None:
@@ -236,7 +266,7 @@ class Engine:
         return results
 
     def status(self):
-        """[(rule, phase, current run?, ms, facts)] for `dcp rules`."""
+        """[(rule, current run?, ms, facts, waiting obligations)] for `dcp rules`."""
         rows = []
         for r in self.order():
             cur = self.store.current_run(r.id)
@@ -245,5 +275,5 @@ class Engine:
             if cur:
                 n = self.store.db.execute("SELECT COUNT(*) FROM fact WHERE run_id=?", (cur[0],)).fetchone()[0]
                 ms = self.store.db.execute("SELECT ms FROM run WHERE id=?", (cur[0],)).fetchone()[0]
-            rows.append((r, cur is not None, ms, n))
+            rows.append((r, cur is not None, ms, n, self.waiting(r)))
         return rows

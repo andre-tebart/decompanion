@@ -72,7 +72,8 @@ def test_vc6_entries_and_defaults():
                      "_wWinMain@16": "wWinMain"}
     assert tc.crt_user_entry("__DllMainCRTStartup@12") == "_DllMain@12"
     assert tc.crt_user_entry("_wWinMainCRTStartup") == "_wWinMain@16"
-    assert tc.default_archives() == ["{toolchain.root}/VC98/Lib/LIBC.LIB"] and tc.default_cflags() == ["/O2", "/Gy"]
+    assert tc.wizard_cflags() == ["/O2", "/Gy"] and tc.archive_spec("libcmt") == "{toolchain.root}/VC98/Lib/LIBCMT.LIB"
+    assert tc.archive_spec("C:/x/my.lib") == "C:/x/my.lib"
     assert tc.import_library_name("KERNEL32.dll") == "kernel32.lib"
     assert (tc.fill_origin(b"\xcc\xcc"), tc.fill_origin(b"\x90\x8b\xff"), tc.fill_origin(b"\x90\xcc")) == ("cc", "nop", "mixed")
     assert tc.archive_tools({(0x0a << 16) | 8047: 3, (0x30 << 16) | 9044: 1}) == {(0x0a, 8047): 3, (0x30, 9044): 1}
@@ -127,23 +128,14 @@ def test_x86_table_shape():
 
 
 # ------------------------------------------------------------------------------------------------ init
-def test_init_needs_toolchain_root(tmp_path, capsys):
-    pe = build_pe(tmp_path / "t.dll")
-    from decompanion.cli import main
-    assert main(["init", str(tmp_path / "proj"), str(pe)]) == 2
-    assert "--toolchain-root" in capsys.readouterr().err and not (tmp_path / "proj").exists()
-
-
 def test_init_names_plugins(tmp_path):
     pe = build_pe(tmp_path / "t.dll")
-    root = tmp_path / "vc"
     from decompanion.cli import main
-    assert main(["init", str(tmp_path / "proj"), str(pe), "--toolchain-root", str(root)]) == 0
+    assert main(["init", str(tmp_path / "proj"), str(pe)]) == 0
     text = (tmp_path / "proj" / "decompanion.toml").read_text()
-    assert 'image = "pe32"\nisa = "x86"\n' in text and 'plugin = "vc6"' in text
-    assert f'root = "{root.as_posix()}"' in text and 'archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB"]' in text
-    assert 'cflags = ["/O2", "/Gy"]' in text
+    assert 'image = "pe32"\nisa = "x86"\n' in text          # computed from the file; nothing is declared
     p = Project(tmp_path / "proj")
+    assert p.toolchain.key == "vc6"                         # the only registered plugin, without a [toolchain] table
     assert p.target().isa == "x86" and p.isa.key == "x86"
     code, out = dcp(tmp_path / "proj", "target", "list")
     assert "isa=x86" in out
