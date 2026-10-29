@@ -1,5 +1,6 @@
-"""The derived-state store: one SQLite file (build/dcp.sqlite) holding every rule run, its facts and conflicts,
-content-addressed blobs, and the materialised byte map.
+"""The derived-state store: one SQLite file per target (build/<target>.sqlite) holding every rule run, its facts
+and conflicts, content-addressed blobs, and the materialised byte map. Facts carry no target column: each
+target's address space has a store of its own.
 
 Nothing in the store is typed state: it is a cache of what the rules computed from the image, the sources, the
 declarations and the toolchain, and it can be deleted at any time (the next command recomputes). Every rule run
@@ -12,7 +13,7 @@ Tables
   run       rule, version, code_hash, input_hash, out_hash, current, ms, at
   fact      run_id, lo, hi, kind, value, level, by, reason      (only facts of current runs are visible)
   conflict  run_id, severity, check, lo, hi, message, a, b
-  blob      hash, kind, data                disassembly, include sets, logs, lib sections
+  blob      hash, kind, data                disassembly, include sets, logs, lib sections, Ghidra drafts
   bytemap   lo, hi, cls, level, symbol, unit, source, section   non-overlapping, total over the image
 """
 from __future__ import annotations
@@ -79,7 +80,8 @@ class Store:
     def __init__(self, path: Path, overlay_of: Path | None = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, isolation_level=None)
+        # uri=True: the overlay ATTACHes main's store read-only through a file: URI (?mode=ro)
+        self.db = sqlite3.connect(self.path, isolation_level=None, uri=True)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
@@ -90,7 +92,7 @@ class Store:
             raise RuntimeError(f"{self.path}: store schema {v}, this code wants {SCHEMA_VERSION}: delete build/")
         self.main = None
         if overlay_of is not None and Path(overlay_of).exists():
-            self.db.execute("ATTACH DATABASE ? AS main_store", (f"file:{Path(overlay_of).as_posix()}?mode=ro",))
+            self.db.execute("ATTACH DATABASE ? AS main_store", (Path(overlay_of).resolve().as_uri() + "?mode=ro",))
             self.main = Path(overlay_of)
 
     def close(self):
@@ -229,8 +231,26 @@ class Store:
             row = self.db.execute("SELECT data FROM main_store.blob WHERE hash=?", (hash_,)).fetchone()
         return bytes(row[0]) if row else None
 
-    def put_blob(self, hash_: str, kind: str, data: bytes):
-        self.db.execute("INSERT OR IGNORE INTO blob (hash, kind, data) VALUES (?, ?, ?)", (hash_, kind, data))
+    def put_blob(self, hash_: str, kind: str, data: bytes, replace: bool = False):
+        """Store a blob. Content-addressed blobs never change (INSERT OR IGNORE); a blob keyed by something else
+        (a Ghidra draft keyed by image and start) is replaced when `replace`."""
+        verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
+        self.db.execute(f"{verb} INTO blob (hash, kind, data) VALUES (?, ?, ?)", (hash_, kind, data))
+
+    def blobs(self, kind: str) -> dict[str, bytes]:
+        """Every blob of one kind, main store first, the overlay's own replacing it: {hash: data}."""
+        out = {}
+        if self.main is not None:
+            out.update((h, bytes(d)) for h, d in self.db.execute("SELECT hash, data FROM main_store.blob WHERE kind=?", (kind,)))
+        out.update((h, bytes(d)) for h, d in self.db.execute("SELECT hash, data FROM blob WHERE kind=?", (kind,)))
+        return out
+
+    def main_meta(self, key: str) -> str | None:
+        """A meta value of the main store (None outside a worktree)."""
+        if self.main is None:
+            return None
+        row = self.db.execute("SELECT value FROM main_store.meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
 
     def blob_json(self, hash_: str):
         b = self.blob(hash_)

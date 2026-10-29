@@ -8,17 +8,20 @@ from ..ledger.fact import Kind, Level, Severity, severity_of
 from .engine import RuleContext, rule
 
 
-@rule("C.overlap", version="1", ceiling=Level.proven, needs=("kind:symbol", "kind:region"))
+@rule("C.overlap", version="2", ceiling=Level.proven, needs=("kind:symbol", "kind:region"))
 def overlap(ctx: RuleContext):
     """Two symbol or region facts that overlap contradict each other (every byte has one owner). Severity
     from the two levels: proven against proven is a bug in a rule. Overlaps with an open fact are not
-    reported (open is replaced, not contradicted)."""
+    reported (open is replaced, not contradicted), nor two facts that say the same thing (one interval, one
+    symbol kind: a declaration the walk confirms)."""
     items = [f for f in ctx.facts(Kind.symbol) if f.level > Level.open] + list(ctx.facts(Kind.region))
     items.sort(key=lambda f: (f.lo, f.hi))
     active = []
     for f in items:
         active = [g for g in active if g.hi > f.lo]
         for g in active:
+            if (g.lo, g.hi, g.kind, g.value.get("skind")) == (f.lo, f.hi, f.kind, f.value.get("skind")):
+                continue
             if g.lo < f.hi and f.lo < g.hi:
                 yield ctx.conflict(severity_of(f.level, g.level), "C.overlap", max(f.lo, g.lo), min(f.hi, g.hi),
                                    f"{g.kind.value} {g.value.get('skind', g.value.get('what', ''))} {g.lo:#x}..{g.hi:#x} overlaps "

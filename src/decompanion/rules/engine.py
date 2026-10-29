@@ -21,6 +21,11 @@ A rule is a function decorated with @rule:
   derived start): the engine cannot know which facts were premises and which were merely verified.
 - The run key is sha256(code of the function, version, out_hash of each needed run, hash of each input). A
   rule whose key matches a stored run is skipped; `dcp rules` shows which ran and how long they took.
+  `helpers` (functions or modules the rule calls) join the code hash, so editing a helper reruns the rule.
+- A `loader` rule (L.decl, L.src, L.ghidra) turns typed state written by a human (a declarations file, the
+  sources, an imported Ghidra analysis) into facts. It is the only kind of rule that may emit facts whose
+  producer is a file line (`decl:<file>:<line>`, `src:<file>:<line>`) instead of the rule: ctx.declared()
+  stamps them at level declared and refuses a missing reason.
 """
 from __future__ import annotations
 
@@ -46,6 +51,7 @@ class Rule:
     doc: str
     code_hash: str
     phase: str = ""
+    loader: bool = False
 
     @property
     def name(self):
@@ -56,13 +62,16 @@ RULES: dict[str, Rule] = {}
 
 
 def rule(id: str, *, version: str, ceiling: Level, outputs: tuple[str, ...] = (), needs: tuple[str, ...] = (),
-         inputs: tuple[str, ...] = (), phase: str = ""):
+         inputs: tuple[str, ...] = (), phase: str = "", helpers: tuple = (), loader: bool = False):
     def deco(fn):
         if id in RULES:
             raise RuntimeError(f"rule {id} registered twice")
-        src = inspect.getsource(fn)
+        src = inspect.getsource(fn) + "".join(inspect.getsource(h) for h in helpers)
+        if loader and Level(ceiling) > Level.declared:
+            raise RuntimeError(f"loader rule {id} with ceiling {Level(ceiling)}: loaders declare")
         RULES[id] = Rule(id, version, Level(ceiling), tuple(needs), tuple(outputs), tuple(inputs), fn,
-                         inspect.getdoc(fn) or "", hashlib.sha256(src.encode()).hexdigest()[:16], phase or id.split(".")[0])
+                         inspect.getdoc(fn) or "", hashlib.sha256(src.encode()).hexdigest()[:16], phase or id.split(".")[0],
+                         loader)
         return fn
     return deco
 
@@ -103,6 +112,19 @@ class RuleContext:
         if level > self.rule.ceiling:
             raise RuleError(f"{self.rule.id} emits {kind} at {lo:#x} as {level} above its ceiling {self.rule.ceiling}")
         return Fact(lo, hi, kind, value, level, self.rule.name, reason)
+
+    def declared(self, lo: int, hi: int, kind: Kind | str, value: dict, by: str, reason: str) -> Fact:
+        """A declared fact whose producer is a line of typed state (only loader rules may emit these)."""
+        kind = Kind(kind)
+        if not self.rule.loader:
+            raise RuleError(f"{self.rule.id} is not a loader: it may not emit {by} facts")
+        if kind not in self._kinds_ok:
+            raise RuleError(f"{self.rule.id} emits {kind} but lists outputs {self.rule.outputs}")
+        if not by.startswith(("decl:", "src:")):
+            raise RuleError(f"{self.rule.id}: a declared fact's producer must be decl:<file>:<line> or src:<file>:<line>, not {by!r}")
+        if not reason or not reason.strip():
+            raise RuleError(f"{self.rule.id}: declared {kind} at {lo:#x} ({by}) without a reason")
+        return Fact(lo, hi, kind, value, Level.declared, by, reason)
 
     def conflict(self, severity, check: str, lo: int, hi: int, message: str, a: str = "", b: str = "") -> Conflict:
         return Conflict(severity, check, lo, hi, message, a, b)

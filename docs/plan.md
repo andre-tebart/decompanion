@@ -1,6 +1,8 @@
 # decompanion: a framework for byte-matching decompilation (plan)
 
-Approved 2026-10-29, amended the same day (several targets per project, section 1.5). Milestone status: M1 done 2026-10-29 (`dcp setup` on server.dll, see README); M2..M6 open.
+Approved 2026-10-29, amended the same day (several targets per project, section 1.5). Milestone status: M1 done 2026-10-29 (`dcp setup` on server.dll, see README); M2 done 2026-10-29 (targets,
+declarations, source scan, layout rules and commands, Ghidra import, worktree overlay; see README and
+docs/layout.md); M3..M6 open.
 
 ## Context
 
@@ -93,7 +95,7 @@ project to one file per unit at the end.
 
 ### 1.3 Store and caching (`ledger/store.py`)
 
-One SQLite file `build/dcp.sqlite` (WAL). Tables: `input(key, hash)`, `run(rule, version, code_hash,
+One SQLite file per target, `build/<target>.sqlite` (WAL; section 1.5). Tables: `input(key, hash)`, `run(rule, version, code_hash,
 input_hash, current, ms)`, `fact(run_id, lo, hi, kind, value, level, by, reason)` indexed `(kind, lo)`,
 `conflict`, `bytemap(lo, hi, cls, symbol_id, unit_id, source_id, level)` (materialised, non-overlapping),
 `blob(hash, kind, data)` (disassembly lists, include sets, CL logs, lib sections), `tu(path, src_hash, flags_hash,

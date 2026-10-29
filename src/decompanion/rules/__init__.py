@@ -1,2 +1,2 @@
 """Importing the package registers every rule (rules.engine.RULES)."""
-from . import checks, setup, walk  # noqa: F401
+from . import checks, layout, setup, walk  # noqa: F401

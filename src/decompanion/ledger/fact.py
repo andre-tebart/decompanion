@@ -43,20 +43,22 @@ class Kind(StrEnum):
     section = "section"      # {name, chars, raw_lo, raw_hi}; exactly one per mapped byte
     region = "region"        # {what}: pe.header, pe.import_desc, pe.ilt, pe.iat, pe.names, pe.export_*, pe.reloc, pe.rsrc, pad
     symbol = "symbol"        # {skind, name?, extent}; exactly one per byte (unknown.code / unknown.data close the map)
-    start = "start"          # {skind: func, how}; a point fact: something starts here (export, entry, call, crt, fptr, decl)
-    name = "name"            # {name, origin}; origin: export, import, lib, source, decl, placeholder
+    start = "start"          # {skind: func, how}; a point fact: something starts here (export, entry, call, crt, fptr, decl, source, ghidra)
+    name = "name"            # {name, origin}; origin: export, import, lib, entry, source, decl
     source = "source"        # {file, line, unit, symbol}
-    unit = "unit"            # {tu, lib?}
-    boundary = "boundary"    # {side: start|end, of: tu}; point fact
+    unit = "unit"            # {tu, lib?} (library members) / {tu, status, start_level, end_level, ...} (game units, L.unit.extent)
+    boundary = "boundary"    # {side: start|end, tu, named_by?}; point fact
     toolchain = "toolchain"  # {compiler, linker, cflags, language}
     ref = "ref"              # {rkind: call|jmp|reloc|operand|fptr, to}; at the site interval
     grade = "grade"          # {code, readability, failing}
     build = "build"          # {tu, ok, obj?, errors}
+    evidence = "evidence"    # {ekind: lit|fill|leak, ...}: computed layout evidence (L.analyze), never a claim by itself
 
 
 SYMBOL_KINDS = frozenset((
     "func", "thunk", "fill", "jumptable", "idxtable", "fptr", "global", "string", "float", "guid", "iat",
     "crt.data", "unknown.code", "unknown.data",
+    "dead", "foreign",       # declared only (decl/*.dcl `bytes dead`, `foreign kind=`)
 ))
 
 
