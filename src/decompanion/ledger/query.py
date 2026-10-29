@@ -2,7 +2,6 @@
 facts; the byte map is rebuilt when the facts it is made of changed (hash in meta)."""
 from __future__ import annotations
 
-import bisect
 from collections import Counter, defaultdict
 
 from .fact import Kind, Level, canonical
@@ -38,32 +37,31 @@ def ensure_bytemap(store: Store) -> str:
     cuts = sorted(cuts)
     rows = []
 
-    def index(facts):
-        facts = sorted(facts, key=lambda f: (f.lo, -f.level, f.hi))
-        los = [f.lo for f in facts]
-        return facts, los
+    class Sweep:
+        """The fact of one group that owns each cut, cuts visited in address order: among the facts covering
+        the address the highest level, then the highest lo, then the highest hi."""
 
-    def lookup(idx, a):
-        facts, los = idx
-        i = bisect.bisect_right(los, a) - 1
-        best = None
-        while i >= 0 and facts[i].lo <= a:
-            f = facts[i]
-            if f.lo <= a < f.hi and (best is None or f.level > best.level):
-                best = f
-            i -= 1
-            if i >= 0 and facts[i].hi <= a and facts[i].lo < a - 0x100000:
-                break
-        return best
+        def __init__(self, facts):
+            self.items = sorted(((f.fact.lo, f.fact.hi, int(f.fact.level), f) for f in facts), key=lambda t: (t[0], t[1]))
+            self.i = 0
+            self.active = []
 
-    isym, isec, iunit, isrc = index(symbols), index(sections), index(units), index(sources)
+        def at(self, a):
+            items, active = self.items, self.active
+            while self.i < len(items) and items[self.i][0] <= a:
+                active.append(items[self.i])
+                self.i += 1
+            if active:
+                active[:] = [t for t in active if t[1] > a]
+            if not active:
+                return None
+            return max(reversed(active), key=lambda t: (t[2], t[0], t[1]))[3]      # equal keys: the later fact
+
+    isym, isec, iunit, isrc = Sweep(symbols), Sweep(sections), Sweep(units), Sweep(sources)
     for a, b in zip(cuts, cuts[1:]):
-        s = lookup(isym, a)
+        s, sec, u, src = isym.at(a), isec.at(a), iunit.at(a), isrc.at(a)
         if s is None:
             continue
-        sec = lookup(isec, a)
-        u = lookup(iunit, a)
-        src = lookup(isrc, a)
         rows.append((a, b, _cls(s), int(s.level), s.id, u.id if u else None, src.id if src else None, sec.id if sec else None))
     store.write_bytemap(rows, h)
     return h

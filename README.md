@@ -32,15 +32,19 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
   first is the default, every command takes `--target NAME`. Each target has its own **store**
   (`ledger/store.py`), `build/<target>.sqlite`, holding runs, facts, conflicts, blobs and the materialised
   byte map. A store is a cache: delete it and the next command recomputes. A worktree (`dcp wt new`) overlays
-  main's store of the same target.
+  main's store of the same target. Each target declares its own toolchain (`compiler`, `linker`, `cflags`,
+  `reason`; `[toolchain]` holds the plugin, its root and defaults) and may name its own library `archives`
+  (else `[libs] archives`).
 
 ## Phases
 
-1. **setup** (`dcp setup`): headers, sections, imports, exports, base relocations, the Rich header
-   (compiler / linker builds, language), library members placed by masked byte search with relocation-site
-   coincidence (`S.crt.code`), the names those members' relocations prove (`S.crt.refs`: the user's
-   `DllMain`, CRT data), import thunks, strings, a recursive-descent code walk with tail-call and inner-label
-   handling (`rules/walk.py`), fill, and a total byte map (`S.unknown` closes it).
+1. **setup** (`dcp setup`): headers, sections, imports, exports, base relocations, the Rich header (its
+   compiler and linker candidates; the target's declaration picks one of each and `C.toolchain` checks the
+   pick), library members placed by masked byte search with relocation-site coincidence (`S.crt.code`), the
+   names those members' relocations prove (`S.crt.refs`: the user's `DllMain`, CRT data), import thunks
+   (`S.thunk`: only where LINK's layout makes `jmp [iat]` an import-library contribution; elsewhere it is a
+   compiled tail call), strings, a recursive-descent code walk with tail-call and inner-label handling
+   (`rules/walk.py`), fill, and a total byte map (`S.unknown` closes it).
 2. **layout** (`dcp layout ...`): declarations (`decl/*.dcl`, `ledger/decl.py`), address comments in one
    file per function (`ledger/srcscan.py`), Ghidra drafts (`dcp ghidra import`), boundary evidence
    (`L.analyze`: literal first users, fill before a start, leaked source paths), unit extents and status
@@ -60,7 +64,7 @@ uv run dcp facts 0x10008cb0..0x10008d20 --kind name
 uv run dcp conflicts                      # contradictions
 uv run dcp check                          # the gate (every target, loaders included)
 uv run dcp rules -v                       # the rule graph with criteria and timings
-uv run dcp toolchain                      # the toolchain evidence
+uv run dcp toolchain                      # per target: the declaration, the Rich candidates, C.toolchain
 ```
 
 Targets:
@@ -69,6 +73,25 @@ Targets:
 uv run dcp target list
 uv run dcp target add exe "C:/Program Files/GOG Galaxy/Games/The Guild Gold/GildeGold.exe"
 uv run dcp --target exe setup             # or: uv run dcp setup --target exe
+uv run dcp setup --all-targets            # every target in config order (also: dcp report --all-targets)
+```
+
+`dcp init` and `dcp target add` pre-fill the target's toolchain declaration from its Rich header (the compiler
+entry with the most objects that no configured archive object was built with, the linker entry with the most
+objects) and say so in the reason; verify it with `dcp toolchain`. A target's table, e.g. the exe linking the
+DirectInput library:
+
+```toml
+[[target]]
+name = "exe"
+path = "C:/Program Files/GOG Galaxy/Games/The Guild Gold/GildeGold.exe"
+sha256 = "d6f20fda..."
+image = "pe32"
+archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", "{toolchain.root}/VC98/Lib/DINPUT.LIB"]
+compiler = "cl 12.00.9044"
+linker = "link 6.00.8447"
+cflags = ["/O2", "/Gy"]
+reason = "picked at target add from the Rich header: ... (Utc12_2_C 9044 x157), ... (Linker600 8447 x53); verify"
 ```
 
 Layout:

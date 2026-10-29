@@ -3,10 +3,13 @@ toolchain plugin, one store per target, the named external inputs with their con
 
 decompanion.toml
   [[target]]     name = "server"  path = "...server.dll"  sha256 = "..."  image = "pe32"
-                 (one table per binary built from the codebase; the first is the default target)
-  [toolchain]    plugin = "vc6"  root = "C:/Tools/MSVC600-SP5PP"  compiler = "cl 12.00.9044"  linker = "link 6.00.8447"
-                 cflags = ["/O2", "/Gy"]  reason = "..."     (declared; the probe proves flags per unit later)
-  [libs]         archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", ...]
+                 compiler = "cl 12.00.9044"  linker = "link 6.00.8447"  cflags = ["/O2", "/Gy"]  reason = "..."
+                 archives = [...]            (optional: this target's library archives instead of [libs])
+                 (one table per binary built from the codebase; the first is the default target; the toolchain
+                 declaration is per target: binaries of one tree may still differ in what built them)
+  [toolchain]    plugin = "vc6"  root = "C:/Tools/MSVC600-SP5PP"
+                 (compiler / linker / cflags / reason here are defaults a target without its own inherits)
+  [libs]         archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", ...]     (the default of every target)
   [sources]      roots = ["src"]  include = ["include"]
 
 The single-table form `[target]` of milestone 1 is still read (one target named after the file's stem); `dcp
@@ -26,6 +29,7 @@ from functools import cached_property
 from pathlib import Path
 
 from .image.pe32 import PE32
+from .ledger.fact import canonical
 from .ledger.store import Store, file_hash, sha256
 from .toolchains.vc6 import VC6
 
@@ -39,6 +43,10 @@ class ConfigError(RuntimeError):
     pass
 
 
+TOOLCHAIN_KEYS = ("compiler", "linker", "cflags", "reason")
+TARGET_KEYS = ("name", "path", "sha256", "image", "archives", *TOOLCHAIN_KEYS)
+
+
 @dataclass(frozen=True)
 class Target:
     name: str
@@ -46,6 +54,8 @@ class Target:
     sha256: str
     image: str = "pe32"
     legacy: bool = False       # read from the single-table [target] form
+    toolchain: tuple = ()      # ((key, value), ...) of the toolchain keys the target table declares itself
+    archives: tuple | None = None   # the target's own library archives (strings as written), else None
 
 
 def find_root(start: Path | None = None) -> Path:
@@ -78,7 +88,15 @@ def parse_targets(cfg: dict, expand) -> list[Target]:
             raise ConfigError(f"{CONFIG_NAME}: target name {name!r} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)")
         if any(o.name == name for o in out):
             raise ConfigError(f"{CONFIG_NAME}: target {name!r} declared twice")
-        out.append(Target(name, path, tab.get("sha256", ""), tab.get("image", "pe32"), legacy))
+        unknown = sorted(set(tab) - set(TARGET_KEYS))
+        if unknown:
+            raise ConfigError(f"{CONFIG_NAME}: target {name!r} has unknown keys {', '.join(unknown)} (known: {', '.join(TARGET_KEYS)})")
+        archives = tab.get("archives")
+        if archives is not None and not (isinstance(archives, list) and all(isinstance(a, str) for a in archives)):
+            raise ConfigError(f"{CONFIG_NAME}: target {name!r}: archives is not a list of paths")
+        tc = tuple((k, tuple(tab[k]) if isinstance(tab[k], list) else tab[k]) for k in TOOLCHAIN_KEYS if k in tab)
+        out.append(Target(name, path, tab.get("sha256", ""), tab.get("image", "pe32"), legacy, tc,
+                          tuple(archives) if archives is not None else None))
     if not out:
         raise ConfigError(f"{CONFIG_NAME}: the [[target]] list is empty")
     return out
@@ -163,26 +181,63 @@ class Project:
             raise ConfigError(f"target {t.name}: {t.path} has sha256 {img.sha256}, the declared one is {t.sha256}")
         return img
 
+    def image_of(self, name: str):
+        """The image of any target (the current one's is `image`); checked against its declared sha256."""
+        if name == self.target_name:
+            return self.image
+        cache = self.__dict__.setdefault("_images", {})
+        if name not in cache:
+            cache[name] = Project(self.root, name).image
+        return cache[name]
+
     @cached_property
     def store(self) -> Store:
         main = self.main_build_dir()
         overlay = main / f"{self.target_name}.sqlite" if main is not None else None
         return Store(self.store_path(), overlay_of=overlay)
 
-    @cached_property
-    def lib_archives(self) -> list[Path]:
-        libs = (self.cfg.get("libs") or {}).get("archives") or []
+    def lib_archives_of(self, name: str | None = None) -> list[Path]:
+        """The library archives of a target: its own `archives` list, else the project's [libs] archives."""
+        t = self.target(name)
+        own = t.archives is not None
+        libs = list(t.archives) if own else ((self.cfg.get("libs") or {}).get("archives") or [])
         out = []
         for s in libs:
             p = self.expand(s)
             if not p.exists():
-                raise ConfigError(f"[libs] archive {p} does not exist")
+                where = f"target {t.name} archives" if own else "[libs] archives"
+                raise ConfigError(f"{where}: {p} does not exist")
             out.append(p)
+        return out
+
+    @cached_property
+    def lib_archives(self) -> list[Path]:
+        """The current target's library archives."""
+        return self.lib_archives_of()
+
+    def toolchain_decl_for(self, name: str | None = None) -> dict:
+        """The toolchain declaration of a target: plugin and root from [toolchain]; compiler, linker, cflags and
+        reason from the target's own table, else the [toolchain] defaults. `from` names where each of the four
+        came from (target | toolchain | missing)."""
+        tc = self.cfg.get("toolchain") or {}
+        own = dict(self.target(name).toolchain)
+        out = {"plugin": tc.get("plugin", "vc6"), "root": tc.get("root", "")}
+        src = {}
+        for k in TOOLCHAIN_KEYS:
+            if k in own:
+                v, src[k] = own[k], "target"
+            elif k in tc:
+                v, src[k] = tc[k], "toolchain"
+            else:
+                v, src[k] = ([] if k == "cflags" else ""), "missing"
+            out[k] = list(v) if isinstance(v, (list, tuple)) else v
+        out["from"] = src
         return out
 
     @property
     def toolchain_decl(self) -> dict:
-        return dict(self.cfg.get("toolchain") or {})
+        """The current target's toolchain declaration (toolchain_decl_for)."""
+        return self.toolchain_decl_for()
 
     # ------------------------------------------------------------------ inputs
     def input_hash(self, name: str) -> str:
@@ -201,6 +256,10 @@ class Project:
         elif name == "ghidra":
             st = self.store
             h = sha256(st.main_meta("ghidra") or "", st.meta("ghidra") or "")
+        elif name == "toolchain":
+            h = sha256(canonical(self.toolchain_decl))
+        elif name == "targets":
+            h = sha256(canonical(self.input("targets")))
         else:
             raise ConfigError(f"unknown input {name!r}")
         self._hashes[name] = h
@@ -238,4 +297,8 @@ class Project:
         if name == "ghidra":
             from .ledger import ghidra
             return ghidra.entries(self.store)
+        if name == "toolchain":
+            return self.toolchain_decl
+        if name == "targets":
+            return [{"name": t.name, "path": t.path.as_posix(), "sha256": t.sha256, "image": t.image} for t in self.targets]
         raise ConfigError(f"unknown input {name!r}")

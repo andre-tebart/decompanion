@@ -42,7 +42,10 @@ exe:0x004a3000 name NetInit -- named by the log string "NetInit failed"
 
 Gate errors (check `L.decl`): a malformed line, an unknown kind or key, a missing reason, an unknown target
 prefix, an unsorted file, a duplicate key (target, address, kind, first word), an address outside the image,
-a range across sections, a code address in `data.dcl` or a data address in `text.dcl`.
+a range across sections, a code address in `data.dcl` or a data address in `text.dcl`. Each target's store
+holds the facts of its own lines only, and an error is a conflict of the target its line names (a line whose
+target is unknown: the default target's). `dcp decl add` with `--target NAME` writes a bare address as
+`NAME:ADDR` and refreshes that target's store.
 
 Declarations are re-checked every run (`L6`): dead or foreign bytes that walked code covers or a call or jump
 reaches, a jump table the walk finds elsewhere or whose `fn` is no start, `fptr` dwords that are not relocated
@@ -70,7 +73,8 @@ int __cdecl Init(void)
 ```
 
 Several targets: `/* server:0x10008cc0, exe:0x4a3000, starts the server thread */` (a bare address is the
-default target's). Not in the binary: `/* unlinked, dropped by /OPT:REF */` in `u_<name>.c`. Tags inside the
+default target's): the fragment is a fact in the store of every target it lists, at that target's address,
+and in no other store. Not in the binary: `/* unlinked, dropped by /OPT:REF */` in `u_<name>.c`. Tags inside the
 comment: `@deep why`, `@stuck why`, `@rough`.
 
 Data addresses follow the definition or extern, one per declarator, or stand on the line above a multi-line
@@ -86,9 +90,12 @@ static const char *names[] = {
 ```
 
 A placeholder identifier spells an address (`Unk10008d20`, `FUN_10008d20`, `thread_10008d20`): it must name a
-start of the target (`L5`). A fragment's address must be a function start or lie in unknown code, never
-inside another function, fill or a table (`L1`). Two definitions at one address and one name at two
-addresses (`N2`) are errors.
+start of the target (`L5`). A fragment belongs to the targets its address comment lists, every other file to
+all targets; a placeholder is checked in each target its file belongs to whose image holds the number, and a
+number no such image holds is reported once, in the default target's store. A fragment's address must be a
+function start or lie in unknown code, never inside another function, fill or a table (`L1`). Two definitions
+at one address and one name at two addresses (`N2`) are errors (per target). Errors of the source text itself
+(a missing address comment, an unknown target prefix) are reported once, in the default target's store.
 
 ## Units and evidence
 

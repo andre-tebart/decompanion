@@ -175,6 +175,7 @@ class LoadError:
     line: int
     lo: int | None
     message: str
+    target: str | None = None     # the target the line belongs to (None: unknown; the default target reports it)
 
 
 def sort_key(d: Decl, order: dict[str, int], default: str) -> tuple[int, int]:
@@ -199,18 +200,22 @@ def load(files: list[Path], root: Path, targets: list[str]) -> tuple[list[Decl],
             try:
                 d = parse_line(s, rel, n)
             except DeclError as e:
-                errors.append(LoadError(rel, n, None, str(e)))
+                m = LINE.match(s.partition(" -- ")[0].strip())
+                t = m.group("target") if m and m.group("target") in order else None
+                errors.append(LoadError(rel, n, None, str(e), t))
                 continue
             if d.target is not None and d.target not in order:
                 errors.append(LoadError(rel, n, d.lo, f"unknown target {d.target!r} (targets: {', '.join(targets)})"))
                 continue
             if prev is not None and sort_key(d, order, default) < sort_key(prev, order, default):
                 errors.append(LoadError(rel, n, d.lo, f"out of order: {d.text().split(' ')[0]} after line {prev.line} "
-                                                      f"({prev.text().split(' ')[0]}); the file is sorted by target, address"))
+                                                      f"({prev.text().split(' ')[0]}); the file is sorted by target, address",
+                                        d.target or default))
             prev = d
             k = d.key(default)
             if k in seen:
-                errors.append(LoadError(rel, n, d.lo, f"duplicate {' '.join((d.kind, *d.words))} at {d.lo:#x} (also {seen[k]})"))
+                errors.append(LoadError(rel, n, d.lo, f"duplicate {' '.join((d.kind, *d.words))} at {d.lo:#x} (also {seen[k]})",
+                                        d.target or default))
             else:
                 seen[k] = f"{rel}:{n}"
             out.append(d)

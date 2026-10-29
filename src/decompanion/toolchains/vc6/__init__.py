@@ -34,6 +34,12 @@ class VC6(Toolchain):
     def build_name(self, family: str, build: int) -> str:
         return rich.COMPILER_BUILDS.get(build, "")
 
+    def declare(self, entry: dict) -> str:
+        """cl <major.minor>.<build> for a compiler entry, link <major.minor>.<build> for a linker entry."""
+        tool = {"compiler": "cl", "linker": "link"}.get(entry["family"], entry["tool"])
+        ver = rich.tool_version(entry["tool"])
+        return f"{tool} {ver}.{entry['build']}" if ver else f"{tool} {entry['build']}"
+
     def crt_entry_symbols(self):
         return dict(CRT_ENTRIES)
 

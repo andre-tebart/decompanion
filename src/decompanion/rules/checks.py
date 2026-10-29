@@ -2,6 +2,7 @@
 removes a fact; it makes `dcp check` fail (error, bug) or `dcp conflicts` list it (warn)."""
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 
 from ..ledger.fact import Kind, Level, Severity, severity_of
@@ -54,39 +55,63 @@ def ref_target(ctx: RuleContext):
                                    f"call from {r.lo:#x} targets the inside of the function at {a:#x}..{b:#x}", a=f.by, b=r.by)
 
 
-@rule("C.toolchain", version="1", ceiling=Level.proven, needs=("S.rich",), inputs=("config",))
+def declared_build(decl: str) -> int | None:
+    """The build number a declaration names: its last run of digits ('cl 12.00.9044' -> 9044)."""
+    m = re.search(r"(\d+)\D*$", decl or "")
+    return int(m.group(1)) if m else None
+
+
+@rule("C.toolchain", version="2", ceiling=Level.proven, needs=("S.rich",), inputs=("toolchain",), helpers=(declared_build,))
 def toolchain(ctx: RuleContext):
-    """The declared toolchain (decompanion.toml [toolchain]) must not contradict the Rich header: a declared
-    compiler build or linker build that differs from the decoded one is an error; a declaration without a
-    reason is an error."""
-    cfg = ctx.input("config").get("toolchain") or {}
+    """The target's toolchain declaration ([[target]] compiler / linker / reason, or the [toolchain] defaults it
+    inherits) against the Rich header's candidates (S.rich): a declaration without a reason is an error; when
+    the Rich header lists compiler entries, the declared compiler must name the build of one of them (the last
+    number of the declaration), and a missing compiler declaration is an error; the same for the linker and
+    the linker entries."""
+    decl = ctx.input("toolchain")
     img = ctx.image
+    t = ctx.project.target_name
+    by = f"decl:decompanion.toml:{t}"
+    if not str(decl.get("reason", "")).strip():
+        yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1,
+                           f"target {t}: the toolchain declaration has no reason", a=by)
     rich = next(iter(ctx.facts(Kind.toolchain)), None)
-    if not cfg.get("reason"):
-        yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1, "decompanion.toml [toolchain] has no reason")
     if rich is None:
         return
-    v = rich.value
-    for key, decl in (("compiler", cfg.get("compiler", "")), ("linker", cfg.get("linker", ""))):
-        build = v.get(key + "_build")
-        if decl and build and str(build) not in decl:
+    tc = ctx.project.toolchain
+    for key, cands in (("compiler", rich.value.get("compilers") or []), ("linker", rich.value.get("linkers") or [])):
+        if not cands:
+            continue
+        spelled = ", ".join(f"{tc.declare(c)} ({c['tool']} x{c['count']})" for c in cands)
+        d = str(decl.get(key, "") or "")
+        if not d:
             yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1,
-                               f"declared {key} {decl!r} does not name the Rich header's build {build}", a="decl:decompanion.toml", b=rich.by)
+                               f"target {t}: no {key} declared; the Rich header's {key} candidates: {spelled}", a=by, b=rich.by)
+            continue
+        b = declared_build(d)
+        if b not in {c["build"] for c in cands}:
+            yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1,
+                               f"target {t}: declared {key} {d!r} names build {b}, no {key} entry of the Rich header has it "
+                               f"(candidates: {spelled})", a=by, b=rich.by)
 
 
-@rule("S2.rich.members", version="1", ceiling=Level.proven, needs=("S.rich", "S.crt.code"))
+@rule("S2.rich.members", version="2", ceiling=Level.proven, needs=("S.rich", "S.crt.code"), inputs=("toolchain",),
+      helpers=(declared_build,))
 def rich_members(ctx: RuleContext):
-    """The Rich header counts library objects (compiler entries with builds other than the user compiler's);
-    the placed library members should account for them. Fewer placed members than counted objects is a
-    warning (members whose code was not found, or libraries not configured)."""
+    """The Rich header counts library objects: the compiler entries whose build is not the declared compiler's.
+    The placed library members should account for them. Fewer placed members than counted objects is a
+    warning (members whose code was not found, or libraries not configured). Without a compiler declaration
+    nothing is counted."""
     rich = next(iter(ctx.facts(Kind.toolchain)), None)
-    if rich is None:
+    b = declared_build(str(ctx.input("toolchain").get("compiler", "") or ""))
+    if rich is None or b is None:
         return
     members = {f.value["tu"] for f in ctx.facts(Kind.unit)}
-    counted = rich.value.get("library_objects", 0)
+    counted = sum(c["count"] for c in rich.value.get("compilers") or [] if c["build"] != b)
     if counted and len(members) < counted:
         yield ctx.conflict(Severity.warn, "S2", ctx.image.base, ctx.image.base + 1,
-                           f"Rich header counts {counted} library objects, {len(members)} members placed")
+                           f"Rich header counts {counted} library objects (compiler entries of other builds than {b}), "
+                           f"{len(members)} members placed")
 
 
 @rule("S7.entry.section", version="1", ceiling=Level.proven, needs=("S.sections", "S.exports", "S.entry"))

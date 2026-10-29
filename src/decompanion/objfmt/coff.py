@@ -200,3 +200,17 @@ def import_member_symbol(data: bytes) -> tuple[str, str] | None:
     if len(strings) < 2:
         return None
     return strings[0].decode("latin-1"), strings[1].decode("latin-1")
+
+
+def comp_ids(paths) -> dict[tuple[int, int], int]:
+    """(Rich prodid, build) -> number of objects of the archives whose `@comp.id` symbol names it (the tool
+    that built each object, as VC6-era compilers and assemblers stamp it)."""
+    out: dict[tuple[int, int], int] = {}
+    for path in paths:
+        for o in archive_objects(path):
+            for s in o.symbols.values():
+                if s.name == "@comp.id":
+                    k = (s.value >> 16, s.value & 0xffff)
+                    out[k] = out.get(k, 0) + 1
+                    break
+    return out

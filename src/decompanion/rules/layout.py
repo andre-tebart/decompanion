@@ -302,7 +302,7 @@ def leak_issues(units: list[UnitX], leaks: list[Leak]) -> list[Issue]:
 
 
 # ------------------------------------------------------------------------------------------------ loaders
-@rule("L.decl", version="1", ceiling=DE, outputs=("boundary", "symbol", "name", "start"), inputs=("decl", "config"),
+@rule("L.decl", version="2", ceiling=DE, outputs=("boundary", "symbol", "name", "start"), inputs=("decl", "targets"),
       loader=True, helpers=(decl_mod,))
 def load_decl(ctx: RuleContext):
     """Every line of decl/*.dcl that belongs to the current target becomes one declared fact, producer
@@ -311,11 +311,14 @@ def load_decl(ctx: RuleContext):
     kind= -> symbol foreign; fptr -> symbol fptr; name N -> name (origin decl); start -> start (how decl).
     Errors (check L.decl, severity error): a malformed line, an unknown kind or key, a missing reason, an
     unknown target prefix, an unsorted file, a duplicate key, an address outside the image or a range across
-    sections, a text.dcl line outside a code section or a data.dcl line inside one."""
+    sections, a text.dcl line outside a code section or a data.dcl line inside one. An error is reported in
+    the store of the target its line names (a line whose target is unknown: the default target's)."""
     p, img = ctx.project, ctx.image
-    targets = [t.name for t in p.targets]
+    targets = [t["name"] for t in ctx.input("targets")]
     decls, errors = decl_mod.load(ctx.input("decl"), p.root, targets)
     for e in errors:
+        if (e.target or targets[0]) != p.target_name:
+            continue
         lo = e.lo if e.lo is not None and img.in_image(e.lo) else img.base
         yield ctx.conflict(Severity.error, "L.decl", lo, lo + 1, f"{e.file}:{e.line}: {e.message}", a=f"decl:{e.file}:{e.line}")
     code = code_ranges(img)
@@ -352,7 +355,7 @@ def load_decl(ctx: RuleContext):
             yield ctx.declared(d.lo, d.lo + 1, Kind.start, {"skind": "func", "how": "decl"}, d.by, d.reason)
 
 
-@rule("L.src", version="1", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "config"),
+@rule("L.src", version="2", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
       loader=True, helpers=(srcscan,))
 def load_src(ctx: RuleContext):
     """The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function
@@ -363,19 +366,24 @@ def load_src(ctx: RuleContext):
     without its address comment on line 1, a function outside a fragment, two definitions in a fragment, a
     stray file), L11 (the file name's address differs from the comment's first address), an unknown target
     prefix, an address outside the image, a function address outside a code section, two definitions at one
-    address (L.src), one name at two addresses (N2)."""
+    address (L.src), one name at two addresses (N2). Errors of the text itself (the scan's, an unknown target
+    prefix) are reported in the default target's store; errors about an address in the store of its target.
+    A function or datum whose comment lists another target's address only is no fact of this target."""
     p, img = ctx.project, ctx.image
-    targets = [t.name for t in p.targets]
+    targets = [t["name"] for t in ctx.input("targets")]
     default, cur = targets[0], p.target_name
     sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
     base = img.base
-    for e in sc.errors:
-        yield ctx.conflict(Severity.error, e.check, base, base + 1, f"{e.file}:{e.line}: {e.message}", a=f"src:{e.file}:{e.line}")
+    if cur == default:
+        for e in sc.errors:
+            yield ctx.conflict(Severity.error, e.check, base, base + 1, f"{e.file}:{e.line}: {e.message}", a=f"src:{e.file}:{e.line}")
     code = code_ranges(img)
     defs_at: dict[int, list[str]] = defaultdict(list)
     names_at: dict[str, dict[int, str]] = defaultdict(dict)
 
     def unknown_prefix(addrs, by):
+        if cur != default:
+            return []
         bad = sorted({t for t, _ in addrs if t is not None and t not in targets})
         return [ctx.conflict(Severity.error, "L.src", base, base + 1, f"{by[4:]}: unknown target prefix {t}: (targets: {', '.join(targets)})", a=by)
                 for t in bad]
@@ -652,31 +660,48 @@ def boundary_at_start(ctx: RuleContext):
     yield from _emit(ctx, boundary_issues(bounds_of(ctx.facts(Kind.boundary)), starts, funcs, fills, game))
 
 
-@rule("L5.placeholder", version="1", ceiling=P, inputs=("src",), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
-      helpers=(srcscan,))
+def file_targets(sc, targets: list[str]) -> dict[str, set[str]]:
+    """The targets each fragment belongs to: the targets its address comment lists (a bare address: the default
+    target); a fragment without an address (unlinked) or a file that is no fragment (head.c, headers) belongs
+    to every target."""
+    out = {}
+    for f in sc.functions:
+        if f.addrs:
+            out[f.file] = {t or targets[0] for t, _ in f.addrs}
+    return out
+
+
+@rule("L5.placeholder", version="2", ceiling=P, inputs=("src", "targets"), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
+      helpers=(srcscan, file_targets))
 def placeholder(ctx: RuleContext):
     """L5: an identifier that spells an address (`Unk<hex>`, `FUN_<hex>`, `DAT_<hex>`, `<name>_<6-8 hex with a
-    digit>`, in any .c / .h of src/ and include/) names a real address of the current target: inside the image,
-    and inside a code section a function start (a `start` fact of any producer, or an inner label). A dropped or
-    extra digit is an error at the line that spells it. Identifiers whose number lies outside the image range
-    of every target are reported only for the default target."""
+    digit>`, in any .c / .h of src/ and include/) names a real address: in a file of the current target (a
+    fragment of a function the target holds, or any file that is no fragment) a number inside a section of the
+    target's image must, inside a code section, be a function start (a `start` fact of any producer, or an inner
+    label). A number inside no section of any target the file belongs to is a dropped or extra digit, reported
+    in the default target's store only (at the line that spells it)."""
     p, img = ctx.project, ctx.image
+    names = [t["name"] for t in ctx.input("targets")]
     sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
     starts = {f.lo for f in ctx.facts(Kind.start)}
     for f in ctx.facts(Kind.symbol):
         if f.value.get("skind") == "func":
             starts.update(f.value.get("inner", ()))
     code = code_ranges(img)
-    default = p.target_name == p.default_target
+    cur = p.target_name
+    default = cur == names[0]
+    owners = file_targets(sc, names)
     for ph in sc.placeholders:
         v = ph.value
         by = f"src:{ph.file}:{ph.line}"
-        if not img.in_image(v) or img.section_of(v) is None:
-            if default:
-                yield ctx.conflict(Severity.error, "L5", img.base, img.base + 1,
-                                   f"{ph.file}:{ph.line}: {ph.ident}: {v:#x} is not an address of the image (a dropped or extra digit?)", a=by)
-        elif in_ranges(v, code) and v not in starts:
-            yield ctx.conflict(Severity.error, "L5", v, v + 1, f"{ph.file}:{ph.line}: {ph.ident}: no function starts at {v:#x}", a=by)
+        mine = owners.get(ph.file, set(names))
+        if cur in mine and img.section_of(v) is not None:
+            if in_ranges(v, code) and v not in starts:
+                yield ctx.conflict(Severity.error, "L5", v, v + 1, f"{ph.file}:{ph.line}: {ph.ident}: no function starts at {v:#x}", a=by)
+        elif default and not any(p.image_of(t).section_of(v) is not None for t in mine):
+            yield ctx.conflict(Severity.error, "L5", img.base, img.base + 1,
+                               f"{ph.file}:{ph.line}: {ph.ident}: {v:#x} is not an address of {', '.join(n for n in names if n in mine)} "
+                               f"(a dropped or extra digit?)", a=by)
 
 
 @rule("L6.declared", version="1", ceiling=P, needs=("L.decl", "S.codewalk", "S.crt.code", "S.thunk", "S.relocs", "S.sections"))

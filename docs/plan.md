@@ -2,7 +2,9 @@
 
 Approved 2026-10-29, amended the same day (several targets per project, section 1.5). Milestone status: M1 done 2026-10-29 (`dcp setup` on server.dll, see README); M2 done 2026-10-29 (targets,
 declarations, source scan, layout rules and commands, Ghidra import, worktree overlay; see README and
-docs/layout.md); M3..M6 open.
+docs/layout.md); multi-target round done 2026-10-29 (per-target toolchain declaration and archives, every command
+and loader per target, `dcp setup --all-targets`; server.dll and GildeGold.exe pass `dcp check` as two targets
+of one project; S.codewalk on the exe ~35 s -> ~5 s); M3..M6 open.
 
 ## Context
 
@@ -33,8 +35,8 @@ per line, sorted by address); function and data addresses stay in the sources.
 
 Amendment (2026-10-29, after M1): **one project may hold several binaries of one codebase** ("targets": for
 The Guild Gold the server dll, GildeGold.exe and GildeGold_TL.exe were built from one tree on one day). The
-target dimension is modelled from M2 on (section 1.5); every workflow stays single-target until M6, which
-adds the second target and the one rule that makes sharing pay: same code across targets transfers names and
+target dimension is modelled from M2 on (section 1.5) and every setup and layout command runs per target and
+across targets since the multi-target round (2026-10-29); M6 adds the one rule that makes sharing pay: same code across targets transfers names and
 sources at the proven level.
 
 ## 1. Core model
@@ -69,8 +71,8 @@ them; `dcp check` fails on any.
 |---|---|---|
 | binary facts (headers, sections, imports, exports, relocs, rich, strings) | computed every run, cached | proven / derived |
 | target identity | `decompanion.toml [[target]] name, path, sha256, image="pe32"` (the first is the default target) | verified, mismatch fatal |
-| toolchain + flags (+ per-unit overrides) | `decompanion.toml [toolchain] ... reason=` | declared → proven per unit by `M.flags.proven` |
-| library identification (CRT, SDK) | computed from `.lib` archives in `[libs]` into the signature store | proven |
+| toolchain + flags (+ per-unit overrides) | per target: `[[target]] compiler= linker= cflags= reason=` (picked from the Rich candidates; `[toolchain]` holds `plugin`, `root` and defaults a target inherits) | declared (checked against the Rich candidates by `C.toolchain`) → proven per unit by `M.flags.proven` |
+| library identification (CRT, SDK) | computed from the `.lib` archives of the target (`[[target]] archives=`, else `[libs] archives`) into the signature store | proven |
 | function address + description, `@deep` / `@stuck` / `@rough` | `/* 0x10001000, what */` first line of `src/<unit>/f_<addr>.c` (file name must agree); several targets: `/* server:0x10001000, exe:0x4a3000, what */`, a bare address means the default target | src: declared → proven when matched |
 | data address | `T x = v; /* 0x1002xxxx */` after definition / extern (kept from rea); same target prefixes | src: declared → proven via site / content |
 | per-line exemptions `@original why`, `@vc6 why` | in sources | declared |
@@ -129,7 +131,18 @@ A project is one codebase; it may hold several binaries built from it. Each is a
 - The `.dcl` grammar takes the same prefix (`server:0x10001000 boundary ...`); a bare address is the default
   target.
 - Every `dcp` command takes `--target NAME` (default: the first target). `dcp init` creates one target; `dcp
-  target add NAME PATH` adds another.
+  target add NAME PATH` adds another. `dcp setup|report --all-targets` and `dcp check` / `dcp toolchain`
+  without `--target` run every target.
+- The toolchain is declared per target (`[[target]] compiler= linker= cflags= reason=`; `[toolchain]` keeps the
+  plugin, its root and defaults a target inherits): binaries of one tree may differ in what built or linked
+  them, and the Rich header of each is its own evidence. `dcp init` / `dcp target add` pre-fill the
+  declaration from the Rich candidates and say how in the reason; `C.toolchain` checks it per target.
+- Library archives are per target too (`[[target]] archives=` replaces `[libs] archives`): the exe links
+  DirectX and Miles libraries the dll does not.
+- The loaders read every target's lines and keep the current target's: a fragment `/* server:0x10001000,
+  exe:0x4a3000, what */` is a fact in both stores, a bare address only in the default target's; a prefixed
+  `.dcl` line only in its target's. Errors of the text itself are reported once (the default target's store),
+  errors about an address in its target's store.
 What this buys, in M6: rule `X.same.code` [proven]: a function of target A whose masked bytes equal a function
 of target B (with the relocation fields of both masked, and the dll's `.reloc` evidence attached to the exe's
 copy) is the same source compiled with the same flags: names, descriptions, drafted source, unit membership
@@ -157,12 +170,15 @@ the run key; the DAG is cycle-checked at import; `dcp rules` prints it with run 
 **Setup `S.*`** (`dcp setup`): `S.image` (bytes, base, sha256 vs declared), `S.headers`, `S.sections` (+ `pad`
 for raw/virtual slack), `S.datadirs`, `S.imports` (iat slots + `KERNEL32!X` names), `S.exports` (func starts +
 names, extent open), `S.entry`, `S.relocs` (one `ref reloc` per base relocation: the DLL's exact list of absolute
-operands), `S.rich` [derived] (decode with a shipped prodid table `toolchains/vc6/rich.py`: RH1 largest non-library
-count = user compiler; RH2 language C when no `*_CPP` count besides the CRT; RH3 other builds = library members),
+operands), `S.rich` [derived] (decode with a shipped prodid table `toolchains/vc6/rich.py`; emits every entry and
+the candidates — every compiler entry with build, language, object count and the number of configured archive
+objects whose `@comp.id` names it, every linker entry — and picks nothing: the pick is the target's declaration),
 `S.libsig` (archives → `libsig`), `S.crt.code` [proven] (member code section placed where its masked bytes equal
 the image's, every DIR32 site is a base-relocation site, no base relocation in an unmasked byte, unique hit;
 multiple hits = listed ambiguous, nothing emitted), `S.crt.data` (through placed members' DIR32 sites),
-`S.crt.flavour` (LIBC vs LIBCMT by member identity), `S.thunk` (`FF 25 <iat>`), `S.strings` [derived] (runs whose
+`S.crt.flavour` (LIBC vs LIBCMT by member identity), `S.thunk` [derived] (`FF 25 <iat>` where LINK's layout
+makes it an import-library contribution: after the first placed library section, or adjoining another such jump;
+elsewhere the same bytes are VC6's tail call of a dllimport function and the walk reaches them), `S.strings` [derived] (runs whose
 start is a reloc target; unreferenced runs stay candidates), `S.jumptable` / `S.idxtable` [derived], `S.codewalk`
 [derived] (recursive descent from every proven/derived start, capstone, never into a known symbol; emits func
 extents + call/jmp refs), `S.fptr` [derived] (reloc whose target is in `.text` and not a table entry),
@@ -173,11 +189,13 @@ CRT sources if present, public-source hits, later every matched function — und
 /G3..G6 × /Oy /Oy- × /Gy × /GF /Gf × /Ob0 /Ob1`; each flag reports *distinguished by N anchors* or
 *indistinguishable*; the toolchain fact becomes proven only for flags distinguished by ≥ 2 units), `S.unknown`
 [open] catch-all, `B.bytemap`. Checks: `C.overlap`, `C.ref.target` (call into the middle of a proven function),
-`C.reloc.unmasked` [bug], `C.toolchain` (declaration vs Rich), `S1` sizes vs file, `S2` Rich counts vs members
-found, `S4` import DLL without import lib, `S5` unexplained gap in the CRT region, `S7` export/entry outside
+`C.reloc.unmasked` [bug], `C.toolchain` (per target: the declared compiler / linker build is one of the Rich
+header's compiler / linker candidates, a missing declaration or reason is an error), `S1` sizes vs file, `S2` Rich
+counts (compiler entries of other builds than the declared one) vs members found, `S4` import DLL without import lib, `S5` unexplained gap in the CRT region, `S7` export/entry outside
 `.text`, `S8` public-source string without a compiled match.
 
-`dcp toolchain` prints the evidence view: rich / libs (members matched) / probed (anchors, units, flags
+`dcp toolchain [--target]` prints the evidence view per target: the declaration (and what it inherits), the Rich
+candidates and the C.toolchain verdict / archives and libs (members matched) / probed (anchors, units, flags
 distinguished) and which flags are still declared only.
 
 **Layout `L.*`** (`dcp layout ...`): loaders `L.decl`, `L.src`; `L.analyze` once per image hash: starts with
@@ -223,7 +241,7 @@ file committed in a worktree, merged byte functions no longer byte on main).
 Output contract for agent readers: one record per line, `key=value` tokens, addresses `0x%08x`, intervals
 `lo..hi` (hi exclusive), sorted by address then kind, counts before lists, `--json` everywhere.
 
-Every command takes `--target NAME` (section 1.5). `dcp init [--from-setup]` · `dcp target add|list` · `dcp setup [pe|dirs|rich|strings|sigs build|sigs scan|entry|probe|report]` ·
+Every command takes `--target NAME` (section 1.5). `dcp init [--from-setup]` · `dcp target add|list` · `dcp setup [--all-targets] [pe|dirs|rich|strings|sigs build|sigs scan|entry|probe|report]` ·
 `dcp toolchain` · `dcp why ADDR` · `dcp facts LO..HI [--kind]` · `dcp conflicts` · `dcp rules` · `dcp check
 [--strict] [--against REV]` (the gate: loaders parse, no conflicts, every TU compiles, link resolves, no grade fall,
 decl files sorted, UTF-8/LF) · `dcp decl add "LINE"` · `dcp layout next|units|unit propose|analyze` · `dcp
@@ -302,7 +320,7 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 | M3 build + compare + grades | `toolchains/vc6/cl.py` (`/P` include sets), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.*`, capstone asmdiff/diffclass, `G.*`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote`, full `/DLL` link with generated `.def`, lint, checks M1..M12, D1..D6 | first functions byte-match; `dcp toolchain probe` promotes `/O2 /Gy` to proven; a header edit that flips codegen is reported by M12; a header edit recompiles only its includers |
 | M4 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
 | M5 parallel sessions | `names.log` + `dcp rename`, claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
-| M6 second target | GildeGold.exe as a second target of guild-server (exe without `.reloc`, `.data` ordered literal scan replaces reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; no migration of `rea` | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
+| M6 second target | GildeGold.exe as a second target of guild-server (the target itself, its toolchain declaration and archives, setup and the gate run since the multi-target round of 2026-10-29: game code 0x401000..0x5dd3e0, CRT from 0x5de4a0; open: the exe has no `.reloc`, so W3 finds nothing and ~0xc6000 bytes of its game code stay unknown — a `.data` ordered literal scan and code-pointer evidence replace the reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; no migration of `rea` | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
 
 ## 8. What is lifted from `rea` (paths under `C:\Users\andre\Documents\rea\tools\gildegold\`)
 

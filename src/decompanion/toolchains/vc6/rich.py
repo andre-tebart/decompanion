@@ -7,6 +7,8 @@ import entries, which count differently (the import entry counts imported symbol
 """
 from __future__ import annotations
 
+import re
+
 from ..base import RichProduct
 
 _T = [
@@ -138,3 +140,18 @@ COMPILER_BUILDS = {
 
 def product(prodid: int) -> RichProduct:
     return PRODUCTS.get(prodid, RichProduct(prodid, f"prodid_{prodid:#x}", "unknown"))
+
+
+def tool_version(name: str) -> str:
+    """The major.minor a tool reports for itself, from its Rich product name: Utc12_2_C -> 12.00, Utc1310_C ->
+    13.10, Linker600 -> 6.00, Linker512 -> 5.12. '' for other products."""
+    m = re.match(r"^Utc(\d\d)(\d\d)", name)
+    if m:
+        return f"{m.group(1)}.{m.group(2)}"
+    m = re.match(r"^Utc(\d\d)", name)
+    if m:
+        return f"{m.group(1)}.00"
+    m = re.match(r"^Linker(\d)(\d\d)", name)
+    if m:
+        return f"{m.group(1)}.{m.group(2)}"
+    return ""

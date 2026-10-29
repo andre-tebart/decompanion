@@ -85,35 +85,59 @@ def refresh(p: Project, e: Engine, verbose=False, force=False, only=None):
 
 
 # ------------------------------------------------------------------------------------------------- setup and queries
+def target_names(args) -> list[str | None]:
+    """The targets a command runs on: --all-targets: every target in config order; else the selected one."""
+    if getattr(args, "all_targets", False):
+        if getattr(args, "target", None):
+            raise ConfigError("--all-targets and --target exclude each other")
+        p = Project(Path(args.root) if getattr(args, "root", None) else None)
+        return [t.name for t in p.targets]
+    return [getattr(args, "target", None)]
+
+
 def cmd_setup(args):
-    p, e = open_project(args)
-    refresh(p, e, verbose=args.verbose, force=args.force)
-    cmd_report(args, p, e)
+    for i, name in enumerate(target_names(args)):
+        if i:
+            print()
+        p, e = open_project(args, name)
+        refresh(p, e, verbose=args.verbose, force=args.force)
+        cmd_report(args, p, e)
+
+
+def candidate_entry(tc, e) -> str:
+    """One Rich candidate as `dcp toolchain` prints it."""
+    extra = f", {e['archive_objects']} archive objects" if e.get("archive_objects") else ""
+    return f"{tc.declare(e)} ({e['tool']} {e['language'] or '-'} x{e['count']}{extra})"
 
 
 def cmd_report(args, p=None, e=None):
     if p is None:
-        p, e = open_project(args)
-        refresh(p, e)
+        for i, name in enumerate(target_names(args)):
+            if i:
+                print()
+            p, e = open_project(args, name)
+            refresh(p, e)
+            cmd_report(args, p, e)
+        return
     st = p.store
     img = p.image
     print(f"target={p.target_name}  file={p.image_path.name}  sha256={img.sha256[:16]}  base={fmt_addr(img.base)}  entry={fmt_addr(img.entry)}  "
           f"{'dll' if img.is_dll else 'exe'}  linker={img.linker_version[0]}.{img.linker_version[1]}  sections={len(img.sections)}")
+    decl = p.toolchain_decl
     tcf = next(iter(st.facts(Kind.toolchain)), None)
-    if tcf:
-        v = tcf.value
-        print(f"rich: compiler={v.get('compiler')} build={v.get('compiler_build')} objects={v.get('compiler_objects')} "
-              f"language={v.get('language')} library_objects={v.get('library_objects')} linker={v.get('linker')} "
-              f"build={v.get('linker_build')}  {tcf.level}  name={v.get('compiler_name', '')!r}")
+    rich = (f"  rich: compilers={len(tcf.value.get('compilers') or [])} linkers={len(tcf.value.get('linkers') or [])} "
+            f"(dcp toolchain)") if tcf else "  rich: none"
+    print(f"toolchain: compiler={decl.get('compiler') or '-'!r} linker={decl.get('linker') or '-'!r} "
+          f"cflags={' '.join(decl.get('cflags') or []) or '-'!r}  declared{rich}")
     s = query.summary(st)
     for name in s["by_section"]:
         classes = "  ".join(f"{k}={v:#x}" for k, v in sorted(s["by_section"][name].items(), key=lambda kv: -kv[1]))
         levels = "  ".join(f"{k}={v:#x}" for k, v in sorted(s["by_level"][name].items(), key=lambda kv: -Level[kv[0]]))
         print(f"section {name}: {levels}")
         print(f"  {classes}")
-    lib_units = [f for f in st.facts(Kind.unit) if "lib" in f.value]
-    units = Counter(f.value["tu"] for f in lib_units)
-    libs = Counter(f.value.get("lib", "") for f in lib_units)
+    lib_units = {(f.value.get("lib", ""), f.value["tu"]) for f in st.facts(Kind.unit) if "lib" in f.value}
+    units = {tu for _, tu in lib_units}
+    libs = Counter(lib for lib, _ in sorted(lib_units))
     funcs = [f for f in st.facts(Kind.symbol) if f.value.get("skind") == "func"]
     print(f"functions: {len(funcs)} (proven {sum(1 for f in funcs if f.level == Level.proven)}, "
           f"derived {sum(1 for f in funcs if f.level == Level.derived)}); library members placed: {len(units)} "
@@ -146,6 +170,10 @@ def cmd_why(args):
         off = f"  section={sec.name}  off=+{a - sec.va:#x}" if sec else "  (headers)"
         print(f"addr={fmt_addr(a)}  target={p.target_name}{off}  cls={cls}  level={Level(level)}  owner={fmt_range(lo, hi)}")
         for f in w["facts"]:
+            if f.kind is Kind.toolchain:       # spans the whole image: one line, `dcp toolchain` has the rest
+                print(f"  {fmt_range(f.lo, f.hi)}  toolchain  compilers={len(f.value.get('compilers') or [])}  "
+                      f"linkers={len(f.value.get('linkers') or [])}  (dcp toolchain)  {f.level}  by={f.by}")
+                continue
             print("  " + f.line())
         if args.refs:
             for f in w["refs_to"]:
@@ -165,7 +193,7 @@ def cmd_facts(args):
         for f in facts:
             print(canonical({"lo": f.lo, "hi": f.hi, "kind": f.kind.value, "value": f.value, "level": f.level.name, "by": f.by, "reason": f.reason}))
         return
-    print(f"facts={len(facts)}  range={fmt_range(lo, hi)}" + (f"  kind={args.kind}" if args.kind else ""))
+    print(f"target={p.target_name}  facts={len(facts)}  range={fmt_range(lo, hi)}" + (f"  kind={args.kind}" if args.kind else ""))
     for f in facts:
         print(f.line())
 
@@ -179,7 +207,7 @@ def cmd_conflicts(args):
             print(canonical({"severity": x.severity.value, "check": x.check, "lo": x.lo, "hi": x.hi, "message": x.message, "a": x.a, "b": x.b}))
         return
     c = Counter(x.severity.value for x in conf)
-    print("conflicts=" + str(len(conf)) + ("  " + "  ".join(f"{k}={v}" for k, v in sorted(c.items())) if conf else ""))
+    print(f"target={p.target_name}  conflicts={len(conf)}" + ("  " + "  ".join(f"{k}={v}" for k, v in sorted(c.items())) if conf else ""))
     for x in conf:
         print(x.line())
 
@@ -210,7 +238,9 @@ def cmd_check(args):
 def cmd_rules(args):
     p, e = open_project(args)
     refresh(p, e)
-    for r, cur, ms, n in e.status():
+    rows = e.status()
+    print(record(target=p.target_name, rules=len(rows), current=sum(1 for _, cur, _, _ in rows if cur)))
+    for r, cur, ms, n in rows:
         print(f"{r.id:<18} v{r.version:<3} {r.ceiling.name:<9} {'current' if cur else 'missing':<8} {ms:>6} ms {n:>6} facts  "
               f"needs={','.join(e.resolve_needs(r)) or '-'}  inputs={','.join(r.inputs) or '-'}" + ("  loader" if r.loader else ""))
         if args.verbose:
@@ -224,7 +254,7 @@ def cmd_map(args):
     st = p.store
     lo, hi = parse_range(args.range) if args.range else (p.image.base, p.image.end)
     rows = st.bytemap_rows(lo, hi)
-    print(f"rows={len(rows)}  range={fmt_range(lo, hi)}")
+    print(f"target={p.target_name}  rows={len(rows)}  range={fmt_range(lo, hi)}")
     for rlo, rhi, cls, level, sym, unit, src, sec in rows:
         f = st.fact(sym)
         name = f.value.get("name", "") if f else ""
@@ -235,21 +265,47 @@ def cmd_map(args):
 
 
 def cmd_toolchain(args):
-    p, e = open_project(args)
-    refresh(p, e)
-    tcf = next(iter(p.store.facts(Kind.toolchain)), None)
-    decl = p.toolchain_decl
-    print(f"declared: plugin={decl.get('plugin')} compiler={decl.get('compiler')!r} linker={decl.get('linker')!r} "
-          f"cflags={' '.join(decl.get('cflags', []))!r}  reason={decl.get('reason', '')!r}")
-    if tcf:
-        v = tcf.value
-        print(f"rich ({tcf.level}): compiler={v.get('compiler')} build={v.get('compiler_build')} "
-              f"objects={v.get('compiler_objects')} language={v.get('language')} linker={v.get('linker')} build={v.get('linker_build')}")
-        for en in v["entries"]:
-            print(f"  prodid={en['prodid']:#04x} {en['tool']:<16} family={en['family']:<9} build={en['build']:<5} count={en['count']}")
-    members = Counter(f.value.get("lib", "") for f in p.store.facts(Kind.unit) if "lib" in f.value)
-    print("libraries placed: " + ("  ".join(f"{k}={v}" for k, v in members.items()) or "none"))
-    print("probe: not run (milestone 3): flags are declared only")
+    """Per target (every target unless --target): the declaration, the Rich candidates it is checked against,
+    the C.toolchain verdict, every Rich entry, the configured archives and the library members placed."""
+    p0 = Project(Path(args.root) if args.root else None)
+    names = [args.target] if getattr(args, "target", None) else [t.name for t in p0.targets]
+    for i, name in enumerate(names):
+        if i:
+            print()
+        p, e = open_project(args, name)
+        refresh(p, e)
+        tc = p.toolchain
+        decl = p.toolchain_decl
+        src = decl["from"]
+        print(record(target=p.target_name, plugin=decl.get("plugin"), root=decl.get("root") or None))
+        print("  declared  " + record(compiler=decl.get("compiler") or None, linker=decl.get("linker") or None,
+                                      cflags=" ".join(decl.get("cflags") or []) or None, reason=decl.get("reason") or None))
+        inherited = sorted(k for k, v in src.items() if v == "toolchain")
+        if inherited:
+            print("  inherited from [toolchain]: " + ", ".join(inherited))
+        tcf = next(iter(p.store.facts(Kind.toolchain)), None)
+        if tcf is None:
+            print("  rich: no Rich header")
+        else:
+            v = tcf.value
+            for key in ("compilers", "linkers"):
+                cands = v.get(key) or []
+                print(f"  {key[:-1]} candidates={len(cands)}  ({tcf.level}, {tcf.by})")
+                for c in cands:
+                    print("    " + candidate_entry(tc, c))
+            print(f"  rich entries={len(v.get('entries') or [])}")
+            for en in v.get("entries") or []:
+                print(f"    prodid={en['prodid']:#04x} {en['tool']:<16} family={en['family']:<9} build={en['build']:<5} "
+                      f"count={en['count']:<4} archive_objects={en.get('archive_objects', 0)}")
+        bad = [x for x in p.store.conflicts() if x.check == "C.toolchain"]
+        print("  C.toolchain: " + ("ok" if not bad else f"{len(bad)} error(s)"))
+        for x in bad:
+            print("    " + x.message)
+        print("  archives: " + (", ".join(a.name for a in p.lib_archives) or "none")
+              + (" (own list)" if p.target().archives is not None else " ([libs] default)"))
+        members = Counter(f.value.get("lib", "") for f in p.store.facts(Kind.unit) if "lib" in f.value)
+        print("  libraries placed: " + ("  ".join(f"{k}={v}" for k, v in members.items()) or "none"))
+        print("  probe: not run (milestone 3): flags are declared only")
 
 
 def cmd_init(args):
@@ -435,7 +491,7 @@ def cmd_ghidra_import(args):
     for path in args.json_files:
         digest, entries, failed = G.parse(Path(path))
         if digest and digest != img_sha:
-            other = next((t.name for t in p.targets if t.sha256 == digest), None)
+            other = next((t.name for t in p.targets if t.name != p.target_name and p.image_of(t.name).sha256 == digest), None)
             hint = f" (that is target {other}: --target {other})" if other else ""
             print(f"dcp ghidra import: {path} analysed sha256 {digest[:16]}, target {p.target_name} is {img_sha[:16]}{hint}", file=sys.stderr)
             return 1
@@ -517,7 +573,9 @@ def main(argv=None):
     s = cmd(sub, "setup", cmd_setup, "run every rule and print the report")
     s.add_argument("-v", "--verbose", action="store_true")
     s.add_argument("--force", action="store_true", help="rerun every rule")
-    cmd(sub, "report", cmd_report, "the setup report")
+    s.add_argument("--all-targets", action="store_true", help="every target in config order")
+    s = cmd(sub, "report", cmd_report, "the setup report")
+    s.add_argument("--all-targets", action="store_true", help="every target in config order")
     s = cmd(sub, "why", cmd_why, "everything known about an address")
     s.add_argument("addr", nargs="+")
     s.add_argument("--refs", action="store_true")

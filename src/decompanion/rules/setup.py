@@ -124,36 +124,21 @@ def relocs(ctx: RuleContext):
 
 
 # ---------------------------------------------------------------------------------------------------- rich
-@rule("S.rich", version="1", ceiling=D, outputs=("toolchain",))
+@rule("S.rich", version="2", ceiling=D, outputs=("toolchain",), inputs=("libs",))
 def rich(ctx: RuleContext):
-    """The Rich header decoded with the toolchain's product table. Convention RH1: the compiler entry with the
-    highest build number is the compiler that built the user's objects (libraries ship prebuilt with older
-    builds); RH2: the language is that entry's (C or C++), and mixed when another compiler entry has the same
-    build; RH3: compiler entries with other builds are library objects. The linker is the Linker* entry. The
-    fact spans the whole image."""
+    """The Rich header decoded with the toolchain's product table (Toolchain.rich_candidates): every entry with
+    its tool, family, language, build and object count, and how many objects of the target's configured
+    archives carry the same (prodid, build) in their @comp.id symbol (those entries are library objects the
+    archives explain). The candidates are listed, never picked: every compiler entry is a compiler candidate,
+    every linker entry a linker candidate; which one built the user's objects is the target's declaration
+    ([[target]] compiler / linker), checked by C.toolchain. The fact spans the whole image; its level is
+    derived (the product table is the community's reconstruction of Microsoft's ids)."""
+    from ..objfmt.coff import comp_ids
     img, tc = ctx.image, ctx.project.toolchain
     entries = img.rich()
     if not entries:
         return
-    decoded = []
-    for prodid, build, count in entries:
-        p = tc.rich_product(prodid)
-        decoded.append({"prodid": prodid, "tool": p.name, "family": p.family, "language": p.language,
-                        "build": build, "count": count})
-    compilers = [e for e in decoded if e["family"] == "compiler"]
-    linkers = [e for e in decoded if e["family"] == "linker"]
-    v = {"entries": decoded}
-    if compilers:
-        top = max(compilers, key=lambda e: (e["build"], e["count"]))
-        same = [e for e in compilers if e["build"] == top["build"]]
-        langs = sorted({e["language"] for e in same})
-        v.update({"compiler": top["tool"], "compiler_build": top["build"], "compiler_objects": sum(e["count"] for e in same),
-                  "language": "+".join(langs), "compiler_name": tc.build_name("compiler", top["build"]),
-                  "library_objects": sum(e["count"] for e in compilers if e["build"] != top["build"])})
-    if linkers:
-        lk = max(linkers, key=lambda e: e["build"])
-        v.update({"linker": lk["tool"], "linker_build": lk["build"], "linker_name": tc.build_name("linker", lk["build"])})
-    yield ctx.fact(img.base, img.end, Kind.toolchain, v, D)
+    yield ctx.fact(img.base, img.end, Kind.toolchain, tc.rich_candidates(entries, comp_ids(ctx.input("libs"))), D)
 
 
 # ---------------------------------------------------------------------------------------------------- libraries
@@ -392,14 +377,21 @@ def crt_data(ctx: RuleContext):
                         yield ctx.fact(lo + s.value, lo + s.value + 1, Kind.name, {"name": s.name, "origin": "lib", "unit": unit}, P)
 
 
-@rule("S.thunk", version="1", ceiling=P, outputs=("symbol", "name"), needs=("S.imports", "S.crt.code"))
+@rule("S.thunk", version="2", ceiling=D, outputs=("symbol", "name"), needs=("S.imports", "S.crt.code"))
 def thunk(ctx: RuleContext):
     """`FF 25 <address of an import address-table slot>` (6 bytes, `jmp dword ptr [slot]`) in a code section,
-    outside every placed library section, is an import thunk the import library contributed; it is named after
-    the slot."""
+    outside every placed library section, is a candidate. The same 6 bytes are what VC6 compiles for `return
+    f(...)` when f is a dllimport function, as the last instruction of a function or as a whole function, so a
+    candidate is an import thunk (named after the slot) only where LINK's layout makes it a library
+    contribution: it lies at or after the start of the first placed library section (convention: LINK places
+    every library contribution after the objects of the command line), or another candidate adjoins it
+    (convention: LINK packs the 6-byte thunks of an import library back to back; VC6 starts every compiled
+    function at a 16-byte boundary). Every other candidate is compiled code, which the walk reaches."""
     img = ctx.image
     slots = {f.lo: f.value["name"] for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "iat"}
     crt = [(f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "func"]
+    first_lib = min((a for a, _ in crt), default=None)
+    cands = []
     for s in img.sections:
         if not (s.code or s.executable):
             continue
@@ -410,9 +402,13 @@ def thunk(ctx: RuleContext):
                 slot = struct.unpack_from("<I", raw, p + 2)[0]
                 va = s.va + p
                 if slot in slots and not any(a <= va < b for a, b in crt):
-                    yield ctx.fact(va, va + 6, Kind.symbol, {"skind": "thunk", "name": slots[slot], "extent": "proven"}, P)
-                    yield ctx.fact(va, va + 1, Kind.name, {"name": "thunk:" + slots[slot], "origin": "import"}, P)
+                    cands.append((va, slots[slot]))
             p = raw.find(b"\xff\x25", p + 1)
+    at = {va for va, _ in cands}
+    for va, name in cands:
+        if (first_lib is not None and va >= first_lib) or va - 6 in at or va + 6 in at:
+            yield ctx.fact(va, va + 6, Kind.symbol, {"skind": "thunk", "name": name, "extent": "proven"}, D)
+            yield ctx.fact(va, va + 1, Kind.name, {"name": "thunk:" + name, "origin": "import"}, D)
 
 
 @rule("S.entry.user", version="1", ceiling=D, outputs=("name",), needs=("S.crt.refs", "S.entry", "S.codewalk"))

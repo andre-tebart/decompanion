@@ -8,6 +8,8 @@ Layout of the synthetic image (base 0x10000000):
                                                                                                table of pointers in .data)
   .data 0x10002000  a dword, then the strings, then a pointer to f4
   .reloc            the base relocations of every absolute operand
+The headers carry a Rich header (RICH_TINY for the first target, RICH_OTHER for the second of `tiny2`);
+build_lib writes a COFF archive of objects that carry only an @comp.id symbol.
 """
 from __future__ import annotations
 
@@ -20,8 +22,37 @@ BASE = 0x10000000
 TEXT, DATA, RELOC = 0x1000, 0x2000, 0x3000
 
 
-def build_pe(path: Path, variant: int = 0) -> Path:
-    """Write the synthetic dll; `variant` changes one data byte (another binary of the same codebase)."""
+# Rich headers of the two synthetic targets (prodid, build, count): the user's objects (Utc12_2_C 9044), static
+# CRT objects (Utc12_C 8047), the linker; the second target adds a VC7 object (Utc13_C 9178) and an old linker.
+RICH_TINY = [(0x30, 9044, 3), (0x0a, 8047, 5), (0x04, 8447, 1)]
+RICH_OTHER = [(0x30, 9044, 2), (0x0a, 8047, 5), (0x1c, 9178, 1), (0x04, 8447, 2), (0x13, 9049, 1)]
+
+
+def rich_header(entries, key=0x1234abcd) -> bytes:
+    """A Rich header: DanS and three padding dwords, the (prodid << 16 | build, count) pairs, all xor key; then
+    "Rich" and the key."""
+    out = struct.pack("<IIII", 0x536e6144 ^ key, key, key, key)
+    for prodid, build, count in entries:
+        out += struct.pack("<II", ((prodid << 16) | build) ^ key, count ^ key)
+    return out + b"Rich" + struct.pack("<I", key)
+
+
+def build_lib(path: Path, comp_ids) -> Path:
+    """A COFF archive of one object per (prodid, build): no sections, only the absolute `@comp.id` symbol."""
+    members = b""
+    for k, (prodid, build) in enumerate(comp_ids):
+        sym = b"@comp.id" + struct.pack("<IhHBB", (prodid << 16) | build, -1, 0, 3, 0)
+        obj = struct.pack("<HHIIIHH", 0x14c, 0, 0, 20, 1, 0, 0) + sym + struct.pack("<I", 4)
+        name = f"o{k}.obj/".ljust(16).encode()
+        hdr = name + b"0".ljust(12) + b"0".ljust(6) + b"0".ljust(6) + b"644".ljust(8) + str(len(obj)).ljust(10).encode() + b"`\n"
+        members += hdr + obj + (b"\n" if len(obj) & 1 else b"")
+    path.write_bytes(b"!<arch>\n" + members)
+    return path
+
+
+def build_pe(path: Path, variant: int = 0, rich=None) -> Path:
+    """Write the synthetic dll; `variant` changes one data byte (another binary of the same codebase); `rich`
+    adds a Rich header with these entries."""
     va = lambda rva: BASE + rva  # noqa: E731
     s_path, s_hello, s_world = va(DATA + 0x10), va(DATA + 0x30), va(DATA + 0x38)
     code = bytearray(b"\x90" * 0x60)
@@ -65,8 +96,12 @@ def build_pe(path: Path, variant: int = 0) -> Path:
         off += rs
     out = bytearray(off)
     out[0:2] = b"MZ"
-    struct.pack_into("<I", out, 0x3c, 0x80)
     pe = 0x80
+    if rich:
+        r = rich_header(rich)
+        out[0x80:0x80 + len(r)] = r
+        pe = (0x80 + len(r) + 0xf) & ~0xf
+    struct.pack_into("<I", out, 0x3c, pe)
     out[pe:pe + 4] = b"PE\0\0"
     struct.pack_into("<HHIIIHH", out, pe + 4, 0x14c, len(secs), 0x3f7a0000, 0, 0, 0xE0, 0x2102)
     opt = pe + 24
@@ -103,10 +138,10 @@ archives = []
 
 def make_project(d: Path, two: bool = False) -> Path:
     d.mkdir(parents=True, exist_ok=True)
-    p1 = build_pe(d / "tiny.dll")
+    p1 = build_pe(d / "tiny.dll", rich=RICH_TINY)
     second = ""
     if two:
-        p2 = build_pe(d / "tiny2.dll", variant=1)
+        p2 = build_pe(d / "tiny2.dll", variant=1, rich=RICH_OTHER)
         second = f'\n[[target]]\nname = "other"\npath = "{p2.as_posix()}"\nimage = "pe32"\n'
     (d / "decompanion.toml").write_text(CONFIG.format(n1="tiny", p1=p1.as_posix(), second=second), newline="\n")
     (d / "decl").mkdir(exist_ok=True)

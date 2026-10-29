@@ -49,7 +49,13 @@ def test_setup_total_map(project):
     bad = [c for c in project.store.conflicts() if c.severity.value in ("bug", "error")]
     assert not bad, [c.line() for c in bad][:5]
     tc = project.store.facts(Kind.toolchain)[0].value
-    assert tc["compiler_build"] == 9044 and tc["language"] == "C" and tc["linker_build"] == 8447
+    comps = {(c["tool"], c["build"]): c for c in tc["compilers"]}
+    assert comps[("Utc12_2_C", 9044)]["count"] == 37 and comps[("Utc12_2_C", 9044)]["archive_objects"] == 0
+    assert comps[("Utc12_C", 8047)]["archive_objects"] > 0          # the static CRT's objects carry @comp.id 8047
+    assert 8447 in {k["build"] for k in tc["linkers"]}
+    # the pre-filled declaration (dcp init) picks the user's compiler, not the CRT's more numerous objects
+    decl = project.toolchain_decl
+    assert decl["compiler"] == "cl 12.00.9044" and decl["linker"] == "link 6.00.8447" and "verify" in decl["reason"]
     # a second run runs nothing
     res = e.run()
     assert not any(r.ran for r in res)
