@@ -15,6 +15,8 @@ from decompanion.ledger import decl as D
     ("0x10001000 name NetInit -- leaked by a log string", "name", 0x10001000, 0x10001001, ("NetInit",), {}, None),
     ("0x10001000..0x10001008 fptr -- two handlers", "fptr", 0x10001000, 0x10001008, (), {}, None),
     ("exe:0x401000 start -- reached through a computed jump", "start", 0x401000, 0x401001, (), {}, "exe"),
+    ("0x5de460..0x5de480 libunit lib=mss32.lib tu=mss32lib -- mss32.lib's code member", "libunit", 0x5de460, 0x5de480, (),
+     {"tu": "mss32lib", "lib": "mss32.lib"}, None),
     ("0x5fbd94 file tu=d3_interface path=D:\\develop\\Units\\d3\\d3_interface.c -- its __FILE__", "file", 0x5fbd94, 0x5fbd95,
      (), {"tu": "d3_interface", "path": "D:\\develop\\Units\\d3\\d3_interface.c"}, None),
 ])

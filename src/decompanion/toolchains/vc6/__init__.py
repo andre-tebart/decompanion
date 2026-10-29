@@ -269,6 +269,15 @@ class VC6(Toolchain):
         from .implib import make_import_library
         return make_import_library(self.tools, dll, imports, Path(out))
 
+    def add_library_members(self, lib: Path, objects: list) -> str | None:
+        """LIB.EXE /OUT:lib lib obj...: the archive with the objects added (a member of the same name replaced)."""
+        lib = Path(lib)
+        r = self.tools.run("LIB.EXE", ["/NOLOGO", f"/OUT:{lib.name}", lib.name, *(str(Path(o).resolve()) for o in objects)],
+                           lib.parent)
+        if r.returncode:
+            return f"LIB.EXE failed: {(r.stdout + r.stderr).strip()[:300]}"
+        return None
+
     def link(self, job: LinkJob) -> LinkResult:
         """LINK.EXE @<response file>: the arguments of toolchains/vc6/link.py link_args."""
         return run_link(self.tools, job)

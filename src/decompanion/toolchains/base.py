@@ -11,6 +11,8 @@ What a plugin answers (the rules ask, they never know the answers themselves):
   archive_tools(stamps)  the objects' tool stamps (objfmt tool_stamps) decoded to Rich (prodid, build)
   rich_product / rich_candidates / declare / build_name   the Rich header vocabulary
   import_library_name(dll)   the import library a DLL is linked through
+  add_library_members(lib, objects)        add compiled objects to an archive (a library unit's object joins the
+                         archive whose member it reproduces)
   make_import_library(dll, imports, out)   an import library built from the image's own import directory, for a
                          DLL whose library no installation holds (a commercial SDK that is not archived)
 The guided decisions (obligations.py; the plugin hands over evidence, it never declares anything):
@@ -277,6 +279,10 @@ class Toolchain:
         """Write an import library for `dll` to `out` that imports exactly `imports` (image Import records:
         the names and hints of the image's import directory); None when written, else why not."""
         return f"the {self.key} toolchain cannot build import libraries"
+
+    def add_library_members(self, lib: Path, objects: list) -> str | None:
+        """Add the objects to the archive `lib` (rewritten in place); None when done, else why not."""
+        return f"the {self.key} toolchain cannot add archive members"
 
     def library_search_dirs(self) -> list[Path]:
         """The directories the linker finds a library named by its file name in."""

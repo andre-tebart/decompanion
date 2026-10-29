@@ -524,6 +524,15 @@ Added next (user decision: the data tooling first, then validate it; "all the to
 - Correctness: `refresh` drops the memoised src / decl input hashes, so a command that wrote sources no longer
   refreshes against the old tree.
 
+Library units (user decision, instead of a fragment of a game unit for library code): decl `libunit
+lib=ARCHIVE tu=UNIT` over a library member's range; the unit is no game unit, L14 checks its fragments against
+the range, and `dcp link` adds its object to the archive (Toolchain.add_library_members: LIB.EXE), so the
+relinked image keeps the member among the library contributions instead of shifting every later unit.
+gildegold's mss32.lib code member (MSS_auto_cleanup and its exit callback) is the first: both byte, and in the
+relinked exe they sit between the DINPUT stub and the AIL_shutdown thunk as in the original. Seen on the way:
+LINK places LIBC's members before the import libraries' contributions, the original after them (library order,
+open for whole-image identity).
+
 Left open, visible in `dcp check` of gildegold (the user accepted gate=FAIL for the migration commit): rea's
 data debt (D5 tentative definitions 530, D4 69, D1 9, M.data.content 1, data C.overlap), and the link's
 unresolved names (CRT functions

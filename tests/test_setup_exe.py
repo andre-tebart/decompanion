@@ -96,3 +96,13 @@ def test_import_library_from_the_image(guild, tmp_path):
         d = members[i.name]
         assert (struct.unpack_from("<H", lib, d + 18)[0] >> 2) & 7 == 1                  # IMPORT_NAME
         assert struct.unpack_from("<H", lib, d + 16)[0] == i.hint
+    # a library unit's object joins the archive (decl `libunit`): its code member next to the import members
+    src = tmp_path / "member.c"
+    src.write_text("int MSS_auto_cleanup(void)\n{\n    return 0;\n}\n", newline="\n")
+    res = p.toolchain.compile(src, tmp_path / "member.obj", ["/O2", "/Gy"], [], tmp_path)
+    assert res.ok, res.log
+    assert p.toolchain.add_library_members(out, [tmp_path / "member.obj"]) is None
+    from decompanion.objfmt.coff import archive_members
+    names = [n for n, _ in archive_members(out)]
+    assert any(n.endswith("member.obj") for n in names)
+    assert len(short_members(out.read_bytes())) == 31                                 # the import members stay

@@ -55,6 +55,11 @@ KINDS: dict[str, Spec] = {
     "fptr": Spec(range=True, doc="function pointers stored in a code section (dwords, each a relocated code address)"),
     "start": Spec(doc="a function start the setup walk does not find (reached only through a computed jump or not at all); "
                       "the walk takes it as a root, and what it reaches from there stays declared"),
+    "libunit": Spec(required={"tu": "unit", "lib": "path"}, range=True,
+                    doc="a library member compiled from source: the unit's code is the member of archive `lib` the image "
+                        "holds at the range (an import library's code member no installation has); the link puts the "
+                        "unit's object into that archive instead of the object list, so LINK places it among the "
+                        "library contributions as the original"),
     "file": Spec(required={"tu": "unit", "path": "path"},
                  doc="the original file name of a unit (its __FILE__), declared at the address of the string in the image "
                      "(data.dcl); the amalgamation compiles the unit under that name"),
@@ -197,6 +202,15 @@ def unit_files(decls: list[Decl], target: str, default: str) -> dict[str, str]:
     for d in decls:
         if d.kind == "file" and (d.target or default) == target:
             out.setdefault(d.keys["tu"], d.keys["path"])
+    return out
+
+
+def lib_units(decls: list[Decl], target: str, default: str) -> dict[str, Decl]:
+    """unit -> its `libunit` declaration (of one target; the first one per unit)."""
+    out: dict[str, Decl] = {}
+    for d in decls:
+        if d.kind == "libunit" and (d.target or default) == target:
+            out.setdefault(d.keys["tu"], d)
     return out
 
 

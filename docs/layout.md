@@ -30,6 +30,7 @@ One fact per line:
 | `name` | `ADDR name NAME` | a name for an address without source |
 | `fptr` | `ADDR..END fptr` | function pointers stored in a code section |
 | `start` | `ADDR start` | a function start the walk does not find; the walk takes it as a root (rule L.decl.start), and what it reaches from there is declared |
+| `libunit` | `ADDR..END libunit lib=ARCHIVE tu=NAME` | a library member compiled from source (an import library's code member no installation has): the unit is no game unit (L.unit.extent leaves it out), its fragments lie inside the range and the range outside the game code (L14), and `dcp link` puts its object into ARCHIVE (the generated import library, or a copy of the toolchain's archive under build/link/) instead of the object list, so LINK places it among the library contributions as the original |
 | `file` | `ADDR file path=PATH tu=NAME` (data.dcl) | the unit's original file name, at the address of its `__FILE__` string (L.decl checks the image's bytes); the amalgamation compiles the unit under that name, so `__FILE__` matches, and maps diagnostics back to the fragments. An M9 on a `__FILE__` literal prints the line to add |
 
 Examples:

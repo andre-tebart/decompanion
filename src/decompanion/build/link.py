@@ -13,6 +13,10 @@ What goes in (Toolchain.link, LinkJob):
   libraries    the target's archives (the static CRT), the import library of every DLL the image imports
                (Toolchain.import_library_name, found in the toolchain's library directories or the project's
                libs/), the toolchain's default libraries
+  lib units    the object of a unit declared `libunit tu=UNIT lib=ARCHIVE` (a library member compiled from source)
+               is no command-line object: it becomes a member of that archive (a copy under build/link/<target>/
+               when the archive is the toolchain's, Toolchain.add_library_members), so LINK places it among the
+               library contributions where the original has it
   aliases      one weak external per extra name of a data address: when the sources give one address several
                names (`extern` views of one object under another type), the name an object defines is the
                canonical one and every other resolves to it
@@ -37,10 +41,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..ledger.fact import Kind
 from ..ledger.store import sha256
@@ -106,12 +112,25 @@ def full_link(project, log=None) -> LinkReport:
         rep.skipped = "no compiled unit"
         return rep
     parsed = [(u, C.read_object(project, tus[u]["obj_hash"])) for u, _ in objs]
+    # library units (decl `libunit`): their objects go into the archive they belong to, not the object list, so
+    # LINK places them among the library contributions as the original; no /INCLUDE (pulled on demand)
+    targets = [t["name"] for t in project.input("targets")]
+    decls, _ = decl_mod.load(project.input("decl"), root, targets)
+    lib_units = decl_mod.lib_units(decls, project.target_name, project.default_target)
+    members: dict[str, list] = {}
+    for u, p in objs:
+        if u in lib_units:
+            members.setdefault(lib_units[u].keys["lib"].lower(), []).append((u, p))
+    objs = [(u, p) for u, p in objs if u not in lib_units]
+    rep.objects = len(objs)
     defined = set()
     includes = []
     for u, o in parsed:
         for s in o.symbols.values():
             if s.defined and s.external:
                 defined.add(s.name)
+        if u in lib_units:
+            continue
         for s in o.functions():
             if s.external:
                 includes.append(s.name)
@@ -158,6 +177,20 @@ def full_link(project, log=None) -> LinkReport:
             rep.notes.append(f"import library {name} for {dll} built from the image's import directory")
         libs.append(p)
     libs += tc.default_libraries(kind)
+    for key, units in sorted(members.items()):      # each library unit's object becomes a member of its archive
+        k = next((i for i, x in enumerate(libs) if isinstance(x, Path) and x.name.lower() == key), None)
+        if k is None:
+            rep.errors.append(f"library unit(s) {', '.join(u for u, _ in units)}: the archive {key} is not linked")
+            continue
+        dest = out_dir / libs[k].name
+        if libs[k].resolve() != dest.resolve():      # never change the toolchain's own file: a copy here
+            shutil.copyfile(libs[k], dest)
+            libs[k] = dest
+        why = tc.add_library_members(dest, [p for _, p in units])
+        if why is not None:
+            rep.errors.append(f"library unit(s) {', '.join(u for u, _ in units)}: {why}")
+            continue
+        rep.notes.append(f"{dest.name} holds the library unit(s) {', '.join(u for u, _ in units)}")
     rep.errors += missing_libs
     def_file = None
     open_exports = []

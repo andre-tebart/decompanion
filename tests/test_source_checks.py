@@ -108,6 +108,22 @@ def test_l14_outside_unit_pure():
     assert issues[0].a == "src:src/sfx/f_5de460.c:1" and issues[0].b == "decl:decl/text.dcl:47"
 
 
+def test_l14_library_unit_pure():
+    """A library unit (`libunit`) is checked against its member range, not a game unit's extent: inside it is
+    fine, outside it is L14, and a member range inside the game code is L14 too."""
+    from decompanion.ledger import decl as D
+    lib = D.parse_line("0x5de460..0x5de480 libunit lib=mss32.lib tu=mss32lib -- the member", "decl/text.dcl", 188)
+    srcs = [LY.SrcFn(0x5de460, "mss32lib", "MSS_auto_cleanup", "src:src/mss32lib/f_5de460.c:1"),
+            LY.SrcFn(0x5de470, "mss32lib", "mss_AutoCleanupExit", "src:src/mss32lib/f_5de470.c:1"),
+            LY.SrcFn(0x5de490, "mss32lib", "beyond", "src:src/mss32lib/f_5de490.c:1")]
+    issues = LY.outside_unit_issues([], srcs, set(), (0x401000, 0x5dd3e0), {"mss32lib": lib})
+    assert [(i.check, i.lo) for i in issues] == [("L14", 0x5de490)]
+    assert "outside its declared member range 0x5de460..0x5de480" in issues[0].message
+    inside = D.parse_line("0x401000..0x401010 libunit lib=x.lib tu=wrong -- inside the game code", "decl/text.dcl", 1)
+    issues = LY.outside_unit_issues([], [], set(), (0x401000, 0x5dd3e0), {"wrong": inside})
+    assert [i.check for i in issues] == ["L14"] and "inside the game code" in issues[0].message
+
+
 # ------------------------------------------------------------------------------------------------ the link's library class
 def build_symlib(path: Path, symbols: list[str]) -> Path:
     """A COFF archive whose first linker member lists `symbols` (all at one dummy member)."""

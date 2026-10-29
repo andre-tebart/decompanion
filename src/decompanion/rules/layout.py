@@ -599,9 +599,17 @@ def unit_status(start_level: Level, end_level: Level, open_bytes: int, walk_conf
     return "separated" if start_level >= DE and end_level >= DE and not open_bytes and not walk_conflicts else "open"
 
 
-@rule("L.unit.extent", version="2", ceiling=DE, outputs=("unit",),
+def lib_units_of(ctx) -> dict:
+    """unit -> its `libunit` declaration for the current target (decl/text.dcl; a library member compiled from
+    source, no game unit)."""
+    targets = [t["name"] for t in ctx.input("targets")]
+    decls, _ = decl_mod.load(ctx.input("decl"), ctx.project.root, targets)
+    return decl_mod.lib_units(decls, ctx.project.target_name, targets[0])
+
+
+@rule("L.unit.extent", version="3", ceiling=DE, outputs=("unit",),
       needs=("L.decl", "L.src", "S.sections", "S.crt.code", "S.thunk", "S.codewalk", "S.unknown"),
-      helpers=(compute_units, game_range, lib_starts_of, unit_status))
+      inputs=("decl", "targets"), helpers=(compute_units, game_range, lib_starts_of, unit_status, lib_units_of))
 def unit_extent(ctx: RuleContext):
     """The units of the game code (compute_units in rules/layout.py: a unit runs from its declared start
     boundary or first fragment to its declared end, the next unit's start or the end of the game code; the
@@ -611,12 +619,14 @@ def unit_extent(ctx: RuleContext):
     not open) and the C.walk conflicts inside it (a walk that runs into another function's bytes: one of the
     two starts is wrong). Status: separated when both boundaries are at least declared, no open byte and no
     C.walk conflict lies inside, else open. Level: the lower of the two boundary levels (at most declared).
-    Issues of the computation are L7 conflicts."""
+    Issues of the computation are L7 conflicts. A unit declared `libunit` (a library member compiled from source)
+    is no game unit: its fragments are left out (L14 checks them against the member's range)."""
     img = ctx.image
     syms = ctx.facts(Kind.symbol)
     game = game_range(img, lib_starts_of(syms))
     funcs = [lo for lo, _, _ in functions_of(syms) if game[0] <= lo < game[1]]
-    srcs = srcfns_of(ctx.facts(Kind.source))
+    libs = lib_units_of(ctx)
+    srcs = [s for s in srcfns_of(ctx.facts(Kind.source)) if s.unit not in libs]
     units, issues = compute_units(game, bounds_of(ctx.facts(Kind.boundary)), srcs, funcs)
     yield from _emit(ctx, issues)
     unknown = sorted((f.lo, f.hi) for f in syms if f.value.get("skind") == "unknown.code")
@@ -861,15 +871,30 @@ def data_at_code(ctx: RuleContext):
                            a=f"src:{d.file}:{d.line}", b=fn[2].by if fn else "")
 
 
-def outside_unit_issues(units: list[UnitX], srcs: list[SrcFn], declared: set[str], game: tuple) -> list[Issue]:
+def outside_unit_issues(units: list[UnitX], srcs: list[SrcFn], declared: set[str], game: tuple,
+                        libs: dict | None = None) -> list[Issue]:
     """L14: a function fragment of a unit whose extent rests on a declared boundary (`declared`: the units with a
     `boundary start` or `boundary end` line) lies outside that unit's extent. compute_units' L7 already reports
     the fragments inside the game code that lie outside their unit; L14 adds the ones outside the game code (in
     the library code after it), which L7 does not look at. A unit without a declared boundary, or without an
-    extent, is not checked."""
+    extent, is not checked. A library unit (`libs`: unit -> its `libunit` declaration) is checked against its
+    member range instead: every fragment lies inside it, and the range lies outside the game code (a library
+    member is no game code)."""
     ext = {u.tu: u for u in units}
+    libs = libs or {}
     out = []
+    for tu, d in sorted(libs.items()):
+        if d.lo < game[1] and game[0] < d.hi:
+            out.append(Issue("L14", d.lo, d.hi, f"library unit {tu} declares the member range {d.lo:#x}..{d.hi:#x}, inside the "
+                                                f"game code {game[0]:#x}..{game[1]:#x}", a=d.by))
     for s in srcs:
+        d = libs.get(s.unit)
+        if d is not None:
+            if not d.lo <= s.addr < d.hi:
+                out.append(Issue("L14", s.addr, s.addr + 1,
+                                 f"fragment of library unit {s.unit} ({s.name}) at {s.addr:#x} lies outside its declared member "
+                                 f"range {d.lo:#x}..{d.hi:#x}", a=s.by, b=d.by))
+            continue
         u = ext.get(s.unit)
         if u is None or s.unit not in declared or u.lo <= s.addr < u.hi or game[0] <= s.addr < game[1]:
             continue
@@ -879,19 +904,20 @@ def outside_unit_issues(units: list[UnitX], srcs: list[SrcFn], declared: set[str
     return out
 
 
-@rule("L14.unit.outside", version="1", ceiling=DE, needs=("L.unit.extent", "L.src", "L.decl", "S.crt.code", "S.thunk"),
-      helpers=(outside_unit_issues, game_range, lib_starts_of))
+@rule("L14.unit.outside", version="2", ceiling=DE, needs=("L.unit.extent", "L.src", "L.decl", "S.crt.code", "S.thunk"),
+      inputs=("decl", "targets"), helpers=(outside_unit_issues, game_range, lib_starts_of, lib_units_of))
 def fragment_outside_unit(ctx: RuleContext):
     """L14 (outside_unit_issues in rules/layout.py): a function fragment outside the game code (in the library
     code after it) whose unit has a declared boundary (`boundary start|end tu=UNIT` in decl/text.dcl) and an
     extent: every fragment of such a unit lies inside the extent. Inside the game code L7 checks the same.
-    An error: no unit owns library code, and a unit's amalgamation compiled with that fragment is not the
-    unit's translation unit."""
+    An error: no game unit owns library code, and a unit's amalgamation compiled with that fragment is not the
+    unit's translation unit. Library code with a source belongs to a library unit (`libunit` in decl/text.dcl):
+    its fragments lie inside the declared member range, which lies outside the game code."""
     syms = ctx.facts(Kind.symbol)
     game = game_range(ctx.image, lib_starts_of(syms))
     declared = {f.value["tu"] for f in ctx.facts(Kind.boundary)}
     srcs = [s for s in srcfns_of(ctx.facts(Kind.source)) if s.by.startswith("src:")]
-    yield from _emit(ctx, outside_unit_issues(game_units(ctx.facts(Kind.unit)), srcs, declared, game))
+    yield from _emit(ctx, outside_unit_issues(game_units(ctx.facts(Kind.unit)), srcs, declared, game, lib_units_of(ctx)))
 
 
 @rule("L6.declared", version="1", ceiling=P, needs=("L.decl", "S.codewalk", "S.crt.code", "S.thunk", "S.relocs", "S.sections"))
