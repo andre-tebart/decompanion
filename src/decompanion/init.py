@@ -5,7 +5,8 @@ decl/, decompanion.toml, names.log, claims.log, ledger/grades.tsv) and nothing d
 The original binary is referenced by path and pinned by sha256; it is never copied into the repository.
 The image format is the registered one that reads the binary, the instruction set the one its machine type
 implies; the toolchain plugin's answers pre-fill the rest (its default archives and flags, the Rich-header
-pick), each for a human to verify.
+pick), each for a human to verify. The decompanion skills (skills/ of this repository) are installed into
+.claude/skills/ (`dcp skills install` updates them in an existing project).
 """
 from __future__ import annotations
 
@@ -167,9 +168,13 @@ def init_project(dir_: Path, target: Path, toolchain_root: str, name: str | None
             p.write_text(text, newline="\n")
     if not (dir_ / ".git").exists():
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=dir_, check=True)
+    from .cli_session import install_skills
+    skills = install_skills(dir_)
     print(f"initialised {dir_} for {target.name} as target {tname} (sha256 {sha[:16]})")
     print(f"  declared: image={fmt} isa={isa} toolchain={tc.key} compiler={compiler or '-'} linker={linker or '-'} "
           f"cflags={' '.join(cflags) or '-'}  reason={reason!r}")
+    if skills:
+        print(f"  skills: {', '.join(sorted({s.split('/')[2] for s in skills}))} in .claude/skills/ (dcp skills install updates them)")
     print("next: cd there, uv sync, uv run dcp toolchain (verify the declaration), uv run dcp setup")
 
 
