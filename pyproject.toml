@@ -1,0 +1,37 @@
+# decompanion: a framework for byte-matching decompilation of VC6-era PE32 x86 binaries (exe and dll).
+# Every tool is `uv run dcp <command>` (the venv, Python 3.15: UTF-8 text default, PEP 686).
+# Recreate the venv: uv sync. After changing dependencies: uv lock (uv.lock is committed).
+[project]
+name = "decompanion"
+version = "0.1.0"
+description = "A per-byte ledger with an evidence ladder, and the setup / layout / match tooling around it"
+requires-python = ">=3.15"
+dependencies = [
+    "capstone==5.0.9",
+]
+
+[project.optional-dependencies]
+c2prio = ["frida==17.24.3"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+dcp = "decompanion.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# The venv's top-level `sitecustomize` (tools/sitecustomize.py) forces LF on text writes: Windows would
+# write CRLF by default, and every cache key hashes file contents.
+[tool.setuptools]
+py-modules = ["sitecustomize"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+"sitecustomize" = "tools"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

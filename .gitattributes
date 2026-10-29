@@ -1,0 +1,7 @@
+# LF and UTF-8 (no BOM) in every working tree, on every platform: the store hashes file contents, so a
+# checkout must have the same bytes everywhere (tools/sitecustomize.py forces LF on writes; `dcp check` verifies).
+* text=auto eol=lf
+*.dll binary
+*.exe binary
+*.obj binary
+*.lib binary

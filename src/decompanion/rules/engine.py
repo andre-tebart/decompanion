@@ -1,0 +1,220 @@
+"""The rule engine: every computed fact comes from a registered rule, every rule run is memoised by the hash of
+its inputs, and the code of the rule itself is part of that hash.
+
+A rule is a function decorated with @rule:
+
+    @rule("S.fill", version="1", ceiling=Level.derived, needs=("S.sections", "kind:symbol"), outputs=("symbol",),
+          inputs=())
+    def fill(ctx: RuleContext):
+        '''<the exact criterion, as prose; `dcp rules` prints it>'''
+        ...
+        yield Fact(...)
+
+- `needs` are the rules whose current facts this rule may read (`ctx.facts(kind)` returns only facts of those
+  runs). `kind:symbol` stands for every registered rule that lists `symbol` in its outputs, so a rule that
+  closes a kind (the catch-all, the byte map) needs no list of producers. Dependencies by rule, not by kind,
+  keep the graph acyclic by construction: a rule cannot read the kind it produces.
+- `inputs` are named external inputs the project provides (image, config, libs, decl, src, ...). The image is
+  an input of every rule.
+- `ceiling` is the best level the criterion can justify; a yielded fact above it is a programming error. The
+  rule lowers the level itself with min_level() when it rests on a premise fact (a declared boundary, a
+  derived start): the engine cannot know which facts were premises and which were merely verified.
+- The run key is sha256(code of the function, version, out_hash of each needed run, hash of each input). A
+  rule whose key matches a stored run is skipped; `dcp rules` shows which ran and how long they took.
+"""
+from __future__ import annotations
+
+import hashlib
+import inspect
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Iterable
+
+from ..ledger.fact import Conflict, Fact, Kind, Level
+from ..ledger.store import Store, sha256
+
+
+@dataclass
+class Rule:
+    id: str
+    version: str
+    ceiling: Level
+    needs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    inputs: tuple[str, ...]
+    fn: Callable
+    doc: str
+    code_hash: str
+    phase: str = ""
+
+    @property
+    def name(self):
+        return f"rule:{self.id}@{self.version}"
+
+
+RULES: dict[str, Rule] = {}
+
+
+def rule(id: str, *, version: str, ceiling: Level, outputs: tuple[str, ...] = (), needs: tuple[str, ...] = (),
+         inputs: tuple[str, ...] = (), phase: str = ""):
+    def deco(fn):
+        if id in RULES:
+            raise RuntimeError(f"rule {id} registered twice")
+        src = inspect.getsource(fn)
+        RULES[id] = Rule(id, version, Level(ceiling), tuple(needs), tuple(outputs), tuple(inputs), fn,
+                         inspect.getdoc(fn) or "", hashlib.sha256(src.encode()).hexdigest()[:16], phase or id.split(".")[0])
+        return fn
+    return deco
+
+
+class RuleError(RuntimeError):
+    pass
+
+
+class RuleContext:
+    """What a rule may see: the project, the image, the facts of the rules it needs, its external inputs."""
+
+    def __init__(self, engine: Engine, rule_: Rule, needed: tuple[str, ...]):
+        self.engine = engine
+        self.rule = rule_
+        self.project = engine.project
+        self.image = engine.project.image
+        self.store = engine.store
+        self._needed = needed
+        self._kinds_ok = frozenset(Kind(o) for o in rule_.outputs)
+
+    def facts(self, kind: Kind | str, lo: int | None = None, hi: int | None = None):
+        """Current facts of the needed rules, of one kind, intersecting [lo, hi)."""
+        if not self._needed:
+            raise RuleError(f"{self.rule.id} reads facts but needs no rule")
+        return self.store.facts(kind, lo, hi, rules=self._needed)
+
+    def input(self, name: str):
+        """The object of a named external input (declared in `inputs`)."""
+        if name not in self.rule.inputs:
+            raise RuleError(f"{self.rule.id} reads input {name!r} it did not declare")
+        return self.project.input(name)
+
+    def fact(self, lo: int, hi: int, kind: Kind | str, value: dict, level: Level, reason: str | None = None) -> Fact:
+        """A fact produced by this rule (the producer is stamped; the level is capped by the ceiling)."""
+        kind = Kind(kind)
+        if kind not in self._kinds_ok:
+            raise RuleError(f"{self.rule.id} emits {kind} but lists outputs {self.rule.outputs}")
+        if level > self.rule.ceiling:
+            raise RuleError(f"{self.rule.id} emits {kind} at {lo:#x} as {level} above its ceiling {self.rule.ceiling}")
+        return Fact(lo, hi, kind, value, level, self.rule.name, reason)
+
+    def conflict(self, severity, check: str, lo: int, hi: int, message: str, a: str = "", b: str = "") -> Conflict:
+        return Conflict(severity, check, lo, hi, message, a, b)
+
+    def blob(self, hash_: str):
+        return self.store.blob(hash_)
+
+    def put_blob(self, hash_: str, kind: str, data: bytes):
+        self.store.put_blob(hash_, kind, data)
+
+
+@dataclass
+class RunResult:
+    rule: str
+    ran: bool
+    ms: int
+    facts: int
+    conflicts: int
+
+
+class Engine:
+    def __init__(self, project, store: Store):
+        self.project = project
+        self.store = store
+
+    # ------------------------------------------------------------------ graph
+    def resolve_needs(self, r: Rule) -> tuple[str, ...]:
+        out = []
+        for n in r.needs:
+            if n.startswith("kind:"):
+                k = n[5:]
+                out.extend(x.id for x in RULES.values() if k in x.outputs and x.id != r.id)
+            else:
+                if n not in RULES:
+                    raise RuleError(f"{r.id} needs unknown rule {n}")
+                out.append(n)
+        return tuple(dict.fromkeys(out))
+
+    def order(self, ids: Iterable[str] | None = None) -> list[Rule]:
+        """Rules in dependency order (Kahn), restricted to `ids` and everything they need."""
+        wanted = set(RULES) if ids is None else set()
+        if ids is not None:
+            stack = list(ids)
+            while stack:
+                i = stack.pop()
+                if i in wanted:
+                    continue
+                wanted.add(i)
+                stack.extend(self.resolve_needs(RULES[i]))
+        deps = {i: set(self.resolve_needs(RULES[i])) & wanted for i in wanted}
+        done, out = set(), []
+        while deps:
+            ready = sorted(i for i, d in deps.items() if d <= done)
+            if not ready:
+                raise RuleError("cycle among rules: " + ", ".join(sorted(deps)))
+            for i in ready:
+                out.append(RULES[i])
+                done.add(i)
+                del deps[i]
+        return out
+
+    # ------------------------------------------------------------------ running
+    def input_hash(self, r: Rule, needed: tuple[str, ...]) -> str:
+        parts = [r.code_hash, r.version, self.project.input_hash("image")]
+        for n in needed:
+            cur = self.store.current_run(n)
+            if cur is None:
+                raise RuleError(f"{r.id} needs {n}, which has no current run")
+            parts.append(f"{n}={cur[2]}")
+        for name in r.inputs:
+            parts.append(f"{name}={self.project.input_hash(name)}")
+        return sha256(*parts)
+
+    def run(self, ids: Iterable[str] | None = None, force: bool = False, log=None) -> list[RunResult]:
+        results = []
+        for r in self.order(ids):
+            needed = self.resolve_needs(r)
+            ih = self.input_hash(r, needed)
+            found = None if force else self.store.find_run(r.id, ih)
+            if found is not None:
+                where, run_id, _ = found
+                cur = self.store.current_run(r.id)
+                if cur is None or cur[0] != run_id or where != "main":
+                    self.store.make_current(r.id, where, run_id)
+                results.append(RunResult(r.id, False, 0, 0, 0))
+                continue
+            t0 = time.perf_counter()
+            ctx = RuleContext(self, r, needed)
+            facts, conflicts = [], []
+            for item in r.fn(ctx) or ():
+                if isinstance(item, Fact):
+                    facts.append(item)
+                elif isinstance(item, Conflict):
+                    conflicts.append(item)
+                else:
+                    raise RuleError(f"{r.id} yielded {type(item).__name__}")
+            ms = int((time.perf_counter() - t0) * 1000)
+            self.store.record_run(r.id, r.version, r.code_hash, ih, facts, conflicts, ms)
+            results.append(RunResult(r.id, True, ms, len(facts), len(conflicts)))
+            if log:
+                log(f"ran {r.id}: {len(facts)} facts, {len(conflicts)} conflicts, {ms} ms")
+        return results
+
+    def status(self):
+        """[(rule, phase, current run?, ms, facts)] for `dcp rules`."""
+        rows = []
+        for r in self.order():
+            cur = self.store.current_run(r.id)
+            n = 0
+            ms = 0
+            if cur:
+                n = self.store.db.execute("SELECT COUNT(*) FROM fact WHERE run_id=?", (cur[0],)).fetchone()[0]
+                ms = self.store.db.execute("SELECT ms FROM run WHERE id=?", (cur[0],)).fetchone()[0]
+            rows.append((r, cur is not None, ms, n))
+        return rows
