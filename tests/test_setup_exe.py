@@ -27,7 +27,7 @@ def guild(tmp_path_factory):
     text = text.replace('name = "exe"\n', 'name = "exe"\narchives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", '
                                           '"{toolchain.root}/VC98/Lib/DINPUT.LIB"]\n', 1)
     cfg.write_text(text, newline="\n")
-    code, out = dcp(d, "setup", "--all-targets")
+    code, out = dcp(d, "setup", "--all-targets", "--no-analyzer")      # a Ghidra export of the exe takes minutes
     assert code == 0, out
     return d
 

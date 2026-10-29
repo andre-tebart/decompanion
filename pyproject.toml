@@ -35,3 +35,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# the Ghidra headless export (30 s) runs only on request: `uv run pytest -m ghidra`
+addopts = "-m 'not ghidra'"
+markers = ["ghidra: runs Ghidra headless on server.dll (about 30 s); deselected by default"]

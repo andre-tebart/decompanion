@@ -1,5 +1,6 @@
 """The layout tooling on server.dll (skipped when the GOG install is absent; the Ghidra export when Ghidra or its
-JDK is absent): one project per module, exported once (by dcp setup)."""
+JDK is absent): one project per module, exported once (by dcp setup). The export test is marked `ghidra` and
+deselected by default (pyproject addopts): `uv run pytest -m ghidra` runs it."""
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,7 @@ def test_reading_tools_on_server(srv):
     assert "named=Init  origin=export" in out
 
 
+@pytest.mark.ghidra          # 30 s of Ghidra headless: deselected by default, `uv run pytest -m ghidra` runs it
 @pytest.mark.skipif(not ghidra_ready(), reason="Ghidra or its JDK not found")
 def test_ghidra_export_and_draft(srv):
     assert 'plugin = "ghidra"' in (srv / "decompanion.toml").read_text()      # dcp init found it

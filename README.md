@@ -206,7 +206,7 @@ src/decompanion/
   toolchains/ __init__ (registry) base.py vc6/          # Toolchain seam: fill, stubs, entries, Rich, defaults
   isa/      __init__ (registry) base.py x86.py          # Isa seam: instruction records, flow kinds, table shapes
   analyzers/ __init__ (registry) base.py ghidra.py rea.py none.py   # Analyzer seam: starts, names, pseudocode, dialect
-tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / clang tests when installed
+tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / clang tests when installed; `-m ghidra` adds the 30 s Ghidra export
 docs/                                # plan.md, layout.md, match.md, architecture.md
 skills/                              # dcp-layout/SKILL.md (installed into a project's .claude/skills/)
 ```

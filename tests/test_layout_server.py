@@ -17,7 +17,7 @@ def server(tmp_path_factory):
     from decompanion.init import init_project
     d = tmp_path_factory.mktemp("guild-server")
     init_project(d, SERVER, str(TOOLCHAIN))
-    code, out = dcp(d, "setup")
+    code, out = dcp(d, "setup", "--no-analyzer")      # the Ghidra export is test_layout_tools_server's (-m ghidra)
     assert code == 0
     return d
 
