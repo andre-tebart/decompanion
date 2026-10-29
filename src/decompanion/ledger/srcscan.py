@@ -58,6 +58,19 @@ DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*(
 DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
 FRAGMENT = re.compile(r"^f_([0-9a-fA-F]+)\.c$")
 UNLINKED_FRAGMENT = re.compile(r"^u_([A-Za-z_]\w*)\.c$")
+# A1: an integer literal cast to a pointer type. The cast's type names a pointer explicitly: a declarator with
+# `*` (`(char *)`, `(struct x **)`, `(void (__cdecl *)(int))`); a typedef'd pointer name (`(LPVOID)`) is not
+# recognised (the scan has no types). Between the cast and the literal only parentheses and casts to a type
+# without `*` may stand (`(char *)(unsigned)0x5de470`, `(void (*)(void))(0x5de470)`).
+_TYPE = r"(?:(?:const|volatile|unsigned|signed|struct|union|enum)\s+)*[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*"
+_CC = r"(?:__cdecl|__stdcall|__fastcall|WINAPI|CALLBACK|APIENTRY|PASCAL)"
+PTR_CAST = re.compile(
+    r"\(\s*" + _TYPE + r"\s*(?:"
+    r"(?:\*\s*(?:(?:const|volatile)\b\s*)?)+"                                    # (T *), (T * const *)
+    r"|\**\s*\(\s*" + _CC + r"?\s*\*+\s*\)\s*\([^()]*\)\s*"                      # (T (cc *)(params))
+    r")\)"
+    r"((?:\s*\((?:\s*" + _TYPE + r"\s*\))?)*\s*)"                               # parentheses, casts without `*`
+    r"(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)[uUlL]*(?![\w.])")
 QUALIFIERS = {"extern", "static", "const", "volatile", "unsigned", "signed", "int", "char", "short", "long", "float",
               "double", "void", "struct", "union", "enum", "register", "far", "near", "__cdecl", "__stdcall"}
 
@@ -99,6 +112,15 @@ class Placeholder:
 
 
 @dataclass(frozen=True)
+class PtrCast:
+    """An integer literal cast to a pointer type (PTR_CAST; check A1 in rules/layout.py)."""
+    file: str
+    line: int
+    text: str                 # the cast and the literal as written (whitespace collapsed)
+    value: int
+
+
+@dataclass(frozen=True)
 class ScanError:
     file: str
     line: int
@@ -116,6 +138,7 @@ class Scan:
     orders: dict[str, list[str]] = field(default_factory=dict)   # unit -> fragment file names in TU order
     macros: list[tuple[str, str]] = field(default_factory=list)  # (name, body) of every function-like #define
     described: list[int] = field(default_factory=list)          # addresses an address comment describes in words
+    ptrcasts: list[PtrCast] = field(default_factory=list)       # integer literals cast to a pointer type (A1)
 
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
@@ -383,6 +406,32 @@ def unit_of(rel: str) -> str:
     return Path(rel).stem
 
 
+DEFINE_LINE = re.compile(r"^[ \t]*#[ \t]*define\b(?:\\\n|[^\n])*", re.M)
+
+
+def literal_value(s: str) -> int | None:
+    """The value of a C integer literal's digits (hex, octal with a leading 0, decimal); None when malformed."""
+    try:
+        return int(s, 16) if s[:2] in ("0x", "0X") else int(s, 8) if len(s) > 1 and s[0] == "0" else int(s, 10)
+    except ValueError:
+        return None
+
+
+def ptr_casts(S: Source, out: Scan):
+    """Every integer literal cast to a pointer type (PTR_CAST) in the code (comments and strings blanked), in the
+    compiled branches (blank_alternatives: not in `#if 0` / `#else` / `#elif` text) and in `#define` bodies."""
+    def add(code, base=0):
+        for m in PTR_CAST.finditer(code):
+            v = literal_value(m.group(2))
+            if v is not None:
+                text = " ".join(m.group(0).split())
+                text += ")" * (text.count("(") - text.count(")"))       # close what the match left open
+                out.ptrcasts.append(PtrCast(S.rel, S.line_of(base + m.start()), text, v))
+    add(blank_alternatives(S.code))
+    for m in DEFINE_LINE.finditer(S.code):
+        add(m.group(0), m.start())
+
+
 def scan_file(rel: str, text: str, out: Scan):
     S = Source(rel, text)
     for m in DEFINE.finditer(S.text):
@@ -443,6 +492,7 @@ def scan_file(rel: str, text: str, out: Scan):
                                                                        f"(src/<unit>/f_<addr>.c)"))
     for off, dname, kind, addrs, unlinked in S.data(skip):
         out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked, bool(STATIC.match(S.code, off))))
+    ptr_casts(S, out)
     seen = set()
     for m in PLACEHOLDER_ADDR.finditer(S.code):
         ident = m.group(0)
@@ -454,7 +504,7 @@ def scan_file(rel: str, text: str, out: Scan):
 
 _cache: dict[tuple[str, str], Scan] = {}
 _files: dict[tuple[str, str], Scan] = {}          # (path, sha256 of the text) -> that file's own scan
-CACHE_VERSION = 2                                  # bump when scan_file's results change
+CACHE_VERSION = 3                                 # bump when scan_file's results change
 
 
 def _file_cache(root: Path) -> tuple[Path | None, dict]:
@@ -467,7 +517,7 @@ def _file_cache(root: Path) -> tuple[Path | None, dict]:
     try:
         version, data = pickle.loads(path.read_bytes())
         return path, data if version == CACHE_VERSION else {}
-    except (OSError, ValueError, EOFError, pickle.UnpicklingError, TypeError):
+    except (OSError, ValueError, EOFError, pickle.UnpicklingError, TypeError, AttributeError, ImportError):   # another version's classes
         return path, {}
 
 
@@ -505,6 +555,7 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
             out.errors += piece.errors
             out.macros += piece.macros
             out.described += piece.described
+            out.ptrcasts += piece.ptrcasts
     if path is not None and (changed or len(used) != len(disk)):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

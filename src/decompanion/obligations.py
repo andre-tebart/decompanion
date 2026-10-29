@@ -11,7 +11,8 @@ The obligations, in order (the ids are stable; Project.waiting names the ones a 
   toolchain.linker     the linker build                               dcp toolchain declare linker=...
   toolchain.root       the installation of that toolchain            dcp toolchain declare root=...
   toolchain.cflags     the compiler flags (until the probe proves)    dcp toolchain declare cflags=...
-  libs.archives        the static libraries linked in                 dcp libs declare ARCHIVE...   (due once the root is declared)
+  libs.archives        the static libraries linked in                 dcp libs declare ARCHIVE...   (due once the root is declared;
+                       open again while the last link has unresolved names an undeclared archive defines: link class `library`)
   analyzer             the third-party analyzer for the drafts        dcp analyzer declare ghidra|rea|none
   layout               functions without a fragment, open units       dcp session start, dcp layout next
   match                the grade queue                                dcp next
@@ -104,6 +105,17 @@ def libs_evidence(p) -> str:
     return "not placed yet: dcp libs candidates places every run-time archive of the root"
 
 
+def link_library_names(p) -> list[str]:
+    """The `library` lines of the target's last full link (build/link/<target>/link.json, which build/link.py
+    full_link rewrites with every classification): unresolved names that an archive the target does not
+    declare defines. [] without a link."""
+    f = p.root / "build" / "link" / p.target_name / "link.json"
+    try:
+        return list((json.loads(f.read_text()).get("unresolved") or {}).get("library") or [])
+    except (OSError, ValueError):
+        return []
+
+
 def setup_obligations(p) -> list[Obligation]:
     """The toolchain, libs and analyzer obligations of the current target (open ones only)."""
     out: list[Obligation] = []
@@ -156,6 +168,17 @@ def setup_obligations(p) -> list[Obligation]:
         waits = "toolchain.root" if not decl.get("root") else ""
         out.append(Obligation("libs.archives", t, f"the static libraries linked into the image ({s})", libs_evidence(p) if not waits else "",
                               'dcp libs candidates; dcp libs declare ARCHIVE... --why "..."', waits))
+    else:
+        lib = link_library_names(p)
+        if lib:
+            per: dict[str, list[str]] = {}
+            for line in lib:                  # `symbol  ->  first archive, ...  (undeclared: ...)`
+                sym, _, rest = line.partition("  ->  ")
+                per.setdefault(rest.split("  (")[0].split(", ")[0], []).append(sym)
+            ev = "; ".join(f"{a} defines {len(s)}: " + ", ".join(s[:3]) + (" ..." if len(s) > 3 else "") for a, s in sorted(per.items()))
+            specs = " ".join(ad["archives"] or [])
+            out.append(Obligation("libs.archives", t, f"{len(lib)} unresolved name(s) of the last link that an undeclared archive defines",
+                                  ev, f'dcp libs declare {specs} ARCHIVE --why "..." (dcp link lists the names)'))
     a = analyzer_obligation(p)
     if a is not None:
         out.append(a)

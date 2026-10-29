@@ -13,7 +13,9 @@ Checks: L1 (a source start inside other code), L3 (literal order contradicts the
 not at a start / inside fill), L5 (a placeholder name that spells no start), L6 (a declaration the facts now
 contradict), L7 (extents overlap, a source outside its unit), L8 (two leaked paths in one unit), L9 (an
 analyzer's function body spans one of our starts, warning), L10 (walked code inside a unit that no fragment, declaration
-or other function explains, warning), L11 (address comment vs file name, in L.src). L2 (a function of a unit
+or other function explains, warning), L11 (address comment vs file name, in L.src), L13 (a data declaration at
+a function's code), L14 (a fragment outside its unit's declared extent, in the library code), A1 (an image
+address literal cast to a pointer in the sources). L2 (a function of a unit
 without a source fragment, "undrafted") is informational: `dcp layout next` / `dcp layout units` report it, it
 is no conflict.
 
@@ -753,6 +755,143 @@ def placeholder(ctx: RuleContext):
             yield ctx.conflict(Severity.error, "L5", img.base, img.base + 1,
                                f"{ph.file}:{ph.line}: {ph.ident}: {v:#x} is not an address of {', '.join(n for n in names if n in mine)} "
                                f"(a dropped or extra digit?)", a=by)
+
+
+NAME_ORIGINS = ("source", "decl", "export", "entry")       # the origins a reader names an address by, preferred first
+
+
+def what_is_at(a: int, names: dict, syms: list) -> str:
+    """What the facts know at address a: its names (`name` facts at a, sources and declarations first), else the
+    symbol above open that contains it (`func 0x5de460..0x5de480 (MSS_auto_cleanup) +0x10`), else `nothing known`.
+    `names` maps an address to its name facts, `syms` is [(lo, hi, fact)] sorted (symbols do not overlap)."""
+    def name_of(x):
+        fs = sorted(names.get(x, ()), key=lambda f: (NAME_ORIGINS.index(f.value.get("origin")) if f.value.get("origin") in NAME_ORIGINS
+                                                      else len(NAME_ORIGINS), f.value["name"]))
+        return list(dict.fromkeys(f.value["name"] for f in fs))
+    own = name_of(a)
+    if own:
+        return "the name " + " / ".join(own[:3])
+    i = bisect.bisect_right([s[0] for s in syms], a) - 1
+    for j in range(i, max(i - 8, -1), -1):
+        lo, hi, f = syms[j]
+        if lo <= a < hi:
+            nm = name_of(lo)
+            return (f"the {f.value.get('skind', f.kind.value)} {lo:#x}..{hi:#x}" + (f" ({nm[0]})" if nm else "")
+                    + (f" +{a - lo:#x}" if a != lo else ""))
+    return "nothing known"
+
+
+@rule("A1.addr.cast", version="1", ceiling=P, inputs=("src", "targets"), needs=("kind:name", "kind:symbol"),
+      helpers=(srcscan, file_targets, what_is_at))
+def addr_cast(ctx: RuleContext):
+    """A1: an integer literal cast to a pointer type in the sources (srcscan.PTR_CAST: `(void (*)(void))0x5de470`,
+    `(char *)0x6f242c`, `(T *)(unsigned)0x...`; the cast's type spells its `*`, a typedef'd pointer name is not
+    recognised; comments, strings and `#if 0` / `#else` text do not count, `#define` bodies do) whose value lies in
+    the current target's image [base, end), in a file of the current target (file_targets: a fragment of a
+    function the target holds, or any file that is no fragment). Such a pointer is the original's address
+    frozen into the code: the relinked image places that object elsewhere, so the pointer goes wrong. An error;
+    the message names what the facts know at the address (its name, else the symbol containing it, else nothing
+    known) and asks for the symbol by name. The address of a symbol (`(unsigned)&x`, `(char *)&x`) is no literal
+    and is not reported."""
+    p, img = ctx.project, ctx.image
+    names_t = [t["name"] for t in ctx.input("targets")]
+    sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
+    if not sc.ptrcasts:
+        return
+    owners = file_targets(sc, names_t)
+    names = defaultdict(list)
+    for f in ctx.facts(Kind.name):
+        names[f.lo].append(f)
+    syms = sorted(((f.lo, f.hi, f) for f in ctx.facts(Kind.symbol) if f.level > O), key=lambda t: (t[0], t[1]))
+    for c in sc.ptrcasts:
+        if p.target_name not in owners.get(c.file, set(names_t)) or not (img.base <= c.value < img.end):
+            continue
+        what = what_is_at(c.value, names, syms)
+        hint = (f"reference {what[len('the name '):].split(' / ')[0]} by name" if what.startswith("the name ")
+                else "declare the object at that address and reference it by name")
+        yield ctx.conflict(Severity.error, "A1", c.value, c.value + 1,
+                           f"{c.file}:{c.line}: `{c.text}` casts the image address {c.value:#x} to a pointer; the image has "
+                           f"{what} there: {hint} (a relinked image places it elsewhere)", a=f"src:{c.file}:{c.line}")
+
+
+TABLE_KINDS = ("jumptable", "idxtable", "fptr")            # data a code section legitimately holds
+
+
+@rule("L13.data.code", version="1", ceiling=P, inputs=("src", "targets"),
+      needs=("kind:name", "kind:start", "S.codewalk", "S.crt.code", "S.thunk", "M.match", "L.decl"),
+      helpers=(srcscan, what_is_at))
+def data_at_code(ctx: RuleContext):
+    """L13: a data declaration of the sources (a definition or an `extern` with an address comment, srcscan Data)
+    whose address, for the current target, is a known function start (a `start` fact above declared: the walk,
+    the library placement, the entry, an export; or the start of a function symbol above declared) or lies inside
+    a known function's extent (a `func` symbol above declared: walked, placed or byte-matched), unless a table
+    symbol covers it (the walk's or a declared jumptable / idxtable, a declared fptr range: data a code section
+    holds). The name declares data at code: whatever reads or calls it through that declaration, the relinked
+    image gives it a data object instead of the function. An error naming the function there."""
+    p = ctx.project
+    targets = [t["name"] for t in ctx.input("targets")]
+    sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
+    syms = ctx.facts(Kind.symbol)
+    funcs = sorted(((f.lo, f.hi, f) for f in syms if f.value.get("skind") == "func" and f.level > DE), key=lambda t: (t[0], t[1]))
+    tables = sorted((f.lo, f.hi) for f in syms if f.value.get("skind") in TABLE_KINDS and f.level >= DE)
+    starts = {f.lo for f in ctx.facts(Kind.start) if f.level > DE} | {lo for lo, _, _ in funcs}
+    if not funcs and not starts:
+        return
+    at = container(funcs)
+    data_names = {d.name for d in sc.data}
+    names = defaultdict(list)
+    for f in ctx.facts(Kind.name):
+        if f.value["name"] not in data_names:       # name the function by its function names, not by the data views
+            names[f.lo].append(f)
+    for d in sc.data:
+        a = srcscan.address_for(d.addrs, p.target_name, targets[0])
+        if a is None:
+            continue
+        fn = at(a)
+        if fn is None and a not in starts:
+            continue
+        if any(lo <= a < hi for lo, hi in tables):
+            continue
+        what = what_is_at(fn[0] if fn else a, names, funcs)
+        where = "the start of" if fn is None or fn[0] == a else f"+{a - fn[0]:#x} inside"
+        rng = f" {fn[0]:#x}..{fn[1]:#x}" if fn else ""
+        yield ctx.conflict(Severity.error, "L13", a, a + 1,
+                           f"{d.file}:{d.line}: data {'definition' if d.kind == 'def' else 'extern'} {d.name} at {a:#x} lies at {where} "
+                           f"the function{rng} ({what}): declare it as a function (or fix the address)",
+                           a=f"src:{d.file}:{d.line}", b=fn[2].by if fn else "")
+
+
+def outside_unit_issues(units: list[UnitX], srcs: list[SrcFn], declared: set[str], game: tuple) -> list[Issue]:
+    """L14: a function fragment of a unit whose extent rests on a declared boundary (`declared`: the units with a
+    `boundary start` or `boundary end` line) lies outside that unit's extent. compute_units' L7 already reports
+    the fragments inside the game code that lie outside their unit; L14 adds the ones outside the game code (in
+    the library code after it), which L7 does not look at. A unit without a declared boundary, or without an
+    extent, is not checked."""
+    ext = {u.tu: u for u in units}
+    out = []
+    for s in srcs:
+        u = ext.get(s.unit)
+        if u is None or s.unit not in declared or u.lo <= s.addr < u.hi or game[0] <= s.addr < game[1]:
+            continue
+        out.append(Issue("L14", s.addr, s.addr + 1,
+                         f"fragment of unit {s.unit} ({s.name}) at {s.addr:#x} lies outside the unit's declared extent "
+                         f"{u.lo:#x}..{u.hi:#x}", a=s.by, b=u.start_by))
+    return out
+
+
+@rule("L14.unit.outside", version="1", ceiling=DE, needs=("L.unit.extent", "L.src", "L.decl", "S.crt.code", "S.thunk"),
+      helpers=(outside_unit_issues, game_range, lib_starts_of))
+def fragment_outside_unit(ctx: RuleContext):
+    """L14 (outside_unit_issues in rules/layout.py): a function fragment outside the game code (in the library
+    code after it) whose unit has a declared boundary (`boundary start|end tu=UNIT` in decl/text.dcl) and an
+    extent: every fragment of such a unit lies inside the extent. Inside the game code L7 checks the same.
+    An error: no unit owns library code, and a unit's amalgamation compiled with that fragment is not the
+    unit's translation unit."""
+    syms = ctx.facts(Kind.symbol)
+    game = game_range(ctx.image, lib_starts_of(syms))
+    declared = {f.value["tu"] for f in ctx.facts(Kind.boundary)}
+    srcs = [s for s in srcfns_of(ctx.facts(Kind.source)) if s.by.startswith("src:")]
+    yield from _emit(ctx, outside_unit_issues(game_units(ctx.facts(Kind.unit)), srcs, declared, game))
 
 
 @rule("L6.declared", version="1", ceiling=P, needs=("L.decl", "S.codewalk", "S.crt.code", "S.thunk", "S.relocs", "S.sections"))

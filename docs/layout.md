@@ -136,6 +136,14 @@ Checks added in milestone 4 (warnings: `dcp check --strict` fails on them, `dcp 
   does not know (a declared start in unknown code) and that does not byte-match owns no bytes, its code stays
   open; (b) a byte-matched fragment whose walk runs past its compiled section (rare: R1's tail check).
 
+Checks of source decisions the byte match and the link let pass (errors, rules/layout.py):
+
+| check | rule | criterion |
+|---|---|---|
+| **A1** | `A1.addr.cast` | an integer literal cast to a pointer type (`(void (*)(void))0x5de470`, `(char *)0x6f242c`, `(T *)(unsigned)0x...`; the cast spells its `*`, a typedef'd pointer name is not recognised) whose value lies in the target's image, in a file of the target; comments, strings and `#if 0` / `#else` text do not count, `#define` bodies do. The relinked image places that object elsewhere. The message names what the facts know there (its name, the symbol containing it, or nothing) and asks for the symbol by name. `(unsigned)&x`, `(char *)&x` take a symbol's address and are not reported |
+| **L13** | `L13.data.code` | a data definition or `extern` with an address comment whose address is a known function start (a `start` fact or `func` symbol above declared) or lies inside a known function's extent (walked, placed, byte-matched), unless a jump table, index table or declared fptr range covers it. The message names the function there |
+| **L14** | `L14.unit.outside` | a function fragment outside the game code (in the library code) whose unit has a declared boundary and an extent lies outside that extent (inside the game code L7 checks the same) |
+
 ## The layout tooling (milestone 4)
 
 Everything a layout session needs; the skill `dcp-layout` (skills/dcp-layout/SKILL.md, installed into a

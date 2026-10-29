@@ -286,6 +286,21 @@ def archive_members(path: Path) -> list[tuple[str, bytes]]:
     return out
 
 
+def archive_symbol_table(b: bytes) -> list[str]:
+    """The public symbols of a COFF archive from its first linker member (`/`): a big-endian member count N, N
+    big-endian member offsets, then N NUL-terminated symbol names. Reading it costs one member, not a parse of
+    every object. An archive without a linker member has no symbol table: []."""
+    if b[:8] != b"!<arch>\n":
+        raise ValueError("not an archive")
+    if len(b) < 68 or b[8:24].decode("latin-1").strip() != "/":
+        return []
+    size = int(b[56:66])
+    d = b[68:68 + size]
+    n = int.from_bytes(d[:4], "big")
+    names = d[4 + 4 * n:].split(b"\0")[:n]
+    return [x.decode("latin-1") for x in names]
+
+
 def is_import_member(data: bytes) -> bool:
     return data[:4] == b"\0\0\xff\xff"
 

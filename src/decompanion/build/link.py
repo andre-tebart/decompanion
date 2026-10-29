@@ -17,7 +17,7 @@ What goes in (Toolchain.link, LinkJob):
                names (`extern` views of one object under another type), the name an object defines is the
                canonical one and every other resolves to it
 Output under build/link/<target>/: the image, the map, the response file, link.log and the unresolved
-externals in four files, classified as in the first attempt:
+externals in one file per class (unresolved-<class>.txt), classified as in the first attempt plus `library`:
   data      a data name of the sources (a definition or an `extern` with an address) nothing defines: define it
   renames   a stale name: it spells (placeholder) or is registered at the address of a function whose fragment
             defines another name
@@ -25,6 +25,10 @@ externals in four files, classified as in the first attempt:
   undrafted a placeholder (or a name the ledger registers) whose address has no definition in the sources yet: a
             function start without a fragment, or a data address no definition names; open layout work, not a link
             error (the link is ok when nothing else is unresolved)
+  library   a name no class above takes that the symbol table of an archive the target does not declare defines
+            (an archive directly in the project's libs/ or the toolchain's library directories, [toolchain] lib_dirs
+            first): the line names the archive(s) and the `dcp libs declare` that adds it; the archives' symbol
+            tables are indexed by content hash in the store (archive_symbols), read only when such names remain
   other     everything else (a real name without an address, a CRT internal, ...)
 The link is skipped when its inputs (the arguments, every object and library by content hash) are those of the
 last successful-or-not link and its log is on disk: the result is read back.
@@ -182,6 +186,9 @@ def full_link(project, log=None) -> LinkReport:
     if hit is not None and hit.get("key") == key and "raw" in hit and (out.exists() or not hit.get("link_ok")):
         rep.unresolved, rep.cached = classify(project, hit["raw"]), True    # the classes follow the current facts
         rep.unresolved["undrafted"] += open_exports
+        if hit.get("unresolved") != rep.unresolved:          # the classes the obligations read (libs_link_evidence)
+            hit["unresolved"] = rep.unresolved
+            cache.write_text(json.dumps(hit), newline="\n")
         rep.errors += hit["errors"]
         rep.ok = not rep.errors and (hit["link_ok"] or (bool(hit["raw"]) and not any(v for k, v in rep.unresolved.items() if k != "undrafted")))
         rep.ms = int((time.perf_counter() - t0) * 1000)
@@ -202,8 +209,66 @@ def full_link(project, log=None) -> LinkReport:
     return rep
 
 
+ARCHIVE_INDEX_VERSION = "1"
+_archive_syms: dict[str, frozenset] = {}            # content sha256 -> the archive's public symbols (per process)
+
+
+def archive_symbols(store, path: Path) -> frozenset:
+    """The public symbols of a COFF archive, from its first linker member (`/`: a big-endian count, the member
+    offsets, then the NUL-terminated names; objfmt/coff.py archive_symbol_table). Memoised by the archive's
+    content sha256 (fsmemo) in the process and in the store's blob table (kind `archive.symbols`)."""
+    from .. import fsmemo
+    from ..objfmt import coff
+    h = fsmemo.sha256(path)
+    hit = _archive_syms.get(h)
+    if hit is not None:
+        return hit
+    key = sha256("archive.symbols", ARCHIVE_INDEX_VERSION, h)
+    names = store.blob_json(key) if store is not None else None
+    if names is None:
+        try:
+            names = sorted(set(coff.archive_symbol_table(fsmemo.read_bytes(path))))
+        except (ValueError, IndexError, UnicodeDecodeError):
+            names = []
+        if store is not None:
+            store.put_blob_json(key, "archive.symbols", names)
+    _archive_syms[h] = out = frozenset(names)
+    return out
+
+
+def library_dirs(project) -> list[Path]:
+    """Where an archive of the link may come from: the project's libs/, then the toolchain's library search
+    directories ([toolchain] lib_dirs first, then the installation's own)."""
+    return [project.root / "libs", *project.toolchain.library_search_dirs()]
+
+
+def undeclared_definers(project, names: list[str]) -> dict[str, list[Path]]:
+    """symbol -> the archives (*.lib directly in library_dirs, not in subdirectories, in search order) whose
+    symbol table defines it, for the archives the target does not declare. Reads the archives only when asked
+    (classify asks only for names no other class takes)."""
+    if not names:
+        return {}
+    declared = {Path(a).resolve() for a in project.lib_archives}
+    out: dict[str, list[Path]] = {}
+    want = set(names)
+    seen = set()
+    for d in library_dirs(project):
+        if not d.is_dir():
+            continue
+        for p in sorted(d.iterdir(), key=lambda x: x.name.lower()):
+            if p.suffix.lower() != ".lib" or not p.is_file():
+                continue
+            rp = p.resolve()
+            if rp in declared or rp in seen:
+                continue
+            seen.add(rp)
+            for n in want & archive_symbols(project.store, p):
+                out.setdefault(n, []).append(p)
+    return out
+
+
 def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
-    """The five classes of the module docstring, one line per symbol (`symbol  ->  hint`)."""
+    """The six classes of the module docstring, one line per symbol (`symbol  ->  hint`)."""
     st, tc = project.store, project.toolchain
     starts = {f.lo for f in st.facts(Kind.start)}
     registered: dict[str, set] = {}
@@ -226,8 +291,9 @@ def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
     sc = srcscan.scan(project.root, project.input_hash("src"))
     for d in sc.data:
         data_names.add(d.name)
-    out = {"data": [], "renames": [], "aliases": [], "undrafted": [], "other": []}
+    out = {"data": [], "renames": [], "aliases": [], "undrafted": [], "library": [], "other": []}
     img = project.image
+    rest = []
     for u in unresolved:
         cn = tc.undecorate(u)
         addrs = set(name_at.get(cn, ()))
@@ -253,6 +319,13 @@ def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
         if cn in data_names:
             out["data"].append(u)
             continue
-        where = sorted(a for a in addrs if a not in func_at)
+        rest.append((u, sorted(a for a in addrs if a not in func_at)))
+    definers = undeclared_definers(project, [u for u, _ in rest])
+    for u, where in rest:
+        libs = definers.get(u)
+        if libs:
+            out["library"].append(f"{u}  ->  " + ", ".join(p.as_posix() for p in libs[:3]) + (f" (+{len(libs) - 3})" if len(libs) > 3 else "")
+                                  + f"  (undeclared: dcp libs declare <the declared archives> {libs[0].as_posix()} --why \"...\")")
+            continue
         out["other"].append(u + (f"  (no fragment at {where[0]:#010x})" if where else ""))
     return out

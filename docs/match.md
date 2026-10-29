@@ -148,8 +148,13 @@ externals for the several source names of one data address. Output under `build/
 externals are classified into `data` (a data name of the sources nothing defines), `renames` (a stale name of
 a function whose fragment defines another), `aliases` (a name at another data object's address), `undrafted`
 (a placeholder or registered name of an address the sources do not define yet, and every export without a
-fragment, which the generated .def leaves out: open layout work, milestone 4) and `other`; the link is ok when
-nothing but `undrafted` is unresolved.
+fragment, which the generated .def leaves out: open layout work, milestone 4), `library` (a name no class above
+takes that an archive the target does not declare defines: an archive directly in the project's `libs/` or the
+toolchain's library directories, `[toolchain] lib_dirs` first; the line names the archives and the `dcp libs
+declare` that adds one; the symbol tables come from each archive's first linker member, indexed once per
+archive content hash in the store's blob table and read only when such names remain) and `other`; the link is
+ok when nothing but `undrafted` is unresolved. A `library` name of the last link also reopens the obligation
+`libs.archives` (`dcp status`, the gate), with the archives and the names they define as evidence.
 The link is part of `dcp check` once a target has a compiled unit; it is skipped (read back) when no input
 changed.
 
@@ -175,5 +180,7 @@ the flags and its include hash. `dcp check` lints when clang is installed.
 ## The gate (`dcp check`)
 
 Per target: build the stale units, lint (when clang is installed), refresh every rule, fail on any bug or
-error conflict (M.compile, M.gen, M1, M5, M6, M8..M10, D1, D4..D6, the setup and layout checks), link (once a
-unit is compiled) and fail on unresolved externals; `--against REV` adds the grade comparison.
+error conflict (M.compile, M.gen, M1, M5, M6, M8..M10, D1, D4..D6, the setup and layout checks, A1, L13, L14:
+docs/layout.md), link (once a unit is compiled) and fail on unresolved externals, then the open toolchain and
+libs obligations (after the link: a `library` name reopens libs.archives); `--against REV` adds the grade
+comparison.

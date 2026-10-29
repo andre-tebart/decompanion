@@ -529,3 +529,21 @@ data debt (D5 tentative definitions 530, D4 69, D1 9, M.data.content 1, data C.o
 unresolved names (CRT functions
 under placeholder names, an ICF-folded stub, GUID libraries not declared, two Miles stubs) that rea resolved
 with hand-written alias tables.
+
+Added next (user decision, 2026-10-30: a gildegold session made four decisions that passed with gate=ok; each is
+now caught):
+- A1 (`A1.addr.cast`, error): an integer literal inside the image cast to a pointer type (`atexit((void
+  (*)(void))0x5de470)`); the relinked image places the object elsewhere. The source scan collects the casts per
+  file (srcscan.PTR_CAST, cached with the scan), so the rule reads no file. gildegold: 5, all in
+  unk_575860/f_580a50.c (`*(int *)(0x6f9f60 + i * 0x38)`).
+- L13 (`L13.data.code`, error): a data definition or extern whose address is a known function's start or inside
+  its extent (`extern char ai_SeanceDecideStub[]; /* 0x52a040 */` at sv_ReturnZero). gildegold: 0 now, 2 at
+  98fca9c.
+- L14 (`L14.unit.outside`, error): a fragment in the library code whose unit has a declared extent elsewhere
+  (L7 looks at the game code only). gildegold: 2, mss32.lib's MSS_auto_cleanup / its exit callback in unit sfx;
+  gildegold's gate fails on them until the project decides where library code that has a source lives.
+- The link's class `library`: an unresolved name an undeclared archive of the library directories defines
+  (DX6's dxguid.lib for `_IID_IDirectDraw4`, which VC98's DXGUID.LIB lacks), with the `dcp libs declare` that
+  adds it; it reopens the obligation libs.archives. The archives' first linker members are indexed once per
+  content hash in the blob store, and only when such names remain.
+- The warm `dcp check` of gildegold is unchanged (~5.2 s).

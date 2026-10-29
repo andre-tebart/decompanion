@@ -289,13 +289,7 @@ def cmd_check(args):
         print(f"check target={name}: " + ("  ".join(f"{k}={v}" for k, v in sorted(c.items())) if conf else "no conflicts"))
         for x in bad:
             print(x.line())
-        from .obligations import gate_failures
-        open_ = gate_failures(p)
-        for o in open_:
-            print(record(**o.fields()))
         reasons = []
-        if open_:
-            reasons.append(f"obligations={len(open_)}")
         if bad:
             reasons.append(f"errors={len(bad)}")
         if args.strict:
@@ -312,6 +306,12 @@ def cmd_check(args):
                                + (f",errors={len(lr.errors)}" if lr.errors else ""))
         elif p.store.facts(Kind.build):
             print(record(link=name, skipped="the toolchain is not available"))
+        from .obligations import gate_failures
+        open_ = gate_failures(p)            # after the link: libs.archives reads the link's `library` class
+        for o in open_:
+            print(record(**o.fields()))
+        if open_:
+            reasons.insert(0, f"obligations={len(open_)}")
         if against is not None:
             falls = G.regressions(p, against)
             print(record(against=args.against, target=name, falls=len(falls)))
