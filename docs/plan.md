@@ -1,6 +1,6 @@
 # decompanion: a framework for byte-matching decompilation (plan)
 
-Approved 2026-10-29. Milestone status: M1 done 2026-10-29 (`dcp setup` on server.dll, see README); M2..M6 open.
+Approved 2026-10-29, amended the same day (several targets per project, section 1.5). Milestone status: M1 done 2026-10-29 (`dcp setup` on server.dll, see README); M2..M6 open.
 
 ## Context
 
@@ -28,6 +28,12 @@ Decisions taken with the user (2026-10-29): new repo named decompanion; server.d
 evidence ladder per fact (no numbers); VC6 PE32 x86 only, behind plugin seams; **one file per function** compiled
 through a generated per-unit amalgamation; unit-level / pre-source declarations in **`decl/*.dcl`** files (one fact
 per line, sorted by address); function and data addresses stay in the sources.
+
+Amendment (2026-10-29, after M1): **one project may hold several binaries of one codebase** ("targets": for
+The Guild Gold the server dll, GildeGold.exe and GildeGold_TL.exe were built from one tree on one day). The
+target dimension is modelled from M2 on (section 1.5); every workflow stays single-target until M6, which
+adds the second target and the one rule that makes sharing pay: same code across targets transfers names and
+sources at the proven level.
 
 ## 1. Core model
 
@@ -60,17 +66,17 @@ them; `dcp check` fails on any.
 | state | where | level |
 |---|---|---|
 | binary facts (headers, sections, imports, exports, relocs, rich, strings) | computed every run, cached | proven / derived |
-| target identity | `decompanion.toml [target] path, sha256, image="pe32"` | verified, mismatch fatal |
+| target identity | `decompanion.toml [[target]] name, path, sha256, image="pe32"` (the first is the default target) | verified, mismatch fatal |
 | toolchain + flags (+ per-unit overrides) | `decompanion.toml [toolchain] ... reason=` | declared → proven per unit by `M.flags.proven` |
 | library identification (CRT, SDK) | computed from `.lib` archives in `[libs]` into the signature store | proven |
-| function address + description, `@deep` / `@stuck` / `@rough` | `/* 0x10001000, what */` first line of `src/<unit>/f_<addr>.c` (file name must agree) | src: declared → proven when matched |
-| data address | `T x = v; /* 0x1002xxxx */` after definition / extern (kept from rea) | src: declared → proven via site / content |
+| function address + description, `@deep` / `@stuck` / `@rough` | `/* 0x10001000, what */` first line of `src/<unit>/f_<addr>.c` (file name must agree); several targets: `/* server:0x10001000, exe:0x4a3000, what */`, a bare address means the default target | src: declared → proven when matched |
+| data address | `T x = v; /* 0x1002xxxx */` after definition / extern (kept from rea); same target prefixes | src: declared → proven via site / content |
 | per-line exemptions `@original why`, `@vc6 why` | in sources | declared |
 | unit boundary + name origin, dead bytes, jump tables, foreign blobs, names for addresses without source | `decl/text.dcl`, `decl/data.dcl` | declared |
 | rename events (functions, data, **fields, types, macros**) | `names.log`, append-only, `merge=union` | — |
 | claims | `claims.log`, append-only, `merge=union` | — |
 | grade baseline | `ledger/grades.tsv`, written only by `dcp promote` on main, `merge=ours` | — |
-| derived state | `build/dcp.sqlite` + `build/obj/` (git-ignored) | — |
+| derived state | `build/<target>.sqlite` per target + `build/obj/` (git-ignored) | — |
 
 `.dcl` grammar: `ADDR[..END] KIND [k=v ...] -- reason`, closed vocabulary (`boundary start|end tu=`, `bytes
 dead`, `jumptable fn=`, `foreign kind=`, `name`, `fptr`, ...), file kept sorted by address (`dcp decl add` inserts
@@ -108,6 +114,26 @@ in-process, memoised in `blob` by `sha256(bytes ‖ mask ‖ va)`; no objdump, n
 Worktrees: `dcp wt new` records main's store path; the worktree `ATTACH`es main's `dcp.sqlite` read-only and
 `build/obj` by path, writes its own overlay, lookups go overlay-then-main. `dcp seed PATH` (plain copy) stays as
 the fallback. `why` is one `bytemap` lookup + per-kind `(kind, lo)` lookups: Python start-up dominates.
+
+### 1.5 Several targets per project
+
+A project is one codebase; it may hold several binaries built from it. Each is a **target** with a name
+(`[[target]]` in `decompanion.toml`, the first is the default). What this costs, all of it in M2:
+- Facts stay intervals of one address space: every target has its own store `build/<target>.sqlite`, the
+  same schema, the same rules. A cross-target rule opens two stores.
+- The address comment grammar takes an optional target prefix (section 1.2): a function compiled into two
+  targets lists both addresses; a unit compiled into two targets gets two amalgamations and two grades per
+  function (one per target), and `ledger/grades.tsv` carries a target column.
+- The `.dcl` grammar takes the same prefix (`server:0x10001000 boundary ...`); a bare address is the default
+  target.
+- Every `dcp` command takes `--target NAME` (default: the first target). `dcp init` creates one target; `dcp
+  target add NAME PATH` adds another.
+What this buys, in M6: rule `X.same.code` [proven]: a function of target A whose masked bytes equal a function
+of target B (with the relocation fields of both masked, and the dll's `.reloc` evidence attached to the exe's
+copy) is the same source compiled with the same flags: names, descriptions, drafted source, unit membership
+and the dll's exact data references carry over. Unit order found in one target constrains the other (link
+order is the same tree). What stays out until the match phase is working on one target: units that differ
+between targets by a define, differing link orders, a function matched in one target but not the other.
 
 ### 1.4 Rule engine (`rules/engine.py`)
 
@@ -195,7 +221,7 @@ file committed in a worktree, merged byte functions no longer byte on main).
 Output contract for agent readers: one record per line, `key=value` tokens, addresses `0x%08x`, intervals
 `lo..hi` (hi exclusive), sorted by address then kind, counts before lists, `--json` everywhere.
 
-`dcp init [--from-setup]` · `dcp setup [pe|dirs|rich|strings|sigs build|sigs scan|entry|probe|report]` ·
+Every command takes `--target NAME` (section 1.5). `dcp init [--from-setup]` · `dcp target add|list` · `dcp setup [pe|dirs|rich|strings|sigs build|sigs scan|entry|probe|report]` ·
 `dcp toolchain` · `dcp why ADDR` · `dcp facts LO..HI [--kind]` · `dcp conflicts` · `dcp rules` · `dcp check
 [--strict] [--against REV]` (the gate: loaders parse, no conflicts, every TU compiles, link resolves, no grade fall,
 decl files sorted, UTF-8/LF) · `dcp decl add "LINE"` · `dcp layout next|units|unit propose|analyze` · `dcp
@@ -270,11 +296,11 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 | # | deliverable | verification |
 |---|---|---|
 | M1 setup byte map | fact/store/engine, pe32, coff, vc6 rich/fill, disasm, all `S.*` + `B.bytemap` + setup checks, `dcp init`, `dcp setup`, `dcp why`, `dcp facts`, `dcp conflicts`, `dcp rules`, `dcp toolchain` | on server.dll: every byte has exactly one `symbol`/`region` fact; LIBC members placed proven with `.reloc` coincidence; report shows 37 user objects C, static LIBC, CRT region with gaps listed, exports + DllMain starts, toolchain = declared flags; `dcp why` < 100 ms; rerun runs zero rules; unit tests on a synthetic PE |
-| M2 declarations + layout | `decl.py`, `srcscan.py`, `L.*`, boundary rules, Ghidra import, `dcp layout *`, `dcp decl add`, `dcp check` (loader + conflict gate), `dcp wt new/seed` (overlay store) | first unit declared on server.dll from `Init` outward; a deliberately wrong boundary and a walk crossing a start are caught (L1/L3/L4) |
+| M2 declarations + layout | the target dimension (section 1.5: `[[target]]`, store per target, `--target`, target prefixes in the address-comment and `.dcl` grammars, `dcp target add`), `decl.py`, `srcscan.py`, `L.*`, boundary rules, Ghidra import, `dcp layout *`, `dcp decl add`, `dcp check` (loader + conflict gate), `dcp wt new/seed` (overlay store) | first unit declared on server.dll from `Init` outward; a deliberately wrong boundary and a walk crossing a start are caught (L1/L3/L4); a second target added to a scratch project gets its own store and `dcp why --target` answers for both |
 | M3 build + compare + grades | `toolchains/vc6/cl.py` (`/P` include sets), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.*`, capstone asmdiff/diffclass, `G.*`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote`, full `/DLL` link with generated `.def`, lint, checks M1..M12, D1..D6 | first functions byte-match; `dcp toolchain probe` promotes `/O2 /Gy` to proven; a header edit that flips codegen is reported by M12; a header edit recompiles only its includers |
 | M4 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
 | M5 parallel sessions | `names.log` + `dcp rename`, claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
-| M6 second target | GildeGold.exe as a second project (exe without `.reloc`, `.data` ordered literal scan replaces reloc evidence) — validates the exe path; no migration of `rea` | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2) |
+| M6 second target | GildeGold.exe as a second target of guild-server (exe without `.reloc`, `.data` ordered literal scan replaces reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; no migration of `rea` | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
 
 ## 8. What is lifted from `rea` (paths under `C:\Users\andre\Documents\rea\tools\gildegold\`)
 
