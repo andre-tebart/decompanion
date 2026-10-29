@@ -6,7 +6,7 @@ docs/layout.md); multi-target round done 2026-10-29 (per-target toolchain declar
 and loader per target, `dcp setup --all-targets`; server.dll and GildeGold.exe pass `dcp check` as two targets
 of one project; S.codewalk on the exe ~35 s -> ~5 s); cleanup round done 2026-10-29 (every VC6 / LINK, PE32, COFF and
 x86 / capstone fact moved behind the plugin seams, the instruction-set seam `isa/` added, plugin registries,
-`dcp init --toolchain-root` required; facts byte-identical; see docs/architecture.md); M3 done 2026-10-29 (amalgamation per unit and target, pool compile with include-set staleness, M.match with the DLL aid, M.draft, M8..M10, M.data.site / .content / .draft, D1 D4 D5 D6, grades code draft/shape/byte and readability Q1..Q7, queues, ledger/grades.tsv + M1, the full /DLL link, `dcp toolchain probe`, clang lint M5..M7; DllMain, Init and Exit of server.dll byte-match; see docs/match.md); M4..M6 open.
+`dcp init --toolchain-root` required; facts byte-identical; see docs/architecture.md); M3 done 2026-10-29 (amalgamation per unit and target, pool compile with include-set staleness, M.match with the DLL aid, M.draft, M8..M10, M.data.site / .content / .draft, D1 D4 D5 D6, grades code draft/shape/byte and readability Q1..Q7, queues, ledger/grades.tsv + M1, the full /DLL link, `dcp toolchain probe`, clang lint M5..M7; DllMain, Init and Exit of server.dll byte-match; see docs/match.md); reprioritised 2026-10-29 (user decision: the layout tooling first, section 7: M4 layout tooling, M5 the layout experiment on server.dll, then the match toolbox, parallel sessions and the second target as M6..M8); M4 in progress 2026-10-29.
 
 ## Context
 
@@ -38,8 +38,12 @@ per line, sorted by address); function and data addresses stay in the sources.
 Amendment (2026-10-29, after M1): **one project may hold several binaries of one codebase** ("targets": for
 The Guild Gold the server dll, GildeGold.exe and GildeGold_TL.exe were built from one tree on one day). The
 target dimension is modelled from M2 on (section 1.5) and every setup and layout command runs per target and
-across targets since the multi-target round (2026-10-29); M6 adds the one rule that makes sharing pay: same code across targets transfers names and
+across targets since the multi-target round (2026-10-29); M8 adds the one rule that makes sharing pay: same code across targets transfers names and
 sources at the proven level.
+
+Reprioritisation (2026-10-29, user decision: "all the tooling that is relevant for layout work first"): before the
+match toolbox, every tool a layout session needs (M4), then a layout experiment on server.dll by the user with the
+skill (M5); the old M4..M6 follow as M6..M8.
 
 ## 1. Core model
 
@@ -145,7 +149,7 @@ A project is one codebase; it may hold several binaries built from it. Each is a
   exe:0x4a3000, what */` is a fact in both stores, a bare address only in the default target's; a prefixed
   `.dcl` line only in its target's. Errors of the text itself are reported once (the default target's store),
   errors about an address in its target's store.
-What this buys, in M6: rule `X.same.code` [proven]: a function of target A whose masked bytes equal a function
+What this buys, in M8: rule `X.same.code` [proven]: a function of target A whose masked bytes equal a function
 of target B (with the relocation fields of both masked, and the dll's `.reloc` evidence attached to the exe's
 copy) is the same source compiled with the same flags: names, descriptions, drafted source, unit membership
 and the dll's exact data references carry over. Unit order found in one target constrains the other (link
@@ -324,9 +328,11 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 | M1 setup byte map | fact/store/engine, pe32, coff, vc6 rich/fill, disasm, all `S.*` + `B.bytemap` + setup checks, `dcp init`, `dcp setup`, `dcp why`, `dcp facts`, `dcp conflicts`, `dcp rules`, `dcp toolchain` | on server.dll: every byte has exactly one `symbol`/`region` fact; LIBC members placed proven with `.reloc` coincidence; report shows 37 user objects C, static LIBC, CRT region with gaps listed, exports + DllMain starts, toolchain = declared flags; `dcp why` < 100 ms; rerun runs zero rules; unit tests on a synthetic PE |
 | M2 declarations + layout | the target dimension (section 1.5: `[[target]]`, store per target, `--target`, target prefixes in the address-comment and `.dcl` grammars, `dcp target add`), `decl.py`, `srcscan.py`, `L.*`, boundary rules, Ghidra import, `dcp layout *`, `dcp decl add`, `dcp check` (loader + conflict gate), `dcp wt new/seed` (overlay store) | first unit declared on server.dll from `Init` outward; a deliberately wrong boundary and a walk crossing a start are caught (L1/L3/L4); a second target added to a scratch project gets its own store and `dcp why --target` answers for both |
 | M3 build + compare + grades (done 2026-10-29) | `toolchains/vc6/cl.py` (`/E` include sets: the `/P` listing on stdout), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.site/.content/.draft`, capstone asmdiff/diffclass, `G.grade`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote/escalate/stuck/asmdiff/diffclass/lint`, full `/DLL` link with generated `.def`, lint, checks M1, M2 (stale / double level tag), M5..M10, D1, D4..D6; open: M3, M4, M11, M12, D2, D3, `M.data.iat/.lib/.fill`, `M.bytes.declared` | first functions byte-match (server.dll DllMain / Init / Exit, relocs 0/0, 2/2, 4/4); `dcp toolchain probe` runs the grid and says *indistinguishable* for most flags with three anchors from one unit (correct: proven needs anchors from two units); a header edit recompiles only its includers (shown) |
-| M4 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
-| M5 parallel sessions | `names.log` + `dcp rename`, claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
-| M6 second target | GildeGold.exe as a second target of guild-server (the target itself, its toolchain declaration and archives, setup and the gate run since the multi-target round of 2026-10-29: game code 0x401000..0x5dd3e0, CRT from 0x5de4a0; open: the exe has no `.reloc`, so W3 finds nothing and ~0xc6000 bytes of its game code stay unknown — a `.data` ordered literal scan and code-pointer evidence replace the reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; no migration of `rea` | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
+| M4 layout tooling | Ghidra headless export (`dcp ghidra export`, `dcp ghidra status`, L9), reading tools (`dcp disasm`, `dcp dump`, `dcp refs`, `dcp layout literals`, `dcp layout starts`), drafting (`dcp unit new`, `dcp unit join`, `dcp unit rename`, `dcp draft [--next]`, `dcp rename` + `names.log`), unlinked helpers and `bytes dead` in the unit byte map, L10, `dcp session start`, `dcp session wrap`, the skill `dcp-layout` (`dcp init` / `dcp skills install`) | on a scratch project of server.dll: export, status, starts / literals of a range, the first ten minutes of a layout session (unit new, five drafts, build, grade, refs, rename, unit rename, check, session wrap) |
+| M5 layout experiment | the user runs layout sessions on server.dll (`../guild-server`) by hand with the skill; findings go back into the tooling | the units of server.dll's game code drafted and separated, the session reports computed |
+| M6 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
+| M7 parallel sessions | the `names.log` fold at the merge (the log and `dcp rename` itself are M4), claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
+| M8 second target | GildeGold.exe as a second target of guild-server (the target itself, its toolchain declaration and archives, setup and the gate run since the multi-target round of 2026-10-29: game code 0x401000..0x5dd3e0, CRT from 0x5de4a0; open: the exe has no `.reloc`, so W3 finds nothing and ~0xc6000 bytes of its game code stay unknown — a `.data` ordered literal scan and code-pointer evidence replace the reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; no migration of `rea` | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
 
 ## 8. What is lifted from `rea` (paths under `C:\Users\andre\Documents\rea\tools\gildegold\`)
 
@@ -383,5 +389,5 @@ zero rule runs.
 - The level tags are removed by `dcp build` when a function reaches byte + readable (auto-clear); a remaining
   stale tag is the warning M2.
 - The toolchain not installed: units are not compiled and M.compile warns instead of failing the gate.
-- Open (M4 or later): M3 (stuck without open.md), M4 (distance WORSE without `dcp accept`), M11, M12 (the
+- Open (M6 or later): M3 (stuck without open.md), M4 (distance WORSE without `dcp accept`), M11, M12 (the
   header-commit distance check), D2 / D3, `M.data.iat` / `.lib` / `.fill`, `M.bytes.declared`, `dcp accept`.
