@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import register
-from .base import ABSOLUTE, ABSOLUTE_RVA, RELATIVE, ObjectFormat
+from .base import ABSOLUTE, ABSOLUTE_RVA, RELATIVE, FunctionCode, ObjectFormat
 
 DIR32, DIR32NB, REL32 = 0x06, 0x07, 0x14
 # IMAGE_REL_I386_* -> (kind, width): the relocations that rewrite bytes of the linked image
@@ -140,6 +140,25 @@ class Symbol:
         return (self.type >> 4) == 2
 
     @property
+    def imported(self) -> str | None:
+        """The linker symbol a dllimport reference imports (`__imp__Sleep@4` -> `_Sleep@4`), else None."""
+        return self.name[len(IMPORT_PREFIX):] if self.dllimport else None
+
+    @property
+    def constant(self) -> str | None:
+        """"string" for a string literal COMDAT (`??_C@`), "float" for a floating constant (`__real@`), else None."""
+        if self.name.startswith("??_C@"):
+            return "string"
+        if self.name.startswith("__real@"):
+            return "float"
+        return None
+
+    @property
+    def common(self) -> bool:
+        """A tentative definition (`T x;` at file scope): external, no section, the value is its size."""
+        return self.cls == SYM_EXTERNAL and self.secnum == 0 and self.value > 0
+
+    @property
     def key(self):
         if self.external and not self.name.startswith(CONSTANT_PREFIXES):
             return self.name
@@ -204,6 +223,39 @@ class Obj:
     def externals(self):
         """Symbols this object references but does not define."""
         return [s for s in self.symbols.values() if s.unresolved]
+
+    def functions(self) -> list[Symbol]:
+        """The defined function symbols of the code sections (external or static), in symbol-table order."""
+        return [s for s in self.symbols.values() if s.defined and s.named and s.function and s.section is not None
+                and s.section.code and s.section.data is not None]
+
+    def function_code(self, sym: Symbol) -> FunctionCode:
+        """The bytes of a function: from its symbol to the next named symbol of its section (several functions
+        share a section without /Gy), else to the section's end; the relocation mask; the relocations inside."""
+        sec = sym.section
+        start = sym.value
+        end = next((s.value for s in sec.syms if s.value > start and s.named), sec.size)
+        mask = sec.mask()[start:end]
+        relocs = tuple((r.offset - start, r, self.symbols.get(r.symbol_index)) for r in sec.relocs if start <= r.offset < end)
+        return FunctionCode(sym, sec, start, bytes(sec.data[start:end]), mask, relocs)
+
+    def data_symbols(self) -> list[tuple[Symbol, str, int]]:
+        """(symbol, kind, size) of every named data symbol: kind `data` / `rdata` / `bss` for a symbol of an
+        initialised, read-only or uninitialised section (its size: up to the next named symbol or the section
+        end), `common` for a tentative definition. Compiler constants (literals, floats) are left out."""
+        out = []
+        for sec in self.sections[1:]:
+            if sec.code or sec.discard:
+                continue
+            kind = "bss" if sec.data is None else ("rdata" if sec.name.startswith(".rdata") else "data")
+            named = [s for s in sec.syms if s.named and not s.constant and not s.name.startswith(("$", "."))]
+            for k, s in enumerate(named):
+                end = named[k + 1].value if k + 1 < len(named) else sec.size
+                out.append((s, kind, end - s.value))
+        for s in self.symbols.values():
+            if s.common:
+                out.append((s, "common", s.value))
+        return out
 
     def __repr__(self):
         return f"Obj({self.name})"
@@ -275,6 +327,55 @@ class Coff(ObjectFormat):
 
     def archive_objects(self, path):
         return archive_objects(path)
+
+    def read_object(self, path):
+        return Obj(Path(path).name, Path(path).read_bytes())
+
+    def import_symbols(self, path) -> dict[str, tuple[str, str]]:
+        """symbol -> (dll, import name or `#ordinal`) of the short import members of an import library."""
+        out = {}
+        for _, data in archive_members(path):
+            if not is_import_member(data):
+                continue
+            hint, typ = struct.unpack_from("<HH", data, 16)
+            sym, dll = import_member_symbol(data)
+            ntype = typ >> 2 & 7
+            name = {0: f"#{hint}", 1: sym, 2: sym.lstrip("?@_"), 3: sym.lstrip("?@_").split("@")[0]}.get(ntype, sym)
+            out[sym] = (dll, name)
+        return out
+
+    def alias_object(self, path, aliases) -> None:
+        """Write an object whose only content is one weak external per (alias, canonical) pair of linker symbol
+        names (storage class WEAK_EXTERNAL, aux characteristics 3 = search alias): LINK then resolves the alias
+        to the canonical symbol (lifted from the first attempt's link.py)."""
+        strtab = bytearray()
+
+        def namefield(n):
+            if len(n) <= 8:
+                return n.encode().ljust(8, b"\0")
+            off = 4 + len(strtab)
+            strtab.extend(n.encode() + b"\0")
+            return struct.pack("<II", 0, off)
+
+        def sym(n, cls=2, naux=0):
+            return namefield(n) + struct.pack("<IhHBB", 0, 0, 0, cls, naux)
+
+        body, idx = b"", 0
+        for _ in aliases:
+            idx += 2
+        target_idx, order = {}, []
+        for _, c in aliases:
+            if c not in target_idx:
+                target_idx[c] = idx
+                order.append(c)
+                idx += 1
+        for a, c in aliases:
+            body += sym(a, cls=105, naux=1)
+            body += struct.pack("<II10s", target_idx[c], 3, b"\0" * 10)
+        for c in order:
+            body += sym(c)
+        header = struct.pack("<HHIIIHH", 0x14c, 0, 0, 20, idx, 0, 0)
+        Path(path).write_bytes(header + body + struct.pack("<I", 4 + len(strtab)) + bytes(strtab))
 
     def tool_stamps(self, paths):
         return comp_ids(paths)

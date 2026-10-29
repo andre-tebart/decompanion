@@ -87,7 +87,7 @@ claims.log merge=union
 ledger/grades.tsv merge=ours
 """
 
-GITIGNORE = """build/
+GITIGNORE = """/build/
 .dcp/
 __pycache__/
 .venv/

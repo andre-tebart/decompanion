@@ -318,6 +318,15 @@ class Project:
             h = sha256(canonical(self.input("targets")))
         elif name == "plugins":
             h = plugins_hash(f"{self.target().image}/{self.toolchain.key}/{self.toolchain.object_format}/{self.target().isa or ''}")
+        elif name == "objects":
+            h = sha256(self.store.tu_hash(), str(self.toolchain.available()))
+        elif name == "baseline":
+            p = self.root / "ledger" / "grades.tsv"
+            h = file_hash(p) if p.exists() else "none"
+        elif name == "probe":
+            h = sha256(self.store.meta("probe") or "")
+        elif name == "lint":
+            h = sha256(self.store.meta("lint") or "")
         else:
             raise ConfigError(f"unknown input {name!r}")
         self._hashes[name] = h
@@ -359,4 +368,17 @@ class Project:
             return self.toolchain_decl
         if name == "targets":
             return [{"name": t.name, "path": t.path.as_posix(), "sha256": t.sha256, "image": t.image} for t in self.targets]
+        if name == "objects":
+            return self.store.tus()
+        if name == "baseline":
+            p = self.root / "ledger" / "grades.tsv"
+            return p.read_text() if p.exists() else ""
+        if name == "probe":
+            import json
+            m = self.store.meta("probe")
+            return json.loads(m) if m else None
+        if name == "lint":
+            import json
+            m = self.store.meta("lint")
+            return json.loads(m) if m else None
         raise ConfigError(f"unknown input {name!r}")

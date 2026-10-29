@@ -65,6 +65,13 @@ class PE32(Image):
         return None
 
     @property
+    def kind(self):
+        """dll (the DLL characteristic), gui (subsystem 2, WINDOWS_GUI), console (3, WINDOWS_CUI), else exe."""
+        if self.is_dll:
+            return "dll"
+        return {2: "gui", 3: "console"}.get(self.subsystem, "exe")
+
+    @property
     def default_isa(self):
         return MACHINE_ISA.get(self.machine)
 

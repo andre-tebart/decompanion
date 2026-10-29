@@ -372,9 +372,9 @@ def scan_file(rel: str, text: str, out: Scan):
     is_fragment = in_src and bool(FRAGMENT.match(name) or UNLINKED_FRAGMENT.match(name))
     defs = S.definitions()
     skip = None
-    if in_src and rel.endswith(".c") and not is_fragment and name != "head.c":
+    if in_src and rel.endswith(".c") and not is_fragment and name not in ("head.c", "tail.c"):
         out.errors.append(ScanError(rel, 1, "L.src", f"unexpected source file {name}: a unit holds head.c, f_<addr>.c "
-                                                     f"and u_<name>.c fragments"))
+                                                     f"and u_<name>.c fragments, and tail.c"))
     if is_fragment:
         if len(defs) != 1:
             out.errors.append(ScanError(rel, 1, "L.src", f"a fragment defines exactly one function, this one {len(defs)}"))

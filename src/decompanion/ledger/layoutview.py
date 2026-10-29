@@ -34,7 +34,7 @@ class View:
     def load(cls, project, store):
         v = cls(project, store)
         img = project.image
-        v.syms = store.facts(Kind.symbol)
+        v.syms = [f for f in store.facts(Kind.symbol) if not f.run.startswith("M.")]   # the match phase repeats the walk's functions
         v.game = L.game_range(img, L.lib_starts_of(v.syms))
         v.funcs = L.functions_of(v.syms)
         for f in store.facts(Kind.start):

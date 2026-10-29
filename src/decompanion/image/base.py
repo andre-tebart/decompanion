@@ -177,6 +177,11 @@ class Image:
 
     # ------------------------------------------------------------------ implemented per format
     @property
+    def kind(self) -> str:
+        """What the start-up code calls: dll, gui (a windowed exe), console, or exe when the format cannot say."""
+        return "dll" if self.is_dll else "exe"
+
+    @property
     def default_isa(self) -> str | None:
         """The key of the instruction-set plugin the machine type implies (None: unknown machine)."""
         return None

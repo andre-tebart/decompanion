@@ -21,13 +21,15 @@ How it is computed (none of this changes a result):
 """
 from __future__ import annotations
 
+import collections
+import itertools
 import re
 
 from capstone import CS_ARCH_X86, CS_GRP_CALL, CS_GRP_JUMP, CS_GRP_RET, CS_MODE_32, Cs
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG, X86_REG_INVALID
 
 from . import register
-from .base import CALL, CJUMP, IJUMP, JUMP, OTHER, RET, Decoder, Ins, Isa, TableShape
+from .base import CALL, CJUMP, IJUMP, JUMP, OTHER, RET, Decoder, Ins, Isa, Line, TableShape
 
 M32 = 0xffffffff
 G_NONE, G_CALL, G_JUMP, G_RET = 0, 1, 2, 3
@@ -163,6 +165,91 @@ class X86Decoder(Decoder):
         return range(ins.addr + 1, ins.addr + ins.size - 3)
 
 
+# ------------------------------------------------------------------------------------------------ the instruction diff
+# Ported from the first attempt's decomp/match/diffclass.py and ledger/grade.py (one_renaming), from objdump's
+# spelling to capstone's (`mov eax, dword ptr [esp + 4]`, scale-1 index without `*1`).
+GPR_ALL = ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp"]     # ebp counts only in functions without a frame pointer
+SUB = {"eax": ["ax", "al", "ah"], "ebx": ["bx", "bl", "bh"], "ecx": ["cx", "cl", "ch"], "edx": ["dx", "dl", "dh"],
+       "esi": ["si"], "edi": ["di"], "ebp": ["bp"]}
+REG_RE = re.compile(r"\b(e[abcd]x|e[sd]i|ebp|[abcd][xlh]|[sd]i|bp)\b")
+NUM = r"(?:0x[0-9a-f]+|\d+)"
+SLOT_RE = re.compile(r"\[(esp|ebp)((?: [+-] " + NUM + r")?)\]")
+SIB_RE = re.compile(r"\[(e[abcd]x|e[sd]i|ebp) \+ (e[abcd]x|e[sd]i|ebp)((?: [+-] " + NUM + r")?)\]")
+TOKEN_RE = re.compile(r"\[(?:esp|ebp)(?: [+-] " + NUM + r")?\]|\b(?:e[abcd]x|e[sd]i|ebp|[abcd][xlh]|[sd]i|bp)\b")
+HEXNUM = re.compile(r"0x[0-9a-f]+")
+FRAME = "mov ebp, esp"
+
+_lite = None
+
+
+def capstone_lite() -> Cs:
+    """A capstone instance without operand details (text only)."""
+    global _lite
+    if _lite is None:
+        _lite = Cs(CS_ARCH_X86, CS_MODE_32)
+    return _lite
+
+
+def full_reg(r):
+    for big, subs in SUB.items():
+        if r == big or r in subs:
+            return big
+    return r
+
+
+def rename_regs(lines, mapping):
+    sub = {}
+    for k, v in mapping.items():
+        sub[k] = v
+        for sk, sv in zip(SUB[k], SUB[v]):
+            if len(SUB[k]) == len(SUB[v]):
+                sub[sk] = sv
+    return [REG_RE.sub(lambda m: sub.get(m[1], m[1]), t) for t in lines]
+
+
+def rename_slots(lines, mapping):
+    return [SLOT_RE.sub(lambda m: "[" + m[1] + mapping.get(m[2], m[2]) + "]", t) for t in lines]
+
+
+def find_map(xa, xb, regex, norm, rename, gpr, limit=6):
+    """A token renaming that makes xa equal to xb, or None."""
+    if len(xa) != len(xb):
+        return None
+    toks = sorted({norm(m) for t in xa + xb for m in regex.finditer(t)})
+    if regex is REG_RE:
+        toks = [t for t in toks if t in gpr]
+    if len(toks) > limit:
+        return None
+    for perm in itertools.permutations(toks):
+        mapping = {k: v for k, v in zip(toks, perm) if k != v}
+        if mapping and rename(xa, mapping) == xb:
+            return mapping
+    return None
+
+
+def swap_sib(t):
+    return SIB_RE.sub(lambda m: "[" + m[2] + " + " + m[1] + (m[3] or "") + "]", t)
+
+
+def sib_explain(xa, xb):
+    if len(xa) != len(xb):
+        return None
+    changed = False
+    for x, y in zip(xa, xb):
+        if x == y:
+            continue
+        s = swap_sib(x)
+        if s == x or s != y:
+            return None
+        changed = True
+    return "base/index swapped in [r1 + r2 + disp]" if changed else None
+
+
+def gpr_for(a: list[str]) -> list[str]:
+    """The registers a renaming may touch in this function: ebp only without a frame pointer."""
+    return [r for r in GPR_ALL if r != "ebp"] if FRAME in a[:4] else list(GPR_ALL)
+
+
 @register
 class X86(Isa):
     key = "x86"
@@ -171,3 +258,87 @@ class X86(Isa):
 
     def decoder(self, img, lo, hi, fill_forms):
         return X86Decoder(img, lo, hi, fill_forms)
+
+    def listing(self, code, va, mask, image_range, fill_forms):
+        """capstone's Intel text, spaces normalised; masked fields hold the image's first address (an absolute
+        field reads X; a relative one's target is replaced by X), and every number inside the image reads X."""
+        lo, hi = image_range
+        data = bytearray(code)
+        dummy = lo.to_bytes(4, "little")
+        runs = []
+        if mask is not None:
+            k = 0
+            while k < len(mask):
+                if mask[k]:
+                    e = k
+                    while e < len(mask) and mask[e]:
+                        e += 1
+                    for j in range(k, e):
+                        data[j] = dummy[(j - k) % 4]
+                    runs.append((k, e))
+                    k = e
+                else:
+                    k += 1
+        fills = frozenset(fill_forms)
+        out = []
+        for a, size, mn, ops in capstone_lite().disasm_lite(bytes(data), va):
+            text = (mn + " " + ops).strip() if ops else mn
+            text = re.sub(r"\s+", " ", text)
+            masked = set()
+            o = a - va
+            for s, e in runs:
+                if s < o + size and o < e:
+                    masked.add(lo)
+                    masked.add((a + size + lo) & M32)
+            def num(m, masked=masked):
+                v = int(m.group(0), 16)
+                return "X" if v in masked or lo <= v < hi else m.group(0)
+            text = HEXNUM.sub(num, text)
+            out.append(Line(a, size, text, bytes(code[o:o + size]) in fills))
+        return out
+
+    def explain(self, xa, xb, context):
+        gpr = gpr_for(context)
+        m = find_map(xa, xb, REG_RE, lambda m: full_reg(m[1]), rename_regs, gpr)
+        if m:
+            return "regs", " ".join(f"{k}->{v}" for k, v in m.items())
+        toks = sorted({full_reg(mm[1]) for t in xa + xb for mm in REG_RE.finditer(t)} & set(gpr))
+        if len(xa) == len(xb) and len(toks) <= 6:
+            for perm in itertools.permutations(toks):
+                rm = {k: v for k, v in zip(toks, perm) if k != v}
+                ra = rename_regs(xa, rm) if rm else xa
+                sm = find_map(ra, xb, SLOT_RE, lambda mm: mm[2], rename_slots, gpr, 5)
+                if sm:
+                    desc = " ".join(f"{k}->{v}" for k, v in rm.items())
+                    return "slots", (desc + " " if desc else "") + " ".join(f"[{k or '+0'}]->[{v or '+0'}]" for k, v in sm.items())
+            for perm in itertools.permutations(toks):
+                rm = {k: v for k, v in zip(toks, perm) if k != v}
+                if rm and collections.Counter(rename_regs(xa, rm)) == collections.Counter(xb):
+                    return "order", "same instructions, other order, after " + " ".join(f"{k}->{v}" for k, v in rm.items())
+        s = sib_explain(xa, xb)
+        if s:
+            return "sib", s
+        if all(t.startswith("f") for t in set(xa) ^ set(xb)):
+            norm = lambda ls: sorted(re.sub(r"st\(\d\)", "st(N)", t) for t in ls)  # noqa: E731
+            if norm(xa) == norm(xb):
+                return "fpu", "same FPU instructions, other stack order"
+            return "fpu", "FPU instructions differ"
+        return None
+
+    def rename_registers(self, lines, mapping):
+        return rename_regs(lines, {full_reg(k): full_reg(v) for k, v in mapping.items()})
+
+    def one_renaming(self, a, b):
+        if len(a) != len(b):
+            return False
+        fwd, back = {}, {}
+        for x, y in zip(a, b):
+            ta, tb = TOKEN_RE.findall(x), TOKEN_RE.findall(y)
+            if len(ta) != len(tb) or TOKEN_RE.sub("T", x) != TOKEN_RE.sub("T", y):
+                return False
+            for p, q in zip(ta, tb):
+                p = full_reg(p) if not p.startswith("[") else p
+                q = full_reg(q) if not q.startswith("[") else q
+                if fwd.setdefault(p, q) != q or back.setdefault(q, p) != p:
+                    return False
+        return True

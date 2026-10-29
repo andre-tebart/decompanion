@@ -124,7 +124,7 @@ def cmd_report(args, p=None, e=None):
     print(f"target={p.target_name}  file={p.image_path.name}  sha256={img.sha256[:16]}  base={fmt_addr(img.base)}  entry={fmt_addr(img.entry)}  "
           f"{'dll' if img.is_dll else 'exe'}  linker={img.linker_version[0]}.{img.linker_version[1]}  sections={len(img.sections)}")
     decl = p.toolchain_decl
-    tcf = next(iter(st.facts(Kind.toolchain)), None)
+    tcf = next(iter(st.facts(Kind.toolchain, rules=("S.rich",))), None)
     rich = (f"  rich: compilers={len(tcf.value.get('compilers') or [])} linkers={len(tcf.value.get('linkers') or [])} "
             f"(dcp toolchain)") if tcf else "  rich: none"
     print(f"toolchain: compiler={decl.get('compiler') or '-'!r} linker={decl.get('linker') or '-'!r} "
@@ -138,7 +138,7 @@ def cmd_report(args, p=None, e=None):
     lib_units = {(f.value.get("lib", ""), f.value["tu"]) for f in st.facts(Kind.unit) if "lib" in f.value}
     units = {tu for _, tu in lib_units}
     libs = Counter(lib for lib, _ in sorted(lib_units))
-    funcs = [f for f in st.facts(Kind.symbol) if f.value.get("skind") == "func"]
+    funcs = [f for f in st.facts(Kind.symbol) if f.value.get("skind") == "func" and not f.run.startswith("M.")]
     print(f"functions: {len(funcs)} (proven {sum(1 for f in funcs if f.level == Level.proven)}, "
           f"derived {sum(1 for f in funcs if f.level == Level.derived)}); library members placed: {len(units)} "
           + "  ".join(f"{k}={v}" for k, v in libs.items()))
@@ -169,8 +169,15 @@ def cmd_why(args):
         sec = p.image.section_of(a)
         off = f"  section={sec.name}  off=+{a - sec.va:#x}" if sec else "  (headers)"
         print(f"addr={fmt_addr(a)}  target={p.target_name}{off}  cls={cls}  level={Level(level)}  owner={fmt_range(lo, hi)}")
+        probed = [f for f in w["facts"] if f.kind is Kind.toolchain and "flag" in f.value]
+        if probed:
+            print(f"  {fmt_range(probed[0].lo, probed[0].hi)}  toolchain probe  "
+                  + " ".join(f"{f.value['flag']}={f.level}" for f in sorted(probed, key=lambda f: f.value["group"]))
+                  + f"  (dcp toolchain)  by={probed[0].by}")
         for f in w["facts"]:
-            if f.kind is Kind.toolchain:       # spans the whole image: one line, `dcp toolchain` has the rest
+            if f.kind is Kind.toolchain and "flag" in f.value:
+                continue
+            if f.kind is Kind.toolchain and "compilers" in f.value:   # spans the image: one line, `dcp toolchain` has the rest
                 print(f"  {fmt_range(f.lo, f.hi)}  toolchain  compilers={len(f.value.get('compilers') or [])}  "
                       f"linkers={len(f.value.get('linkers') or [])}  (dcp toolchain)  {f.level}  by={f.by}")
                 continue
@@ -213,14 +220,23 @@ def cmd_conflicts(args):
 
 
 def cmd_check(args):
-    """The gate: every rule of every target ran (the loaders included), no bug / error conflicts. Exit 1
-    otherwise. --target checks one target only."""
+    """The gate, per target (every target unless --target): the stale units compile (dcp build), every rule
+    ran (the loaders included), no bug / error conflicts (M.compile, M.gen, M1, M8.. among them), and, once
+    the target has a fragment, the full link resolves every external. --against REV: no function grade fell
+    against ledger/grades.tsv at that git revision. Exit 1 otherwise."""
+    from .build import link as L
+    from .cli_match import print_link
+    from .ledger import grades as G
     p0 = Project(Path(args.root) if args.root else None, getattr(args, "target", None))
     names = [args.target] if getattr(args, "target", None) else [t.name for t in p0.targets]
     failed = False
+    against = G.baseline_at(p0.root, args.against) if getattr(args, "against", None) else None
     for name in names:
-        p, e = open_project(args, name)
-        refresh(p, e)
+        p, e, rep = build_target(args, name, quiet=True)
+        from .source import lint as LI
+        if p.store.facts(Kind.build) and LI.clang_path(p) is not None:
+            from .cli_match import lint_target
+            lint_target(p, e)
         conf = p.store.conflicts()
         c = Counter(x.severity.value for x in conf)
         bad = [x for x in conf if x.severity.value in ("bug", "error")]
@@ -232,6 +248,18 @@ def cmd_check(args):
                 if x.severity.value == "warn":
                     print(x.line())
         failed = failed or bool(bad) or (args.strict and bool(conf))
+        if p.store.facts(Kind.build) and p.toolchain.available():
+            lr = L.full_link(p)
+            print_link(lr)
+            failed = failed or not lr.ok
+        elif p.store.facts(Kind.build):
+            print(record(link=name, skipped="the toolchain is not available"))
+        if against is not None:
+            falls = G.regressions(p, against)
+            print(record(against=args.against, target=name, falls=len(falls)))
+            for line in falls:
+                print("  fell: " + line)
+            failed = failed or bool(falls)
     return 1 if failed else 0
 
 
@@ -267,6 +295,9 @@ def cmd_map(args):
 def cmd_toolchain(args):
     """Per target (every target unless --target): the declaration, the Rich candidates it is checked against,
     the C.toolchain verdict, every Rich entry, the configured archives and the library members placed."""
+    if getattr(args, "action", None) == "probe":
+        from .cli_match import cmd_probe
+        return cmd_probe(args)
     p0 = Project(Path(args.root) if args.root else None)
     names = [args.target] if getattr(args, "target", None) else [t.name for t in p0.targets]
     for i, name in enumerate(names):
@@ -283,7 +314,7 @@ def cmd_toolchain(args):
         inherited = sorted(k for k, v in src.items() if v == "toolchain")
         if inherited:
             print("  inherited from [toolchain]: " + ", ".join(inherited))
-        tcf = next(iter(p.store.facts(Kind.toolchain)), None)
+        tcf = next(iter(p.store.facts(Kind.toolchain, rules=("S.rich",))), None)
         if tcf is None:
             print("  rich: no Rich header")
         else:
@@ -305,7 +336,64 @@ def cmd_toolchain(args):
               + (" (own list)" if p.target().archives is not None else " ([libs] default)"))
         members = Counter(f.value.get("lib", "") for f in p.store.facts(Kind.unit) if "lib" in f.value)
         print("  libraries placed: " + ("  ".join(f"{k}={v}" for k, v in members.items()) or "none"))
-        print("  probe: not run (milestone 3): flags are declared only")
+        probed = [f for f in p.store.facts(Kind.toolchain) if f.run == "M.flags.proven"]
+        if not probed:
+            print("  probe: not run (dcp toolchain probe): flags are declared only")
+        for f in probed:
+            v = f.value
+            print("  probe  " + record(flag=v["flag"], group=v["group"], anchors=v["anchors"], units=v["units"], level=f.level.name))
+
+
+# ------------------------------------------------------------------------------------------------- match phase
+def build_target(args, name, quiet=False):
+    """Compile the stale units of one target and refresh its rules: (project, engine, compile report)."""
+    from .build import compile as B
+    p, e = open_project(args, name)
+    rep = B.ensure(p, log=None if quiet else print, force=getattr(args, "force", False))
+    refresh(p, e)
+    return p, e, rep
+
+
+def cmd_build(args):
+    """Compile every stale unit (one compiler process per unit, in a pool), then refresh the rules."""
+    failed = False
+    for i, name in enumerate(target_names(args)):
+        if i:
+            print()
+        p, e, rep = build_target(args, name)
+        builds = sorted(p.store.facts(Kind.build), key=lambda f: f.value["tu"])
+        bad = [f for f in builds if not f.value["ok"]]
+        print(record(target=p.target_name, units=rep.units, compiled=len(rep.compiled), failed=len(bad),
+                     fresh=rep.units - len(rep.compiled), removed=len(rep.removed), ms=rep.ms))
+        for f in builds:
+            v = f.value
+            print("  " + record(tu=v["tu"], at=f.lo, ok=v["ok"], obj=v.get("obj"), fragments=v.get("fragments"),
+                                warnings=v.get("warnings", 0), errors=len(v.get("errors") or []), flags=v.get("flags")))
+            for x in (v.get("errors") or [])[:10]:
+                print("    " + x)
+        failed = failed or bool(bad)
+        from .ledger import grades as G
+        rows = G.function_grades(p.store)
+        if rows:
+            c = Counter((r["code"], r["readability"]) for r in rows)
+            print("  grades: " + "  ".join(f"{k[0]}+{k[1]}={v}" for k, v in sorted(c.items())))
+        cleared = G.auto_clear(p, rows)
+        for line in cleared:
+            print("  " + line)
+        if cleared:
+            p, e, rep = build_target(args, name, quiet=True)
+    return 1 if failed else 0
+
+
+def cmd_unit_cat(args):
+    """Print the amalgamation of a unit (head, fragments in address order, tail) as the compiler sees it."""
+    from .build import compile as B
+    p, e = open_project(args)
+    a = next((a for a in B.plan(p) if a.unit == args.unit), None)
+    if a is None:
+        print(f"dcp unit cat: no unit {args.unit!r} with a fragment of target {p.target_name}", file=sys.stderr)
+        return 1
+    sys.stdout.write(a.text)
 
 
 def cmd_init(args):
@@ -598,11 +686,42 @@ def main(argv=None):
     s = cmd(sub, "conflicts", cmd_conflicts, "contradictions between facts")
     s.add_argument("--severity", choices=("bug", "error", "warn"))
     s.add_argument("--json", action="store_true")
-    s = cmd(sub, "check", cmd_check, "the gate: exit 1 on any bug or error conflict (every target unless --target)")
+    s = cmd(sub, "check", cmd_check, "the gate: build, no bug or error conflict, the link resolves (every target unless --target)")
     s.add_argument("--strict", action="store_true", help="warnings fail too")
+    s.add_argument("--against", metavar="REV", help="no grade fell against ledger/grades.tsv at this git revision")
     s = cmd(sub, "rules", cmd_rules, "the rule graph and run status")
     s.add_argument("-v", "--verbose", action="store_true", help="print each rule's criterion")
-    cmd(sub, "toolchain", cmd_toolchain, "the toolchain evidence")
+    s = cmd(sub, "toolchain", cmd_toolchain, "the toolchain evidence; `dcp toolchain probe`: the flag probe")
+    s.add_argument("action", nargs="?", choices=("probe",))
+    s.add_argument("-v", "--verbose", action="store_true")
+
+    from . import cli_match as CM
+    s = cmd(sub, "grade", CM.cmd_grade, "the grades: matrix and units, or one unit / function with the failing rules")
+    s.add_argument("what", nargs="?", metavar="NAME|UNIT|ADDR")
+    s = cmd(sub, "next", CM.cmd_next, "the next functions of the base (default), deep or names queue")
+    s.add_argument("--base", action="store_true")
+    s.add_argument("--deep", action="store_true")
+    s.add_argument("--names", action="store_true")
+    s.add_argument("-n", type=int, default=1)
+    s.add_argument("--unit")
+    s.add_argument("--shard", help="k/N (or off); default: the file .dcp/shard")
+    s = cmd(sub, "asmdiff", CM.cmd_asmdiff, "the instruction diff of one function (ours '-', the original '+')")
+    s.add_argument("name")
+    s.add_argument("--regs", help="rename registers on our side: a=b,c=d")
+    s.add_argument("--all", action="store_true", help="print every equal instruction")
+    s = cmd(sub, "diffclass", CM.cmd_diffclass, "the hunk classes of one function's instruction diff")
+    s.add_argument("name")
+    for lvl, verb in (("deep", "escalate"), ("stuck", "stuck")):
+        s = cmd(sub, verb, CM.cmd_level, f"write `@{lvl} why` into a function's address comment (--clear removes the tag)")
+        s.add_argument("name")
+        s.add_argument("why", nargs="?")
+        s.add_argument("--clear", action="store_true")
+        s.set_defaults(level=lvl)
+    cmd(sub, "promote", CM.cmd_promote, "write the grade baseline ledger/grades.tsv (main checkout only)")
+    s = cmd(sub, "link", CM.cmd_link, "the full link of a target with the unresolved externals classified")
+    s.add_argument("--all-targets", action="store_true")
+    s = cmd(sub, "lint", CM.cmd_lint, "clang as the declaration checker (M5 / M6 / M7, readability Q7)")
+    s.add_argument("--all-targets", action="store_true")
     s = cmd(sub, "init", cmd_init, "create a target project")
     s.add_argument("dir")
     s.add_argument("target_path", metavar="TARGET")
@@ -637,6 +756,13 @@ def main(argv=None):
     s.add_argument("--why", required=True)
     s.add_argument("--by", choices=("leaked", "tag", "guess"))
     s.add_argument("--dry-run", action="store_true")
+
+    s = cmd(sub, "build", cmd_build, "compile every stale unit, refresh the rules, print the build and grade summary")
+    s.add_argument("--all-targets", action="store_true", help="every target in config order")
+    s.add_argument("--force", action="store_true", help="compile every unit")
+    un = sub.add_parser("unit", help="units").add_subparsers(dest="sub", required=True)
+    s = cmd(un, "cat", cmd_unit_cat, "print a unit's amalgamation")
+    s.add_argument("unit")
 
     g = sub.add_parser("ghidra", help="Ghidra drafts").add_subparsers(dest="sub", required=True)
     s = cmd(g, "import", cmd_ghidra_import, "import saved REA batch_decompile results")

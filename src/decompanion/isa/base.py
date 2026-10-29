@@ -85,3 +85,38 @@ class Isa:
         """A decoder over the code range [lo, hi) of img; `fill_forms` are the toolchain's alignment fill byte
         forms (Toolchain.fill_forms), which the decoder marks on the records."""
         raise NotImplementedError
+
+    # ------------------------------------------------------------------ the instruction diff (milestone 3)
+    def listing(self, code: bytes, va: int, mask: bytes | None, image_range: tuple[int, int], fill_forms) -> list["Line"]:
+        """The instructions of `code` placed at `va`, as normalised text for the instruction diff: every number
+        that is an address of the image (inside image_range) and every value a masked (relocated) field holds
+        reads `X`, so link-dependent values never differ. `mask` marks our relocated bytes (None: the
+        original's bytes). Stops at the first byte that does not decode."""
+        raise NotImplementedError
+
+    def explain(self, xa: list[str], xb: list[str], context: list[str]) -> tuple[str, str] | None:
+        """The ISA's explanation of one differing hunk (ours xa, the original's xb; `context` our whole
+        function), as (class, note): `regs` equal after renaming general registers, `slots` after renaming
+        stack slots (and registers), `order` the same instructions in another order after a register renaming,
+        `sib` equal after exchanging base and index of scale-1 addressing modes, `fpu` only floating-point
+        instructions differ. None: nothing explains it (a `code` hunk). The generic classes `fill` and `order`
+        (the same multiset) are decided before this is asked."""
+        return None
+
+    def rename_registers(self, lines: list[str], mapping: dict[str, str]) -> list[str]:
+        """The listing texts with registers renamed (`dcp asmdiff --regs a=b,...`)."""
+        return list(lines)
+
+    def one_renaming(self, a: list[str], b: list[str]) -> bool:
+        """The whole function (ours a, the original's b) is equal under one bijective renaming of registers and
+        stack slots applied everywhere."""
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class Line:
+    """One instruction of a listing: address, size, the normalised text, whether its bytes are a fill form."""
+    addr: int
+    size: int
+    text: str
+    fill: bool

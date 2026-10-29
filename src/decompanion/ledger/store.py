@@ -15,6 +15,11 @@ Tables
   conflict  run_id, severity, check, lo, hi, message, a, b
   blob      hash, kind, data                disassembly, include sets, logs, lib sections, Ghidra drafts
   bytemap   lo, hi, cls, level, symbol, unit, source, section   non-overlapping, total over the image
+  tu        unit, amalg, src_hash, flags, flags_hash, include_hash, obj_hash, ok, log, diags, at
+            one row per translation unit of the target (build/compile.py): the hashes of the last compile's
+            inputs, the object it produced (build/obj/<obj_hash>.obj; '' when it failed), its log and diagnostics
+  include_set  key, files                   the include set of a unit per (source hash, flags hash, listing hash)
+The tu and include_set tables were added in milestone 3 (CREATE IF NOT EXISTS: older stores gain them).
 """
 from __future__ import annotations
 
@@ -49,6 +54,11 @@ CREATE TABLE IF NOT EXISTS blob (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, data
 CREATE TABLE IF NOT EXISTS bytemap (
     lo INTEGER PRIMARY KEY, hi INTEGER NOT NULL, cls TEXT NOT NULL, level INTEGER NOT NULL,
     symbol INTEGER, unit INTEGER, source INTEGER, section INTEGER);
+CREATE TABLE IF NOT EXISTS tu (
+    unit TEXT PRIMARY KEY, amalg TEXT NOT NULL, src_hash TEXT NOT NULL, flags TEXT NOT NULL, flags_hash TEXT NOT NULL,
+    include_hash TEXT NOT NULL, obj_hash TEXT NOT NULL, ok INTEGER NOT NULL, log TEXT NOT NULL, diags TEXT NOT NULL,
+    at REAL NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS include_set (key TEXT PRIMARY KEY, files TEXT NOT NULL);
 """
 
 
@@ -258,6 +268,44 @@ class Store:
 
     def put_blob_json(self, hash_: str, kind: str, value):
         self.put_blob(hash_, kind, canonical(value).encode())
+
+    # ------------------------------------------------------------------ translation units
+    TU_COLS = ("unit", "amalg", "src_hash", "flags", "flags_hash", "include_hash", "obj_hash", "ok", "log", "diags", "at")
+
+    def tus(self) -> dict[str, dict]:
+        """unit -> its tu row (flags and diags decoded)."""
+        out = {}
+        for row in self.db.execute(f"SELECT {', '.join(self.TU_COLS)} FROM tu ORDER BY unit"):
+            d = dict(zip(self.TU_COLS, row))
+            d["flags"] = json.loads(d["flags"])
+            d["diags"] = json.loads(d["diags"])
+            d["ok"] = bool(d["ok"])
+            out[d["unit"]] = d
+        return out
+
+    def put_tu(self, row: dict):
+        vals = dict(row)
+        vals["flags"] = canonical(list(vals["flags"]))
+        vals["diags"] = canonical(list(vals["diags"]))
+        vals["ok"] = int(bool(vals["ok"]))
+        vals.setdefault("at", time.time())
+        self.db.execute(f"INSERT OR REPLACE INTO tu ({', '.join(self.TU_COLS)}) VALUES ({', '.join('?' * len(self.TU_COLS))})",
+                        tuple(vals[c] for c in self.TU_COLS))
+
+    def drop_tu(self, unit: str):
+        self.db.execute("DELETE FROM tu WHERE unit=?", (unit,))
+
+    def tu_hash(self) -> str:
+        """The hash of every tu row's inputs and outcome: the `objects` input of the match rules."""
+        rows = self.db.execute("SELECT unit, src_hash, flags_hash, include_hash, obj_hash, ok, diags FROM tu ORDER BY unit").fetchall()
+        return sha256(*(canonical(list(r)) for r in rows))
+
+    def include_set(self, key: str) -> list[str] | None:
+        row = self.db.execute("SELECT files FROM include_set WHERE key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def put_include_set(self, key: str, files: list[str]):
+        self.db.execute("INSERT OR REPLACE INTO include_set (key, files) VALUES (?, ?)", (key, canonical(list(files))))
 
     # ------------------------------------------------------------------ bytemap
     def write_bytemap(self, rows: list[tuple], hash_: str):
