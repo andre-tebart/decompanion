@@ -23,6 +23,18 @@ def view_of(p, e):
     return LV.View.load(p, p.store)
 
 
+def rebuilt(args):
+    """The project after an edit of the sources: the stale units compiled (when the toolchain is installed: the
+    objects must define the new names, M.gen) and the rules refreshed."""
+    from .cli import build_target
+    p, e = open_project(args)
+    if p.toolchain.available() and p.store.facts(Kind.build):
+        p, e, _ = build_target(args, getattr(args, "target", None), quiet=True)
+    else:
+        refresh(p, e)
+    return p, e
+
+
 def errors(p) -> list:
     return [x for x in p.store.conflicts() if x.severity.value in ("bug", "error")]
 
@@ -121,8 +133,7 @@ def cmd_unit_rename(args):
         print("decl  " + c)
     for o, n in sorted(r.renamed.items()):
         print(f"renamed {o} -> {n}")
-    p, e = open_project(args)
-    refresh(p, e)
+    p, e = rebuilt(args)
     bad = errors(p)
     print(record(unit=args.old, renamed=args.new, by=args.by, includes=r.includes, placeholders=len(r.renamed), errors=len(bad)))
     return 1 if bad else 0
@@ -189,7 +200,7 @@ def cmd_rename(args):
         return err("rename", "OLD and NEW are C identifiers")
     if not E.uses(p.root, args.old):
         return err("rename", f"{args.old} occurs nowhere in src/ or include/")
-    clash = E.uses(p.root, args.new)
+    clash = E.code_uses(p.root, args.new)
     if clash:
         return err("rename", f"{args.new} exists already ({clash[0][0]}:{clash[0][1]}): refused (a collision)")
     names = Names(p, p.store)
@@ -214,8 +225,7 @@ def cmd_rename(args):
             print(f"decl  {path.relative_to(p.root).as_posix()}: name {args.old} -> {args.new}")
     E.log_names(p.root, [(a, kind, args.old, args.new)], args.why)
     print(record(renamed=args.old, to=args.new, kind=kind, at=a, files=len(n), replacements=sum(n.values())))
-    p, e = open_project(args)
-    refresh(p, e)
+    p, e = rebuilt(args)
     bad = errors(p)
     if bad:
         print(f"check: {len(bad)} error(s) after the rename (dcp check lists them)")

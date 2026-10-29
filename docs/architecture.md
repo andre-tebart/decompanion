@@ -74,6 +74,9 @@ image), so editing a plugin reruns the rules that read it.
   - `default_libraries(kind)`, `entry_object(kind, dir, user_entry)` (a generated stub when the sources name
     the user entry otherwise), `module_definition(name, exports)` (the .def text with ordinals)
   - `probe_grid()` -> [(group, alternatives)], `probe_defaults()` (the tie-break)
+- Milestone 4, drafting: `declaring_header(name)` (the system header that declares a C library function; VC6:
+  the first header of VC98/Include declaring it `__cdecl`, the C89 headers first), `import_header(dll)` (VC6:
+  `windows.h` for every system DLL)
 
 ### Isa (isa/base.py)
 
@@ -89,6 +92,9 @@ image), so editing a plugin reruns the rules that read it.
   text, fill)] (numbers inside the image and our relocated fields read `X`); `explain(xa, xb, context)` -> the
   ISA's hunk class (`regs` / `slots` / `order` after a renaming / `sib` / `fpu`) or None; `one_renaming(a, b)`;
   `rename_registers(lines, mapping)` (x86: ported from the first attempt's diffclass onto capstone's spelling)
+- Milestone 4, reading: `disasm(code, va, fill_forms)` -> [Line] in the disassembler's own text (`dcp disasm`,
+  the skeleton of `dcp draft`); `numbers(text)` -> (start, end, value) of every number in such a text (where
+  `dcp disasm` puts the ledger's name of an address)
 
 ## What the rules may and may not know
 
@@ -140,6 +146,12 @@ last non-fill instruction); the switch tables of a function lie in its section; 
 the C, stdcall and fastcall spellings of `f`; the probe grid `/O1 /O2 /Ox` x `/G3 /G4 /G5 /G6 /GB` x `/Oy /Oy-`
 x `/Gy` x `/GF /Gf` x `/Ob0 /Ob1 /Ob2` with the defaults `/GB /Oy /GF /Ob1`; LINK's `.def` syntax
 `LIBRARY name` / `EXPORTS f @ordinal`.
+
+Where the layout tooling lives (milestone 4): `build/ghidra.py` (runs Ghidra headless; the post-script
+`data/ghidra/DcpExport.java`), `ledger/names.py` (one C name per address by a fixed order of origins),
+`source/draft.py` / `source/units.py` / `source/edit.py` (the files `dcp draft`, `dcp unit new|join|rename` and
+`dcp rename` write; names.log), `repo/session.py` (the session gate's record and the computed report),
+`cli_read.py` / `cli_draft.py` / `cli_layout.py` / `cli_session.py` (the commands), `skills/` (the agent skills).
 
 Where the match phase lives: `build/` (amalg, compile, link, probe: they run the tools; no rule runs a tool),
 `match/` (compare, diffclass: pure functions over objects and listings), `rules/match.py` / `match_data.py` /

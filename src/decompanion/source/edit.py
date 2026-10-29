@@ -57,26 +57,55 @@ def uses(root: Path, name: str) -> list[tuple[str, int]]:
     return out
 
 
+STRINGS = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|^[ \t]*#[ \t]*include\b[^\n]*', re.M)
+
+
+def replace_words(text: str, mapping: dict[str, str]) -> tuple[str, int]:
+    """Every whole-word occurrence of an old name in code and comments replaced by its new one; string and
+    character literals and #include lines are left alone (a unit's header may carry the old spelling of a
+    name). Returns (text, replacements)."""
+    pat = re.compile(r"\b(" + "|".join(sorted(map(re.escape, mapping), key=len, reverse=True)) + r")\b")
+    out, pos, n = [], 0, 0
+
+    def sub(m):
+        nonlocal n
+        n += 1
+        return mapping[m.group(1)]
+    for m in STRINGS.finditer(text):
+        out.append(pat.sub(sub, text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(pat.sub(sub, text[pos:]))
+    return "".join(out), n
+
+
 def rename_words(root: Path, mapping: dict[str, str]) -> dict[str, int]:
     """Replace every whole-word occurrence of each old name by its new one in one pass over src/ and include/
-    (comments and strings included: a name in an address comment or a description follows the rename). Returns
-    {file: replacements}."""
+    (code and comments: a name in an address comment or a description follows the rename; not inside string
+    literals or #include lines). Returns {file: replacements}."""
     if not mapping:
         return {}
-    pat = re.compile(r"\b(" + "|".join(sorted(map(re.escape, mapping), key=len, reverse=True)) + r")\b")
     out = {}
     for p in sources(root):
-        text = p.read_text(errors="replace")
-        n = 0
-
-        def sub(m):
-            nonlocal n
-            n += 1
-            return mapping[m.group(1)]
-        new = pat.sub(sub, text)
+        new, n = replace_words(p.read_text(errors="replace"), mapping)
         if n:
             write(p, new)
             out[p.relative_to(root).as_posix()] = n
+    return out
+
+
+def code_uses(root: Path, name: str) -> list[tuple[str, int]]:
+    """(file, line) of every occurrence of name as an identifier of the code (comments, strings and #include
+    lines blanked): what a rename to `name` would collide with."""
+    pat = re.compile(rf"\b{re.escape(name)}\b")
+    out = []
+    for p in sources(root):
+        text = p.read_text(errors="replace")
+        blank = TOKEN.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+        blank = re.sub(r"(?m)^[ \t]*#[ \t]*include\b[^\n]*", "", blank)
+        for i, line in enumerate(blank.splitlines(), 1):
+            if pat.search(line):
+                out.append((p.relative_to(root).as_posix(), i))
     return out
 
 

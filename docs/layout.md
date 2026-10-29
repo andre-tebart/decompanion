@@ -102,12 +102,146 @@ at one address and one name at two addresses (`N2`) are errors (per target). Err
 
 A unit runs from its `boundary start` (else its first fragment) to its `boundary end`, else the next unit's
 start, else the end of the game code (the first library byte: LINK places library members after every
-object). It is **separated** when both boundaries are at least declared and no open byte lies inside, else
-**open**. The last unit's implicit end is derived only when every function after its start has a fragment of
-it; otherwise it is open.
+object). It is **separated** when both boundaries are at least declared, no open byte (unknown code) and no
+C.walk conflict lies inside (milestone 4), else **open**. The last unit's implicit end is derived only when
+every function after its start has a fragment of it; otherwise it is open. Undrafted functions (L2) do not keep
+a unit open; `dcp layout units` counts them (`undrafted=`).
 
 `L.analyze` computes the evidence `dcp layout next` and `dcp layout unit propose` show: per string literal its
 first user (`B-LIT`: in one data section the units of the first users never go backwards, `L3`), what
 precedes each function start (`B-FILL`: `cc` linker padding, `nop` compiler alignment, `none`), and leaked
 source paths (`B-LEAK`: one unit, one leaked `.c` file, `L8`). Literals reached from data tables are no
 evidence (a table's unit is their first user).
+
+Declared dead or foreign bytes (`bytes dead`, `foreign`) inside a unit belong to it (rule `M.bytes.declared`,
+R5): a `source` fact {what: dead, unit} over the range, so the byte map gives them the unit, and
+`dcp layout units -v` counts them as `dead_bytes=` (explained, not open). A range across a unit boundary is an
+error, one in no unit a warning.
+
+Checks added in milestone 4 (warnings: `dcp check --strict` fails on them, `dcp check` does not):
+- **L9** a Ghidra function of the game code whose body (its address ranges, from `dcp ghidra export`) holds
+  one of our starts other than its own entry: Ghidra merged two functions, its draft holds both.
+- **L10** code inside a unit that a fragment claims but nothing explains: (a) a fragment whose start the walk
+  does not know (a declared start in unknown code) and that does not byte-match owns no bytes, its code stays
+  open; (b) a byte-matched fragment whose walk runs past its compiled section (rare: R1's tail check).
+
+## The layout tooling (milestone 4)
+
+Everything a layout session needs; the skill `dcp-layout` (skills/dcp-layout/SKILL.md, installed into a
+project's `.claude/skills/` by `dcp init` and `dcp skills install`) runs a session with these commands.
+
+### Ghidra drafts for every function
+
+```
+uv run dcp ghidra export [--force]      # analyzeHeadless + data/ghidra/DcpExport.java, then the import
+uv run dcp ghidra status [-v]           # drafts, starts only Ghidra has (and where), starts only we have, L9
+uv run dcp ghidra show 0x10008cc0       # one draft
+```
+
+`dcp ghidra export` runs Ghidra headless on the target's binary (project under `build/ghidra/<target>/`, log
+`headless.log`), creates a function at every start of ours Ghidra lacks (tagged `DCP_SEEDED`: they are ours,
+no Ghidra claim, no `start how=ghidra` fact), decompiles every function and imports the JSON (the shape `dcp
+ghidra import` reads from a saved REA `batch_decompile`, plus each function's body). Keyed by (image sha256,
+script, our starts): a second export does nothing unless `--force`. Ghidra and its JDK: `[ghidra] root =`,
+`java_home =`, `timeout =` in decompanion.toml, else `$GHIDRA_INSTALL_DIR` / `$JAVA_HOME`, else the newest
+`C:/Tools/ghidra_*` / `C:/Program Files/Eclipse Adoptium/jdk-21*`; missing: a clear error, nothing else
+changes. On server.dll: 678 functions in ~22 to 30 s (fresh), ~10 s again (the project keeps the analysis).
+
+```
+target=server  drafts=678  export=up-to-date  game_functions=311  with_draft=311  ghidra_only=6  ours_only=0  l9=0
+  ghidra_only=0x10018dc4  name=FUN_10018dc4  size=231  where=unknown.code  game=no
+```
+
+### Reading
+
+```
+uv run dcp disasm 0x10008cc0 [LEN|..END]     # the original, the ledger's names after every address operand
+uv run dcp disasm --ours Init                # our compiled function, relocations named
+uv run dcp dump 0x10027d08 0x20 --str        # hex + latin-1 per row with the symbols starting there; --dword --float
+uv run dcp refs Init                         # definition, name facts, starts, Ghidra, refs to / from, source lines
+uv run dcp layout starts 0x10008c00..0x10009000
+uv run dcp layout literals 0x10008c00..0x10009000     # or a UNIT; default: the game code
+```
+
+```
+   0x10008cc7  68208d0010       push 0x10008d20 <ServerThread>
+   0x10008ccc  e8240e0100       call 0x10019af5 <_beginthread>
+start=0x10008cc0  how=export,ghidra  callers=0  size=48  extent=0x10008cc0..0x10008ce4  fill=nop  unit=-  drafted=no  ghidra=yes  name=Init
+  fn=0x10008d20  unit=-  section=.data  first_used=10  block=0x10027ad8..0x10027d7d  jump=+0xf4
+  lit=0x10027d10  section=.data  kind=string  first=0x10008d20  first_unit=-  first_in_range=yes  users=1  data_refs=-  pooled=yes  text=GamePath
+  unit_block=server  section=.data  range=0x10027ad8..0x10027d7d  literals=10  interleaves=-
+```
+
+`layout literals`: every data address the range's functions refer to (through base relocations when the image
+has them, else the walk's operands), with its first user in the whole image and that user's unit; per function
+the block of literals it is the first user of and the `jump=` from the highest literal first used by an earlier
+function (a big forward jump skips another unit's block); per unit the block of its pooled literals (strings and
+read-only constants reached from code only) and the units whose blocks it interleaves with. `layout starts`:
+every start with every `how` (export, entry, crt, libref, call, tail, immediate, fptr, ghidra, decl, source), the
+code sites that reach it, the size to the next start, the walk's extent, B-FILL, the unit, drafted, Ghidra.
+
+### Drafting
+
+```
+uv run dcp unit new adler32 --range 0x10001000..0x10001130 --by guess --why "zlib adler32: 0xfff1, 0x15b0"
+uv run dcp draft --next                       # the function `dcp layout next` shows (or: dcp draft 0xADDR)
+uv run dcp unit join A B --why "..."          # B directly after A
+uv run dcp unit rename OLD NEW --by leaked|tag|guess --why "..."
+uv run dcp rename OLD NEW --why "..."         # one identifier
+```
+
+`dcp unit new` = `dcp layout unit propose` (refuses its own L3 / L4 / L7 / L8 errors) + `src/<unit>/head.c`,
+`include/<unit>.h` (with its guard) and `src/<unit>/open.md` (Open work first, then findings).
+
+`dcp draft` writes `src/<unit>/f_<addr>.c` (source/draft.py): line 1 `/* 0x10001000, <name> */`, the name the
+ledger registers for the address (a declaration, an export, the user entry) else the placeholder
+`<unit>_<addr>`; the body is Ghidra's pseudocode with the ledger's names (callees: source, decl, export, entry,
+library and import names, else the placeholder of the callee's unit, else `unk_<addr>`; data labels: the
+ledger's name, else `DAT_<addr>`), or, without a Ghidra draft, a `@rough` skeleton holding the disassembly. The
+prototype goes into `include/<unit>.h`; head.c gets `#include "dcp_ghidra.h"` (Ghidra's type names, written
+into include/), the system header of every import and C library function it calls
+(Toolchain.import_header / declaring_header), the header of every unit that declares a callee, and for the rest
+a K&R declaration (Ghidra's return type) or `extern` (the type from Ghidra's label prefix) in a `/* dcp draft:
+... */` block. Every other placeholder spelling of the drafted address in src/ and include/ is renamed to the new
+name (one address, one name) and its K&R lines leave the dcp blocks.
+
+```
+drafted=0x10001310  name=deflate_10001310  unit=deflate  file=src/deflate/f_10001310.c  body=ghidra  size=505  uses=6
+  include/deflate.h: undefined4 deflate_10001310(int param_1, ..., char *param_7, int param_8);
+  src/deflate/head.c: extern undefined * DAT_1002603c;
+  src/deflate/head.c: undefined4 deflate_10001510();
+```
+
+`dcp unit join A B` moves B's fragments into A (git mv), merges head.c / tail.c / the headers / open.md, points
+the includes at A's header, drops B's start boundary and A's end at it (B's end becomes A's), renames
+`B_<addr>` placeholders to `A_<addr>`, builds before and after and exits 1 when a function's code grade or the
+error count changed (evidence to keep them apart). `dcp unit rename` moves the directory, header (and guard) and
+notes, fixes includes, the boundary lines' `tu=` (and `by=` on the start), the placeholders. `dcp rename`
+replaces whole words in code and comments of src/ and include/ (not in string literals or #include lines),
+refuses a name that is already an identifier of the code, renames `u_<old>.c` and `name` declarations. All
+three append to `names.log`:
+
+```
+2026-10-29T14:42:23 0x10001000 func adler32_10001000 -> adler32 by:main why:zlib 1.1.3 adler32 (byte-identical with zlib's source)
+2026-10-29T14:42:26 - unit unk_10001130 -> bcast by:main why:by=guess: the unit's one function sends UDP broadcasts
+```
+
+The full link classes an unresolved external whose name is a placeholder (or a registered name) of an address
+the sources do not define yet as `undrafted`, and leaves an export without a fragment out of the generated .def:
+open layout work, not a link error (the link is ok when nothing else is unresolved).
+
+Unlinked helpers (`src/<unit>/u_<name>.c`, first line `/* unlinked, why */`) compile with their unit (M.gen
+counts them), get no grade (no address) and are listed by `dcp layout units -v`.
+
+### The session
+
+```
+uv run dcp session start     # gate: clean tree, every unit compiles, no error, every link ok; then the overview
+uv run dcp session wrap      # build, link, check, promote (main), the computed report (build/session/report.md)
+uv run dcp skills install    # the skills into .claude/skills/ (dcp init does it for a new project)
+```
+
+`session start` records the base commit in `.dcp/session.json`; `session wrap` computes the report from git (the
+base against the working tree), the store and names.log: errors / fragments / byte / readable / units before ->
+after, units declared / joined / renamed, the boundary lines added and removed, the functions drafted with
+their grades, the renames, the units touched with their boundary levels, the next item, the baseline promoted.

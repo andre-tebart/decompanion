@@ -535,9 +535,11 @@ def cmd_layout_units(args):
         if args.verbose:
             print("  " + record(start_by=r["start_by"], end_by=r["end_by"], dead_bytes=r["dead_bytes"], walk_conflicts=r["walk_conflicts"]))
             lo, hi = r["range"]
-            for a in und:
-                if lo <= a < hi:
-                    print("  " + record(undrafted=a) + "  (L2)")
+            mine = [a for a in und if lo <= a < hi]
+            for a in mine[:8]:
+                print("  " + record(undrafted=a) + "  (L2)")
+            if len(mine) > 8:
+                print(f"  ... {len(mine) - 8} more undrafted (L2): dcp layout next --start {mine[8]:#010x} -n N")
             for x in conf:
                 if x.check in ("L10", "C.walk", "M.bytes.declared") and lo <= x.lo < hi:
                     print("  " + x.line())
@@ -590,9 +592,14 @@ def cmd_layout_propose(args):
         print(f"added {path.relative_to(p.root).as_posix()}:{n}  {d.text()}")
     p2, e2 = open_project(args)
     refresh(p2, e2)
+    rel = path.relative_to(p.root).as_posix()
+    bys = {f"decl:{rel}:{i}" for i, line in enumerate(path.read_text().splitlines(), 1) if f"tu={args.name} " in line + " "}
     bad = [x for x in p2.store.conflicts() if x.severity.value in ("bug", "error")]
-    print(f"check: {len(bad)} error(s) after the proposal" + ("" if not bad else " (dcp check lists them)"))
-    return 1 if bad else 0
+    mine = [x for x in bad if x.a in bys or x.b in bys]
+    print(f"check: {len(mine)} error(s) of the proposal's lines, {len(bad)} in all" + ("" if not bad else " (dcp check lists them)"))
+    for x in mine:
+        print(x.line())
+    return 1 if mine else 0
 
 
 # ------------------------------------------------------------------------------------------------- ghidra

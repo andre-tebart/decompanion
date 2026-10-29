@@ -47,7 +47,9 @@ Always work the first open function; never skip one, never stop early, never end
    - It lies in no unit (`unit=-`): decide the unit first (section 3): extend the previous unit (move its end
      boundary: edit the `boundary end` line in `decl/text.dcl`, keep the file sorted) or declare a new one with
      `uv run dcp unit new NAME --range 0xSTART..0xEND --by guess|tag|leaked --why "the evidence"`. A placeholder
-     name is fine (`unk_10001234`); rename it when evidence turns up (section 4).
+     name is fine (`unk_10001234`); rename it when evidence turns up (section 4). When the end is not known
+     yet, give only the start (`--range 0xSTART`): the unit runs to the next unit or the end of the game code
+     and stays open; declare its end as soon as evidence shows it.
    - `kind=unknown` (code no start explains): find the start (`uv run dcp disasm 0xADDR`, `uv run dcp layout
      starts LO..HI`) and declare it (`uv run dcp decl add "0xADDR start -- why"`), or declare dead bytes (section 3).
 2. `uv run dcp draft --next` - writes `src/<unit>/f_<addr>.c`: line 1 `/* 0x10001234, <unit>_10001234 */`, the
@@ -82,6 +84,16 @@ What `dcp build` typically says about a fresh draft and what to do:
 - C89: declarations at the top of a block; no `//` comments in new code; no `bool`.
 - Never write a second prototype for a name: `uv run dcp refs NAME` shows every declaration. A function of
   another unit is declared by including that unit's header; an undrafted one by the K&R line `dcp draft` wrote.
+- A function of a known library (zlib announces itself by its version string, `1.1.3`; a CRT-like routine by
+  its shape) is best written as that library's own source: it often byte-matches at once (zlib's adler32 did,
+  where Ghidra's unrolled loop did not).
+- Quick byte fixes `dcp asmdiff NAME` shows: Ghidra splits one store into byte stores (`char on[4]` with four
+  assignments where the original writes one dword: write `int on = 1;` and pass `(char *)&on`), a signed /
+  unsigned compare, the operand order of a commutative operation.
+- Warnings that are expected while a unit is half drafted: `M7 call without a prototype` (the K&R lines),
+  link `unresolved undrafted=` (placeholders of functions and `DAT_` data the sources do not define yet, exports
+  without a fragment): open work, not errors. `unresolved data=` / `other=` are errors: a real name nothing
+  defines (give it an address comment or a definition).
 
 ## 3. Boundaries: the evidence, strongest first
 

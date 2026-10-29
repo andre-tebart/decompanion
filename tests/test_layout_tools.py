@@ -299,3 +299,21 @@ def test_ghidra_export_without_ghidra(tiny, capsys):
     assert code == 1
     assert "Ghidra not found ([ghidra] root = C:" in capsys.readouterr().err
     assert dcp(tiny, "layout", "next")[0] == 0               # nothing else breaks
+
+
+def test_rename_leaves_strings_and_includes():
+    from decompanion.source import edit as E
+    text = '/* net: f calls net */\n#include "net.h"\nchar *s = "net";\nint net(void);\nint f(void) { return net(); }\n'
+    new, n = E.replace_words(text, {"net": "socket_net"})
+    assert n == 4 and '#include "net.h"' in new and '"net"' in new and "int socket_net(void);" in new
+    assert "/* socket_net: f calls socket_net */" in new
+
+
+def test_rename_collides_only_with_code(tiny):
+    write(tiny, "src/a/head.c", '/* adler32: the checksum */\n#include "adler32.h"\n')
+    write(tiny, "src/a/f_10001000.c", "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return 0;\n}\n")
+    code, out = dcp(tiny, "rename", "a_10001000", "adler32", "--why", "zlib's name")
+    assert code == 0, out
+    assert "int adler32(void)" in (tiny / "src/a/f_10001000.c").read_text()
+    write(tiny, "src/a/f_10001020.c", "/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return 1;\n}\n")
+    assert dcp(tiny, "rename", "a_10001020", "adler32", "--why", "x")[0] == 1

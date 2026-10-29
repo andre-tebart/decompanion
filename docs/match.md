@@ -126,7 +126,10 @@ exports with their ordinals>`, the target's archives, the import library of ever
 entry object when the start-up code calls an entry the sources name otherwise, and an alias object of weak
 externals for the several source names of one data address. Output under `build/link/<target>/`; unresolved
 externals are classified into `data` (a data name of the sources nothing defines), `renames` (a stale name of
-a function whose fragment defines another), `aliases` (a name at another data object's address) and `other`.
+a function whose fragment defines another), `aliases` (a name at another data object's address), `undrafted`
+(a placeholder or registered name of an address the sources do not define yet, and every export without a
+fragment, which the generated .def leaves out: open layout work, milestone 4) and `other`; the link is ok when
+nothing but `undrafted` is unresolved.
 The link is part of `dcp check` once a target has a compiled unit; it is skipped (read back) when no input
 changed.
 

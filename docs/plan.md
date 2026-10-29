@@ -6,7 +6,9 @@ docs/layout.md); multi-target round done 2026-10-29 (per-target toolchain declar
 and loader per target, `dcp setup --all-targets`; server.dll and GildeGold.exe pass `dcp check` as two targets
 of one project; S.codewalk on the exe ~35 s -> ~5 s); cleanup round done 2026-10-29 (every VC6 / LINK, PE32, COFF and
 x86 / capstone fact moved behind the plugin seams, the instruction-set seam `isa/` added, plugin registries,
-`dcp init --toolchain-root` required; facts byte-identical; see docs/architecture.md); M3 done 2026-10-29 (amalgamation per unit and target, pool compile with include-set staleness, M.match with the DLL aid, M.draft, M8..M10, M.data.site / .content / .draft, D1 D4 D5 D6, grades code draft/shape/byte and readability Q1..Q7, queues, ledger/grades.tsv + M1, the full /DLL link, `dcp toolchain probe`, clang lint M5..M7; DllMain, Init and Exit of server.dll byte-match; see docs/match.md); reprioritised 2026-10-29 (user decision: the layout tooling first, section 7: M4 layout tooling, M5 the layout experiment on server.dll, then the match toolbox, parallel sessions and the second target as M6..M8); M4 in progress 2026-10-29.
+`dcp init --toolchain-root` required; facts byte-identical; see docs/architecture.md); M3 done 2026-10-29 (amalgamation per unit and target, pool compile with include-set staleness, M.match with the DLL aid, M.draft, M8..M10, M.data.site / .content / .draft, D1 D4 D5 D6, grades code draft/shape/byte and readability Q1..Q7, queues, ledger/grades.tsv + M1, the full /DLL link, `dcp toolchain probe`, clang lint M5..M7; DllMain, Init and Exit of server.dll byte-match; see docs/match.md); reprioritised 2026-10-29 (user decision: the layout tooling first, section 7: M4 layout tooling, M5 the layout experiment on server.dll, then the match toolbox, parallel sessions and the second target as M6..M8); M4 done 2026-10-29 (the layout tooling: Ghidra
+headless drafts for every function, the reading, drafting and session commands, L9 / L10 / R5, the skill
+`dcp-layout`; see docs/layout.md and section 12); M5 (the layout experiment on server.dll, by the user) next.
 
 ## Context
 
@@ -328,7 +330,7 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 | M1 setup byte map | fact/store/engine, pe32, coff, vc6 rich/fill, disasm, all `S.*` + `B.bytemap` + setup checks, `dcp init`, `dcp setup`, `dcp why`, `dcp facts`, `dcp conflicts`, `dcp rules`, `dcp toolchain` | on server.dll: every byte has exactly one `symbol`/`region` fact; LIBC members placed proven with `.reloc` coincidence; report shows 37 user objects C, static LIBC, CRT region with gaps listed, exports + DllMain starts, toolchain = declared flags; `dcp why` < 100 ms; rerun runs zero rules; unit tests on a synthetic PE |
 | M2 declarations + layout | the target dimension (section 1.5: `[[target]]`, store per target, `--target`, target prefixes in the address-comment and `.dcl` grammars, `dcp target add`), `decl.py`, `srcscan.py`, `L.*`, boundary rules, Ghidra import, `dcp layout *`, `dcp decl add`, `dcp check` (loader + conflict gate), `dcp wt new/seed` (overlay store) | first unit declared on server.dll from `Init` outward; a deliberately wrong boundary and a walk crossing a start are caught (L1/L3/L4); a second target added to a scratch project gets its own store and `dcp why --target` answers for both |
 | M3 build + compare + grades (done 2026-10-29) | `toolchains/vc6/cl.py` (`/E` include sets: the `/P` listing on stdout), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.site/.content/.draft`, capstone asmdiff/diffclass, `G.grade`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote/escalate/stuck/asmdiff/diffclass/lint`, full `/DLL` link with generated `.def`, lint, checks M1, M2 (stale / double level tag), M5..M10, D1, D4..D6; open: M3, M4, M11, M12, D2, D3, `M.data.iat/.lib/.fill`, `M.bytes.declared` | first functions byte-match (server.dll DllMain / Init / Exit, relocs 0/0, 2/2, 4/4); `dcp toolchain probe` runs the grid and says *indistinguishable* for most flags with three anchors from one unit (correct: proven needs anchors from two units); a header edit recompiles only its includers (shown) |
-| M4 layout tooling | Ghidra headless export (`dcp ghidra export`, `dcp ghidra status`, L9), reading tools (`dcp disasm`, `dcp dump`, `dcp refs`, `dcp layout literals`, `dcp layout starts`), drafting (`dcp unit new`, `dcp unit join`, `dcp unit rename`, `dcp draft [--next]`, `dcp rename` + `names.log`), unlinked helpers and `bytes dead` in the unit byte map, L10, `dcp session start`, `dcp session wrap`, the skill `dcp-layout` (`dcp init` / `dcp skills install`) | on a scratch project of server.dll: export, status, starts / literals of a range, the first ten minutes of a layout session (unit new, five drafts, build, grade, refs, rename, unit rename, check, session wrap) |
+| M4 layout tooling (done 2026-10-29) | Ghidra headless export (`dcp ghidra export`, `dcp ghidra status`, L9), reading tools (`dcp disasm`, `dcp dump`, `dcp refs`, `dcp layout literals`, `dcp layout starts`), drafting (`dcp unit new`, `dcp unit join`, `dcp unit rename`, `dcp draft [--next]`, `dcp rename` + `names.log`), unlinked helpers and `bytes dead` in the unit byte map, L10, `dcp session start`, `dcp session wrap`, the skill `dcp-layout` (`dcp init` / `dcp skills install`) | on a scratch project of server.dll: export, status, starts / literals of a range, the first ten minutes of a layout session (unit new, five drafts, build, grade, refs, rename, unit rename, check, session wrap); shown: 678 Ghidra drafts in ~30 s (all 311 game functions), four units declared around 0x10001000 (zlib's adler32 and crc32, a broadcast helper, deflate), five drafts, two of them byte-identical after the hand fixes, `dcp check` and `dcp session wrap` ok with the undrafted externals classified |
 | M5 layout experiment | the user runs layout sessions on server.dll (`../guild-server`) by hand with the skill; findings go back into the tooling | the units of server.dll's game code drafted and separated, the session reports computed |
 | M6 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
 | M7 parallel sessions | the `names.log` fold at the merge (the log and `dcp rename` itself are M4), claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
@@ -391,3 +393,35 @@ zero rule runs.
 - The toolchain not installed: units are not compiled and M.compile warns instead of failing the gate.
 - Open (M6 or later): M3 (stuck without open.md), M4 (distance WORSE without `dcp accept`), M11, M12 (the
   header-commit distance check), D2 / D3, `M.data.iat` / `.lib` / `.fill`, `M.bytes.declared`, `dcp accept`.
+
+## 12. Milestone 4 as built (2026-10-29): what changed against the plan, and why
+
+- `dcp ghidra export` seeds Ghidra with our starts: the post-script creates a function at every start of ours
+  Ghidra lacks (tagged `DCP_SEEDED` in the Ghidra project, `seeded` in the JSON) before decompiling, so every
+  function of the game code has a draft (server.dll: 311 of 311; without the seeding 232). A seeded function is
+  no claim of Ghidra's and gives no `start how=ghidra` fact. The export is keyed by (image, script, our starts).
+- L9 is a warning, not an error, and only for Ghidra functions of the game code: Ghidra's body is an external
+  tool's analysis; in the library code its merges (assembly CRT routines) are no layout question. On server.dll
+  all eleven L9 cases lie in the CRT.
+- L10 is a warning for code a fragment claims but nothing explains: a fragment in unknown code that does not
+  byte-match (no walk extent for M.draft) or a byte match whose walk runs past its section. "Walked code reached
+  from nowhere" as planned does not occur: every walked function is reached from some evidence.
+- A unit's status: C.walk conflicts inside keep it open (rule `unit_status`); undrafted functions (L2) still do
+  not (unchanged from M2; `dcp layout units` counts them).
+- `M.bytes.declared` (R5) is a rule of rules/layout.py: declared dead / foreign bytes inside a unit get a
+  `source` fact {what: dead, unit} (the byte map gives them the unit) and count as `dead_bytes`.
+- The link: an unresolved placeholder (or registered name) of an address the sources do not define yet is the
+  class `undrafted`, and an export without a fragment is left out of the generated .def; neither fails the link.
+  Without this every layout draft (calls into undrafted functions, `DAT_` data) failed `dcp check`. The cached
+  link result is classified again on every read (the classes follow the current facts).
+- Seams: Isa `disasm` / `numbers` (reading) and Toolchain `declaring_header` / `import_header` (drafting).
+- `dcp rename` replaces whole words in code and comments but not in string literals or `#include` lines (a unit
+  named like a function, `adler32` / `adler32.h`); a collision is an identifier of the code only. `dcp rename`
+  and `dcp unit rename` rebuild afterwards (M.gen compares objects with fragments).
+- `dcp layout unit propose` fails only on errors of its own lines (before: on any error of the store, so a unit
+  that was not compiled yet made every later proposal fail).
+- The skill lives in the repository's `skills/` (not under the package's data/): decompanion is installed by
+  path, `dcp init` and `dcp skills install` copy it into `.claude/skills/`. `dcp-match-base` waits for M6.
+- Open after M4: the hand fixes Ghidra's C needs (struct tags, partial field access `._2_4_`, register
+  variables) are left to the agent (the skill lists them); data placeholders are typed by Ghidra's label prefix
+  only; `dcp unit new` without an end lists every function to the end of the game code.

@@ -58,7 +58,11 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
 2. **layout** (`dcp layout ...`): declarations (`decl/*.dcl`, `ledger/decl.py`), address comments in one
    file per function (`ledger/srcscan.py`), Ghidra drafts (`dcp ghidra import`), boundary evidence
    (`L.analyze`: literal first users, fill before a start, leaked source paths), unit extents and status
-   (`L.unit.extent`), and the checks L1, L3..L8, L11 (`rules/layout.py`). See [docs/layout.md](docs/layout.md).
+   (`L.unit.extent`), and the checks L1, L3..L11 (`rules/layout.py`). The layout tooling (milestone 4): Ghidra
+   headless drafts for every function (`dcp ghidra export`), the reading commands (`dcp disasm`, `dump`, `refs`,
+   `layout literals`, `layout starts`), drafting (`dcp unit new|join|rename`, `dcp draft`, `dcp rename`,
+   `names.log`), the session protocol (`dcp session start|wrap`) and the agent skill `dcp-layout`. See
+   [docs/layout.md](docs/layout.md).
 3. **match** (`dcp build`, `grade`, `next`, `link`, `check`): one amalgamation per unit and target (head.c +
    fragments in address order behind `#line`), one CL.EXE per stale unit in a pool (stale = source, flags or
    include-set contents changed: an edited header recompiles only its includers), masked compare with the DLL
@@ -67,7 +71,7 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
    readable`, rules B1..B3 / Q1..Q7), the level ladder (`@deep` / `@stuck`), the base / deep / names queues
    with rendezvous shards, the baseline `ledger/grades.tsv` (`dcp promote`, M1), the full `/DLL` link, the flag
    probe and clang as the declaration checker. See [docs/match.md](docs/match.md). The match toolbox (try,
-   vargen, respell, ...) is milestone 4.
+   vargen, respell, ...) is milestone 6.
 
 ## Use
 
@@ -138,8 +142,23 @@ uv run dcp layout units [-v]                   # the unit table: range, status, 
 uv run dcp layout unit propose 0x10008cb0..0x10008d20 --name dllmain --by guess --why "DllMain, Init, Exit"
                                                # runs L3/L4/L7/L8 on the proposal, writes the boundary lines
 uv run dcp decl add "0x1000f3a0..0x1000f3b8 bytes dead -- unreachable epilogue copy"
+uv run dcp ghidra export                       # Ghidra headless: a draft for every function ([ghidra] root / java_home)
+uv run dcp ghidra status                       # drafts, starts only Ghidra / only we have, L9
 uv run dcp ghidra import batch1.json ...       # saved REA batch_decompile results
 uv run dcp ghidra show 0x10008d20
+uv run dcp disasm 0x10008cc0                   # the original with the ledger's names (--ours NAME: our object)
+uv run dcp dump 0x10027d08 0x20 --str          # bytes, strings, dwords (--dword), floats (--float)
+uv run dcp refs Init                           # everything that names a function or datum
+uv run dcp layout starts 0x10008c00..0x10009000     # every start with its evidence
+uv run dcp layout literals 0x10008c00..0x10009000   # the literal-pool view (B-LIT): first users, blocks, interleaving
+uv run dcp unit new NAME --range 0xA..0xB --by guess --why "..."   # propose + head.c, include/NAME.h, open.md
+uv run dcp draft --next                        # the next function's fragment (Ghidra's pseudocode or a @rough skeleton)
+uv run dcp unit join A B --why "..."           # B into A (grades must not change)
+uv run dcp unit rename OLD NEW --by leaked|tag|guess --why "..."
+uv run dcp rename OLD NEW --why "..."          # one identifier; names.log
+uv run dcp session start                       # the gate and the overview
+uv run dcp session wrap                        # build, link, check, promote, the computed report
+uv run dcp skills install                      # the skills into .claude/skills/ (dcp init installs them)
 ```
 
 Worktrees:
@@ -158,17 +177,19 @@ Output is one record per line, `key=value` tokens, addresses `0x%08x`, intervals
 
 ```
 src/decompanion/
-  cli.py cli_match.py config.py init.py
-  ledger/   fact.py store.py query.py decl.py srcscan.py ghidra.py layoutview.py grades.py
+  cli.py cli_match.py cli_read.py cli_draft.py cli_layout.py cli_session.py config.py init.py
+  ledger/   fact.py store.py query.py decl.py srcscan.py ghidra.py layoutview.py grades.py names.py
   rules/    engine.py setup.py walk.py checks.py layout.py match.py match_data.py grade.py   # generic: the seams only
-  build/    amalg.py compile.py link.py probe.py   # the tools run here (one process per unit), never in a rule
+  build/    amalg.py compile.py link.py probe.py ghidra.py   # the tools run here (one process per unit), never in a rule
+  data/     ghidra/DcpExport.java dcp_ghidra.h   # the Ghidra post-script, Ghidra's type names for drafts
   match/    compare.py diffclass.py              # masked compare, instruction diff and hunk classes
-  source/   lint.py                              # clang as the declaration checker
-  repo/     wt.py                    # worktrees and seed
+  repo/     wt.py session.py         # worktrees and seed; the session record and report
+  source/   lint.py draft.py units.py edit.py   # clang; the files dcp draft / unit / rename write
   image/    __init__ (registry) base.py pe32.py         # Image seam: sections, directories, regions, relocations
   objfmt/   __init__ (registry) base.py coff.py         # ObjectFormat seam: archives, objects, relocation view
   toolchains/ __init__ (registry) base.py vc6/          # Toolchain seam: fill, stubs, entries, Rich, defaults
   isa/      __init__ (registry) base.py x86.py          # Isa seam: instruction records, flow kinds, table shapes
 tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / clang tests when installed
 docs/                                # plan.md, layout.md, match.md, architecture.md
+skills/                              # dcp-layout/SKILL.md (installed into a project's .claude/skills/)
 ```

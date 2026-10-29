@@ -8,7 +8,8 @@ What goes in (Toolchain.link, LinkJob):
   /INCLUDE     every external function symbol the objects define (so /OPT:REF keeps it and its references are
                checked)
   a dll        /DLL /BASE:<image base> and a module definition file from the image's exports with their
-               ordinals (Toolchain.module_definition)
+               ordinals (Toolchain.module_definition); an export whose address has no fragment yet is left out
+               of it and listed as undrafted (open layout work: LINK cannot build an export nothing defines)
   libraries    the target's archives (the static CRT), the import library of every DLL the image imports
                (Toolchain.import_library_name, found in the toolchain's library directories or the project's
                libs/), the toolchain's default libraries
@@ -150,9 +151,12 @@ def full_link(project, log=None) -> LinkReport:
     libs += tc.default_libraries(kind)
     rep.errors += missing_libs
     def_file = None
+    open_exports = []
     if img.is_dll:
         def_file = out_dir / f"{project.target_name}.def"
-        text = tc.module_definition(project.image_path.stem, [e for e in img.exports() if not e.forwarder])
+        exports = [e for e in img.exports() if not e.forwarder]
+        open_exports = [f"{e.name or '#' + str(e.ordinal)}  (export, no fragment at {e.va:#010x} yet)" for e in exports if e.va not in src_names]
+        text = tc.module_definition(project.image_path.stem, [e for e in exports if e.va in src_names])
         if not def_file.exists() or def_file.read_text() != text:
             def_file.write_text(text, newline="\n")
     out = out_dir / project.image_path.name
@@ -172,6 +176,7 @@ def full_link(project, log=None) -> LinkReport:
             hit = None
     if hit is not None and hit.get("key") == key and "raw" in hit and (out.exists() or not hit.get("link_ok")):
         rep.unresolved, rep.cached = classify(project, hit["raw"]), True    # the classes follow the current facts
+        rep.unresolved["undrafted"] += open_exports
         rep.errors += hit["errors"]
         rep.ok = not rep.errors and (hit["link_ok"] or (bool(hit["raw"]) and not any(v for k, v in rep.unresolved.items() if k != "undrafted")))
         rep.ms = int((time.perf_counter() - t0) * 1000)
@@ -181,6 +186,7 @@ def full_link(project, log=None) -> LinkReport:
     res = tc.link(job)
     (out_dir / "link.log").write_text(res.log, newline="\n")
     rep.unresolved = classify(project, res.unresolved)
+    rep.unresolved["undrafted"] += open_exports
     rep.errors += res.errors
     rep.ok = not rep.errors and (res.ok or (bool(res.unresolved) and not any(v for k, v in rep.unresolved.items() if k != "undrafted")))
     for k, lines in rep.unresolved.items():
@@ -231,16 +237,16 @@ def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
         if hit is not None:
             out["aliases"].append(f"{u}  ->  {data_at[hit]}  ({hit:#010x})")
             continue
-        if cn in data_names:
-            out["data"].append(u)
-            continue
         if not addrs and cn in registered:
             addrs = set(registered[cn])
         open_at = sorted(a for a in addrs if a not in func_at and a not in data_at and img.section_of(a) is not None
                          and (a in starts or not img.section_of(a).holds_code))
-        if open_at:
+        if open_at:                     # a placeholder or a registered name whose address the sources do not define yet
             what = "no fragment" if open_at[0] in starts else "no definition"
             out["undrafted"].append(f"{u}  ({what} at {open_at[0]:#010x} yet)")
+            continue
+        if cn in data_names:
+            out["data"].append(u)
             continue
         where = sorted(a for a in addrs if a not in func_at)
         out["other"].append(u + (f"  (no fragment at {where[0]:#010x})" if where else ""))

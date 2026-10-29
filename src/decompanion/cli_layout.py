@@ -68,6 +68,9 @@ def ghidra_overview(p):
     for lo, hi, f in v.funcs:
         ours.setdefault(lo, "symbol")
         inner.update(f.value.get("inner", ()))
+    for f in v.syms:
+        if f.value.get("skind") == "thunk":
+            ours.setdefault(f.lo, "thunk")
     ours = {a: h for a, h in ours.items() if a not in inner}
     at = LV.L.container(v.funcs)
     g_only = []
