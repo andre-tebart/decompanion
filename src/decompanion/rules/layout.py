@@ -8,11 +8,14 @@ Computed:
   L.analyze      boundary evidence per function: literal first users (B-LIT), the fill before a start (B-FILL),
                  leaked source paths (B-LEAK)
   L.unit.extent  unit extents and status (R7 of the first attempt, adapted)
+  M.bytes.declared  declared dead / foreign bytes inside a unit belong to it (R5)
 Checks: L1 (a source start inside other code), L3 (literal order contradicts the unit order), L4 (a boundary
 not at a start / inside fill), L5 (a placeholder name that spells no start), L6 (a declaration the facts now
-contradict), L7 (extents overlap, a source outside its unit), L8 (two leaked paths in one unit), L11 (address
-comment vs file name, in L.src). L2 (a function of a unit without a source fragment, "undrafted") is
-informational: `dcp layout next` / `dcp layout units` report it, it is no conflict.
+contradict), L7 (extents overlap, a source outside its unit), L8 (two leaked paths in one unit), L9 (a Ghidra
+function body spans one of our starts, warning), L10 (walked code inside a unit that no fragment, declaration
+or other function explains, warning), L11 (address comment vs file name, in L.src). L2 (a function of a unit
+without a source fragment, "undrafted") is informational: `dcp layout next` / `dcp layout units` report it, it
+is no conflict.
 
 The pure functions below (game_range, compute_units, lit_issues, boundary_issues, leak_issues) are shared by the
 rules and by `dcp layout unit propose`, which runs them on the units as they would be with the proposal.
@@ -437,17 +440,21 @@ def load_src(ctx: RuleContext):
                                a=b1, b=b2)
 
 
-@rule("L.ghidra", version="1", ceiling=DE, outputs=("start",), inputs=("ghidra",), loader=True)
+@rule("L.ghidra", version="2", ceiling=DE, outputs=("start",), inputs=("ghidra",), loader=True)
 def load_ghidra(ctx: RuleContext):
-    """Every imported Ghidra draft (`dcp ghidra import`) whose entry lies in a code section is a declared
-    function start (how ghidra, reason "ghidra analysis"): Ghidra's function discovery is an external tool's
-    claim, so it is a declaration, never a computed fact."""
+    """Every imported Ghidra draft (`dcp ghidra export` / `dcp ghidra import`) whose entry lies in a code section
+    is a declared function start (how ghidra, reason "ghidra analysis"; value: Ghidra's name and, from an
+    export, its body's size in bytes): Ghidra's function discovery is an external tool's claim, so it is a
+    declaration, never a computed fact. A function Ghidra made at one of our own starts (seeded by `dcp ghidra
+    export`) is no claim of Ghidra's and gives no start fact."""
     code = code_ranges(ctx.image)
     for e in ctx.input("ghidra"):
-        if in_ranges(e.start, code):
+        if in_ranges(e.start, code) and not e.seeded:
             v = {"skind": "func", "how": "ghidra"}
             if e.name:
                 v["name"] = e.name
+            if e.size is not None:
+                v["size"] = e.size
             yield ctx.declared(e.start, e.start + 1, Kind.start, v, f"decl:ghidra:{e.source}", "ghidra analysis")
 
 
@@ -556,17 +563,25 @@ def srcfns_of(facts) -> list[SrcFn]:
     return [SrcFn(f.lo, f.value["unit"], f.value["symbol"], f.by) for f in facts if f.value.get("what") == "func"]
 
 
-@rule("L.unit.extent", version="1", ceiling=DE, outputs=("unit",),
+def unit_status(start_level: Level, end_level: Level, open_bytes: int, walk_conflicts: int) -> str:
+    """separated when both boundaries are at least declared, no open byte and no C.walk conflict lies inside the
+    unit; else open."""
+    return "separated" if start_level >= DE and end_level >= DE and not open_bytes and not walk_conflicts else "open"
+
+
+@rule("L.unit.extent", version="2", ceiling=DE, outputs=("unit",),
       needs=("L.decl", "L.src", "S.sections", "S.crt.code", "S.thunk", "S.codewalk", "S.unknown"),
-      helpers=(compute_units, game_range, lib_starts_of))
+      helpers=(compute_units, game_range, lib_starts_of, unit_status))
 def unit_extent(ctx: RuleContext):
     """The units of the game code (compute_units in rules/layout.py: a unit runs from its declared start
     boundary or first fragment to its declared end, the next unit's start or the end of the game code; the
     first library byte ends the game code). Each unit is a `unit` fact over its extent with its boundary
-    levels and producers, the count of function starts inside, how many have a fragment, and its open bytes
-    (unknown code: no rule claims them). Status: separated when both boundaries are at least declared and no
-    open byte lies inside, else open. Level: the lower of the two boundary levels (at most declared). Issues of
-    the computation are L7 conflicts."""
+    levels and producers, the count of function starts inside, how many have a fragment, its open bytes
+    (unknown code: no rule claims them), its declared dead / foreign bytes (`bytes dead`, `foreign`: explained,
+    not open) and the C.walk conflicts inside it (a walk that runs into another function's bytes: one of the
+    two starts is wrong). Status: separated when both boundaries are at least declared, no open byte and no
+    C.walk conflict lies inside, else open. Level: the lower of the two boundary levels (at most declared).
+    Issues of the computation are L7 conflicts."""
     img = ctx.image
     syms = ctx.facts(Kind.symbol)
     game = game_range(img, lib_starts_of(syms))
@@ -575,14 +590,22 @@ def unit_extent(ctx: RuleContext):
     units, issues = compute_units(game, bounds_of(ctx.facts(Kind.boundary)), srcs, funcs)
     yield from _emit(ctx, issues)
     unknown = sorted((f.lo, f.hi) for f in syms if f.value.get("skind") == "unknown.code")
+    dead = sorted((f.lo, f.hi) for f in syms if f.run == "L.decl" and f.value.get("skind") in ("dead", "foreign"))
+    walks = sorted(c.lo for c in ctx.conflicts("C.walk"))
     sourced = {s.addr for s in srcs}
+
+    def overlap(ranges, u):
+        return sum(max(0, min(b, u.hi) - max(a, u.lo)) for a, b in ranges if a < u.hi and b > u.lo)
+
     for u in units:
-        open_bytes = sum(max(0, min(b, u.hi) - max(a, u.lo)) for a, b in unknown if a < u.hi and b > u.lo)
+        open_bytes = overlap(unknown, u)
+        n_walk = bisect.bisect_left(walks, u.hi) - bisect.bisect_left(walks, u.lo)
         inside = [a for a in funcs if u.lo <= a < u.hi]
         extra = {s.addr for s in srcs if u.lo <= s.addr < u.hi} - set(inside)
-        v = {"tu": u.tu, "status": "separated" if u.start_level >= DE and u.end_level >= DE and not open_bytes else "open",
+        v = {"tu": u.tu, "status": unit_status(u.start_level, u.end_level, open_bytes, n_walk),
              "start_level": u.start_level.name, "end_level": u.end_level.name, "start_by": u.start_by, "end_by": u.end_by,
-             "open_bytes": open_bytes, "functions": len(inside) + len(extra), "sourced": sum(1 for a in inside if a in sourced) + len(extra)}
+             "open_bytes": open_bytes, "dead_bytes": overlap(dead, u), "walk_conflicts": n_walk,
+             "functions": len(inside) + len(extra), "sourced": sum(1 for a in inside if a in sourced) + len(extra)}
         if u.named_by:
             v["named_by"] = u.named_by
         yield ctx.fact(u.lo, u.hi, Kind.unit, v, u.level)
@@ -770,3 +793,115 @@ def declared_recheck(ctx: RuleContext):
 def leak_unit(ctx: RuleContext):
     """L8 (leak_issues in rules/layout.py): one unit, one leaked source file."""
     yield from _emit(ctx, leak_issues(game_units(ctx.facts(Kind.unit)), leaks_of(ctx.facts(Kind.evidence))))
+
+
+# ------------------------------------------------------------------------------------------------ L9 / L10 / R5
+def our_starts(ctx) -> tuple[dict, set]:
+    """({start: how} of every start fact of the needed rules and every function / thunk symbol above open,
+    {inner labels of walked functions})."""
+    ours = {f.lo: f.value.get("how", "") for f in ctx.facts(Kind.start)}
+    inner = set()
+    for f in ctx.facts(Kind.symbol):
+        if f.value.get("skind") in ("func", "thunk") and f.level > O:
+            ours.setdefault(f.lo, "symbol")
+            inner.update(f.value.get("inner", ()))
+    return ours, inner
+
+
+@rule("L9.ghidra.span", version="1", ceiling=DE, inputs=("ghidra",),
+      needs=("L.decl", "L.src", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.codewalk", "S.thunk"),
+      helpers=(our_starts, game_range, lib_starts_of))
+def ghidra_span(ctx: RuleContext):
+    """L9 (warning): an imported Ghidra function of the game code (its entry before the first library byte)
+    whose body (its address ranges, `dcp ghidra export`) holds one of our function starts other than its own
+    entry: a start fact of any producer but L.ghidra (export, entry, library, walk, declaration, fragment) or
+    the start of a placed or walked function; inner labels of a walked function do not count. Ghidra merged two
+    functions (typically across a call that does not return): its pseudocode holds both, and a draft from it
+    must stop at our start. A warning, not an error: Ghidra's body is an external tool's analysis (a
+    declaration), our starts rest on the bytes and stated conventions. Library code is placed by its own
+    members' bytes; Ghidra's view of it is no layout question and is not checked."""
+    ours, inner = our_starts(ctx)
+    keys = sorted(a for a in ours if a not in inner)
+    glo, ghi, _ = game_range(ctx.image, lib_starts_of(ctx.facts(Kind.symbol)))
+    for e in ctx.input("ghidra"):
+        if not (glo <= e.start < ghi):
+            continue
+        hits = []
+        for lo, hi in e.ranges:
+            i = bisect.bisect_left(keys, lo)
+            while i < len(keys) and keys[i] < hi:
+                if keys[i] != e.start:
+                    hits.append(keys[i])
+                i += 1
+        if hits:
+            hits.sort()
+            yield ctx.conflict(Severity.warn, "L9", e.start, max(hi for _, hi in e.ranges),
+                               f"Ghidra's function {e.start:#x} ({e.name or '-'}, {e.size} bytes) spans our start"
+                               f"{'s' if len(hits) > 1 else ''} " + ", ".join(f"{a:#x} ({ours[a]})" for a in hits[:6])
+                               + (f" (+{len(hits) - 6} more)" if len(hits) > 6 else "") + ": its draft holds more than one function",
+                               a=f"decl:ghidra:{e.source}")
+
+
+@rule("L10.unexplained", version="1", ceiling=DE, needs=("L.unit.extent", "L.src", "M.match", "S.codewalk", "L.decl"))
+def unexplained(ctx: RuleContext):
+    """L10 (warning): code inside a game unit's extent that no fragment, no declaration and no other function
+    explains, though a fragment claims it. Two cases:
+    (a) a fragment whose start the walk does not know (a declared start in unknown code) and that does not
+    byte-match owns no bytes (M.draft takes the walk's extent, there is none; M.match proves an extent only for
+    a match): its code stays open (`open_bytes`) until it matches or a convention reaches its start;
+    (b) a fragment that byte-matches (M.match: its compiled section, padding included, ends at m) while the walk
+    gives its start a function extent [a, w) with w > m: the bytes [m, w), minus declared dead / foreign bytes,
+    are code the walk reached that our function does not contain (a missed start, dead code to declare `bytes
+    dead -- why`, or a table read as code). (R1's tail check makes (b) rare: a match already proves that only fill
+    follows its end up to the next start.)
+    A non-matching draft with a walked start owns the walk's extent (M.draft), and a walked function without a
+    fragment is L2 (informational, `dcp layout next`): neither is L10."""
+    units = game_units(ctx.facts(Kind.unit))
+    at = unit_index(units)
+    walk = {f.lo: f for f in ctx.facts(Kind.symbol) if f.run == "S.codewalk" and f.value.get("skind") == "func"}
+    matched = {f.lo: f for f in ctx.facts(Kind.source) if f.value.get("what") == "match"}
+    dead = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.run == "L.decl" and f.value.get("skind") in ("dead", "foreign"))
+    for s in ctx.facts(Kind.source):
+        if s.run != "L.src" or s.value.get("what") != "func":
+            continue
+        i = at(s.lo)
+        if i is None:
+            continue
+        w, m = walk.get(s.lo), matched.get(s.lo)
+        if w is None and m is None:
+            yield ctx.conflict(Severity.warn, "L10", s.lo, s.lo + 1,
+                               f"unit {units[i].tu}: {s.value['file']} ({s.value['symbol']}) owns no bytes: the walk does not know its "
+                               f"start and it does not byte-match, so its code stays open", a=s.by)
+            continue
+        if w is None or m is None or w.hi <= m.hi:
+            continue
+        left = w.hi - m.hi - sum(max(0, min(b, w.hi) - max(a, m.hi)) for a, b in dead if a < w.hi and b > m.hi)
+        if left > 0:
+            yield ctx.conflict(Severity.warn, "L10", m.hi, w.hi,
+                               f"unit {units[i].tu}: the walk of {s.lo:#x} ({s.value['symbol']}) runs to {w.hi:#x}, its byte-matched "
+                               f"compile ends at {m.hi:#x}: {left} bytes of walked code no fragment explains (a missed start, or "
+                               f"dead code to declare `bytes dead`)", a=w.by, b=m.by)
+
+
+@rule("M.bytes.declared", version="1", ceiling=DE, outputs=("source",), needs=("L.decl", "L.unit.extent"))
+def bytes_declared(ctx: RuleContext):
+    """R5: declared dead or foreign bytes (decl/*.dcl `bytes dead`, `foreign kind=`) inside a game unit's extent
+    belong to that unit: a `source` fact {what: dead | foreign, unit} over the range, declared (the declaration
+    is the premise), so the byte map gives those bytes the unit and its source, and the unit counts them as
+    explained (L.unit.extent: dead_bytes), not open. A range that crosses a unit boundary is an error
+    (M.bytes.declared); a range inside no unit is a warning (no unit owns it yet)."""
+    units = game_units(ctx.facts(Kind.unit))
+    at = unit_index(units)
+    for f in ctx.facts(Kind.symbol):
+        if f.run != "L.decl" or f.value.get("skind") not in ("dead", "foreign"):
+            continue
+        i, j = at(f.lo), at(f.hi - 1)
+        if i is None and j is None:
+            yield ctx.conflict(Severity.warn, "M.bytes.declared", f.lo, f.hi, f"declared {f.value['skind']} bytes {f.lo:#x}..{f.hi:#x} lie in no unit", a=f.by)
+            continue
+        if i != j:
+            yield ctx.conflict(Severity.error, "M.bytes.declared", f.lo, f.hi,
+                               f"declared {f.value['skind']} bytes {f.lo:#x}..{f.hi:#x} cross a unit boundary", a=f.by)
+            continue
+        v = {"what": f.value["skind"], "unit": units[i].tu, "decl": f.by}
+        yield ctx.fact(f.lo, f.hi, Kind.source, v, min_level(f.level, ceiling=DE), f.reason)

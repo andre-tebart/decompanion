@@ -245,7 +245,7 @@ def cmd_promote(args):
 def print_link(rep):
     print(record(link=rep.target, ok=rep.ok, objects=rep.objects, includes=rep.includes, unresolved=rep.n_unresolved,
                  errors=len(rep.errors), out=rep.out or None, cached=rep.cached, ms=rep.ms) + (f"  skipped: {rep.skipped}" if rep.skipped else ""))
-    for k in ("data", "renames", "aliases", "other"):
+    for k in ("data", "renames", "aliases", "undrafted", "other"):
         lines = rep.unresolved.get(k) or []
         if lines:
             print(f"  unresolved {k}={len(lines)}")

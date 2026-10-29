@@ -21,7 +21,10 @@ externals in four files, classified as in the first attempt:
   renames   a stale name: it spells (placeholder) or is registered at the address of a function whose fragment
             defines another name
   aliases   a name declared at the address of a data object defined under another name
-  other     everything else (a function without a fragment yet, a CRT internal, ...)
+  undrafted a placeholder (or a name the ledger registers) whose address has no definition in the sources yet: a
+            function start without a fragment, or a data address no definition names; open layout work, not a link
+            error (the link is ok when nothing else is unresolved)
+  other     everything else (a real name without an address, a CRT internal, ...)
 The link is skipped when its inputs (the arguments, every object and library by content hash) are those of the
 last successful-or-not link and its log is on disk: the result is read back.
 """
@@ -167,9 +170,10 @@ def full_link(project, log=None) -> LinkReport:
             hit = json.loads(cache.read_text())
         except ValueError:
             hit = None
-    if hit is not None and hit.get("key") == key and (out.exists() or not hit.get("ok")):
-        rep.ok, rep.unresolved, rep.cached = hit["ok"], hit["unresolved"], True
+    if hit is not None and hit.get("key") == key and "raw" in hit and (out.exists() or not hit.get("link_ok")):
+        rep.unresolved, rep.cached = classify(project, hit["raw"]), True    # the classes follow the current facts
         rep.errors += hit["errors"]
+        rep.ok = not rep.errors and (hit["link_ok"] or (bool(hit["raw"]) and not any(v for k, v in rep.unresolved.items() if k != "undrafted")))
         rep.ms = int((time.perf_counter() - t0) * 1000)
         return rep
     if out.exists():
@@ -178,17 +182,23 @@ def full_link(project, log=None) -> LinkReport:
     (out_dir / "link.log").write_text(res.log, newline="\n")
     rep.unresolved = classify(project, res.unresolved)
     rep.errors += res.errors
-    rep.ok = res.ok and not rep.errors and not res.unresolved
+    rep.ok = not rep.errors and (res.ok or (bool(res.unresolved) and not any(v for k, v in rep.unresolved.items() if k != "undrafted")))
     for k, lines in rep.unresolved.items():
         (out_dir / f"unresolved-{k}.txt").write_text("".join(l + "\n" for l in lines), newline="\n")
-    cache.write_text(json.dumps({"key": key, "ok": rep.ok, "unresolved": rep.unresolved, "errors": res.errors}), newline="\n")
+    cache.write_text(json.dumps({"key": key, "ok": rep.ok, "link_ok": res.ok, "raw": res.unresolved, "unresolved": rep.unresolved,
+                                 "errors": res.errors}), newline="\n")
     rep.ms = int((time.perf_counter() - t0) * 1000)
     return rep
 
 
 def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
-    """The four classes of the module docstring, one line per symbol (`symbol  ->  hint`)."""
+    """The five classes of the module docstring, one line per symbol (`symbol  ->  hint`)."""
     st, tc = project.store, project.toolchain
+    starts = {f.lo for f in st.facts(Kind.start)}
+    registered: dict[str, set] = {}
+    for f in st.facts(Kind.name):
+        if f.value.get("origin") in ("decl", "export", "entry"):
+            registered.setdefault(f.value["name"], set()).add(f.lo)
     data_names, func_at, name_at = set(), {}, {}
     for f in st.facts(Kind.source):
         if f.run == "L.src":
@@ -205,7 +215,8 @@ def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
     sc = srcscan.scan(project.root, project.input_hash("src"))
     for d in sc.data:
         data_names.add(d.name)
-    out = {"data": [], "renames": [], "aliases": [], "other": []}
+    out = {"data": [], "renames": [], "aliases": [], "undrafted": [], "other": []}
+    img = project.image
     for u in unresolved:
         cn = tc.undecorate(u)
         addrs = set(name_at.get(cn, ()))
@@ -222,6 +233,14 @@ def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
             continue
         if cn in data_names:
             out["data"].append(u)
+            continue
+        if not addrs and cn in registered:
+            addrs = set(registered[cn])
+        open_at = sorted(a for a in addrs if a not in func_at and a not in data_at and img.section_of(a) is not None
+                         and (a in starts or not img.section_of(a).holds_code))
+        if open_at:
+            what = "no fragment" if open_at[0] in starts else "no definition"
+            out["undrafted"].append(f"{u}  ({what} at {open_at[0]:#010x} yet)")
             continue
         where = sorted(a for a in addrs if a not in func_at)
         out["other"].append(u + (f"  (no fragment at {where[0]:#010x})" if where else ""))

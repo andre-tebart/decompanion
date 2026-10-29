@@ -519,6 +519,11 @@ def cmd_layout_units(args):
         return
     glo, ghi, glevel = v.game
     covered = sum(r["range"][1] - r["range"][0] for r in rows)
+    if args.verbose:
+        from .ledger import srcscan
+        und = LV.undrafted(v)
+        conf = p.store.conflicts()
+        sc = srcscan.scan(p.root, p.input_hash("src"))
     c = Counter(r["status"] for r in rows)
     lib = len({f.value["tu"] for f in p.store.facts(Kind.unit) if "lib" in f.value})
     print(record(target=p.target_name, units=len(rows), separated=c.get("separated", 0), open=c.get("open", 0), game=(glo, ghi),
@@ -528,7 +533,17 @@ def cmd_layout_units(args):
                      open_bytes=r["open_bytes"], functions=r["functions"], sourced=r["sourced"], undrafted=r["undrafted"],
                      leaks=r["leaks"] or None))
         if args.verbose:
-            print("  " + record(start_by=r["start_by"], end_by=r["end_by"]))
+            print("  " + record(start_by=r["start_by"], end_by=r["end_by"], dead_bytes=r["dead_bytes"], walk_conflicts=r["walk_conflicts"]))
+            lo, hi = r["range"]
+            for a in und:
+                if lo <= a < hi:
+                    print("  " + record(undrafted=a) + "  (L2)")
+            for x in conf:
+                if x.check in ("L10", "C.walk", "M.bytes.declared") and lo <= x.lo < hi:
+                    print("  " + x.line())
+            for f in sc.functions:
+                if f.unlinked and f.unit == r["unit"]:
+                    print("  " + record(unlinked=f.name, file=f.file, why=f.what or None))
 
 
 def cmd_layout_propose(args):
@@ -749,6 +764,11 @@ def main(argv=None):
     s = cmd(lay, "units", cmd_layout_units, "the unit table")
     s.add_argument("-v", "--verbose", action="store_true")
     s.add_argument("--json", action="store_true")
+    from . import cli_read as CR
+    s = cmd(lay, "literals", CR.cmd_layout_literals, "the literal-pool view of a unit or range: first users, blocks, interleaving (B-LIT)")
+    s.add_argument("what", nargs="?", metavar="UNIT|LO..HI", help="default: the game code")
+    s = cmd(lay, "starts", CR.cmd_layout_starts, "every function start in a range with its evidence")
+    s.add_argument("range", nargs="?", metavar="LO..HI", help="default: the game code")
     u = lay.add_parser("unit", help="unit commands").add_subparsers(dest="sub2", required=True)
     s = cmd(u, "propose", cmd_layout_propose, "check a unit proposal (L3/L4/L7/L8) and write its boundary lines")
     s.add_argument("range", help="0xSTART..0xEND (END exclusive) or 0xSTART")
@@ -763,12 +783,20 @@ def main(argv=None):
     un = sub.add_parser("unit", help="units").add_subparsers(dest="sub", required=True)
     s = cmd(un, "cat", cmd_unit_cat, "print a unit's amalgamation")
     s.add_argument("unit")
+    from . import cli_layout as CLU
+    CLU.register_unit(un, cmd)
 
     g = sub.add_parser("ghidra", help="Ghidra drafts").add_subparsers(dest="sub", required=True)
     s = cmd(g, "import", cmd_ghidra_import, "import saved REA batch_decompile results")
     s.add_argument("json_files", nargs="+", metavar="JSON")
     s = cmd(g, "show", cmd_ghidra_show, "print the Ghidra draft of a function")
     s.add_argument("addr")
+    from . import cli_layout as CL
+    s = cmd(g, "export", CL.cmd_ghidra_export, "Ghidra headless: decompile every function of the target and import the drafts")
+    s.add_argument("--force", action="store_true", help="export again although this image was exported with this script")
+    s = cmd(g, "status", CL.cmd_ghidra_status, "drafts, starts only Ghidra has, starts only we have, L9")
+    s.add_argument("-v", "--verbose", action="store_true", help="list everything")
+    CL.register(sub, cmd)
 
     w = sub.add_parser("wt", help="worktrees with an overlay store").add_subparsers(dest="sub", required=True)
     s = cmd(w, "new", cmd_wt_new, "create ../<project>-wt/NAME on branch wt/NAME")

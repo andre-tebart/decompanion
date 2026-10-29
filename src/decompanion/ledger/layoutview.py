@@ -77,6 +77,14 @@ class View:
         out.sort(key=lambda t: t[0])
         return out
 
+    def symbol_kind(self, a):
+        """The skind of the symbol (not the match phase's) that starts at a, or None."""
+        if not hasattr(self, "_skind_at"):
+            self._skind_at = {}
+            for f in self.syms:
+                self._skind_at.setdefault(f.lo, f.value.get("skind"))
+        return self._skind_at.get(a)
+
     def unit_at(self, a):
         i = L.unit_index(self.units)(a)
         return self.units[i] if i is not None else None
@@ -195,6 +203,7 @@ def unit_rows(v: View):
         rows.append({"unit": val["tu"], "range": (f.lo, f.hi), "status": val["status"], "start": val["start_level"],
                      "end": val["end_level"], "named_by": val.get("named_by"), "open_bytes": val["open_bytes"],
                      "functions": val["functions"], "sourced": val["sourced"], "undrafted": val["functions"] - val["sourced"],
+                     "dead_bytes": val.get("dead_bytes", 0), "walk_conflicts": val.get("walk_conflicts", 0),
                      "start_by": val["start_by"], "end_by": val["end_by"], "leaks": leaks, "level": f.level.name})
     return rows
 
