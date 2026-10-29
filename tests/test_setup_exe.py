@@ -52,6 +52,7 @@ def test_exe_landmarks(guild):
     assert syms[0x5dd3e0].value["unit"] == "lib:DINPUT.LIB/dilib2.obj"
     assert syms[0x465e00].hi == 0x465e6d and 0x465e70 in syms                           # W5: zlib's _tr_init ends in a jmp
     assert syms[0x4eabd0].hi == 0x4eabd5 and 0x4eabe0 in syms                           # over fill into init_block; 0x4eabd0 is just a jmp
+    assert syms[0x4276a0].hi == 0x4277b5                    # W5 needs an aligned target: `jmp; int 3` inside it
     assert syms[0x5de4a0].value["name"] == "_strrchr"
     code, out = dcp(guild, "--target", "exe", "layout", "units")
     assert "game=0x00401000..0x005dd3e0" in out

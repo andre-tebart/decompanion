@@ -500,7 +500,7 @@ Byte parity with rea's baseline: 2664 of 2664 functions, every unit compiles. Wh
 - N2 compares `static` names within their unit (vfs.c and gzio.c each keep a `gz_magic`).
 - COFF function_code: a `$L` label (CL's switch table after the code, a static symbol) no longer ends a
   function (38 byte matches with switch tables failed the tail check).
-- Walk convention W5: an unconditional jump followed only by fill up to its target is a tail call (exe without
+- Walk convention W5: an unconditional jump followed only by fill up to an aligned target is a tail call (exe without
   base relocations: zlib's `_tr_init` -> `init_block`).
 - `dcp link` builds an import library a DLL lacks from the image's import directory (`make_import_library` of
   the toolchain seam; mss32.dll), import records carry their hint.

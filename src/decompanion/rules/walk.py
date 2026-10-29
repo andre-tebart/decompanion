@@ -14,9 +14,11 @@ Conventions it rests on (derived level; VC6 / LINK are the toolchain they were s
       A call followed directly by a known start ends the function too: the callee does not return (VC6
       emits nothing after a call to a noreturn function such as _exit or _endthread). (Since milestone 3;
       before, the fall-through into the start was a C.walk conflict.)
-  W5  an unconditional direct jump followed only by alignment fill up to its target is a tail call to a
-      function starting there: the toolchain pads between functions, never inside one (VC6 emits `jmp f` for
-      `return f(...)` where f is the next function; without base relocations nothing else marks f's start).
+  W5  an unconditional direct jump followed only by alignment fill up to its target, the target at the
+      toolchain's function alignment, is a tail call to a function starting there: the toolchain pads between
+      functions, never inside one (VC6 emits `jmp f` for `return f(...)` where f is the next function; without
+      base relocations nothing else marks f's start). The alignment keeps an inline `int 3` jumped over inside
+      a function (`__asm int 3`, the same byte as int3 fill) from passing for padding.
 The walk is repeated with the growing set of starts until that set is stable, so no walk ever runs into a
 start found later. A walk that still runs into bytes another function owns is a conflict (C.walk): one of the
 two starts is wrong.
@@ -58,8 +60,9 @@ class Record:
 
 
 class Walker:
-    def __init__(self, dec: Decoder, reloc_sites, stops):
+    def __init__(self, dec: Decoder, reloc_sites, stops, align: int = 1):
         self.dec = dec
+        self.align = align
         self.img = dec.img
         self.lo, self.hi = dec.lo, dec.hi
         self.code = dec.code
@@ -91,8 +94,8 @@ class Walker:
         return i < len(self.sorted_stops) and self.sorted_stops[i] <= hi
 
     def fill_to(self, a, t):
-        """W5: the bytes from a up to t are alignment fill only (at least one byte)."""
-        if t <= a:
+        """W5: the bytes from a up to t are alignment fill only (at least one byte), t at the function alignment."""
+        if t <= a or t % self.align:
             return False
         for ins in self.dec.decode(a):
             if ins.addr >= t:
@@ -315,7 +318,7 @@ class Walker:
         return code, table
 
 
-@rule("S.codewalk", version="4", ceiling=D, outputs=("symbol", "start", "ref"),
+@rule("S.codewalk", version="5", ceiling=D, outputs=("symbol", "start", "ref"),
       needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs"),
       helpers=(Record, Walker))
 def codewalk(ctx: RuleContext):
@@ -364,7 +367,7 @@ def codewalk(ctx: RuleContext):
     for _ in range(25):
         roots = dict(known)
         roots.update({k: v for k, v in derived.items() if k not in roots})
-        w = Walker(dec, reloc_sites, set(roots) | claimed_starts)
+        w = Walker(dec, reloc_sites, set(roots) | claimed_starts, tc.function_alignment)
         for a, b in claimed:
             w.claim(a, b, a, 3)
             w.extent.pop(a, None)
