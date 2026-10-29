@@ -297,6 +297,19 @@ class X86(Isa):
             out.append(Line(a, size, text, bytes(code[o:o + size]) in fills))
         return out
 
+    def disasm(self, code, va, fill_forms=()):
+        """capstone's Intel text, unchanged."""
+        fills = frozenset(fill_forms)
+        out = []
+        for a, size, mn, ops in capstone_lite().disasm_lite(bytes(code), va):
+            o = a - va
+            out.append(Line(a, size, (mn + " " + ops).strip() if ops else mn, bytes(code[o:o + size]) in fills))
+        return out
+
+    def numbers(self, text):
+        """capstone writes every number from 10 on in hex (`0x...`)."""
+        return [(m.start(), m.end(), int(m.group(1), 16)) for m in HEX.finditer(text)]
+
     def explain(self, xa, xb, context):
         gpr = gpr_for(context)
         m = find_map(xa, xb, REG_RE, lambda m: full_reg(m[1]), rename_regs, gpr)

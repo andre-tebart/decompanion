@@ -208,6 +208,16 @@ class Toolchain:
         """The file name (lower case) of the import library a DLL is linked through."""
         raise NotImplementedError
 
+    # -------------------------------------------------------------- drafting (milestone 4)
+    def declaring_header(self, name: str) -> str | None:
+        """The system header (as `#include <...>` names it) that declares the C library function `name`, None when
+        no header of the toolchain does (`dcp draft` includes it instead of writing a declaration)."""
+        return None
+
+    def import_header(self, dll: str) -> str | None:
+        """The system header that declares the functions an imported DLL exports, None when unknown."""
+        return None
+
     # -------------------------------------------------------------- the tools (milestone 3)
     def available(self) -> bool:
         """The compiler and linker are installed (else nothing compiles: the match rules say so as warnings)."""

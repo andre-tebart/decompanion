@@ -103,6 +103,17 @@ class Isa:
         (the same multiset) are decided before this is asked."""
         return None
 
+    # ------------------------------------------------------------------ reading (milestone 4)
+    def disasm(self, code: bytes, va: int, fill_forms=()) -> list["Line"]:
+        """The instructions of `code` placed at `va` in the disassembler's own text (nothing normalised), for
+        `dcp disasm`. Stops at the first byte that does not decode."""
+        raise NotImplementedError
+
+    def numbers(self, text: str) -> list[tuple[int, int, int]]:
+        """(start, end, value) of every number in an instruction text of `disasm`: where `dcp disasm` puts a
+        symbol name for an address."""
+        return []
+
     def rename_registers(self, lines: list[str], mapping: dict[str, str]) -> list[str]:
         """The listing texts with registers renamed (`dcp asmdiff --regs a=b,...`)."""
         return list(lines)

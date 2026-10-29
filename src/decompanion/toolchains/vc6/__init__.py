@@ -9,6 +9,9 @@ from ..base import CompileResult, LinkJob, LinkResult, RichProduct, Toolchain
 from . import cl, rich
 from .link import run_link
 
+C89_HEADERS = frozenset(("assert.h", "ctype.h", "errno.h", "float.h", "limits.h", "locale.h", "math.h", "setjmp.h", "signal.h",
+                         "stdarg.h", "stddef.h", "stdio.h", "stdlib.h", "string.h", "time.h"))
+
 # The alignment fill VC6 / LINK leave between functions: nop, int3, mov edi,edi, lea ecx,[ecx+0]. Counted in
 # GildeGold.exe (2026-10-23, the first attempt); one other instruction makes a run not fill.
 FILL_FORMS = (b"\x90", b"\xcc", b"\x8b\xff", b"\x8d\x49\x00")
@@ -172,6 +175,30 @@ class VC6(Toolchain):
 
     def library_search_dirs(self) -> list[Path]:
         return self.tools.lib_path
+
+    def declaring_header(self, name: str) -> str | None:
+        """The first header of VC98/Include whose text declares `name` as a `__cdecl` function (every C library
+        declaration of VC6's headers carries the calling convention: `_CRTIMP char * __cdecl strrchr(const char
+        *, int);`), the C89 standard headers first, then alphabetical (memset: string.h, not memory.h). Read once
+        per process."""
+        idx = self.__dict__.get("_decls")
+        if idx is None:
+            import re
+            idx = {}
+            pat = re.compile(r"\b__cdecl\s+\**\s*([A-Za-z_]\w*)\s*\(")
+            for d in self.tools.system_include:
+                if not d.exists():
+                    continue
+                for h in sorted(d.glob("*.h"), key=lambda q: (q.name.lower() not in C89_HEADERS, q.name.lower())):
+                    for m in pat.finditer(h.read_text(errors="replace")):
+                        idx.setdefault(m.group(1), h.name.lower())
+            self.__dict__["_decls"] = idx
+        return idx.get(name)
+
+    def import_header(self, dll: str) -> str | None:
+        """The Win32 API of every system DLL is declared through <windows.h> (it includes winsock.h and
+        mmsystem.h unless WIN32_LEAN_AND_MEAN)."""
+        return "windows.h"
 
     def undecorate(self, symbol: str) -> str:
         """`_f` (cdecl) and `_f@12` (stdcall) -> f, `@f@8` (fastcall) -> f; C++ names (`?f@@...`) stay."""
