@@ -174,15 +174,17 @@ def types_headers() -> set[str]:
 
 
 def ensure_types_header(root: Path, head: Path, unit: str, shipped: Path, d: "Draft") -> str:
-    """include/<the analyzer's types header> (copied from the installation) and its #include in head.c before the
-    unit's own header; returns the #include line."""
+    """include/<the analyzer's types header> (copied from the installation, again when the installation's copy
+    differs: the file is dcp's, not the project's) and its #include in head.c before the unit's own header;
+    returns the #include line."""
     line = f'#include "{shipped.name}"'
     dh = root / "include" / shipped.name
-    if not dh.exists():
-        if not shipped.exists():
-            raise DraftError(f"{shipped} is missing from the installation")
-        E.write(dh, shipped.read_text())
-        d.declared.append(f"wrote include/{shipped.name} (the analyzer's type names)")
+    if not shipped.exists():
+        raise DraftError(f"{shipped} is missing from the installation")
+    want = shipped.read_text()
+    if not dh.exists() or dh.read_text() != want:
+        d.declared.append(f"{'updated' if dh.exists() else 'wrote'} include/{shipped.name} (the analyzer's type names)")
+        E.write(dh, want)
     text = head.read_text()
     if line not in text:
         own = f'#include "{unit}.h"'

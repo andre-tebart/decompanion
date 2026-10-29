@@ -114,6 +114,27 @@ def test_compare_masked_and_aid():
     assert c.diffs == [5] and not c.matched
 
 
+def test_aligned_sites():
+    x86 = isa_plugins.get("x86")
+    ours = b"\x55\x8b\xec\xe8\x00\x00\x00\x00\x5d\xc3"           # push ebp; mov ebp,esp; call f; pop ebp; ret
+    mask = bytes([0, 0, 0, 0, 1, 1, 1, 1, 0, 0])
+    site = [(4, 4)]
+
+    def cmp(orig):
+        c = C.Compared(0x1000, len(ours), ours, mask, orig)
+        c.diffs = [k for k in range(len(ours)) if not mask[k] and ours[k] != orig[k]]
+        return c
+
+    # a draft whose call sits where the original's does: the site lines up although the function differs
+    assert C.aligned_sites(x86, cmp(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5e\xc3"), site) == {4}
+    # one more instruction before the call (push ecx): the original's bytes at our site are no call target
+    assert C.aligned_sites(x86, cmp(b"\x55\x8b\xec\x51\xe8\x10\x00\x00\x00\xc3"), site) == set()
+    # the same size and offset but another instruction (mov eax, imm32): no line-up either
+    assert C.aligned_sites(x86, cmp(b"\x55\x8b\xec\xb8\x10\x00\x00\x00\x5d\xc3"), site) == set()
+    # a match lines up everywhere
+    assert C.aligned_sites(x86, cmp(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5d\xc3"), site) == {4}
+
+
 # ------------------------------------------------------------------------------------------------ diffclass
 def lines(*texts):
     return [Line(0x1000 + k, 1, t, t in ("nop", "int3")) for k, t in enumerate(texts)]

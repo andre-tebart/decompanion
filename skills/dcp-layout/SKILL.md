@@ -94,6 +94,8 @@ What `dcp build` typically says about a fresh draft and what to do:
 - `CONCAT`, `SUB`, `ZEXT`, `SEXT` macros, `undefined4`, `uint`, `byte`, `code` come from
   `include/dcp_ghidra.h`; they compile, they are not readable: replace them as you understand the code.
 - A call through a function pointer `(*(code *)x)()` compiles; give the pointer a real type when you can.
+- Never replace a compiling draft by a `@rough` skeleton to make the gate pass: a gate error that a worse draft
+  makes go away is a tool bug; report it and leave the draft in place.
 - C89: declarations at the top of a block; no `//` comments in new code; no `bool`.
 - Never write a second prototype for a name: `uv run dcp refs NAME` shows every declaration. A function of
   another unit is declared by including that unit's header; an undrafted one by the K&R line `dcp draft` wrote.

@@ -5,6 +5,7 @@
 #define DCP_GHIDRA_H
 
 #include <windows.h>
+#include <string.h>
 
 typedef unsigned char undefined;
 typedef unsigned char undefined1;
@@ -48,5 +49,8 @@ typedef unsigned char bool;
 #define SEXT14(x) ((int)(signed char)(x))
 #define SEXT24(x) ((int)(short)(x))
 #define SEXT48(x) ((__int64)(int)(x))
+/* Ghidra's name for an inline copy of a string literal into a fixed buffer: strncpy's semantics (copy up to the
+   terminator, pad the rest of n with zeros) */
+#define builtin_strncpy(d, s, n) strncpy((d), (s), (n))
 
 #endif

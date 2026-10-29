@@ -217,27 +217,31 @@ def name_registry(ctx) -> tuple[dict, dict]:
     return by_name, by_addr
 
 
-@rule("M8.reloc", version="1", ceiling=P, needs=("L.src", *WALK, "kind:name"), inputs=("objects",),
+@rule("M8.reloc", version="2", ceiling=P, needs=("L.src", *WALK, "kind:name"), inputs=("objects",),
       helpers=(compiled_functions, starts_of, name_registry, C))
 def reloc_checks(ctx: RuleContext):
-    """For every compiled function whose relocation sites line up with the original's (a byte match, or bytes
-    that differ while the DLL aid holds: every absolute site of ours is a base-relocation site and the counts
-    agree), each absolute or relative relocation of ours is resolved against the image (the address the
-    original's site refers to, Reloc.resolve with our addend):
+    """For every compiled function that is a byte match, or whose bytes differ while the DLL aid holds (every
+    absolute site of ours is a base-relocation site and the counts agree), each absolute or relative
+    relocation of ours whose site lines up with the original's code (compare.aligned_sites: the same
+    instruction at the same offset, equal outside our relocated fields; the aid alone says nothing about
+    relative sites, and a function without absolute sites passes it trivially) is resolved against the image
+    (the address the original's site refers to, Reloc.resolve with our addend). A site that does not line up
+    says nothing: the difference is the function's draft diff (M.draft), not a contradiction.
     M8: the symbol we reference has a registered address (a name fact: export, import slot, library, source,
     declaration) and the original's site refers to another address: our object references X where the original
     holds the address registered to Y (severity from the two levels).
     M9: we reference a string literal and the original's bytes at the resolved address differ from our
     literal's bytes (text or terminator).
     M10: we reference a floating constant and the original's bytes there differ from its bits."""
-    img, tc = ctx.image, ctx.project.toolchain
+    img, isa, tc = ctx.image, ctx.project.isa, ctx.project.toolchain
     funcs, _ = compiled_functions(ctx, [f for f in ctx.facts(Kind.source) if f.value.get("what") == "func" and f.run == "L.src"])
     by_name, by_addr = name_registry(ctx)
     for s, obj, sym, code, c in funcs:
         if not (c.matched or (c.abs_image is not None and c.aid_ok)):
             continue
+        aligned = C.aligned_sites(isa, c, [(off, r.width) for off, r, _ in code.relocs])
         for off, r, target in code.relocs:
-            if target is None or r.kind not in (ABSOLUTE, RELATIVE):
+            if target is None or r.kind not in (ABSOLUTE, RELATIVE) or off not in aligned:
                 continue
             site = s.lo + off
             to = r.resolve(site, img.read(site, r.width), code.section.addend(r))

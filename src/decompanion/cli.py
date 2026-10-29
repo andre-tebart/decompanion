@@ -266,7 +266,8 @@ def cmd_check(args):
     ran (the loaders included), no bug / error conflicts (M.compile, M.gen, M1, M8.. among them), no open
     toolchain or libs obligation (obligations.py), and, once
     the target has a fragment, the full link resolves every external. --against REV: no function grade fell
-    against ledger/grades.tsv at that git revision. Exit 1 otherwise."""
+    against ledger/grades.tsv at that git revision. Each target ends with its verdict line (`gate=ok` or
+    `gate=FAIL` and the failing parts), the same verdict `dcp session wrap` prints. Exit 1 otherwise."""
     from .build import link as L
     from .cli_match import print_link
     from .ledger import grades as G
@@ -290,16 +291,23 @@ def cmd_check(args):
         open_ = gate_failures(p)
         for o in open_:
             print(record(**o.fields()))
-        failed = failed or bool(open_)
+        reasons = []
+        if open_:
+            reasons.append(f"obligations={len(open_)}")
+        if bad:
+            reasons.append(f"errors={len(bad)}")
         if args.strict:
             for x in conf:
                 if x.severity.value == "warn":
                     print(x.line())
-        failed = failed or bool(bad) or (args.strict and bool(conf))
+            if conf and not bad:
+                reasons.append(f"strict={len(conf)}")
         if p.store.facts(Kind.build) and p.toolchain.available():
             lr = L.full_link(p)
             print_link(lr)
-            failed = failed or not lr.ok
+            if not lr.ok:
+                reasons.append("link:" + ",".join(f"{k}={len(v)}" for k, v in lr.unresolved.items() if v and k != "undrafted")
+                               + (f",errors={len(lr.errors)}" if lr.errors else ""))
         elif p.store.facts(Kind.build):
             print(record(link=name, skipped="the toolchain is not available"))
         if against is not None:
@@ -307,7 +315,10 @@ def cmd_check(args):
             print(record(against=args.against, target=name, falls=len(falls)))
             for line in falls:
                 print("  fell: " + line)
-            failed = failed or bool(falls)
+            if falls:
+                reasons.append(f"falls={len(falls)}")
+        print(record(gate="FAIL" if reasons else "ok", target=name, **({"why": ";".join(reasons)} if reasons else {})))
+        failed = failed or bool(reasons)
     return 1 if failed else 0
 
 
