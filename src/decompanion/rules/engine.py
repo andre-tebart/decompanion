@@ -99,6 +99,12 @@ class RuleContext:
             raise RuleError(f"{self.rule.id} reads facts but needs no rule")
         return self.store.facts(kind, lo, hi, rules=self._needed)
 
+    def conflicts(self, check: str | None = None) -> list[Conflict]:
+        """Current conflicts of the needed rules (their runs' out_hash covers them), optionally of one check."""
+        if not self._needed:
+            raise RuleError(f"{self.rule.id} reads conflicts but needs no rule")
+        return [c for c in self.store.conflicts(rules=self._needed) if check is None or c.check == check]
+
     def input(self, name: str):
         """The object of a named external input (declared in `inputs`)."""
         if name not in self.rule.inputs:

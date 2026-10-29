@@ -224,13 +224,17 @@ class Store:
                               "JOIN run r ON r.id=f.run_id WHERE f.id=?", (fid,)).fetchone()
         return self._row_fact(row) if row else None
 
-    def conflicts(self, severity: str | None = None) -> list[Conflict]:
+    def conflicts(self, severity: str | None = None, rules: tuple[str, ...] | None = None) -> list[Conflict]:
+        """Conflicts of current runs (of the given rules), sorted by address."""
         q = ("SELECT c.severity, c.check_id, c.lo, c.hi, c.message, c.a, c.b FROM conflict c JOIN run r ON r.id=c.run_id "
              "WHERE r.current=1")
         args = []
         if severity:
             q += " AND c.severity=?"
             args.append(severity)
+        if rules:
+            q += " AND r.rule IN (%s)" % ",".join("?" * len(rules))
+            args.extend(rules)
         q += " ORDER BY c.lo, c.hi, c.check_id, c.message"
         return [Conflict(*r) for r in self.db.execute(q, args)]
 
