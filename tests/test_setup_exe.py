@@ -50,6 +50,27 @@ def test_exe_landmarks(guild):
     assert syms[0x42c3a0].value["skind"] == "func" and syms[0x42c3a0].hi == 0x42c3a6     # a whole function of 6 bytes
     assert syms[0x5de450].value["skind"] == "thunk"                                      # dinput.lib's, after its tables
     assert syms[0x5dd3e0].value["unit"] == "lib:DINPUT.LIB/dilib2.obj"
+    assert syms[0x465e00].hi == 0x465e6d and 0x465e70 in syms                           # W5: zlib's _tr_init ends in a jmp
+    assert syms[0x4eabd0].hi == 0x4eabd5 and 0x4eabe0 in syms                           # over fill into init_block; 0x4eabd0 is just a jmp
     assert syms[0x5de4a0].value["name"] == "_strrchr"
     code, out = dcp(guild, "--target", "exe", "layout", "units")
     assert "game=0x00401000..0x005dd3e0" in out
+
+
+def test_import_library_from_the_image(guild, tmp_path):
+    """mss32.dll has no import library in any installation: one is built from the exe's import directory, its
+    members import the decorated names exactly (name type NAME) with the exe's hints."""
+    import struct
+    from decompanion.config import Project
+    from decompanion.toolchains.vc6.implib import short_members
+    p = Project(guild, "exe")
+    imports = [i for i in p.image.imports() if i.dll.lower() == "mss32.dll"]
+    out = tmp_path / "mss32.lib"
+    assert p.toolchain.make_import_library("mss32.dll", imports, out) is None
+    lib = out.read_bytes()
+    members = {lib[d + 20:lib.index(b"\0", d + 20)].decode(): d for d in short_members(lib)}
+    assert len(imports) == 31 and set(members) == {i.name for i in imports}
+    for i in imports:
+        d = members[i.name]
+        assert (struct.unpack_from("<H", lib, d + 18)[0] >> 2) & 7 == 1                  # IMPORT_NAME
+        assert struct.unpack_from("<H", lib, d + 16)[0] == i.hint

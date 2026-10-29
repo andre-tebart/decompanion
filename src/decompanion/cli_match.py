@@ -253,6 +253,8 @@ def print_link(rep):
             print(f"  unresolved {k}={len(lines)}")
             for line in lines[:20]:
                 print("    " + line)
+    for x in rep.notes:
+        print("  note " + x)
     for x in rep.errors[:20]:
         print("  error " + x)
 

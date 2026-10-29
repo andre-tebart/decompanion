@@ -4,6 +4,7 @@
     src/<unit>/f_<addr>.c      one function each, in the target's address order
     src/<unit>/u_<name>.c      the functions the binary does not contain, in name order after them
     src/<unit>/tail.c          trailing file-scope data (optional)
+    src/<unit>/order           optional: the fragments' TU order, replacing the two orders above (srcscan, L12)
 
 Each part goes behind `#line 1 "<its path>"`, so the compiler sees one token stream (static data order and
 literal pooling follow the address order of the fragments) and every diagnostic names the fragment. A fragment
@@ -108,8 +109,14 @@ def units(root: Path, scan: srcscan.Scan, target: str, default: str) -> list[Ama
         members = []
         if (d / "head.c").exists():
             members.append(Member((d / "head.c").relative_to(root).as_posix(), None, None, "head"))
-        members += sorted(addressed, key=lambda m: (m.addr, m.file))
-        members += sorted(unlinked, key=lambda m: m.file)
+        order = scan.orders.get(unit)
+        if order:                                          # the declared TU order; anything it leaves out (L12)
+            pos = {f"src/{unit}/{name}": k for k, name in enumerate(order)}   # follows in the default order
+            default_order = sorted(addressed, key=lambda m: (m.addr, m.file)) + sorted(unlinked, key=lambda m: m.file)
+            members += sorted(default_order, key=lambda m: pos.get(m.file, len(pos)))
+        else:
+            members += sorted(addressed, key=lambda m: (m.addr, m.file))
+            members += sorted(unlinked, key=lambda m: m.file)
         if (d / "tail.c").exists():
             members.append(Member((d / "tail.c").relative_to(root).as_posix(), None, None, "tail"))
         a = Amalg(target, unit, members)

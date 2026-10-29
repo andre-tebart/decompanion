@@ -63,6 +63,7 @@ class Import:
     name: str | None    # None when imported by ordinal
     ordinal: int | None
     slot: int           # VA of the IAT slot (the dword the thunk jumps through)
+    hint: int | None = None   # the hint stored with an import by name (the exporting DLL's name-table index)
 
     @property
     def label(self):

@@ -336,7 +336,7 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 | M5 layout experiment | the user runs layout sessions on server.dll (`../guild-server`) by hand with the skill; findings go back into the tooling | the units of server.dll's game code drafted and separated, the session reports computed |
 | M6 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
 | M7 parallel sessions | the `names.log` fold at the merge (the log and `dcp rename` itself are M4), claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
-| M8 second target | GildeGold.exe as a second target of guild-server (the target itself, its toolchain declaration and archives, setup and the gate run since the multi-target round of 2026-10-29: game code 0x401000..0x5dd3e0, CRT from 0x5de4a0; open: the exe has no `.reloc`, so W3 finds nothing and ~0xc6000 bytes of its game code stay unknown — a `.data` ordered literal scan and code-pointer evidence replace the reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; no migration of `rea` | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
+| M8 second target | GildeGold.exe as a second target of guild-server (the target itself, its toolchain declaration and archives, setup and the gate run since the multi-target round of 2026-10-29: game code 0x401000..0x5dd3e0, CRT from 0x5de4a0; open: the exe has no `.reloc`, so W3 finds nothing and ~0xc6000 bytes of its game code stay unknown — a `.data` ordered literal scan and code-pointer evidence replace the reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; amended 2026-10-29: `rea` is migrated after all, into its own project `../gildegold` (section 13) | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
 
 ## 8. What is lifted from `rea` (paths under `C:\Users\andre\Documents\rea\tools\gildegold\`)
 
@@ -484,3 +484,29 @@ warm setup 0.35 s, `dcp session start` gate ok, the m4b layout sequence to `dcp 
 equal the last round's m4b apart from the four object hashes of M.compile (the objects hold the compile time stamp
 and the project directory, m6 vs m4b), its conflicts (16 warnings) and unit table byte-identical; the setup facts
 of m5 / m2 byte-identical.
+
+## 13. The migration of `rea` (2026-10-29, user decision): what the framework gained
+
+The user decided to migrate the first attempt now (match toolbox later, M6): GildeGold.exe is the target `exe` of
+a new project `C:\Users\andre\Documents\gildegold`, converted by its `tools/import_rea.py` (rea-specific, so
+not in decompanion: one rea unit file -> head.c, f_<addr>.c, u_<name>.c, tail.c; @named_by / @boundary /
+@bytes -> decl/text.dcl; zlib's #if groups that cross a cut resolved to the compiler's branch, checked by CL /EP).
+Byte parity with rea's baseline: 2664 of 2664 functions, every unit compiles. What the framework gained:
+
+- `src/<unit>/order` (L12): the TU order when it is not the address order. Address order alone (the user's
+  first choice, tried) left 7 units uncompilable and changed two byte-matched callers in `am` (a callee
+  defined above its caller changes the caller's code; rea had moved it on purpose).
+- `__inline` helpers are not counted as functions (no symbol, no address; 15 in rea).
+- N2 compares `static` names within their unit (vfs.c and gzio.c each keep a `gz_magic`).
+- COFF function_code: a `$L` label (CL's switch table after the code, a static symbol) no longer ends a
+  function (38 byte matches with switch tables failed the tail check).
+- Walk convention W5: an unconditional jump followed only by fill up to its target is a tail call (exe without
+  base relocations: zlib's `_tr_init` -> `init_block`).
+- `dcp link` builds an import library a DLL lacks from the image's import directory (`make_import_library` of
+  the toolchain seam; mss32.dll), import records carry their hint.
+
+Left open, visible in `dcp check` of gildegold (the user accepted gate=FAIL for the migration commit): rea's
+data debt (D5 tentative definitions 530, M9 `__FILE__` literals 125, D4 69, D1 9, M.data.content 1, data
+C.overlap), one L1 where the exe walk swallows a call target, and the link's unresolved names (CRT functions
+under placeholder names, an ICF-folded stub, GUID libraries not declared, two Miles stubs) that rea resolved
+with hand-written alias tables.

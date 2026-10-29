@@ -53,6 +53,7 @@ class LinkReport:
     includes: int = 0
     unresolved: dict = field(default_factory=dict)     # class -> [lines]
     errors: list = field(default_factory=list)
+    notes: list = field(default_factory=list)       # what the link did beyond the plain call (built import libraries)
     out: str = ""
     cached: bool = False
     ms: int = 0
@@ -144,10 +145,14 @@ def full_link(project, log=None) -> LinkReport:
     for dll in sorted({i.dll for i in img.imports()}, key=str.lower):
         name = tc.import_library_name(dll)
         p = find_library(project, name)
-        if p is None:
-            missing_libs.append(f"no import library {name} for {dll}")
-        else:
-            libs.append(p)
+        if p is None:                       # built from the image's import directory (build/link/<target>/)
+            p = out_dir / name
+            why = tc.make_import_library(dll, [i for i in img.imports() if i.dll == dll], p)
+            if why is not None:
+                missing_libs.append(f"no import library {name} for {dll}: {why}")
+                continue
+            rep.notes.append(f"import library {name} for {dll} built from the image's import directory")
+        libs.append(p)
     libs += tc.default_libraries(kind)
     rep.errors += missing_libs
     def_file = None

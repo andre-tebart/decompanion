@@ -5,7 +5,13 @@ Layout of a target project's sources
   src/<unit>/head.c        includes, local types, prototypes, leading file-scope data; no function
   src/<unit>/f_<addr>.c    one function, plus the file-scope definitions that precede it in TU order
   src/<unit>/u_<name>.c    one function the binary does not contain (`/* unlinked, why */`)
+  src/<unit>/order         optional: the unit's translation-unit order when it is not the address order (CL
+                           compiles a caller differently once a callee is defined above it, and a declaration
+                           must precede its use): `#` reason lines first, then every fragment file of the
+                           unit (f_<addr>.c and u_<name>.c), one per line, in TU order (check L12)
   include/<unit>.h         public prototypes and extern declarations
+  `__inline` helpers       not functions of the binary (no symbol, no address): head.c, any fragment or a
+                           header may define them where the TU needs them; the scan does not count them
 
 Address comments
   function   the FIRST line of its fragment:  /* 0x10001000, what it does */
@@ -44,6 +50,8 @@ ROUGH = re.compile(r"@rough\b")
 FUNCPTR = re.compile(r"\(\s*(?:__cdecl|__stdcall|__fastcall|WINAPI|CALLBACK|APIENTRY|PASCAL)?\s*\*+\s*(?:const\s+)?([A-Za-z_]\w*)\s*\)")
 PLACEHOLDER_ADDR = re.compile(r"\b[A-Za-z_]\w*?(?:Unk|FUN_|DAT_|PTR_|LAB_)([0-9a-fA-F]{5,8})\b"
                               r"|\b[A-Za-z_]\w*?_((?=[0-9a-fA-F]*\d)[0-9a-fA-F]{6,8})\b")
+STATIC = re.compile(r"\s*(?:(?:const|volatile)\s+)*static\b")
+INLINE = re.compile(r"\b(?:__inline|__forceinline|inline)\b")
 KNR = re.compile(r"^[^=(;]*\b[A-Za-z_]\w*\s*\([^()]*\)\s*[A-Za-z_][^;]*;\s*$")
 FRAGMENT = re.compile(r"^f_([0-9a-fA-F]+)\.c$")
 UNLINKED_FRAGMENT = re.compile(r"^u_([A-Za-z_]\w*)\.c$")
@@ -64,6 +72,7 @@ class Function:
     stuck: str | None = None
     rough: bool = False
     comment_line: int = 1
+    static: bool = False      # `static`: its name is the unit's own (N2 compares it within the unit only)
 
 
 @dataclass(frozen=True)
@@ -75,6 +84,7 @@ class Data:
     kind: str                 # def | extern
     addrs: tuple              # ((target or None, address), ...) of this declarator
     unlinked: bool
+    static: bool = False      # `static`: its name is the unit's own (N2 compares it within the unit only)
 
 
 @dataclass(frozen=True)
@@ -89,7 +99,7 @@ class Placeholder:
 class ScanError:
     file: str
     line: int
-    check: str                # L.src | L11
+    check: str                # L.src | L11 | L12
     message: str
 
 
@@ -100,6 +110,7 @@ class Scan:
     placeholders: list[Placeholder] = field(default_factory=list)
     errors: list[ScanError] = field(default_factory=list)
     files: int = 0
+    orders: dict[str, list[str]] = field(default_factory=dict)   # unit -> fragment file names in TU order
 
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
@@ -184,7 +195,8 @@ class Source:
 
     def definitions(self) -> list[tuple[int, str]]:
         """[(offset, name)] of every function definition (a `name(...)` followed by `{`, K&R parameter
-        declarations allowed in between), in file order."""
+        declarations allowed in between), in file order; `__inline` definitions are no functions of the
+        binary and are left out."""
         res = []
         code = blank_alternatives(self.code)
         for m in DEF.finditer(code):
@@ -208,6 +220,8 @@ class Source:
                     and set(re.findall(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*(?:,|$)", c.strip())) for c in chunks[:-1])):
                 continue
             if chunks[-1].strip():
+                continue
+            if INLINE.search(code, m.start(), m.start(1)):
                 continue
             res.append((m.start(), m.group(1)))
         return res
@@ -408,13 +422,13 @@ def scan_file(rel: str, text: str, out: Scan):
                 out.errors.append(ScanError(rel, 1, "L11", f"the file name says {um_name.group(1)}, the definition {fname}"))
             out.functions.append(Function(rel, S.line_of(off), unit, fname, tuple(addrs), bool(um) and not addrs, what,
                                           dm.group(1).strip() if dm else None, sm.group(1).strip() if sm else None,
-                                          bool(ROUGH.search(body))))
+                                          bool(ROUGH.search(body)), static=bool(STATIC.match(S.code, off))))
     elif defs:
         for off, fname in defs:
             out.errors.append(ScanError(rel, S.line_of(off), "L.src", f"function {fname} defined outside a fragment "
                                                                        f"(src/<unit>/f_<addr>.c)"))
     for off, dname, kind, addrs, unlinked in S.data(skip):
-        out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked))
+        out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked, bool(STATIC.match(S.code, off))))
     seen = set()
     for m in PLACEHOLDER_ADDR.finditer(S.code):
         ident = m.group(0)
@@ -442,9 +456,43 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
             rel = p.relative_to(root).as_posix()
             out.files += 1
             scan_file(rel, p.read_text(errors="replace"), out)
+    src = root / "src"
+    if src.exists():
+        for p in sorted(src.glob("*/order")):
+            scan_order(p.relative_to(root).as_posix(), p.read_text(errors="replace"),
+                       sorted(q.name for q in p.parent.glob("*.c")), out)
     if tree_hash is not None:
         _cache[(str(root), tree_hash)] = out
     return out
+
+
+def scan_order(rel: str, text: str, files: list[str], out: Scan):
+    """src/<unit>/order: `#` reason lines, then each fragment file of the unit once, in TU order (L12)."""
+    unit = unit_of(rel)
+    names, seen, reason = [], set(), False
+    for n, line in enumerate(text.split("\n"), 1):
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            reason = reason or bool(s.lstrip("#").strip())
+            continue
+        if not reason:
+            out.errors.append(ScanError(rel, n, "L12", "an order file starts with its reason (`# why`)"))
+            reason = True
+        if not (FRAGMENT.match(s) or UNLINKED_FRAGMENT.match(s)):
+            out.errors.append(ScanError(rel, n, "L12", f"{s} is no fragment file (f_<addr>.c, u_<name>.c)"))
+        elif s not in files:
+            out.errors.append(ScanError(rel, n, "L12", f"{s}: no such file in src/{unit}"))
+        elif s in seen:
+            out.errors.append(ScanError(rel, n, "L12", f"{s} listed twice"))
+        else:
+            seen.add(s)
+            names.append(s)
+    missing = [f for f in files if (FRAGMENT.match(f) or UNLINKED_FRAGMENT.match(f)) and f not in seen]
+    if missing:
+        out.errors.append(ScanError(rel, 1, "L12", f"the order leaves out {len(missing)} fragment(s): " + ", ".join(missing[:6])))
+    out.orders[unit] = names
 
 
 def address_for(addrs: tuple, target: str, default: str) -> int | None:

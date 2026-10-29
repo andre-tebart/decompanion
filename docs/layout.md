@@ -59,8 +59,17 @@ src/<unit>/head.c        includes, local types, prototypes, leading file-scope d
 src/<unit>/f_<addr>.c    one function, plus the file-scope definitions before it in TU order
 src/<unit>/tail.c        trailing file-scope data after the last function (optional; milestone 3)
 src/<unit>/u_<name>.c    one function the binary does not contain
+src/<unit>/order         optional: the TU order of the fragments when it is not the address order (check L12)
 include/<unit>.h         public prototypes and extern declarations
 ```
+
+The amalgamation puts the fragments in address order, then the `u_` files by name. A unit whose translation
+unit had another order carries `src/<unit>/order`: `#` reason lines, then every fragment file of the unit once,
+in TU order. The order is part of the source: CL compiles a caller differently once a callee is defined above
+it, and a declaration must precede its use (the GildeGold.exe migration: 25 of 92 units). `__inline` helpers
+are no functions of the binary (no symbol, no address): head.c or any fragment may define them where the TU
+needs them, the scan does not count them. A `static` name belongs to its unit: two units may each define one
+(check N2 compares statics within their unit only).
 
 A fragment's **first line** is its function's address comment; the file name carries the first address it
 lists (check `L11`):

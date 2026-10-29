@@ -265,6 +265,10 @@ class VC6(Toolchain):
         """`_` + the C name (C linkage)."""
         return "_" + cname
 
+    def make_import_library(self, dll: str, imports: list, out: Path) -> str | None:
+        from .implib import make_import_library
+        return make_import_library(self.tools, dll, imports, Path(out))
+
     def link(self, job: LinkJob) -> LinkResult:
         """LINK.EXE @<response file>: the arguments of toolchains/vc6/link.py link_args."""
         return run_link(self.tools, job)

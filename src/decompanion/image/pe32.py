@@ -139,7 +139,8 @@ class PE32(Image):
                 if e & 0x80000000:
                     out.append(Import(dll, None, e & 0xffff, slot + 4 * k))
                 else:
-                    out.append(Import(dll, self.cstr(self.base + e + 2).decode("latin-1"), None, slot + 4 * k))
+                    out.append(Import(dll, self.cstr(self.base + e + 2).decode("latin-1"), None, slot + 4 * k,
+                                      struct.unpack_from("<H", self.read(self.base + e, 2))[0]))
                 k += 1
             desc += 20
         return out

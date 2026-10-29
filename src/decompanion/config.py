@@ -387,7 +387,7 @@ class Project:
         elif name == "decl":
             h = self.tree_hash([self.root / "decl"], ("*.dcl",))
         elif name == "src":
-            h = self.tree_hash([self.root / "src", self.root / "include"], ("*.c", "*.h"))
+            h = self.tree_hash([self.root / "src", self.root / "include"], ("*.c", "*.h", "order"))
         elif name == "drafts":
             from .ledger import drafts
             h = drafts.input_hash(self.store)

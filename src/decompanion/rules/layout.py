@@ -369,7 +369,8 @@ def load_src(ctx: RuleContext):
     without its address comment on line 1, a function outside a fragment, two definitions in a fragment, a
     stray file), L11 (the file name's address differs from the comment's first address), an unknown target
     prefix, an address outside the image, a function address outside a code section, two definitions at one
-    address (L.src), one name at two addresses (N2). Errors of the text itself (the scan's, an unknown target
+    address (L.src), one name at two addresses (N2; a `static` name is compared within its unit only, two
+    units may each keep their own). Errors of the text itself (the scan's, an unknown target
     prefix) are reported in the default target's store; errors about an address in the store of its target.
     A function or datum whose comment lists another target's address only is no fact of this target."""
     p, img = ctx.project, ctx.image
@@ -382,7 +383,7 @@ def load_src(ctx: RuleContext):
             yield ctx.conflict(Severity.error, e.check, base, base + 1, f"{e.file}:{e.line}: {e.message}", a=f"src:{e.file}:{e.line}")
     code = code_ranges(img)
     defs_at: dict[int, list[str]] = defaultdict(list)
-    names_at: dict[str, dict[int, str]] = defaultdict(dict)
+    names_at: dict[tuple, dict[int, str]] = defaultdict(dict)    # (name, unit of a static or None) -> address -> by
 
     def unknown_prefix(addrs, by):
         if cur != default:
@@ -410,7 +411,7 @@ def load_src(ctx: RuleContext):
             v["rough"] = True
         reason = f.what or "address comment"
         defs_at[a].append(by)
-        names_at[f.name][a] = by
+        names_at[(f.name, f.unit if f.static else None)][a] = by
         yield ctx.declared(a, a + 1, Kind.source, v, by, reason)
         yield ctx.declared(a, a + 1, Kind.name, {"name": f.name, "origin": "source"}, by, reason)
         yield ctx.declared(a, a + 1, Kind.start, {"skind": "func", "how": "source"}, by, reason)
@@ -424,7 +425,7 @@ def load_src(ctx: RuleContext):
             yield ctx.conflict(Severity.error, "L.src", base, base + 1, f"{d.file}:{d.line}: {d.name} at {a:#x}, outside the image", a=by)
             continue
         reason = f"data address comment ({d.kind})"
-        names_at[d.name][a] = by
+        names_at[(d.name, d.unit if d.static else None)][a] = by
         if d.kind == "def":
             defs_at[a].append(by)
             yield ctx.declared(a, a + 1, Kind.source, {"file": d.file, "line": d.line, "unit": d.unit, "symbol": d.name, "what": "data"}, by, reason)
@@ -433,7 +434,7 @@ def load_src(ctx: RuleContext):
         if len(bys) > 1:
             yield ctx.conflict(Severity.error, "L.src", a, a + 1, f"{len(bys)} definitions at {a:#x}: " + ", ".join(b[4:] for b in bys),
                                a=bys[0], b=bys[1])
-    for name, at in sorted(names_at.items()):
+    for (name, _), at in sorted(names_at.items(), key=lambda x: (x[0][0], x[0][1] or "")):
         if len(at) > 1:
             (a1, b1), (a2, b2) = sorted(at.items())[:2]
             yield ctx.conflict(Severity.error, "N2", a1, a1 + 1, f"{name} at {len(at)} addresses: " + ", ".join(f"{x:#x}" for x in sorted(at)),

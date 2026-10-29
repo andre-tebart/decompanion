@@ -231,10 +231,12 @@ class Obj:
 
     def function_code(self, sym: Symbol) -> FunctionCode:
         """The bytes of a function: from its symbol to the next named symbol of its section (several functions
-        share a section without /Gy), else to the section's end; the relocation mask; the relocations inside."""
+        share a section without /Gy), else to the section's end; a compiler label (`$L...`: CL gives the switch
+        table after the code a static one) is no end, the table belongs to the function; the relocation mask;
+        the relocations inside."""
         sec = sym.section
         start = sym.value
-        end = next((s.value for s in sec.syms if s.value > start and s.named), sec.size)
+        end = next((s.value for s in sec.syms if s.value > start and s.named and not s.name.startswith("$")), sec.size)
         mask = sec.mask()[start:end]
         relocs = tuple((r.offset - start, r, self.symbols.get(r.symbol_index)) for r in sec.relocs if start <= r.offset < end)
         return FunctionCode(sym, sec, start, bytes(sec.data[start:end]), mask, relocs)

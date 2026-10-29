@@ -14,6 +14,9 @@ Conventions it rests on (derived level; VC6 / LINK are the toolchain they were s
       A call followed directly by a known start ends the function too: the callee does not return (VC6
       emits nothing after a call to a noreturn function such as _exit or _endthread). (Since milestone 3;
       before, the fall-through into the start was a C.walk conflict.)
+  W5  an unconditional direct jump followed only by alignment fill up to its target is a tail call to a
+      function starting there: the toolchain pads between functions, never inside one (VC6 emits `jmp f` for
+      `return f(...)` where f is the next function; without base relocations nothing else marks f's start).
 The walk is repeated with the growing set of starts until that set is stable, so no walk ever runs into a
 start found later. A walk that still runs into bytes another function owns is a conflict (C.walk): one of the
 two starts is wrong.
@@ -86,6 +89,17 @@ class Walker:
         lo, hi = (a, b) if a < b else (b, a)
         i = bisect.bisect_right(self.sorted_stops, lo)
         return i < len(self.sorted_stops) and self.sorted_stops[i] <= hi
+
+    def fill_to(self, a, t):
+        """W5: the bytes from a up to t are alignment fill only (at least one byte)."""
+        if t <= a:
+            return False
+        for ins in self.dec.decode(a):
+            if ins.addr >= t:
+                return ins.addr == t
+            if not ins.fill:
+                return False
+        return False
 
     def next_stop(self, a):
         i = bisect.bisect_right(self.sorted_stops, a)
@@ -221,7 +235,8 @@ class Walker:
                     if flow == JUMP or flow == CJUMP:
                         t = ins.target
                         if L <= t < hi:
-                            if self.crosses_stop(ia, t) or t in stops and t != owner:   # W1: a tail call
+                            if (self.crosses_stop(ia, t) or t in stops and t != owner      # W1: a tail call
+                                    or flow == JUMP and self.fill_to(ia + size, t)):         # W5: over fill
                                 rec.tails.append((t, ia))
                             else:
                                 rec.jumps.append((t, ia))
@@ -300,13 +315,13 @@ class Walker:
         return code, table
 
 
-@rule("S.codewalk", version="3", ceiling=D, outputs=("symbol", "start", "ref"),
+@rule("S.codewalk", version="4", ceiling=D, outputs=("symbol", "start", "ref"),
       needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs"),
       helpers=(Record, Walker))
 def codewalk(ctx: RuleContext):
     """Recursive descent over the code sections from every known start (exports, the entry point, the symbols
     of placed library sections, the entry the CRT calls), adding the starts the walk reveals (conventions
-    W1..W4 in rules/walk.py: call targets, tail-call targets, code immediates at relocation sites, code
+    W1..W5 in rules/walk.py: call targets, tail-call targets, code immediates at relocation sites, code
     pointers stored in data sections) and repeating until the set of starts is stable. A walked
     function owns [start, last byte it reached + 1) as a `func` symbol of derived extent (bytes inside it
     the walk did not reach are counted as holes); its jump tables and byte index tables are `jumptable` /
