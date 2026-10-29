@@ -8,7 +8,8 @@ of one project; S.codewalk on the exe ~35 s -> ~5 s); cleanup round done 2026-10
 x86 / capstone fact moved behind the plugin seams, the instruction-set seam `isa/` added, plugin registries,
 `dcp init --toolchain-root` required; facts byte-identical; see docs/architecture.md); M3 done 2026-10-29 (amalgamation per unit and target, pool compile with include-set staleness, M.match with the DLL aid, M.draft, M8..M10, M.data.site / .content / .draft, D1 D4 D5 D6, grades code draft/shape/byte and readability Q1..Q7, queues, ledger/grades.tsv + M1, the full /DLL link, `dcp toolchain probe`, clang lint M5..M7; DllMain, Init and Exit of server.dll byte-match; see docs/match.md); reprioritised 2026-10-29 (user decision: the layout tooling first, section 7: M4 layout tooling, M5 the layout experiment on server.dll, then the match toolbox, parallel sessions and the second target as M6..M8); M4 done 2026-10-29 (the layout tooling: Ghidra
 headless drafts for every function, the reading, drafting and session commands, L9 / L10 / R5, the skill
-`dcp-layout`; see docs/layout.md and section 12); M5 (the layout experiment on server.dll, by the user) next.
+`dcp-layout`; see docs/layout.md and section 12); amended 2026-10-29 (the analyzer seam `analyzers/`: Ghidra, REA
+files or none, run inside `dcp setup`; section 12); M5 (the layout experiment on server.dll, by the user) next.
 
 ## Context
 
@@ -210,8 +211,9 @@ distinguished) and which flags are still declared only.
 **Layout `L.*`** (`dcp layout ...`): loaders `L.decl`, `L.src`; `L.analyze` once per image hash: starts with
 their evidence (export / entry / call / immediate / reloc-pointer / ghidra-declared), call graph, fill runs,
 **literal-pool order** (per function the sorted data targets of its reloc sites, per literal its first user; exact
-for a DLL), string xrefs, Ghidra bulk export (`dcp ghidra import JSON` from REA `batch_decompile` first; headless
-`analyzeHeadless` script later) stored as blobs by (image hash, start). Boundary evidence rules: `B-LEAK` leaked
+for a DLL), string xrefs, an analyzer's bulk export (REA `batch_decompile` files first; Ghidra's headless
+`analyzeHeadless` script later; since the amendment of section 12 the analyzer seam run by `dcp setup`) stored as
+blobs by (image hash, start). Boundary evidence rules: `B-LEAK` leaked
 path referenced by the function [proven], `B-LIT` first-user order monotone within a unit [derived], `B-FILL`
 boundary at a start after fill or `ret` [derived; `nop` runs prove nothing], `B-REG` registration tables
 [derived], `B-CPL` codegen coupling [declared by the match worker with evidence], `B-DECL` subsystem guess with
@@ -254,7 +256,7 @@ Every command takes `--target NAME` (section 1.5). `dcp init [--from-setup]` · 
 `dcp toolchain` · `dcp why ADDR` · `dcp facts LO..HI [--kind]` · `dcp conflicts` · `dcp rules` · `dcp check
 [--strict] [--against REV]` (the gate: loaders parse, no conflicts, every TU compiles, link resolves, no grade fall,
 decl files sorted, UTF-8/LF) · `dcp decl add "LINE"` · `dcp layout next|units|unit propose|analyze` · `dcp
-ghidra import` · `dcp build` · `dcp link` · `dcp unit cat|fold` · `dcp grade [NAME|UNIT]` · `dcp next` · `dcp
+draft [--show]` · `dcp build` · `dcp link` · `dcp unit cat|fold` · `dcp grade [NAME|UNIT]` · `dcp next` · `dcp
 escalate|stuck|accept` · `dcp promote` · `dcp rename OLD NEW --why` (the only way to rename: edits sources,
 appends to `names.log`) · `dcp claim` · match toolbox `dcp asmdiff|diffclass|spell|idioms|siblings|slotmap|
 listing|try|vargen|respell|tuorder|c2prio|dump|refs|data next|data table` · `dcp wt new|list|drop|seed` · `dcp
@@ -330,7 +332,7 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 | M1 setup byte map | fact/store/engine, pe32, coff, vc6 rich/fill, disasm, all `S.*` + `B.bytemap` + setup checks, `dcp init`, `dcp setup`, `dcp why`, `dcp facts`, `dcp conflicts`, `dcp rules`, `dcp toolchain` | on server.dll: every byte has exactly one `symbol`/`region` fact; LIBC members placed proven with `.reloc` coincidence; report shows 37 user objects C, static LIBC, CRT region with gaps listed, exports + DllMain starts, toolchain = declared flags; `dcp why` < 100 ms; rerun runs zero rules; unit tests on a synthetic PE |
 | M2 declarations + layout | the target dimension (section 1.5: `[[target]]`, store per target, `--target`, target prefixes in the address-comment and `.dcl` grammars, `dcp target add`), `decl.py`, `srcscan.py`, `L.*`, boundary rules, Ghidra import, `dcp layout *`, `dcp decl add`, `dcp check` (loader + conflict gate), `dcp wt new/seed` (overlay store) | first unit declared on server.dll from `Init` outward; a deliberately wrong boundary and a walk crossing a start are caught (L1/L3/L4); a second target added to a scratch project gets its own store and `dcp why --target` answers for both |
 | M3 build + compare + grades (done 2026-10-29) | `toolchains/vc6/cl.py` (`/E` include sets: the `/P` listing on stdout), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.site/.content/.draft`, capstone asmdiff/diffclass, `G.grade`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote/escalate/stuck/asmdiff/diffclass/lint`, full `/DLL` link with generated `.def`, lint, checks M1, M2 (stale / double level tag), M5..M10, D1, D4..D6; open: M3, M4, M11, M12, D2, D3, `M.data.iat/.lib/.fill`, `M.bytes.declared` | first functions byte-match (server.dll DllMain / Init / Exit, relocs 0/0, 2/2, 4/4); `dcp toolchain probe` runs the grid and says *indistinguishable* for most flags with three anchors from one unit (correct: proven needs anchors from two units); a header edit recompiles only its includers (shown) |
-| M4 layout tooling (done 2026-10-29) | Ghidra headless export (`dcp ghidra export`, `dcp ghidra status`, L9), reading tools (`dcp disasm`, `dcp dump`, `dcp refs`, `dcp layout literals`, `dcp layout starts`), drafting (`dcp unit new`, `dcp unit join`, `dcp unit rename`, `dcp draft [--next]`, `dcp rename` + `names.log`), unlinked helpers and `bytes dead` in the unit byte map, L10, `dcp session start`, `dcp session wrap`, the skill `dcp-layout` (`dcp init` / `dcp skills install`) | on a scratch project of server.dll: export, status, starts / literals of a range, the first ten minutes of a layout session (unit new, five drafts, build, grade, refs, rename, unit rename, check, session wrap); shown: 678 Ghidra drafts in ~30 s (all 311 game functions), four units declared around 0x10001000 (zlib's adler32 and crc32, a broadcast helper, deflate), five drafts, two of them byte-identical after the hand fixes, `dcp check` and `dcp session wrap` ok with the undrafted externals classified |
+| M4 layout tooling (done 2026-10-29) | Ghidra headless export (since the amendment of section 12: the analyzer seam inside `dcp setup`, its lines in `dcp report`), L9, reading tools (`dcp disasm`, `dcp dump`, `dcp refs`, `dcp layout literals`, `dcp layout starts`), drafting (`dcp unit new`, `dcp unit join`, `dcp unit rename`, `dcp draft [--next]`, `dcp rename` + `names.log`), unlinked helpers and `bytes dead` in the unit byte map, L10, `dcp session start`, `dcp session wrap`, the skill `dcp-layout` (`dcp init` / `dcp skills install`) | on a scratch project of server.dll: export, status, starts / literals of a range, the first ten minutes of a layout session (unit new, five drafts, build, grade, refs, rename, unit rename, check, session wrap); shown: 678 Ghidra drafts in ~30 s (all 311 game functions), four units declared around 0x10001000 (zlib's adler32 and crc32, a broadcast helper, deflate), five drafts, two of them byte-identical after the hand fixes, `dcp check` and `dcp session wrap` ok with the undrafted externals classified |
 | M5 layout experiment | the user runs layout sessions on server.dll (`../guild-server`) by hand with the skill; findings go back into the tooling | the units of server.dll's game code drafted and separated, the session reports computed |
 | M6 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
 | M7 parallel sessions | the `names.log` fold at the merge (the log and `dcp rename` itself are M4), claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
@@ -396,8 +398,9 @@ zero rule runs.
 
 ## 12. Milestone 4 as built (2026-10-29): what changed against the plan, and why
 
-- `dcp ghidra export` seeds Ghidra with our starts: the post-script creates a function at every start of ours
-  Ghidra lacks (tagged `DCP_SEEDED` in the Ghidra project, `seeded` in the JSON) before decompiling, so every
+- Ghidra's export (a command of its own at first; since the amendment below the ghidra analyzer inside `dcp
+  setup`) seeds Ghidra with our starts: the post-script creates a function at every start of ours Ghidra lacks
+  (tagged `DCP_SEEDED` in the Ghidra project, `seeded` in the JSON) before decompiling, so every
   function of the game code has a draft (server.dll: 311 of 311; without the seeding 232). A seeded function is
   no claim of Ghidra's and gives no `start how=ghidra` fact. The export is keyed by (image, script, our starts).
 - L9 is a warning, not an error, and only for Ghidra functions of the game code: Ghidra's body is an external
@@ -425,3 +428,23 @@ zero rule runs.
 - Open after M4: the hand fixes Ghidra's C needs (struct tags, partial field access `._2_4_`, register
   variables) are left to the agent (the skill lists them); data placeholders are typed by Ghidra's label prefix
   only; `dcp unit new` without an end lists every function to the end of the game code.
+
+Amended 2026-10-29 (user decision): Ghidra is neither a toolchain nor a language property but a third-party
+**analyzer**, the fifth plugin seam `analyzers/` (registry and `@register` like the other four; docs/architecture.md):
+`ghidra` (the headless run, the post-script and `dcp_ghidra.h` referenced only from analyzers/ghidra.py, the
+language id from the instruction set), `rea` (saved `batch_decompile` files, `[analyzer] file`, Ghidra's dialect by
+subclassing), `none` (no drafts: `@rough` skeletons). `[analyzer]` (plugin, root, java_home, timeout, file; default
+plugin ghidra; `dcp init` writes what it finds, else `none`) replaces `[ghidra]`. The analyzer runs inside `dcp
+setup`: the rules, then the export when its key (analyzer, image, script hash, our starts) is stale, then the rules
+again (only `L.analyzer`, L9 and the rules needing every start, L4 / L5); `--no-analyzer`, `--analyzer-force`; a
+missing installation is one warning line and setup still exits 0. The stored entries are the generic input `drafts`
+(ledger/drafts.py; an export replaces them); `L.ghidra` became `L.analyzer` v3 (declared, `by
+decl:analyzer:<key>:<file>`, reason `<key> analysis`, `how` the key), the L9 rule reads `drafts` (`L9.analyzer.span`
+v2), names of the analyzer have the origin `analyzer` and its placeholders come from the plugin. source/draft.py
+composes the analyzer's dialect in (rewrite, data_labels, types_header) with the toolchain's language out (Toolchain
+`keywords`, `default_convention`, `sized_conventions`). The Ghidra commands are gone: export and import are
+`dcp setup`, status is the analyzer line of `dcp report`, show is `dcp draft ADDR --show`; `dcp session start`
+prints the analyzer. Shown on a fresh scratch project of server.dll: cold setup 33 s (the rules 1.3 s, Ghidra
+31 s, the second rule pass 4 rules in 53 ms), 678 drafts, every one of the 311 game functions drafted, 6
+analyzer-only starts in library code, l9=0, the export byte-identical with the last round's; warm setup ~0.39 s
+(~0.37 s without the analyzer step); the setup facts of m5 / m2 byte-identical.
