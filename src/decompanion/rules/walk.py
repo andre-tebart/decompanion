@@ -11,13 +11,24 @@ Conventions it rests on (VC6 / LINK, derived level):
       data section (a function pointer), is a function start.
   W4  a function ends at `ret`, at an unconditional `jmp`, and at alignment fill reached by fall-through; a
       jump target is code whatever its first instruction.
-The walk is repeated from scratch with the growing set of starts until that set is stable, so no walk ever
-runs into a start found later. A walk that still runs into bytes another function owns is a conflict (C.walk):
-one of the two starts is wrong.
+The walk is repeated with the growing set of starts until that set is stable, so no walk ever runs into a
+start found later. A walk that still runs into bytes another function owns is a conflict (C.walk): one of the
+two starts is wrong.
+
+How it is computed (none of this changes a result):
+- Every instruction is decoded once per rule run into a compact record (Ins). capstone's light decoder gives
+  address, size, mnemonic and operand text; the full operand details are read only for an instruction whose
+  text names a number inside the image (a memory operand or an immediate the walk records), a branch whose
+  operand is not a plain number, and the first instruction of every mnemonic (its call / jump / ret group).
+- A root's walk is a function of the bytes, the claims of other rules, and the starts between the root and
+  the next start (W1 confines it there). Each iteration therefore replays a root's recorded walk instead of
+  repeating it when the next start after the root is unchanged and the walk saw no byte another walk owns;
+  everything else is walked again, in the same order as a walk from scratch.
 """
 from __future__ import annotations
 
 import bisect
+import re
 import struct
 from collections import defaultdict
 
@@ -26,16 +37,122 @@ from ..ledger.fact import Kind, Level, Severity
 from .engine import RuleContext, rule
 
 D = Level.derived
+M32 = 0xffffffff
+F_NONE, F_CALL, F_JUMP, F_RET = 0, 1, 2, 3
+HEX = re.compile(r"0x([0-9a-f]+)")
+NUMBER = re.compile(r"^(?:0x[0-9a-f]+|[0-9]+)$")
 
 
-class Walker:
-    def __init__(self, img, code_lo, code_hi, fill_forms, reloc_sites, stops, cache=None):
+class Ins:
+    """One decoded instruction, reduced to what the walk reads: flow (none / call / jump / ret), the immediate
+    first operand of a call or jump (`target`), the memory operands whose displacement lies in the image
+    (`mem`: (address, operand size)), every immediate operand (`imms`), the table of `jmp [index*4 + table]`
+    (`jtab`), and whether the bytes are one alignment fill form."""
+    __slots__ = ("addr", "size", "mn", "flow", "target", "mem", "imms", "jtab", "fill")
+
+    def __init__(self, addr, size, mn, flow, target, mem, imms, jtab, fill):
+        self.addr, self.size, self.mn, self.flow, self.target = addr, size, mn, flow, target
+        self.mem, self.imms, self.jtab, self.fill = mem, imms, jtab, fill
+
+
+class Decoder:
+    """Decodes the code range of an image into Ins records, memoised by address for one rule run."""
+
+    def __init__(self, img, code_lo, code_hi, fill_forms):
         self.img = img
-        self.cache = {} if cache is None else cache   # address -> decoded instruction, shared across walks
         self.lo, self.hi = code_lo, code_hi
         self.code = img.read(code_lo, code_hi - code_lo)
         self.md = decoder()
-        n = code_hi - code_lo
+        self.fill_forms = frozenset(fill_forms)
+        self.cache: dict[int, Ins] = {}
+        self.flows: dict[str, int] = {}          # mnemonic -> flow, from the first full decode of it
+        self.ibase, self.iend = img.base, img.end
+
+    def _in_image(self, v):
+        return self.ibase <= v < self.iend
+
+    def full(self, addr, size) -> Ins:
+        """The record from capstone's operand details."""
+        o = addr - self.lo
+        ins = next(self.md.disasm(self.code[o:o + size], addr, 1))
+        flow = F_CALL if ins.group(CS_GRP_CALL) else F_JUMP if ins.group(CS_GRP_JUMP) else F_RET if ins.group(CS_GRP_RET) else F_NONE
+        self.flows.setdefault(ins.mnemonic, flow)
+        ops = ins.operands
+        target = ops[0].imm if flow in (F_CALL, F_JUMP) and ops and ops[0].type == X86_OP_IMM else None
+        mem = tuple((op.mem.disp & M32, op.size) for op in ops
+                    if op.type == X86_OP_MEM and op.mem.disp and self._in_image(op.mem.disp & M32))
+        imms = tuple(op.imm for op in ops if op.type == X86_OP_IMM)
+        jtab = None
+        if ins.mnemonic == "jmp" and ops and ops[0].type == X86_OP_MEM and ops[0].mem.base == X86_REG_INVALID \
+                and ops[0].mem.index != X86_REG_INVALID and ops[0].mem.scale == 4:
+            jtab = ops[0].mem.disp & M32
+        return Ins(addr, ins.size, ins.mnemonic, flow, target, mem, imms, jtab, bytes(ins.bytes) in self.fill_forms)
+
+    def make(self, addr, size, mn, ops) -> Ins:
+        flow = self.flows.get(mn)
+        if flow is None:
+            return self.full(addr, size)
+        if flow in (F_CALL, F_JUMP):
+            if not NUMBER.match(ops):
+                return self.full(addr, size)
+            target = int(ops, 0)
+        else:
+            target = None
+        for h in HEX.findall(ops):
+            v = int(h, 16)
+            if self._in_image(v) or self._in_image(-v & M32):
+                return self.full(addr, size)
+        o = addr - self.lo
+        return Ins(addr, size, mn, flow, target, (), (), None, self.code[o:o + size] in self.fill_forms)
+
+    def detail(self, addr):
+        """capstone's full instruction at addr (for the few reads the records do not keep)."""
+        o = addr - self.lo
+        return next(self.md.disasm(self.code[o:o + 16], addr, 1))
+
+    def decode(self, addr):
+        """Instructions from addr on, in address order, until the bytes stop decoding or the code ends."""
+        cache, lo, hi = self.cache, self.lo, self.hi
+        while lo <= addr < hi:
+            ins = cache.get(addr)
+            if ins is not None:
+                yield ins
+                addr = ins.addr + ins.size
+                continue
+            o = addr - lo
+            got = False
+            for a, size, mn, ops in self.md.disasm_lite(self.code[o:o + 0x400], addr):
+                got = True
+                ins = cache.get(a)
+                if ins is None:
+                    ins = cache[a] = self.make(a, size, mn, ops)
+                yield ins
+                addr = a + size
+            if not got:
+                return
+            if addr < lo + o + 0x400 - 16:
+                return
+
+
+class Record:
+    """What one root's walk did: its claims in order, its references, the positions where it stopped for a
+    reason other than a foreign byte (probes), whether it saw a byte another walk owns (foreign), the next
+    start after the root when it walked (ns), its extent."""
+    __slots__ = ("claims", "calls", "jumps", "tails", "imms", "operands", "tables", "overlaps", "probes", "foreign", "ns", "extent")
+
+    def __init__(self, ns=0):
+        self.claims, self.calls, self.jumps, self.tails, self.imms = [], [], [], [], []
+        self.operands, self.tables, self.overlaps, self.probes = [], [], [], []
+        self.foreign, self.ns, self.extent = False, ns, 0
+
+
+class Walker:
+    def __init__(self, dec: Decoder, reloc_sites, stops):
+        self.dec = dec
+        self.img = dec.img
+        self.lo, self.hi = dec.lo, dec.hi
+        self.code = dec.code
+        n = self.hi - self.lo
         self.owner = [0] * n
         self.kind = bytearray(n)         # 1 code, 2 table data, 3 placed by another rule
         self.calls = defaultdict(set)    # target -> call sites
@@ -46,16 +163,14 @@ class Walker:
         self.tables = []                 # (lo, hi, owner, skind)
         self.overlaps = []               # (owner, addr, other owner)
         self.extent = {}                 # owner -> highest claimed address + 1
-        self.fill_forms = fill_forms
+        self.claimed = defaultdict(list)  # owner -> [(lo, hi, kind)] (every byte is claimed at most once)
         self.reloc_sites = reloc_sites
         self.stops = set(stops)
         self.sorted_stops = sorted(self.stops)
+        self.rec: Record | None = None
 
     def in_code(self, a):
         return self.lo <= a < self.hi
-
-    def is_fill(self, ins):
-        return bytes(ins.bytes) in self.fill_forms
 
     def crosses_stop(self, a, b):
         """Is there a stop s with min(a, b) < s <= max(a, b)? (a jump from a to b leaves the function)"""
@@ -68,115 +183,163 @@ class Walker:
         return self.sorted_stops[i] if i < len(self.sorted_stops) else self.hi
 
     def claim(self, lo, hi, owner, kind):
-        for o in range(lo - self.lo, hi - self.lo):
-            self.owner[o] = owner
-            self.kind[o] = kind
+        a, b = lo - self.lo, hi - self.lo
+        self.owner[a:b] = [owner] * (b - a)
+        self.kind[a:b] = bytes((kind,)) * (b - a)
+        if kind != 3:
+            self.claimed[owner].append((lo, hi, kind))
+            if self.rec is not None:
+                self.rec.claims.append((lo, hi, kind))
         if kind == 1:   # a function's extent is its code; its tables are symbols of their own after it
             self.extent[owner] = max(self.extent.get(owner, owner), hi)
 
-    def decode(self, addr):
-        cache = self.cache
-        while self.in_code(addr):
-            ins = cache.get(addr)
-            if ins is not None:
-                yield ins
-                addr = ins.address + ins.size
-                continue
-            o = addr - self.lo
-            got = False
-            for ins in self.md.disasm(self.code[o:o + 0x400], addr):
-                got = True
-                cache[ins.address] = ins
-                yield ins
-                addr = ins.address + ins.size
-            if not got:
-                return
-            if addr < self.lo + o + 0x400 - 16:
-                return
+    # ------------------------------------------------------------------ records
+    def merge(self, rec: Record):
+        """Add a record's references to the walk's (claims are applied separately)."""
+        for t, s in rec.calls:
+            self.calls[t].add(s)
+        for t, s in rec.jumps:
+            self.jumps[t].add(s)
+        for t, s in rec.tails:
+            self.tails[t].add(s)
+        for t, s in rec.imms:
+            self.imms[t].add(s)
+        self.operands.extend(rec.operands)
+        self.tables.extend(rec.tables)
+        self.overlaps.extend(rec.overlaps)
 
+    def replay(self, root, rec: Record) -> bool:
+        """Apply a recorded walk of root when it is what walking again would do now: the next start after the
+        root is the same, the walk saw no byte another walk owned, and none of its claimed or probed bytes is
+        owned by another walk now. False (and nothing applied) otherwise."""
+        if rec.foreign or rec.ns != self.next_stop(root):
+            return False
+        kind, owner, L = self.kind, self.owner, self.lo
+        for lo, hi, _ in rec.claims:
+            if any(kind[lo - L:hi - L]):
+                return False
+        for lo, hi, k in rec.claims:
+            self.owner[lo - L:hi - L] = [root] * (hi - lo)
+            self.kind[lo - L:hi - L] = bytes((k,)) * (hi - lo)
+        for p in rec.probes:
+            o = p - L
+            if kind[o] and owner[o] != root:
+                for lo, hi, _ in rec.claims:
+                    self.owner[lo - L:hi - L] = [0] * (hi - lo)
+                    self.kind[lo - L:hi - L] = bytes(hi - lo)
+                return False
+        self.claimed[root].extend(rec.claims)
+        self.extent[root] = rec.extent
+        self.merge(rec)
+        return True
+
+    def walk_root(self, root) -> Record:
+        """Walk a root from scratch, recording what it did, and add its references."""
+        rec = self.rec = Record(self.next_stop(root))
+        try:
+            self.walk(root)
+        finally:
+            self.rec = None
+        rec.extent = self.extent[root]
+        self.merge(rec)
+        return rec
+
+    # ------------------------------------------------------------------ walking
     def walk(self, start, owner=None):
         """Walk from start on behalf of owner (the function start; start itself for a root, an inner label
         otherwise). Returns the owner's extent end."""
         owner = start if owner is None else owner
         self.extent.setdefault(owner, owner)
+        rec = self.rec if self.rec is not None else Record()
+        kind, own, L, hi = self.kind, self.owner, self.lo, self.hi
+        stops, reloc_sites = self.stops, self.reloc_sites
         work = [start]
         while work:
             a = work.pop()
             target = a
             recent = []
-            while self.in_code(a):
-                o = a - self.lo
-                if self.kind[o] == 1 and self.owner[o] == owner:
+            while L <= a < hi:
+                o = a - L
+                if kind[o] == 1 and own[o] == owner:
+                    rec.probes.append(a)
                     break
-                if self.kind[o] != 0 and self.owner[o] != owner:
-                    self.overlaps.append((owner, a, self.owner[o]))
+                if kind[o] != 0 and own[o] != owner:
+                    rec.overlaps.append((owner, a, own[o]))
+                    rec.foreign = rec.foreign or kind[o] != 3
                     break
-                if a != owner and a in self.stops:
+                if a != owner and a in stops:
+                    rec.probes.append(a)
                     break
-                stop = True
-                for ins in self.decode(a):
-                    ia = ins.address
-                    io = ia - self.lo
-                    if self.kind[io] == 1 and self.owner[io] == owner:
+                for ins in self.dec.decode(a):
+                    ia = ins.addr
+                    io = ia - L
+                    if kind[io] == 1 and own[io] == owner:
+                        rec.probes.append(ia)
                         break
-                    if self.kind[io] != 0 and self.owner[io] != owner:
-                        self.overlaps.append((owner, ia, self.owner[io]))
+                    if kind[io] != 0 and own[io] != owner:
+                        rec.overlaps.append((owner, ia, own[io]))
+                        rec.foreign = rec.foreign or kind[io] != 3
                         break
-                    if ia != owner and ia in self.stops:
+                    if ia != owner and ia in stops:
+                        rec.probes.append(ia)
                         break
-                    if self.is_fill(ins) and ia != target:
+                    if ins.fill and ia != target:
+                        rec.probes.append(ia)
                         break
-                    self.claim(ia, ia + ins.size, owner, 1)
+                    size = ins.size
+                    self.claim(ia, ia + size, owner, 1)
                     recent.append(ins)
-                    recent = recent[-12:]
-                    mn = ins.mnemonic
-                    for op in ins.operands:
-                        if op.type == X86_OP_MEM and op.mem.disp and self.img.in_image(op.mem.disp & 0xffffffff):
-                            self.operands.append((ia, ins.size, op.mem.disp & 0xffffffff, op.size))
-                    if ins.group(CS_GRP_CALL) and ins.operands and ins.operands[0].type == X86_OP_IMM:
-                        t = ins.operands[0].imm
-                        if self.in_code(t):
-                            self.calls[t].add(ia)
-                    elif not ins.group(CS_GRP_JUMP):
-                        for op in ins.operands:
-                            if op.type == X86_OP_IMM and self.in_code(op.imm) and \
-                                    any((ia + k) in self.reloc_sites for k in range(1, ins.size - 3)):
-                                self.imms[op.imm].add(ia)
-                    if ins.group(CS_GRP_RET):
+                    if len(recent) > 12:
+                        del recent[0]
+                    for disp, osize in ins.mem:
+                        rec.operands.append((ia, size, disp, osize))
+                    flow = ins.flow
+                    if flow == F_CALL and ins.target is not None:
+                        t = ins.target
+                        if L <= t < hi:
+                            rec.calls.append((t, ia))
+                    elif flow != F_JUMP:
+                        for v in ins.imms:
+                            if L <= v < hi and any((ia + k) in reloc_sites for k in range(1, size - 3)):
+                                rec.imms.append((v, ia))
+                    if flow == F_RET:
                         break
-                    if ins.group(CS_GRP_JUMP):
-                        op = ins.operands[0] if ins.operands else None
-                        if op is not None and op.type == X86_OP_IMM:
-                            t = op.imm
-                            if self.in_code(t):
-                                if self.crosses_stop(ia, t) or t in self.stops and t != owner:
-                                    self.tails[t].add(ia)
+                    if flow == F_JUMP:
+                        if ins.target is not None:
+                            t = ins.target
+                            if L <= t < hi:
+                                if self.crosses_stop(ia, t) or t in stops and t != owner:
+                                    rec.tails.append((t, ia))
                                 else:
-                                    self.jumps[t].add(ia)
+                                    rec.jumps.append((t, ia))
                                     work.append(t)
-                            if mn == "jmp":
+                            if ins.mn == "jmp":
                                 break
                             continue
-                        if mn == "jmp" and op is not None and op.type == X86_OP_MEM and op.mem.base == X86_REG_INVALID \
-                                and op.mem.index != X86_REG_INVALID and op.mem.scale == 4:
-                            self.jump_table(op.mem.disp & 0xffffffff, recent, owner, work)
+                        if ins.jtab is not None:
+                            self.jump_table(ins.jtab, recent, owner, work, rec)
                         break
                 break
+        if self.rec is None:
+            self.merge(rec)
         return self.extent[owner]
 
-    def jump_table(self, tbl, recent, owner, work):
+    def jump_table(self, tbl, recent, owner, work, rec):
         if not self.in_code(tbl):
             return
         bound = None
         byte_tbl = None
-        for ins in reversed(recent[:-1]):
+        for r in reversed(recent[:-1]):
+            if r.mn not in ("cmp", "movzx", "mov"):
+                continue
+            ins = self.dec.detail(r.addr)
             if ins.mnemonic == "cmp" and len(ins.operands) == 2 and ins.operands[1].type == X86_OP_IMM \
                     and ins.operands[0].type == X86_OP_REG and bound is None and 0 <= ins.operands[1].imm < 0x400:
                 bound = ins.operands[1].imm + 1
             if ins.mnemonic in ("movzx", "mov") and len(ins.operands) == 2 and ins.operands[1].type == X86_OP_MEM \
                     and ins.operands[1].size == 1 and (ins.operands[1].mem.index != X86_REG_INVALID or ins.operands[1].mem.base != X86_REG_INVALID) \
-                    and self.in_code(ins.operands[1].mem.disp & 0xffffffff) and byte_tbl is None:
-                byte_tbl = ins.operands[1].mem.disp & 0xffffffff
+                    and self.in_code(ins.operands[1].mem.disp & M32) and byte_tbl is None:
+                byte_tbl = ins.operands[1].mem.disp & M32
         limit = self.next_stop(owner)
         n = 0
         a = tbl
@@ -188,27 +351,56 @@ class Walker:
                 break
             o = a - self.lo
             if self.kind[o] != 0:
+                if self.owner[o] != owner:
+                    rec.foreign = rec.foreign or self.kind[o] != 3
+                else:
+                    rec.probes.append(a)
                 break
             self.claim(a, a + 4, owner, 2)
             work.append(v)
             n += 1
             a += 4
         if n:
-            self.tables.append((tbl, a, owner, "jumptable"))
+            rec.tables.append((tbl, a, owner, "jumptable"))
         if byte_tbl is not None and bound is not None:
             end = byte_tbl + bound
-            if all(self.kind[byte_tbl + i - self.lo] == 0 for i in range(bound) if self.in_code(byte_tbl + i)):
+            free = True
+            for i in range(bound):
+                p = byte_tbl + i
+                if not self.in_code(p):
+                    continue
+                o = p - self.lo
+                if self.kind[o] != 0:
+                    free = False
+                    if self.owner[o] != owner:
+                        rec.foreign = rec.foreign or self.kind[o] != 3
+                else:
+                    rec.probes.append(p)
+            if free:
                 self.claim(byte_tbl, min(end, self.hi), owner, 2)
-                self.tables.append((byte_tbl, min(end, self.hi), owner, "idxtable"))
+                rec.tables.append((byte_tbl, min(end, self.hi), owner, "idxtable"))
+
+    def counts(self, owner, lo, hi):
+        """(code bytes, table bytes) the owner claimed inside [lo, hi)."""
+        code = table = 0
+        for a, b, k in self.claimed.get(owner, ()):
+            n = min(b, hi) - max(a, lo)
+            if n > 0:
+                if k == 1:
+                    code += n
+                else:
+                    table += n
+        return code, table
 
 
 @rule("S.codewalk", version="2", ceiling=D, outputs=("symbol", "start", "ref"),
-      needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs"))
+      needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs"),
+      helpers=(Ins, Decoder, Record, Walker))
 def codewalk(ctx: RuleContext):
     """Recursive descent over the code sections from every known start (exports, the entry point, the symbols
     of placed library sections, the entry the CRT calls), adding the starts the walk reveals (conventions
     W1..W4 in rules/walk.py: call targets, tail-call targets, code immediates at relocation sites, code
-    pointers stored in data sections) and repeating from scratch until the set of starts is stable. A walked
+    pointers stored in data sections) and repeating until the set of starts is stable. A walked
     function owns [start, last byte it reached + 1) as a `func` symbol of derived extent (bytes inside it
     the walk did not reach are counted as holes); its jump tables and byte index tables are `jumptable` /
     `idxtable` symbols; calls, jumps, tail calls, immediates and memory operands pointing into the image are
@@ -222,11 +414,20 @@ def codewalk(ctx: RuleContext):
     reloc_sites = {f.lo for f in ctx.facts(Kind.ref) if f.value["rkind"] == "reloc"}
     data_ptrs = {f.value["to"] for f in ctx.facts(Kind.ref)
                  if f.value["rkind"] == "reloc" and not any(s.va <= f.lo < s.end for s in code_secs)}
-    claimed = [(f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.value.get("skind") in ("func", "thunk") and lo <= f.lo < hi]
+    claimed = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.value.get("skind") in ("func", "thunk") and lo <= f.lo < hi)
     claimed_starts = {a for a, _ in claimed}
+    claimed_los = [a for a, _ in claimed]
 
     def inside_claimed(t):
-        return any(a <= t < b for a, b in claimed)
+        i = bisect.bisect_right(claimed_los, t) - 1
+        while i >= 0:
+            a, b = claimed[i]
+            if a <= t < b:
+                return True
+            i -= 1
+            if i >= 0 and claimed[i][0] < t - 0x100000:
+                break
+        return False
 
     known: dict[int, str] = {}
     for f in ctx.facts(Kind.start):
@@ -235,16 +436,19 @@ def codewalk(ctx: RuleContext):
     derived: dict[int, str] = {}
     w = None
     inner: dict[int, int] = {}
-    cache: dict = {}
+    dec = Decoder(img, lo, hi, tc.fill_forms)
+    records: dict[int, Record] = {}
     for _ in range(25):
         roots = dict(known)
         roots.update({k: v for k, v in derived.items() if k not in roots})
-        w = Walker(img, lo, hi, set(tc.fill_forms), reloc_sites, set(roots) | claimed_starts, cache)
+        w = Walker(dec, reloc_sites, set(roots) | claimed_starts)
         for a, b in claimed:
             w.claim(a, b, a, 3)
             w.extent.pop(a, None)
         for r in sorted(roots):
-            w.walk(r)
+            rec = records.get(r)
+            if rec is None or not w.replay(r, rec):
+                records[r] = w.walk_root(r)
         # W2: a call target called only from inside the one function whose range holds it is an inner label of
         # that function (walked on its behalf when the function's own walk did not reach it)
         inner = {}
@@ -281,8 +485,7 @@ def codewalk(ctx: RuleContext):
         e = w.extent.get(r, r)
         if e <= r:
             continue
-        n_walked = sum(1 for o in range(r - lo, e - lo) if w.owner[o] == r and w.kind[o] == 1)
-        n_table = sum(1 for o in range(r - lo, e - lo) if w.owner[o] == r and w.kind[o] == 2)
+        n_walked, n_table = w.counts(r, r, e)
         holes = (e - r) - n_walked - n_table
         yield ctx.fact(r, r + 1, Kind.start, {"skind": "func", "how": roots[r]}, D)
         v = {"skind": "func", "extent": "derived", "walked": n_walked, "holes": holes}
