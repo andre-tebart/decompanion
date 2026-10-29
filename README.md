@@ -7,7 +7,8 @@ we are**.
 
 The first attempt at this (the GildeGold.exe decomp in `../rea`) is the reference; decompanion is the refined
 second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarations and address comments:
-[docs/layout.md](docs/layout.md).
+[docs/layout.md](docs/layout.md). The plugin seams and the conventions the rules rest on:
+[docs/architecture.md](docs/architecture.md).
 
 ## The model
 
@@ -36,6 +37,15 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
   `reason`; `[toolchain]` holds the plugin, its root and defaults) and may name its own library `archives`
   (else `[libs] archives`).
 
+- **Seams** (docs/architecture.md): the rules (`rules/`, `ledger/`) know no container, object format,
+  toolchain or instruction set. They ask four plugin kinds, each a package with a registry its plugins
+  register into: `image/` (Image: sections, imports, exports, relocations, its own region vocabulary;
+  PE32), `objfmt/` (ObjectFormat: archive objects, relocations as absolute / relative / absolute-rva with a
+  width and `resolve`; COFF), `toolchains/` (Toolchain: fill forms, import stubs and their placement,
+  function alignment, user entry names, Rich vocabulary, default archives; VC6) and `isa/` (Isa: a decoder of
+  compact instruction records with flow kinds, table shapes; x86-32 through capstone). A target selects
+  `image` and `isa` in its table (the ISA defaults to the image's machine type), the project its toolchain.
+
 ## Phases
 
 1. **setup** (`dcp setup`): headers, sections, imports, exports, base relocations, the Rich header (its
@@ -55,7 +65,8 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
 
 ```
 uv sync                                   # in this repo: the venv (Python 3.15, capstone)
-uv run dcp init ../guild-server "C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll"
+uv run dcp init ../guild-server "C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll" \
+    --toolchain-root C:/Tools/MSVC600-SP5PP       # required: the toolchain installation (VC6: holds VC98/)
 cd ../guild-server && uv sync             # the target project depends on decompanion by path
 uv run dcp setup -v                       # run every rule, print the report
 uv run dcp why 0x10008cb0 --refs          # everything known about an address
@@ -87,6 +98,7 @@ name = "exe"
 path = "C:/Program Files/GOG Galaxy/Games/The Guild Gold/GildeGold.exe"
 sha256 = "d6f20fda..."
 image = "pe32"
+isa = "x86"
 archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", "{toolchain.root}/VC98/Lib/DINPUT.LIB"]
 compiler = "cl 12.00.9044"
 linker = "link 6.00.8447"
@@ -122,13 +134,14 @@ Output is one record per line, `key=value` tokens, addresses `0x%08x`, intervals
 
 ```
 src/decompanion/
-  cli.py config.py init.py disasm.py
+  cli.py config.py init.py
   ledger/   fact.py store.py query.py decl.py srcscan.py ghidra.py layoutview.py
-  rules/    engine.py setup.py walk.py checks.py layout.py
+  rules/    engine.py setup.py walk.py checks.py layout.py      # generic: they talk to the seams only
   repo/     wt.py                    # worktrees and seed
-  image/    base.py pe32.py          # ImageFormat seam
-  objfmt/   coff.py                  # COFF objects and archives
-  toolchains/ base.py vc6/           # Toolchain seam: fill forms, Rich products, CRT entries
+  image/    __init__ (registry) base.py pe32.py         # Image seam: sections, directories, regions, relocations
+  objfmt/   __init__ (registry) base.py coff.py         # ObjectFormat seam: archives, objects, relocation view
+  toolchains/ __init__ (registry) base.py vc6/          # Toolchain seam: fill, stubs, entries, Rich, defaults
+  isa/      __init__ (registry) base.py x86.py          # Isa seam: instruction records, flow kinds, table shapes
 tests/                               # a synthetic PE32 dll (conftest.py); server.dll tests when it is installed
-docs/                                # plan.md, layout.md
+docs/                                # plan.md, layout.md, architecture.md
 ```

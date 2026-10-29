@@ -4,7 +4,9 @@ Approved 2026-10-29, amended the same day (several targets per project, section 
 declarations, source scan, layout rules and commands, Ghidra import, worktree overlay; see README and
 docs/layout.md); multi-target round done 2026-10-29 (per-target toolchain declaration and archives, every command
 and loader per target, `dcp setup --all-targets`; server.dll and GildeGold.exe pass `dcp check` as two targets
-of one project; S.codewalk on the exe ~35 s -> ~5 s); M3..M6 open.
+of one project; S.codewalk on the exe ~35 s -> ~5 s); cleanup round done 2026-10-29 (every VC6 / LINK, PE32, COFF and
+x86 / capstone fact moved behind the plugin seams, the instruction-set seam `isa/` added, plugin registries,
+`dcp init --toolchain-root` required; facts byte-identical; see docs/architecture.md); M3..M6 open.
 
 ## Context
 
@@ -70,7 +72,7 @@ them; `dcp check` fails on any.
 | state | where | level |
 |---|---|---|
 | binary facts (headers, sections, imports, exports, relocs, rich, strings) | computed every run, cached | proven / derived |
-| target identity | `decompanion.toml [[target]] name, path, sha256, image="pe32"` (the first is the default target) | verified, mismatch fatal |
+| target identity | `decompanion.toml [[target]] name, path, sha256, image="pe32", isa="x86"` (the first is the default target; isa defaults to the image's machine type) | verified, mismatch fatal |
 | toolchain + flags (+ per-unit overrides) | per target: `[[target]] compiler= linker= cflags= reason=` (picked from the Rich candidates; `[toolchain]` holds `plugin`, `root` and defaults a target inherits) | declared (checked against the Rich candidates by `C.toolchain`) → proven per unit by `M.flags.proven` |
 | library identification (CRT, SDK) | computed from the `.lib` archives of the target (`[[target]] archives=`, else `[libs] archives`) into the signature store | proven |
 | function address + description, `@deep` / `@stuck` / `@rough` | `/* 0x10001000, what */` first line of `src/<unit>/f_<addr>.c` (file name must agree); several targets: `/* server:0x10001000, exe:0x4a3000, what */`, a bare address means the default target | src: declared → proven when matched |
@@ -182,7 +184,8 @@ elsewhere the same bytes are VC6's tail call of a dllimport function and the wal
 start is a reloc target; unreferenced runs stay candidates), `S.jumptable` / `S.idxtable` [derived], `S.codewalk`
 [derived] (recursive descent from every proven/derived start, capstone, never into a known symbol; emits func
 extents + call/jmp refs), `S.fptr` [derived] (reloc whose target is in `.text` and not a table entry),
-`S.fill` [derived] (VC6 fill set 90 / CC / 8B FF / 8D 49 00 from the toolchain plugin), `S.entry.dllmain`
+`S.fill` [derived] (VC6 fill set 90 / CC / 8B FF / 8D 49 00 from the toolchain plugin; the walk decodes through
+the instruction-set plugin, x86: capstone), `S.entry.dllmain`
 (the non-library call target of `_DllMainCRTStartup`), `S.pubsrc` (catalogue version strings → public-source
 candidates; compiled candidates scanned like lib members), `S.probe` (`dcp toolchain probe`: compile anchors —
 CRT sources if present, public-source hits, later every matched function — under the flag grid `/O1 /O2 /Ox ×
@@ -293,11 +296,14 @@ decompanion/
     cli.py  config.py  fmt.py
     ledger/   fact.py store.py decl.py srcscan.py query.py grades.py
     rules/    engine.py setup.py setup_libs.py layout.py match.py match_data.py grade.py checks.py
-    image/    base.py pe32.py                 # ImageFormat ABC (sections, dirs, imports, exports, relocs, rich, read)
-    objfmt/   base.py coff.py                 # ObjectFormat ABC (.obj, .lib archives)  ← port of link.py Obj/archive_members
-    toolchains/ base.py vc6/{__init__,cl,rich,fill,link}.py   # Toolchain ABC: compile, includes (CL /P), link, fill_forms, rich_table
+    image/    __init__.py base.py pe32.py     # Image seam (sections, dirs, regions, imports, exports, relocs, rich, read); registry
+    objfmt/   __init__.py base.py coff.py     # ObjectFormat seam (.obj, .lib archives, relocation view)  ← port of link.py Obj/archive_members
+    toolchains/ __init__.py base.py vc6/{__init__,cl,rich,link}.py   # Toolchain seam: fill forms, import stubs, entries, Rich, defaults,
+                                              # later compile, includes (CL /P), link
+    isa/      __init__.py base.py x86.py      # Isa seam: instruction records for the walk (x86-32: capstone; blob memo with M3)
     build/    compile.py amalg.py link.py
-    disasm.py                                 # capstone + blob memo
+                                              # every seam package keeps a registry its plugins register into
+                                              # (docs/architecture.md: what each exposes, what the rules may know)
     match/    asmdiff.py diffclass.py spell.py idioms.py respell.py vargen.py tryvar.py siblings.py slotmap.py listing.py tuorder.py c2prio.py
     source/   rename.py refs.py enc.py lint.py declcheck.py
     repo/     wt.py merge.py session.py claims.py
