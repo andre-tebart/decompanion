@@ -11,6 +11,9 @@ Conventions it rests on (derived level; VC6 / LINK are the toolchain they were s
       data section (a function pointer), is a function start.
   W4  a function ends at a return, at an unconditional jump (direct or indirect), and at alignment fill
       (Toolchain.fill_forms) reached by fall-through; a jump target is code whatever its first instruction.
+      A call followed directly by a known start ends the function too: the callee does not return (VC6
+      emits nothing after a call to a noreturn function such as _exit or _endthread). (Since milestone 3;
+      before, the fall-through into the start was a C.walk conflict.)
 The walk is repeated with the growing set of starts until that set is stable, so no walk ever runs into a
 start found later. A walk that still runs into bytes another function owns is a conflict (C.walk): one of the
 two starts is wrong.
@@ -184,6 +187,9 @@ class Walker:
                     if kind[io] == 1 and own[io] == owner:
                         rec.probes.append(ia)
                         break
+                    if ia != owner and ia in stops and recent and recent[-1].flow == CALL:   # W4: a call that does not return
+                        rec.probes.append(ia)
+                        break
                     if kind[io] != 0 and own[io] != owner:
                         rec.overlaps.append((owner, ia, own[io]))
                         rec.foreign = rec.foreign or kind[io] != 3
@@ -294,7 +300,7 @@ class Walker:
         return code, table
 
 
-@rule("S.codewalk", version="2", ceiling=D, outputs=("symbol", "start", "ref"),
+@rule("S.codewalk", version="3", ceiling=D, outputs=("symbol", "start", "ref"),
       needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs"),
       helpers=(Record, Walker))
 def codewalk(ctx: RuleContext):
