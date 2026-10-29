@@ -174,9 +174,12 @@ never stored:
 A declaration always carries a reason (`--why`, refused without one) and lands in decompanion.toml as `key =
 value` plus `reason.<key> = "..."` in the same table (`tomledit.py`, a line editor that keeps the comments); it is
 level declared, and the rules raise it. The older one-reason form `reason = "..."` still reads as the reason of
-every key of its table. `dcp status` prints the phase (setup / layout / match / done) and the open obligations in
-order, one record each (`obligation= target= missing= evidence= resolve=`, `waits=` for one not due yet);
-`dcp setup`, `dcp session start` and every declaration print it as their tail. The toolchain and libs
+every key of its table. `dcp status` prints the phase (setup / layout / match / done), whether the gate is blocked,
+then one numbered step per open obligation in order: its target, what is missing, the evidence so far, the command
+that resolves it (and the commands that follow), and a `next:` line for the first step to take. `waits=` marks an
+obligation that is not due until an earlier one is declared (`wait on <id>` in the view); `--json` prints the
+records (`status`, `phase`, `open`; then `obligation= target= missing= evidence= resolve=`) instead.
+`dcp setup`, `dcp session start` and every declaration print the status as their tail. The toolchain and libs
 obligations are a gate: `dcp session start` and `dcp check` fail on them.
 
 How a declaration feeds the rules: an external input may be absent until declared (`Project.waiting`): `libs`

@@ -1,16 +1,19 @@
-"""dcp: the guided decisions (obligations.py): `dcp status` (the phase and the open obligations in order), the
-evidence views (`dcp toolchain`, `dcp libs candidates`) and the declarations (`dcp toolchain declare`, `dcp libs
-declare`, `dcp analyzer declare`). A declaration always carries a reason (`--why`, refused without one), lands
-in decompanion.toml as `key = value` with `reason.<key> = "..."`, is level declared, and reruns the rules at
-once so the next obligation shows. The tool never declares anything on its own. Same output contract as cli.py.
+"""dcp: the guided decisions (obligations.py): `dcp status` (the phase, the gate and the numbered steps in order,
+with the next command; --json for the records), the evidence views (`dcp toolchain`, `dcp libs candidates`) and the
+declarations (`dcp toolchain declare`, `dcp libs declare`, `dcp analyzer declare`). A declaration always carries a
+reason (`--why`, refused without one), lands in decompanion.toml as `key = value` with `reason.<key> = "..."`, is
+level declared, and reruns the rules at once so the next obligation shows. The tool never declares anything on its
+own. The other commands keep the output contract of cli.py.
 """
 from __future__ import annotations
 
+import json
 import sys
+import textwrap
 from collections import Counter
 from pathlib import Path
 
-from .cli import candidate_entry, open_project, record, refresh
+from .cli import candidate_entry, jsonable, open_project, record, refresh
 from .config import Project
 from .ledger.fact import Kind
 from . import obligations as OB
@@ -23,26 +26,77 @@ def err(cmd: str, msg: str, code: int = 1) -> int:
 
 
 # ------------------------------------------------------------------------------------------------ status
-def print_status(p, view=None, shown: set | None = None, work: bool = True) -> list:
-    """The status tail of one target: `status target= phase= open=` and one record per open obligation, in
-    order. `shown`: ids of project-wide obligations already printed (multi-target output prints them once).
+DETAIL = "    "          # a step's detail lines start here
+WRAP = 100               # the width of a status line
+
+
+def detail(label: str, text: str):
+    """One labelled detail line of a step, wrapped under its own column (`need`, `seen`, `run`, ...)."""
+    first = f"{DETAIL}{label:<6}"
+    print(textwrap.fill(text, width=WRAP, initial_indent=first, subsequent_indent=" " * len(first)))
+
+
+def print_status(p, view=None, shown: set | None = None, work: bool = True, as_json: bool = False) -> list:
+    """The status tail of one target. Human output: the phase, whether the gate is blocked, then one numbered
+    step per open obligation (target, what is missing, the evidence, the command that resolves it), and a `next:`
+    line for the first one to do. `shown`: ids of project-wide obligations already printed (multi-target output
+    prints them once). `as_json`: the records of the output contract instead (status header + one per obligation).
     Returns the obligations."""
     obls = OB.compute(p, view, work=work)
     shown = shown if shown is not None else set()
     rows = [o for o in obls if not (o.target is None and o.id in shown)]
-    print(record(status=p.target_name, phase=OB.phase(obls), open=len(obls)))
-    for o in rows:
-        print(record(**o.fields()))
+    if as_json:
+        print(json.dumps(jsonable({"status": p.target_name, "phase": OB.phase(obls), "open": len(obls)})))
+        for o in rows:
+            print(json.dumps(jsonable(o.fields())))
+            if o.target is None:
+                shown.add(o.id)
+        return obls
+
+    waiting = sum(1 for o in obls if o.waits)
+    gates = sum(1 for o in obls if o.gate)
+    print(f"dcp status: {p.target_name}")
+    print(f"  phase  {OB.phase(obls)}")
+    print(f"  open   {len(obls)}" + (f" ({len(obls) - waiting} to do now, {waiting} waiting)" if waiting else ""))
+    print("  gate   " + (f"blocked by {gates} open obligation{'s' if gates != 1 else ''} "
+                         f"(dcp session start and dcp check fail)" if gates else "clear"))
+    hidden = [o.id for o in obls if o.target is None and o.id in shown]
+    if hidden:
+        print("  also   " + ", ".join(hidden) + " (project-wide, printed above)")
+    if not obls:
+        print()
+        print("nothing open: every decision is declared and every function is byte + readable")
+        return obls
+    print()
+    for i, o in enumerate(rows, 1):
+        print(f"{i:>2}. {o.id:<18} {'every target' if o.target is None else 'target ' + o.target}")
+        detail("need", o.missing)
+        if o.waits:
+            detail("wait", f"on {o.waits}: declare that first")
+        else:
+            if o.evidence:
+                detail("seen", o.evidence)
+            cmds = o.resolve.split("; ")
+            detail("run", cmds[0])
+            for c in cmds[1:]:
+                detail("then", c)
+        print()
         if o.target is None:
             shown.add(o.id)
-    if not obls:
-        print("nothing open: every decision is declared and every function is byte + readable")
+    nxt = next((o for o in rows if not o.waits), None)
+    if nxt is not None:
+        print("next: " + nxt.resolve.split("; ")[0])
+    elif rows:
+        print("next: waiting for " + ", ".join(sorted({o.waits for o in rows})))
+    else:
+        print("next: see the project-wide obligations above")
     return obls
 
 
 def cmd_status(args):
-    """Per target (every target unless --target): the phase and the open obligations in order, each with what is
-    missing, the evidence so far and the command that resolves it (obligations.py). Exit 0."""
+    """Per target (every target unless --target): the phase, the gate and the open obligations in order, each
+    with what is missing, the evidence so far and the command that resolves it (obligations.py), plus the first
+    step to take. --json prints the records instead. Exit 0."""
     shown: set = set()
     names = ([args.target] if getattr(args, "target", None)
              else [t.name for t in Project(Path(args.root) if args.root else None).targets])
@@ -51,13 +105,13 @@ def cmd_status(args):
             print()
         p, e = open_project(args, name)
         refresh(p, e)
-        print_status(p, shown=shown)
+        print_status(p, shown=shown, as_json=args.json)
     return 0
 
 
 def status_tail(p, view=None, work: bool = True):
     """The tail other commands print (setup, session start, the declarations)."""
-    print("--- dcp status")
+    print()
     print_status(p, view, work=work)
 
 
@@ -143,6 +197,8 @@ def cmd_toolchain_declare(args):
     for k, v in {**tgt, **proj}.items():
         where = f"target {p.target_name}" if k in tgt else "[toolchain]"
         print(record(declared=k, value=" ".join(v) if isinstance(v, list) else v, level="declared", where=where, why=why))
+        if isinstance(v, list):
+            print("  flags  " + (" ".join(repr(f) for f in v) or "-"))
     r = rerun(args, p.target_name)
     if r is None:
         return 0
@@ -313,7 +369,8 @@ def cmd_toolchain(args):
 
 def register(sub, cmd):
     """The parsers: status, toolchain [probe | declare], libs candidates | declare, analyzer declare."""
-    s = cmd(sub, "status", cmd_status, "the phase and the open obligations in order (every target unless --target)")
+    s = cmd(sub, "status", cmd_status, "the phase and the open obligations in order, with the next step (every target unless --target)")
+    s.add_argument("--json", action="store_true", help="the records of the output contract instead of the guided view")
     s = cmd(sub, "toolchain", cmd_toolchain, "the toolchain evidence; `probe`: the flag probe; `declare`: a declaration")
     s.add_argument("-v", "--verbose", action="store_true")
     ts = s.add_subparsers(dest="sub")

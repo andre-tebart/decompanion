@@ -119,15 +119,50 @@ git add -A && git commit -m init
 uv run dcp setup                          # 29 s cold (the rules 1.6 s, Ghidra 27 s)
 waiting=8  rules=C.toolchain,M.compile,M.flags.proven,S.crt.code,S.crt.data,S.crt.refs,S2.rich.members,S4.import.libs  on=toolchain.compiler,toolchain.linker,libs.archives
 conflicts: error=8                        # C.overlap in library code the archives will explain
---- dcp status
-status=server  phase=setup  open=7
-obligation=toolchain.compiler  target=server  missing="the compiler build that made the user's objects (missing)"  evidence='Rich compilers cl 12.00.8047 x125, cl 12.00.9044 x37, cl 12.00.8047 x1 C++; built 2003-10-01; CRT strings 3 (__MSVCRT_HEAP_SELECT)'  resolve='dcp toolchain declare compiler="<one of the Rich compilers>" --why "..."'
-obligation=toolchain.linker  target=server  missing='the linker build (missing)'  evidence='Rich linkers link 6.00.8447 x1; PE linker version 6.00'  resolve=...
-obligation=toolchain.root  target=-  missing='the installation of that toolchain (missing)'  evidence='installs found: C:/Tools/MSVC600 (cl 12.00.8804 c2 12.00.9782 link 6.00.8447; makes a Rich linker (8447)); C:/Tools/MSVC600-SP5PP (cl 12.00.8804 c2 13.00.9044 link 6.00.8447; makes a Rich compiler (9044) and a Rich linker (8447))'  resolve='dcp toolchain declare root=DIR --why "..."'
-obligation=toolchain.cflags  target=server  missing='the compiler flags (missing)'  evidence="the vc6 project wizard's release flags /O2 /Gy; dcp toolchain probe proves flags once functions byte-match"  resolve=...
-obligation=libs.archives  target=server  waits=toolchain.root  missing='the static libraries linked into the image (missing)'  resolve='dcp libs candidates; dcp libs declare ARCHIVE... --why "..."'
-obligation=analyzer  target=-  missing='the analyzer whose pseudocode the drafts start from (computed, not confirmed)'  evidence='[analyzer] plugin=ghidra as dcp init found it (found at C:/Tools/ghidra_12.1.4_PUBLIC); drafts=616'  resolve='dcp analyzer declare ghidra|rea|none [root=DIR] [file=PATH] --why "..."'
-obligation=layout  target=server  missing='311 of 311 functions of the game code without a fragment; units open=0 separated=0'  evidence='next=0x10001000 kind=func size=304 unit=- start=immediate analyzed=yes (dcp layout next: the evidence)'  resolve=...
+
+dcp status: server
+  phase  setup
+  open   7 (6 to do now, 1 waiting)
+  gate   blocked by 5 open obligations (dcp session start and dcp check fail)
+
+ 1. toolchain.compiler target server
+    need  the compiler build that made the user's objects (missing)
+    seen  Rich compilers cl 12.00.8047 x125, cl 12.00.9044 x37, cl 12.00.8047 x1 C++; built 2003-10-01;
+          CRT strings 3 (__MSVCRT_HEAP_SELECT)
+    run   dcp toolchain declare compiler="<one of the Rich compilers>" --why "..."
+
+ 2. toolchain.linker   target server
+    need  the linker build (missing)
+    seen  Rich linkers link 6.00.8447 x1; PE linker version 6.00
+    run   dcp toolchain declare linker="<one of the Rich linkers>" --why "..."
+
+ 3. toolchain.root     every target
+    need  the installation of that toolchain (missing)
+    seen  installs found: C:/Tools/MSVC600 (...); C:/Tools/MSVC600-SP5PP (...)
+    run   dcp toolchain declare root=DIR --why "..."
+
+ 4. toolchain.cflags   target server
+    need  the compiler flags (missing)
+    seen  the vc6 project wizard's release flags /O2 /Gy; dcp toolchain probe proves flags once functions byte-match
+    run   dcp toolchain declare cflags="/F1 /F2 ..." --why "..."
+
+ 5. libs.archives      target server
+    need  the static libraries linked into the image (missing)
+    wait  on toolchain.root: declare that first
+
+ 6. analyzer           every target
+    need  the analyzer whose pseudocode the drafts start from (computed, not confirmed)
+    seen  [analyzer] plugin=ghidra as dcp init found it (found at C:/Tools/ghidra_12.1.4_PUBLIC); drafts=616
+    run   dcp analyzer declare ghidra|rea|none [root=DIR] [file=PATH] --why "..."
+
+ 7. layout             target server
+    need  311 of 311 functions of the game code without a fragment; units open=0 separated=0
+    seen  next=0x10001000 kind=func size=304 unit=- start=immediate analyzed=yes (dcp layout next: the evidence)
+    run   dcp session start
+    then  dcp layout next
+    then  dcp draft --next
+
+next: dcp toolchain declare compiler="<one of the Rich compilers>" --why "..."
 ```
 
 3. The evidence for the toolchain, in full:
@@ -156,8 +191,19 @@ uv run dcp toolchain declare compiler="cl 12.00.9044" linker="link 6.00.8447" ro
     --why "Rich: Utc12_2_C 9044 x37 is the one compiler build the CRT's 8047 objects do not explain, ..."
   root=C:/Tools/MSVC600-SP5PP  available=yes  cl=12.00.8804  c1=12.00.8867  c2=13.00.9044  link=6.00.8447
 C.toolchain: ok
-status=server  phase=setup  open=3
-obligation=libs.archives  target=server  missing='the static libraries linked into the image (missing)'  evidence='not placed yet: dcp libs candidates places every run-time archive of the root'  resolve=...
+
+dcp status: server
+  phase  setup
+  open   3
+  gate   blocked by 1 open obligation (dcp session start and dcp check fail)
+
+ 1. libs.archives      target server
+    need  the static libraries linked into the image (missing)
+    seen  not placed yet: dcp libs candidates places every run-time archive of the root
+    run   dcp libs candidates
+    then  dcp libs declare ARCHIVE... --why "..."
+
+next: dcp libs candidates
 ```
 
 5. The evidence for the libraries: every run-time archive of the root placed on its own (S.crt.code's search,
@@ -175,7 +221,12 @@ target=server  root=C:/Tools/MSVC600-SP5PP  archives=13  cached=0  ms=870
   conflict=LIBCMT.LIB,LIBC.LIB  overlaps=6  first=0x10019028
 uv run dcp libs declare LIBCMT --why "dcp libs candidates: LIBCMT places 109 members against LIBC's 75 ...; Init starts its thread with _beginthread"
   placed: LIBCMT.LIB=109  (S.crt.code)
-status=server  phase=layout  open=2
+
+dcp status: server
+  phase  layout
+  open   2
+  gate   clear
+  ...
 ```
 
 6. Setup again: the waiting rules have run (CRT placement, CRT refs and data, C.toolchain, S5); the starts of
@@ -186,9 +237,21 @@ uv run dcp setup
 functions: 586 (proven 212, derived 374); library members placed: 109 LIBCMT.LIB=109
 analyzer=ghidra  drafts=678  export=up-to-date  game_functions=311  with_draft=311  analyzer_only=6  ours_only=0  l9=0
 conflicts: warn=8
-status=server  phase=layout  open=2
-obligation=analyzer  ...                  # confirm it: dcp analyzer declare ghidra --why "..."
-obligation=layout  target=server  missing='311 of 311 functions of the game code without a fragment; units open=0 separated=0'  ...
+
+dcp status: server
+  phase  layout
+  open   2
+  gate   clear
+
+ 1. analyzer           every target
+    need  the analyzer whose pseudocode the drafts start from (computed, not confirmed)
+    ...                 # confirm it: dcp analyzer declare ghidra --why "..."
+
+ 2. layout             target server
+    need  311 of 311 functions of the game code without a fragment; units open=0 separated=0
+    ...
+
+next: dcp analyzer declare ghidra|rea|none [root=DIR] [file=PATH] --why "..."
 git add -A && git commit -m "toolchain and libraries declared"
 uv run dcp session start                  # gate: ok (an open toolchain or libs obligation fails it)
 ```
@@ -196,7 +259,7 @@ uv run dcp session start                  # gate: ok (an open toolchain or libs 
 Reading and checking:
 
 ```
-uv run dcp status                         # the phase and the open obligations (every command's tail)
+uv run dcp status                         # the phase, the gate and the numbered next steps (setup's tail too)
 uv run dcp why 0x10008cb0 --refs          # everything known about an address
 uv run dcp map 0x10008c00..0x10008e00     # the byte map of a range
 uv run dcp facts 0x10008cb0..0x10008d20 --kind name
