@@ -29,6 +29,7 @@ image), so editing a plugin reruns the rules that read it.
 - `header_regions()`, `directory_regions()`, `import_regions()`, `export_regions()`: (what, lo, hi) region
   triples in the format's own vocabulary (`pe.header`, `pe.rich`, `pe.reloc`, `pe.iat`, ...)
 - `default_isa`: the Isa key the machine type implies (PE32: i386 -> `x86`)
+- `kind`: what the start-up code calls: `dll`, `gui`, `console` (PE32: the DLL characteristic, subsystem 2 / 3)
 
 ### ObjectFormat (objfmt/base.py)
 
@@ -41,6 +42,11 @@ image), so editing a plugin reruns the rules that read it.
 - Symbol: `name`, `value`, `section`, `defined`, `external`, `function`, `named` (external or file-static),
   `unresolved` (defined elsewhere), `dllimport` (a reference through an import slot)
 - `tool_stamps(paths)`: raw tool stamp -> objects (COFF: the `@comp.id` symbol)
+- Milestone 3: `read_object(path)`; Obj `functions()`, `function_code(symbol)` -> FunctionCode (`data`, `mask`,
+  `relocs` as (offset, Reloc, Symbol), from the symbol to the next named symbol of its section or the section
+  end), `data_symbols()` -> (symbol, `data` / `rdata` / `bss` / `common`, size); Symbol `constant` (`string` /
+  `float`: a compiler literal), `common`, `imported` (the linker symbol a dllimport reference imports);
+  `import_symbols(lib)`; `alias_object(path, [(alias, canonical)])` (COFF: weak externals, search alias)
 
 ### Toolchain (toolchains/base.py)
 
@@ -53,6 +59,21 @@ image), so editing a plugin reruns the rules that read it.
 - `archive_tools(stamps)`: tool stamps decoded to Rich (prodid, build)
 - `rich_product`, `rich_candidates`, `declare`, `prefill`, `build_name`: the Rich header vocabulary
 - `library_archives()`, `default_archives()`, `default_cflags()`, `import_library_name(dll)`
+- Milestone 3, the tools themselves:
+  - `available()`: the compiler is installed (else nothing compiles and the match rules warn)
+  - `compile(src, obj, flags, include_dirs, cwd)` -> CompileResult (`ok`, `log`, `diagnostics` as Diagnostic
+    file / line / severity / code / message, `refused_flags`): one compiler process for one unit (VC6:
+    `CL.EXE /nologo /c <flags> /I.. /Fo<obj> <src>`)
+  - `includes(src, flags, include_dirs, cwd)` -> (the files the preprocessor read, log) (VC6: `CL /E`, the `/P`
+    listing on stdout, its `#line` directives; VC6 has no /showIncludes)
+  - `include_search_dirs(dirs)`: every directory an include may resolve to (their listing keys the include-set
+    cache); `library_search_dirs()`
+  - `undecorate(symbol)` (`_f@12` -> `f`), `data_symbol(cname)` (`f` -> `_f`)
+  - `link(LinkJob)` -> LinkResult (`ok`, `log`, `unresolved`, `errors`, `args`): one linker process (VC6:
+    `LINK.EXE @response file`, toolchains/vc6/link.py)
+  - `default_libraries(kind)`, `entry_object(kind, dir, user_entry)` (a generated stub when the sources name
+    the user entry otherwise), `module_definition(name, exports)` (the .def text with ordinals)
+  - `probe_grid()` -> [(group, alternatives)], `probe_defaults()` (the tie-break)
 
 ### Isa (isa/base.py)
 
@@ -64,6 +85,10 @@ image), so editing a plugin reruns the rules that read it.
   - `field_starts(ins)`: where a relocated address field may start inside the instruction
   - `read_entry(addr, size)`: a table entry
 - `ptr_size`, `byteorder`
+- Milestone 3, the instruction diff: `listing(code, va, mask, image_range, fill_forms)` -> [Line(addr, size,
+  text, fill)] (numbers inside the image and our relocated fields read `X`); `explain(xa, xb, context)` -> the
+  ISA's hunk class (`regs` / `slots` / `order` after a renaming / `sib` / `fpu`) or None; `one_renaming(a, b)`;
+  `rename_registers(lines, mapping)` (x86: ported from the first attempt's diffclass onto capstone's spelling)
 
 ## What the rules may and may not know
 
@@ -89,7 +114,8 @@ Walk (rules/walk.py, derived level):
   assembly-written library code).
 - W3 a code address in a relocated immediate field, or stored in a data section, is a function start.
 - W4 a function ends at a return, an unconditional jump, and at alignment fill reached by fall-through
-  (VC6 fill: `90`, `CC`, `8B FF`, `8D 49 00`).
+  (VC6 fill: `90`, `CC`, `8B FF`, `8D 49 00`); and at a known start directly after a call (the callee does not
+  return: VC6 emits nothing after a call to `_exit` / `_endthread`; S.codewalk v3, milestone 3).
 - Switch tables (isa/x86.py): `cmp r, N` ... [`mov(zx) r, byte [r + index table]`] ... `jmp dword [r*4 +
   table]`; the bound is the first `cmp reg, imm` (0 <= imm < 0x400) found scanning back at most 11 instructions,
   the index table the first byte load with a base or index register whose displacement lies in the code.
@@ -104,3 +130,18 @@ Thunk (S.thunk, derived level; toolchains/vc6):
 Other VC6 facts the plugin states: the CRT start-up symbols and the user entries they call (`_DllMain@12` ->
 DllMain, `_WinMain@16` -> WinMain, `_main` -> main, the wide variants), `@comp.id` = prodid << 16 | build,
 `<DLL>.LIB` import libraries under `VC98/Lib`, the default archive `VC98/Lib/LIBC.LIB` and flags `/O2 /Gy`.
+
+The match phase (milestone 3; docs/match.md) adds: CL and LINK run with `VC98/Bin` and `Common/MSDev98/Bin` on
+PATH, `VC98/Include` on INCLUDE and `VC98/Lib` on LIB (`[toolchain] include_dirs` / `lib_dirs` first); one CL
+process per unit (`/nologo /c`); the include set from `CL /E`'s `#line` directives; a command-line warning
+D4002 / D4024 or error D2016 / D2021 means a flag was refused (the probe prunes the combination); CL pads a
+function's COMDAT section with fill up to the next function's alignment (M.match ends the function at its
+last non-fill instruction); the switch tables of a function lie in its section; `_f` / `_f@N` / `@f@N` are
+the C, stdcall and fastcall spellings of `f`; the probe grid `/O1 /O2 /Ox` x `/G3 /G4 /G5 /G6 /GB` x `/Oy /Oy-`
+x `/Gy` x `/GF /Gf` x `/Ob0 /Ob1 /Ob2` with the defaults `/GB /Oy /GF /Ob1`; LINK's `.def` syntax
+`LIBRARY name` / `EXPORTS f @ordinal`.
+
+Where the match phase lives: `build/` (amalg, compile, link, probe: they run the tools; no rule runs a tool),
+`match/` (compare, diffclass: pure functions over objects and listings), `rules/match.py` / `match_data.py` /
+`grade.py` (the rules; they read objects through the store's `tu` table, input `objects`), `ledger/grades.py`
+(queues, baseline, the level ladder), `source/lint.py` (clang), `cli_match.py` (the commands).

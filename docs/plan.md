@@ -6,7 +6,7 @@ docs/layout.md); multi-target round done 2026-10-29 (per-target toolchain declar
 and loader per target, `dcp setup --all-targets`; server.dll and GildeGold.exe pass `dcp check` as two targets
 of one project; S.codewalk on the exe ~35 s -> ~5 s); cleanup round done 2026-10-29 (every VC6 / LINK, PE32, COFF and
 x86 / capstone fact moved behind the plugin seams, the instruction-set seam `isa/` added, plugin registries,
-`dcp init --toolchain-root` required; facts byte-identical; see docs/architecture.md); M3..M6 open.
+`dcp init --toolchain-root` required; facts byte-identical; see docs/architecture.md); M3 done 2026-10-29 (amalgamation per unit and target, pool compile with include-set staleness, M.match with the DLL aid, M.draft, M8..M10, M.data.site / .content / .draft, D1 D4 D5 D6, grades code draft/shape/byte and readability Q1..Q7, queues, ledger/grades.tsv + M1, the full /DLL link, `dcp toolchain probe`, clang lint M5..M7; DllMain, Init and Exit of server.dll byte-match; see docs/match.md); M4..M6 open.
 
 ## Context
 
@@ -323,7 +323,7 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 |---|---|---|
 | M1 setup byte map | fact/store/engine, pe32, coff, vc6 rich/fill, disasm, all `S.*` + `B.bytemap` + setup checks, `dcp init`, `dcp setup`, `dcp why`, `dcp facts`, `dcp conflicts`, `dcp rules`, `dcp toolchain` | on server.dll: every byte has exactly one `symbol`/`region` fact; LIBC members placed proven with `.reloc` coincidence; report shows 37 user objects C, static LIBC, CRT region with gaps listed, exports + DllMain starts, toolchain = declared flags; `dcp why` < 100 ms; rerun runs zero rules; unit tests on a synthetic PE |
 | M2 declarations + layout | the target dimension (section 1.5: `[[target]]`, store per target, `--target`, target prefixes in the address-comment and `.dcl` grammars, `dcp target add`), `decl.py`, `srcscan.py`, `L.*`, boundary rules, Ghidra import, `dcp layout *`, `dcp decl add`, `dcp check` (loader + conflict gate), `dcp wt new/seed` (overlay store) | first unit declared on server.dll from `Init` outward; a deliberately wrong boundary and a walk crossing a start are caught (L1/L3/L4); a second target added to a scratch project gets its own store and `dcp why --target` answers for both |
-| M3 build + compare + grades | `toolchains/vc6/cl.py` (`/P` include sets), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.*`, capstone asmdiff/diffclass, `G.*`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote`, full `/DLL` link with generated `.def`, lint, checks M1..M12, D1..D6 | first functions byte-match; `dcp toolchain probe` promotes `/O2 /Gy` to proven; a header edit that flips codegen is reported by M12; a header edit recompiles only its includers |
+| M3 build + compare + grades (done 2026-10-29) | `toolchains/vc6/cl.py` (`/E` include sets: the `/P` listing on stdout), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.site/.content/.draft`, capstone asmdiff/diffclass, `G.grade`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote/escalate/stuck/asmdiff/diffclass/lint`, full `/DLL` link with generated `.def`, lint, checks M1, M2 (stale / double level tag), M5..M10, D1, D4..D6; open: M3, M4, M11, M12, D2, D3, `M.data.iat/.lib/.fill`, `M.bytes.declared` | first functions byte-match (server.dll DllMain / Init / Exit, relocs 0/0, 2/2, 4/4); `dcp toolchain probe` runs the grid and says *indistinguishable* for most flags with three anchors from one unit (correct: proven needs anchors from two units); a header edit recompiles only its includers (shown) |
 | M4 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
 | M5 parallel sessions | `names.log` + `dcp rename`, claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
 | M6 second target | GildeGold.exe as a second target of guild-server (the target itself, its toolchain declaration and archives, setup and the gate run since the multi-target round of 2026-10-29: game code 0x401000..0x5dd3e0, CRT from 0x5de4a0; open: the exe has no `.reloc`, so W3 finds nothing and ~0xc6000 bytes of its game code stay unknown — a `.data` ordered literal scan and code-pointer evidence replace the reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; no migration of `rea` | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
@@ -356,3 +356,32 @@ GildeGold.exe fixtures) → `objfmt/coff.py` (LIBC.LIB) → `toolchains/vc6/{ric
 rules → `B.bytemap` → checks → CLI → `dcp init` producing `../guild-server`. Verify with `dcp setup` on
 server.dll as in the M1 row, then `dcp why 0x10001000`, `dcp why <Init>`, `dcp conflicts`, and a rerun showing
 zero rule runs.
+
+## 11. Milestone 3 as built (2026-10-29): what changed against the plan, and why
+
+- Include sets come from `CL /E` (the `/P` listing on stdout) instead of `CL /P`: the same `#line` directives
+  without a `.i` file next to the amalgamation.
+- The store keeps one `tu` row per unit (store per target, so no target column) and an `include_set` table;
+  both are created by `CREATE TABLE IF NOT EXISTS`, the schema version stays 1 (existing stores stay valid).
+- The compile is not a rule: `dcp build` (and `dcp check`, `grade`, `next`, `link`, ...) runs it, the rules read
+  its outcome through the input `objects` (the hash of the tu rows and whether the toolchain is installed).
+  `M.compile` turns the rows into `build` facts. Rules never run a tool; `dcp why` never compiles.
+- `M.match` emits a proven `symbol` func up to the last non-fill instruction (CL pads a function's COMDAT with
+  fill to the next alignment; the fill keeps its derived symbol) and a proven `source` fact (what: match) over
+  the section; `M.draft` emits `source` (what: draft). The layout view and the setup report ignore the match
+  phase's duplicate function symbols.
+- R1 adds a tail check: the original must not continue after our last byte (only fill up to the next start),
+  else a shorter function whose bytes equal a prefix of the original would count as a match.
+- The probe grid adds `/GB` (VC6's default `/G` setting; without it a declaration naming no `/G` option is not
+  in the grid) and breaks ties by the declared flags, then the compiler's defaults. A flag is distinguished only
+  when every other value of its group loses an anchor. CRT sources are compiled as anchors but reported apart
+  (another compiler build, the library's own flags: they prove nothing about the user's units).
+- S.codewalk v3 (W4): a known start directly after a call ends the function (the callee does not return). With
+  server.dll's true CRT (LIBCMT: `_beginthread`; 109 members placed against LIBC's 75) the walk otherwise ran
+  from `_threadstart`'s handler into `_endthread` and failed the gate with C.walk. The setup facts of the
+  scratch projects are byte-identical apart from the producer `rule:S.codewalk@3`.
+- The level tags are removed by `dcp build` when a function reaches byte + readable (auto-clear); a remaining
+  stale tag is the warning M2.
+- The toolchain not installed: units are not compiled and M.compile warns instead of failing the gate.
+- Open (M4 or later): M3 (stuck without open.md), M4 (distance WORSE without `dcp accept`), M11, M12 (the
+  header-commit distance check), D2 / D3, `M.data.iat` / `.lib` / `.fill`, `M.bytes.declared`, `dcp accept`.

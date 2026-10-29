@@ -57,6 +57,7 @@ never inside fill or inside a function) and `L7` (extents overlap, a fragment ou
 ```
 src/<unit>/head.c        includes, local types, prototypes, leading file-scope data; no function
 src/<unit>/f_<addr>.c    one function, plus the file-scope definitions before it in TU order
+src/<unit>/tail.c        trailing file-scope data after the last function (optional; milestone 3)
 src/<unit>/u_<name>.c    one function the binary does not contain
 include/<unit>.h         public prototypes and extern declarations
 ```

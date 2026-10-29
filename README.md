@@ -8,7 +8,7 @@ we are**.
 The first attempt at this (the GildeGold.exe decomp in `../rea`) is the reference; decompanion is the refined
 second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarations and address comments:
 [docs/layout.md](docs/layout.md). The plugin seams and the conventions the rules rest on:
-[docs/architecture.md](docs/architecture.md).
+[docs/architecture.md](docs/architecture.md). Build, compare, grades, queues and the link: [docs/match.md](docs/match.md).
 
 ## The model
 
@@ -59,7 +59,15 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
    file per function (`ledger/srcscan.py`), Ghidra drafts (`dcp ghidra import`), boundary evidence
    (`L.analyze`: literal first users, fill before a start, leaked source paths), unit extents and status
    (`L.unit.extent`), and the checks L1, L3..L8, L11 (`rules/layout.py`). See [docs/layout.md](docs/layout.md).
-3. **match** (next): compile, compare, grades, the match toolbox lifted from `../rea`.
+3. **match** (`dcp build`, `grade`, `next`, `link`, `check`): one amalgamation per unit and target (head.c +
+   fragments in address order behind `#line`), one CL.EXE per stale unit in a pool (stale = source, flags or
+   include-set contents changed: an edited header recompiles only its includers), masked compare with the DLL
+   relocation aid (`M.match` [proven], `M.draft`), M8..M10, data placement (`M.data.site` / `.content` /
+   `.draft`, D1 D4 D5 D6), two grades per function (code `draft -> shape -> byte`, readability `draft ->
+   readable`, rules B1..B3 / Q1..Q7), the level ladder (`@deep` / `@stuck`), the base / deep / names queues
+   with rendezvous shards, the baseline `ledger/grades.tsv` (`dcp promote`, M1), the full `/DLL` link, the flag
+   probe and clang as the declaration checker. See [docs/match.md](docs/match.md). The match toolbox (try,
+   vargen, respell, ...) is milestone 4.
 
 ## Use
 
@@ -76,6 +84,22 @@ uv run dcp conflicts                      # contradictions
 uv run dcp check                          # the gate (every target, loaders included)
 uv run dcp rules -v                       # the rule graph with criteria and timings
 uv run dcp toolchain                      # per target: the declaration, the Rich candidates, C.toolchain
+```
+
+Match (docs/match.md):
+
+```
+uv run dcp build                          # compile the stale units, grade, print the summary
+uv run dcp grade [NAME|UNIT|0xADDR]       # the grades with the failing rules and the distance
+uv run dcp next [--deep|--names] [-n N]   # the queues
+uv run dcp asmdiff NAME                   # the instruction diff (capstone, both sides)
+uv run dcp diffclass NAME                 # the hunk classes
+uv run dcp escalate NAME "why"            # @deep why (dcp stuck NAME "why"; --clear)
+uv run dcp link                           # the full link, unresolved externals classified
+uv run dcp lint                           # clang: M5 / M6 / M7, readability Q7
+uv run dcp toolchain probe                # the flag grid over the byte-matched functions
+uv run dcp promote                        # write the grade baseline ledger/grades.tsv (main only)
+uv run dcp check [--against REV]          # the gate: build, lint, conflicts, link, grade falls
 ```
 
 Targets:
@@ -134,14 +158,17 @@ Output is one record per line, `key=value` tokens, addresses `0x%08x`, intervals
 
 ```
 src/decompanion/
-  cli.py config.py init.py
-  ledger/   fact.py store.py query.py decl.py srcscan.py ghidra.py layoutview.py
-  rules/    engine.py setup.py walk.py checks.py layout.py      # generic: they talk to the seams only
+  cli.py cli_match.py config.py init.py
+  ledger/   fact.py store.py query.py decl.py srcscan.py ghidra.py layoutview.py grades.py
+  rules/    engine.py setup.py walk.py checks.py layout.py match.py match_data.py grade.py   # generic: the seams only
+  build/    amalg.py compile.py link.py probe.py   # the tools run here (one process per unit), never in a rule
+  match/    compare.py diffclass.py              # masked compare, instruction diff and hunk classes
+  source/   lint.py                              # clang as the declaration checker
   repo/     wt.py                    # worktrees and seed
   image/    __init__ (registry) base.py pe32.py         # Image seam: sections, directories, regions, relocations
   objfmt/   __init__ (registry) base.py coff.py         # ObjectFormat seam: archives, objects, relocation view
   toolchains/ __init__ (registry) base.py vc6/          # Toolchain seam: fill, stubs, entries, Rich, defaults
   isa/      __init__ (registry) base.py x86.py          # Isa seam: instruction records, flow kinds, table shapes
-tests/                               # a synthetic PE32 dll (conftest.py); server.dll tests when it is installed
-docs/                                # plan.md, layout.md, architecture.md
+tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / clang tests when installed
+docs/                                # plan.md, layout.md, match.md, architecture.md
 ```
