@@ -22,11 +22,11 @@ import hashlib
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from dataclasses import replace
 
+from .. import fsmemo
 from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..ledger.fact import canonical
@@ -72,26 +72,30 @@ def include_dirs(unit: str) -> list[Path]:
     return [Path("src") / unit, Path("include")]
 
 
-_listing: dict[tuple, str] = {}
+_listing: dict[str, str] = {}
+
+
+def dir_listing_hash(d: Path) -> str:
+    """The hash of the names below one directory, memoised per process (the system include directories are
+    shared by every unit: one walk each per run)."""
+    key = str(d)
+    h = _listing.get(key)
+    if h is None:
+        hh = hashlib.sha256()
+        if d.exists():
+            for base, subdirs, files in os.walk(d):
+                subdirs.sort()
+                rel = os.path.relpath(base, d).lower()
+                for f in sorted(files):
+                    hh.update((rel + "/" + f.lower()).encode() + b"\0")
+        h = _listing[key] = hh.hexdigest()
+    return h
 
 
 def listing_hash(dirs: list[Path]) -> str:
     """The hash of the names (not the contents) of every file below the directories: a new header that
-    shadows another changes it. Memoised per process."""
-    key = tuple(str(d) for d in dirs)
-    h = _listing.get(key)
-    if h is None:
-        hh = hashlib.sha256()
-        for d in dirs:
-            hh.update(str(d).encode() + b"\1")
-            if not d.exists():
-                continue
-            for base, subdirs, files in os.walk(d):
-                subdirs.sort()
-                for f in sorted(files):
-                    hh.update(os.path.relpath(os.path.join(base, f), d).lower().encode() + b"\0")
-        h = _listing[key] = hh.hexdigest()
-    return h
+    shadows another changes it."""
+    return sha256(*(str(d) + "=" + dir_listing_hash(d) for d in dirs))
 
 
 class Hasher:
@@ -104,7 +108,7 @@ class Hasher:
         h = self.memo.get(path)
         if h is None:
             p = Path(path)
-            h = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else "missing"
+            h = fsmemo.sha256(p) if p.is_file() else "missing"
             self.memo[path] = h
         return h
 

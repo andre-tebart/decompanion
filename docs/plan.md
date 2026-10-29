@@ -512,6 +512,18 @@ Added after the migration commit (user decision: the framework pieces first), cl
 - the walk takes decl `start` lines as roots (own loader L.decl.start, so boundary edits do not rerun the
   walk); facts resting on a declared start are declared (premise propagation through calls, tails, immediates).
 
+Added next (user decision: the data tooling first, then validate it; "all the tooling has to be fast"):
+- `dcp data map`, `dcp data fix` (docs/match.md): trial compiles decide per edit group; on gildegold the
+  data errors went from 616 to 9 with every byte match kept, the remaining 9 rejected with their reason.
+- D1 / the data extents use the least size (an object's COFF size includes the alignment padding before the
+  next symbol); D4 ranks by the amalgamation's order.
+- Speed (a one-file edit, compile + refresh, warm): ~17 s -> ~6 s: per-file source scan cached by content hash
+  (build/cache/srcscan.pickle), the readability context collected by the scan and each function's readability
+  in the blob store, each include directory's listing hashed once per run, compiled_functions shared by the
+  rules of one refresh, decoded facts cached per (run, kind), files read once per process (fsmemo.py).
+- Correctness: `refresh` drops the memoised src / decl input hashes, so a command that wrote sources no longer
+  refreshes against the old tree.
+
 Left open, visible in `dcp check` of gildegold (the user accepted gate=FAIL for the migration commit): rea's
 data debt (D5 tentative definitions 530, D4 69, D1 9, M.data.content 1, data C.overlap), and the link's
 unresolved names (CRT functions

@@ -37,6 +37,7 @@ import functools
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from .. import fsmemo
 
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
 DEF = re.compile(r"^[A-Za-z_][^\n;{}#]*?\b([A-Za-z_]\w*)\s*\(", re.M)
@@ -53,6 +54,8 @@ PLACEHOLDER_ADDR = re.compile(r"\b[A-Za-z_]\w*?(?:Unk|FUN_|DAT_|PTR_|LAB_)([0-9a
 STATIC = re.compile(r"\s*(?:(?:const|volatile)\s+)*static\b")
 INLINE = re.compile(r"\b(?:__inline|__forceinline|inline)\b")
 KNR = re.compile(r"^[^=(;]*\b[A-Za-z_]\w*\s*\([^()]*\)\s*[A-Za-z_][^;]*;\s*$")
+DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
+DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
 FRAGMENT = re.compile(r"^f_([0-9a-fA-F]+)\.c$")
 UNLINKED_FRAGMENT = re.compile(r"^u_([A-Za-z_]\w*)\.c$")
 QUALIFIERS = {"extern", "static", "const", "volatile", "unsigned", "signed", "int", "char", "short", "long", "float",
@@ -111,6 +114,8 @@ class Scan:
     errors: list[ScanError] = field(default_factory=list)
     files: int = 0
     orders: dict[str, list[str]] = field(default_factory=dict)   # unit -> fragment file names in TU order
+    macros: list[tuple[str, str]] = field(default_factory=list)  # (name, body) of every function-like #define
+    described: list[int] = field(default_factory=list)          # addresses an address comment describes in words
 
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
@@ -380,6 +385,15 @@ def unit_of(rel: str) -> str:
 
 def scan_file(rel: str, text: str, out: Scan):
     S = Source(rel, text)
+    for m in DEFINE.finditer(S.text):
+        out.macros.append((m.group(1), m.group(3)))
+    for s, e, body in S.comments:
+        m = DESCRIBED.match(body)
+        if m:
+            rest = re.split(r"@(?:deep|stuck|rough)\b", m.group(2))[0]
+            rest = re.sub(r"^(?:\s*[,/]\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+)*", "", rest)
+            if rest.strip(" \t\r\n,.-:;*/"):
+                out.described.extend(a for _, a in lead_addrs(body))
     name = Path(rel).name
     unit = unit_of(rel)
     in_src = rel.startswith("src/")
@@ -439,14 +453,36 @@ def scan_file(rel: str, text: str, out: Scan):
 
 
 _cache: dict[tuple[str, str], Scan] = {}
+_files: dict[tuple[str, str], Scan] = {}          # (path, sha256 of the text) -> that file's own scan
+CACHE_VERSION = 2                                  # bump when scan_file's results change
+
+
+def _file_cache(root: Path) -> tuple[Path | None, dict]:
+    """The on-disk memo of per-file scans (build/cache/srcscan.pickle), {} when absent or of another version."""
+    import pickle
+    d = root / "build"
+    if not d.is_dir():
+        return None, {}
+    path = d / "cache" / "srcscan.pickle"
+    try:
+        version, data = pickle.loads(path.read_bytes())
+        return path, data if version == CACHE_VERSION else {}
+    except (OSError, ValueError, EOFError, pickle.UnpicklingError, TypeError):
+        return path, {}
 
 
 def scan(root: Path, tree_hash: str | None = None) -> Scan:
-    """Scan src/**/*.c, src/**/*.h and include/**/*.h of the project at root (memoised per tree hash)."""
+    """Scan src/**/*.c, src/**/*.h and include/**/*.h of the project at root (memoised per tree hash). Each
+    file's own scan is memoised by its path and the hash of its text, in the process and in
+    build/cache/srcscan.pickle, so an edit re-parses only the files it changed."""
+    import hashlib
+    import pickle
     root = Path(root)
     if tree_hash is not None and (str(root), tree_hash) in _cache:
         return _cache[(str(root), tree_hash)]
     out = Scan()
+    path, disk = _file_cache(root)
+    used, changed = {}, False
     for d, pats in (("src", ("*.c", "*.h")), ("include", ("*.h",))):
         base = root / d
         if not base.exists():
@@ -454,8 +490,29 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
         files = sorted({p for pat in pats for p in base.rglob(pat)})
         for p in files:
             rel = p.relative_to(root).as_posix()
+            text = fsmemo.read_text(p)
+            key = (rel, fsmemo.sha256(p))
+            piece = _files.get(key) or disk.get(key)
+            if piece is None:
+                piece = Scan()
+                scan_file(rel, text, piece)
+                changed = True
+            _files[key] = used[key] = piece
             out.files += 1
-            scan_file(rel, p.read_text(errors="replace"), out)
+            out.functions += piece.functions
+            out.data += piece.data
+            out.placeholders += piece.placeholders
+            out.errors += piece.errors
+            out.macros += piece.macros
+            out.described += piece.described
+    if path is not None and (changed or len(used) != len(disk)):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_bytes(pickle.dumps((CACHE_VERSION, used)))
+            tmp.replace(path)
+        except OSError:
+            pass
     src = root / "src"
     if src.exists():
         for p in sorted(src.glob("*/order")):

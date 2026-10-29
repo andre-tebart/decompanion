@@ -76,6 +76,8 @@ def open_project(args, target: str | None = None) -> tuple[Project, Engine]:
 
 def refresh(p: Project, e: Engine, verbose=False, force=False, only=None):
     t0 = time.perf_counter()
+    for name in ("src", "decl"):          # a command may have written either since its last refresh (rename, draft,
+        p.forget_input(name)              # data fix, escalate, decl add); the file memo keeps the rehash cheap
     res = e.run(only, force=force, log=(lambda s: print(s, file=sys.stderr)) if verbose else None)
     ran = [r for r in res if r.ran]
     if verbose or ran:
@@ -692,6 +694,8 @@ def main(argv=None):
     s.add_argument("-v", "--verbose", action="store_true", help="print each rule's criterion")
     from . import cli_decide as CD
     CD.register(sub, cmd)
+    from . import cli_data as CDA
+    CDA.register(sub, cmd)
 
     from . import cli_match as CM
     s = cmd(sub, "grade", CM.cmd_grade, "the grades: matrix and units, or one unit / function with the failing rules")

@@ -25,6 +25,7 @@ from ..ledger.fact import Kind, Level, Severity, severity_of
 from ..match import compare as C
 from ..objfmt.base import ABSOLUTE
 from .engine import RuleContext, rule
+from ..build import compile as build_compile
 from .match import WALK, compiled_functions, name_registry, starts_of
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
@@ -117,12 +118,29 @@ def symbol_bytes(sym, size):
     return bytes(sec.data[sym.value:sym.value + size]), bytes(m[sym.value:sym.value + size])
 
 
-def extent(f, size):
-    return f.lo, f.lo + max(1, size or 1)
+def least_size(sym, size):
+    """The fewest bytes the symbol can have. COFF records no sizes: an object's size is the distance to the next
+    symbol of its section (or the section's end), which takes in the alignment padding in front of that next
+    symbol. The padding is less than the alignment of the offset where the distance ends (at most 8: VC6 aligns
+    an object of 8 bytes or more to 8, smaller ones naturally), so the symbol has at least size - (that
+    alignment - 1) bytes, and exactly `size` when the distance ends at an odd offset."""
+    if not size:
+        return size
+    if sym is None:
+        return size
+    end = sym.value + size
+    a = 8 if end % 8 == 0 else 4 if end % 4 == 0 else 2 if end % 2 == 0 else 1
+    return max(1, size - (a - 1))
 
 
-@rule("M.data.site", version="1", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",),
-      helpers=(data_objects, site_confirmed, compiled_functions, starts_of, extent, C))
+def extent(f, sym, size):
+    """The bytes the definition certainly owns: [address, address + least_size)."""
+    n = least_size(sym, size)
+    return f.lo, f.lo + max(1, n or 1)
+
+
+@rule("M.data.site", version="2", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",),
+      helpers=(data_objects, site_confirmed, compiled_functions, starts_of, extent, least_size, C))
 def data_site(ctx: RuleContext):
     """A data definition with an address comment whose address a byte-matched function's absolute relocation
     to the same symbol confirms (the original's site holds exactly that address, Reloc.resolve with our
@@ -131,13 +149,14 @@ def data_site(ctx: RuleContext):
     confirmed = site_confirmed(ctx)
     for f, o, sym, kind, size in data_objects(ctx):
         if confirmed.get(f.lo) == f.value["symbol"]:
-            lo, hi = extent(f, size)
+            lo, hi = extent(f, sym, size)
             yield ctx.fact(lo, hi, Kind.symbol, {"skind": "global", "name": f.value["symbol"], "unit": f.value["unit"],
                                                 "extent": "site", "kind": kind or "-"}, P)
 
 
-@rule("M.data.content", version="1", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",),
-      helpers=(data_objects, site_confirmed, compiled_functions, starts_of, content_hits, masked_equal, symbol_bytes, extent, C))
+@rule("M.data.content", version="2", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",),
+      helpers=(data_objects, site_confirmed, compiled_functions, starts_of, content_hits, masked_equal, symbol_bytes, extent,
+               least_size, C))
 def data_content(ctx: RuleContext):
     """A data definition with an address comment that M.data.site does not place, defined in an initialised
     section of its object with at least 4 bytes that are no relocated field and not all zero, whose bytes
@@ -155,7 +174,7 @@ def data_content(ctx: RuleContext):
             continue
         hits = content_hits(img, data, mask)
         if hits == [f.lo]:
-            lo, hi = extent(f, size)
+            lo, hi = extent(f, sym, size)
             yield ctx.fact(lo, hi, Kind.symbol, {"skind": "global", "name": f.value["symbol"], "unit": f.value["unit"],
                                                 "extent": "content", "kind": kind}, P)
         elif len(hits) == 1 and not masked_equal(img, f.lo, data, mask):
@@ -164,8 +183,8 @@ def data_content(ctx: RuleContext):
                                a=f.by)
 
 
-@rule("M.data.draft", version="1", ceiling=DE, outputs=("symbol",), needs=("L.src", "M.data.site", "M.data.content"),
-      inputs=("objects",), helpers=(data_objects, extent, C))
+@rule("M.data.draft", version="2", ceiling=DE, outputs=("symbol",), needs=("L.src", "M.data.site", "M.data.content"),
+      inputs=("objects",), helpers=(data_objects, extent, least_size, C))
 def data_draft(ctx: RuleContext):
     """Every data definition with an address comment that neither M.data.site nor M.data.content places owns
     its declared extent: a `global` symbol, declared, over [address, address + the object's size) (one byte
@@ -174,17 +193,18 @@ def data_draft(ctx: RuleContext):
     for f, o, sym, kind, size in data_objects(ctx):
         if f.lo in placed:
             continue
-        lo, hi = extent(f, size)
+        lo, hi = extent(f, sym, size)
         yield ctx.fact(lo, hi, Kind.symbol, {"skind": "global", "name": f.value["symbol"], "unit": f.value["unit"],
                                             "extent": "draft", "kind": kind or "-"}, DE)
 
 
-@rule("D.data", version="1", ceiling=P, needs=("L.src", "M.data.site", "M.data.content", "M.data.draft", "S.crt.data",
+@rule("D.data", version="3", ceiling=P, needs=("L.src", "M.data.site", "M.data.content", "M.data.draft", "S.crt.data",
                                               "S.strings", "S.imports", "S.relocs", "S.sections", "kind:name"),
-      inputs=("objects",), helpers=(data_objects, name_registry, C))
+      inputs=("objects", "src", "decl"), helpers=(data_objects, name_registry, C, build_compile.plan, least_size))
 def data_checks(ctx: RuleContext):
-    """D1: a data definition's extent [address, address + the object's size) holds the start of another
-    symbol (a data symbol of the sources, a CRT data block, a string, an import slot). D4: in one unit, the
+    """D1: a data definition's extent holds the start of another symbol (a data symbol of the sources, a CRT data
+    block, a string, an import slot): an error when even its least size (least_size: the object's size without
+    the alignment padding it may include) reaches it, a warning when only the padding may. D4: in one unit, the
     definitions of one section kind (data / rdata / bss) are not in increasing address order in the order the
     amalgamation defines them (VC6 places a unit's definitions of a section in definition order). D5: a
     tentative definition (the object holds it as common: the linker allocates it apart from its unit) whose
@@ -199,22 +219,31 @@ def data_checks(ctx: RuleContext):
         if size and size > 1:
             i = bisect.bisect_right(starts, f.lo)
             if i < len(starts) and starts[i] < f.lo + size:
-                yield ctx.conflict(Severity.error, "D1", f.lo, f.lo + size,
-                                   f"{f.value['symbol']} at {f.lo:#x} ({size} bytes) overlaps the symbol at {starts[i]:#x}", a=f.by)
+                least = least_size(sym, size)
+                room = starts[i] - f.lo
+                if room < least:
+                    yield ctx.conflict(Severity.error, "D1", f.lo, f.lo + size,
+                                       f"{f.value['symbol']} at {f.lo:#x} ({least} bytes at least) overlaps the symbol at {starts[i]:#x}",
+                                       a=f.by)
+                else:
+                    yield ctx.conflict(Severity.warn, "D1", f.lo, f.lo + size,
+                                       f"{f.value['symbol']} at {f.lo:#x}: the object gives it {size} bytes, the symbol at "
+                                       f"{starts[i]:#x} leaves {room}; fine if the last {size - room} are alignment padding", a=f.by)
         if sym is not None and sym.common:
             sec = img.section_of(f.lo)
             if sec is not None and img.off(f.lo) is None:
                 yield ctx.conflict(Severity.error, "D5", f.lo, f.lo + 1,
                                    f"{f.value['symbol']} at {f.lo:#x} lies in uninitialised data and is a tentative definition: "
                                    f"write it `= 0` so it is placed with its unit", a=f.by)
-    # D4: per unit and section kind, in amalgamation order (file order: head.c first, then the fragments by address)
+    # D4: per unit and section kind, in amalgamation order (build/amalg.py: head.c, the fragments in address or
+    # declared TU order, the unlinked ones, tail.c)
+    rank = {m.file: i for a in build_compile.plan(ctx.project) for i, m in enumerate(a.members)}
     per = {}
     for f, o, sym, kind, size in objs:
         if kind in ("data", "rdata", "bss"):
             per.setdefault((f.value["unit"], kind), []).append(f)
     for (unit, kind), fs in sorted(per.items()):
-        order = sorted(fs, key=lambda f: (0 if f.value["file"].endswith("/head.c") else 2 if f.value["file"].endswith("/tail.c") else 1,
-                                          f.value["file"], f.value["line"]))
+        order = sorted(fs, key=lambda f: (rank.get(f.value["file"], len(rank)), f.value["line"]))
         for a, b in zip(order, order[1:]):
             if b.lo < a.lo:
                 yield ctx.conflict(Severity.error, "D4", b.lo, b.lo + 1,

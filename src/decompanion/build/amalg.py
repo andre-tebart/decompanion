@@ -28,6 +28,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import fsmemo
 from ..ledger import srcscan
 from ..ledger.store import sha256
 
@@ -82,12 +83,15 @@ def line_directive(rel: str) -> str:
 PIN = re.compile(r"^[ \t]*#[ \t]*line[ \t]+(\d+)[ \t]*$")
 
 
-def compose(root: Path, members: list[Member], file_name: str | None = None) -> tuple[str, list]:
-    """The amalgamation's text, and its segments when it is compiled under a declared file name."""
+def compose(root: Path, members: list[Member], file_name: str | None = None, read=None) -> tuple[str, list]:
+    """The amalgamation's text, and its segments when it is compiled under a declared file name. `read`
+    (rel -> text or None) supplies a part's text instead of the file (a trial of edits not written yet)."""
     out, segments, n = [], [], 1
     esc = file_name.replace("\\", "\\\\") if file_name else None
     for m in members:
-        text = (Path(root) / m.file).read_text(errors="replace")
+        text = (read(m.file) if read else None)
+        if text is None:
+            text = fsmemo.read_text(Path(root) / m.file)
         if text and not text.endswith("\n"):
             text += "\n"
         if esc is None:

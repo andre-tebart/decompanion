@@ -15,9 +15,11 @@ table (input `objects`); the rules never compile (`dcp build` does).
 from __future__ import annotations
 
 import bisect
+import json
 
 from ..build import compile as build_compile
 from ..ledger.fact import Kind, Level, Severity, min_level, severity_of
+from ..ledger.store import sha256
 from ..match import compare as C
 from ..objfmt.base import ABSOLUTE, RELATIVE
 from .engine import RuleContext, rule
@@ -36,19 +38,31 @@ def starts_of(ctx) -> list[int]:
     return sorted(s)
 
 
+_compiled: dict[str, tuple] = {}
+
+
 def compiled_functions(ctx, sources=None):
     """[(source fact, unit object, function symbol, FunctionCode, Compared)] for every function fragment of the
     current target whose unit compiled and whose object defines the fragment's function; plus a list of
-    (source fact, why) for the fragments that have no compiled function."""
+    (source fact, why) for the fragments that have no compiled function. Memoised per process by its inputs
+    (the objects, the starts, the relocation sites, the fragments): the match, check, data and grade rules of
+    one refresh share one compare of every function."""
     p, img, tc = ctx.project, ctx.image, ctx.project.toolchain
     tus = ctx.input("objects")
-    objs = C.objects(p, tus)
-    index = {u: C.function_index(o, tc) for u, o in objs.items()}
     relocs = sorted(f.lo for f in ctx.facts(Kind.ref) if f.value["rkind"] == "reloc") or None
     if not img.relocations():
         relocs = None
     starts = starts_of(ctx)
     srcs = sources if sources is not None else [f for f in ctx.facts(Kind.source) if f.value.get("what") == "func" and f.run == "L.src"]
+    key = sha256(p.target_name, str(p.root), json.dumps({u: r.get("obj_hash") for u, r in sorted(tus.items())}),
+                 json.dumps(starts), json.dumps(relocs), json.dumps([(f.lo, f.value["unit"], f.value["symbol"]) for f in srcs]))
+    hit = _compiled.get(key)
+    if hit is not None:
+        return hit
+    if len(_compiled) > 4:
+        _compiled.clear()
+    objs = C.objects(p, tus)
+    index = {u: C.function_index(o, tc) for u, o in objs.items()}
     out, missing = [], []
     for s in sorted(srcs, key=lambda f: f.lo):
         unit, name = s.value["unit"], s.value["symbol"]
@@ -64,6 +78,7 @@ def compiled_functions(ctx, sources=None):
         i = bisect.bisect_right(starts, s.lo)
         nxt = starts[i] if i < len(starts) else img.end
         out.append((s, objs[unit], sym, code, C.compare(img, code, s.lo, relocs, nxt, tc.fill_forms)))
+    _compiled[key] = (out, missing)
     return out, missing
 
 

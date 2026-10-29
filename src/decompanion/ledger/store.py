@@ -200,7 +200,10 @@ class Store:
     def facts(self, kind: Kind | str | None = None, lo: int | None = None, hi: int | None = None,
               rules: tuple[str, ...] | None = None) -> list[StoredFact]:
         """Facts of current runs, optionally of one kind, intersecting [lo, hi), produced by the given rules.
-        Sorted by (lo, hi, kind, value)."""
+        Sorted by (lo, hi, kind, value). A whole-store read (no range) decodes each run's facts of a kind once per
+        process: a run's facts never change after it is recorded, so the run id keys them."""
+        if lo is None and hi is None and kind is not None:
+            return self._facts_cached(Kind(kind), rules)
         q = ("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f "
              "JOIN run r ON r.id = f.run_id WHERE r.current=1")
         args: list = []
@@ -218,6 +221,23 @@ class Store:
             args.extend(rules)
         q += " ORDER BY f.lo, f.hi, f.kind, f.value"
         return [self._row_fact(r) for r in self.db.execute(q, args)]
+
+    def _facts_cached(self, kind: Kind, rules) -> list[StoredFact]:
+        cache = self.__dict__.setdefault("_run_facts", {})
+        runs = self.db.execute("SELECT id, rule FROM run WHERE current=1").fetchall()
+        want = set(rules) if rules else None
+        rows = []
+        for rid, rule in runs:
+            if want is not None and rule not in want:
+                continue
+            got = cache.get((rid, kind))
+            if got is None:
+                got = cache[(rid, kind)] = [
+                    (r[4], self._row_fact((r[0], rule, *r[1:]))) for r in self.db.execute(
+                        "SELECT id, lo, hi, kind, value, level, by, reason FROM fact WHERE run_id=? AND kind=?", (rid, kind.value))]
+            rows.extend(got)
+        rows.sort(key=lambda x: (x[1].lo, x[1].hi, x[0]))
+        return [f for _, f in rows]
 
     def fact(self, fid: int) -> StoredFact | None:
         row = self.db.execute("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f "

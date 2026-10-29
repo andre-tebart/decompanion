@@ -33,8 +33,10 @@ and the unit's name has an origin other than `guess` (its start boundary's `by=`
 from __future__ import annotations
 
 import functools
+import json
 import re
 
+from .. import fsmemo
 from ..build import compile as build_compile
 from ..ledger import srcscan
 from ..ledger.fact import Kind, Level, Severity
@@ -55,6 +57,7 @@ IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
 LITERAL = re.compile(r"(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)[uUlL]*(?![\w.])")
 DEREF_CAST = re.compile(r"\*\s*\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*"
                         r"(?:\s+[A-Za-z_]\w*)*\s*\*+\s*(?:const\s*)?\)")
+READABILITY_VERSION = "1"                          # bump when readability() changes its verdicts
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
 MARKER = re.compile(r"\b(ROUGH|SKELETON|TODO|FIXME|XXX)\b")
 DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
@@ -75,25 +78,13 @@ def brace_end(code: str, k: int) -> int:
 
 @functools.lru_cache(maxsize=8)
 def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
-    """(raw macro names (Q4), described addresses (Q6)) over every source and header of the tree."""
-    from pathlib import Path
-    defs, described = {}, set()
-    for d, pats in (("src", ("*.c", "*.h")), ("include", ("*.h",))):
-        base = Path(root) / d
-        if not base.exists():
-            continue
-        for p in sorted({q for pat in pats for q in base.rglob(pat)}):
-            S = srcscan.Source(p.relative_to(root).as_posix(), p.read_text(errors="replace"))
-            for m in DEFINE.finditer(S.text):
-                defs.setdefault(m.group(1), m.group(3))
-            for s, e, body in S.comments:
-                m = DESCRIBED.match(body)
-                if m:
-                    rest = re.split(r"@(?:deep|stuck|rough)\b", m.group(2))[0]
-                    rest = re.sub(r"^(?:\s*[,/]\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+)*", "", rest)
-                    if rest.strip(" \t\r\n,.-:;*/"):
-                        for a in srcscan.lead_addrs(body):
-                            described.add(a[1])
+    """(raw macro names (Q4), described addresses (Q6)) over every source and header of the tree (collected by
+    the source scan, per file)."""
+    sc = srcscan.scan(root, tree)
+    defs = {}
+    for name, body in sc.macros:
+        defs.setdefault(name, body)
+    described = set(sc.described)
     raw = {n for n, body in defs.items() if DEREF_CAST.search(body)}
     while raw:
         pat = re.compile(r"\b(" + "|".join(sorted(map(re.escape, raw))) + r")\s*\(")
@@ -111,7 +102,7 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
     p = Path(root) / rel
     if not p.exists():
         return "draft", ["the fragment is gone"]
-    S = srcscan.Source(rel, p.read_text(errors="replace"))
+    S = srcscan.Source(rel, fsmemo.read_text(p))
     defs = [d for d in S.definitions() if d[1] == name]
     if not defs:
         return "draft", ["definition not found by the parser"]
@@ -159,8 +150,32 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
     return ("draft" if fails else "readable"), fails
 
 
+_ctx_digest: dict[str, str] = {}
+
+
+def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None):
+    """readability(), memoised in the store by everything it reads: the fragment's text, the function's tags,
+    its address, the tree's context (macros, described addresses) and its lint entry."""
+    from pathlib import Path
+    p = Path(root) / fn_value["file"]
+    if not p.exists():
+        return readability(root, tree, fn_value, addr, image_range, lint)
+    dig = _ctx_digest.get(tree)
+    if dig is None:
+        raw, described = context(str(root), tree)
+        dig = _ctx_digest[tree] = sha256(json.dumps(sorted(raw)), json.dumps(sorted(described)))
+    key = sha256("readability", READABILITY_VERSION, fsmemo.sha256(p), json.dumps(fn_value, sort_keys=True), f"{addr:x}",
+                 dig, json.dumps(list(image_range)), json.dumps(lint.get(fn_value["file"]) if lint is not None else None))
+    hit = store.blob_json(key)
+    if hit is not None:
+        return hit[0], hit[1]
+    q, qf = readability(root, tree, fn_value, addr, image_range, lint)
+    store.put_blob_json(key, "readability", [q, qf])
+    return q, qf
+
+
 @rule("G.grade", version="1", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", *WALK),
-      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, context, brace_end, DC, C,
+      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, context, brace_end, DC, C,
                                                          build_compile.plan))
 def grade(ctx: RuleContext):
     """The grades of every function fragment of the current target and of every unit (the rules B1..B3, Q1..Q7
@@ -186,7 +201,11 @@ def grade(ctx: RuleContext):
     rows = []
     for s, obj, sym, code, c in funcs:
         w = walk.get(s.lo)
-        size = DC.code_size(p.isa, img, code.data, code.mask, s.lo, tc.fill_forms)
+        skey = sha256("codesize", DC.VERSION, plug, code.data.hex(), code.mask.hex(), f"{s.lo:x}")
+        size = ctx.store.blob_json(skey)
+        if size is None:
+            size = DC.code_size(p.isa, img, code.data, code.mask, s.lo, tc.fill_forms)
+            ctx.store.put_blob_json(skey, "codesize", size)
         orig_size = (w.hi - s.lo) if w is not None else size
         n = min(size, orig_size)
         nbytes = sum(1 for k in c.diffs if k < n) + abs(size - orig_size)
@@ -215,7 +234,7 @@ def grade(ctx: RuleContext):
                                                                "orig": (w.hi - s.lo) if w is not None else None}))
     per_unit = {}
     for s, g, why, hunks, dist in sorted(rows, key=lambda r: r[0].lo):
-        q, qf = readability(p.root, tree, s.value, s.lo, rng, lint_calls if s.value["unit"] in linted else None)
+        q, qf = readability_cached(ctx.store, p.root, tree, s.value, s.lo, rng, lint_calls if s.value["unit"] in linted else None)
         level = "stuck" if s.value.get("stuck") is not None else ("deep" if s.value.get("deep") is not None else "")
         v = {"of": "function", "name": s.value["symbol"], "unit": s.value["unit"], "file": s.value["file"], "code": g,
              "readability": q, "level": level, "failing": why + qf, "dist": dist}

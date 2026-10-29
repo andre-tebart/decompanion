@@ -45,6 +45,7 @@ from . import image as image_plugins
 from . import isa as isa_plugins
 from . import objfmt as objfmt_plugins
 from . import toolchains as toolchain_plugins
+from . import fsmemo
 from .ledger.fact import canonical
 from .ledger.store import Store, file_hash, sha256
 
@@ -426,7 +427,7 @@ class Project:
                 for p in sorted(d.rglob(pat)):
                     h.update(p.relative_to(d).as_posix().encode())
                     h.update(b"\0")
-                    h.update(hashlib.sha256(p.read_bytes()).digest())
+                    h.update(bytes.fromhex(fsmemo.sha256(p)))
         return h.hexdigest()
 
     def input(self, name: str):
