@@ -116,11 +116,13 @@ def rich_members(ctx: RuleContext):
 
 @rule("S7.entry.section", version="1", ceiling=Level.proven, needs=("S.sections", "S.exports", "S.entry"))
 def entry_section(ctx: RuleContext):
-    """The entry point and every export must lie in an executable section."""
-    secs = [(f.lo, f.hi, f.value) for f in ctx.facts(Kind.section)]
+    """The entry point and every export must lie in a code section (Section.holds_code: marked as code or as
+    executable)."""
+    img = ctx.image
+    secs = [(f.lo, f.hi) for f in ctx.facts(Kind.section)]
     for s in ctx.facts(Kind.start):
-        sec = next((v for a, b, v in secs if a <= s.lo < b), None)
-        if sec is None or not (sec["code"] or sec["chars"] & 0x20000000):
+        sec = next((img.section_of(a) for a, b in secs if a <= s.lo < b), None)
+        if sec is None or not sec.holds_code:
             yield ctx.conflict(Severity.error, "S7", s.lo, s.lo + 1, f"{s.value['how']} start outside an executable section")
 
 
@@ -139,11 +141,12 @@ def crt_gaps(ctx: RuleContext):
 
 @rule("S4.import.libs", version="1", ceiling=Level.proven, inputs=("libs",))
 def import_libs(ctx: RuleContext):
-    """Every DLL the image imports needs an import library for the full link: the toolchain's lib directory
-    must hold <DLL name>.LIB (case-insensitive); a missing one is a warning until the link milestone."""
+    """Every DLL the image imports needs an import library for the full link: the toolchain's library archives
+    or the target's archives must hold the import library the toolchain names for it
+    (Toolchain.import_library_name, compared case-insensitively; VC6: <DLL name>.LIB in VC98/Lib); a missing
+    one is a warning until the link milestone."""
     tc = ctx.project.toolchain
     have = {p.name.lower() for p in tc.library_archives()} | {p.name.lower() for p in ctx.input("libs")}
     for dll in sorted({i.dll for i in ctx.image.imports()}):
-        base = dll.lower().rsplit(".", 1)[0]
-        if base + ".lib" not in have:
+        if tc.import_library_name(dll).lower() not in have:
             yield ctx.conflict(Severity.warn, "S4", ctx.image.base, ctx.image.base + 1, f"no import library for {dll} in the toolchain")

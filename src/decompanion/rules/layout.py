@@ -50,7 +50,7 @@ def _emit(ctx, issues):
 
 
 def code_ranges(img) -> list[tuple[int, int]]:
-    return sorted((s.va, s.va + max(s.vsize, 1)) for s in img.sections if s.code or s.executable)
+    return sorted((s.va, s.va + max(s.vsize, 1)) for s in img.sections if s.holds_code)
 
 
 def in_ranges(a: int, ranges) -> bool:
@@ -478,9 +478,10 @@ def analyze(ctx: RuleContext):
     data sections that reach it (then a table, not a function, may be its first user). For a dll the
     relocations are the complete list of absolute operands, so the users are exact; the containing function
     rests on the walk (derived).
-    fill (B-FILL): for every function start, what precedes it: `cc` (a run of int3: padding the linker puts
-    between section contributions), `nop` (the compiler's alignment inside one object: proves nothing),
-    `mixed`, `none` (the previous symbol ends right there) or `unknown` (open bytes).
+    fill (B-FILL): for every function start, what precedes it: a fill run as the toolchain names its form
+    (Toolchain.fill_origin; VC6: `cc` a run of int3, padding the linker puts between section contributions;
+    `nop` the compiler's alignment inside one object, proves nothing; `mixed`), `none` (the previous symbol
+    ends right there) or `unknown` (open bytes).
     leak (B-LEAK): a string whose text holds a path with a .c / .cpp / .h suffix (an __FILE__ of assert or a
     log call), at every function that references it: the function was compiled from that file (.c / .cpp:
     names the unit; .h: an inline from a header, names nothing)."""
@@ -535,8 +536,7 @@ def analyze(ctx: RuleContext):
             continue
         if lo in fills:
             fl = fills[lo]
-            b = img.read(fl.lo, fl.hi - fl.lo)
-            pre = "cc" if set(b) == {0xCC} else ("nop" if 0xCC not in b else "mixed")
+            pre = ctx.project.toolchain.fill_origin(img.read(fl.lo, fl.hi - fl.lo))
             v = {"ekind": "fill", "pre": pre, "run": fl.hi - fl.lo}
         elif lo in ends:
             v = {"ekind": "fill", "pre": "none", "run": 0}
@@ -711,7 +711,8 @@ def declared_recheck(ctx: RuleContext):
     or code immediate reaches into it (such bytes are reachable code, not dead).
     jumptable / idxtable fn=F: F is a function start; the walk did not walk the range as code; a table the
     walk found overlapping the range has the same extent and function.
-    fptr: every dword of the range is a relocation site whose target lies in a code section.
+    fptr: every address-wide field of the range (Image.ptr_size) is a relocation site whose target lies in a
+    code section.
     start: not strictly inside a walked or placed function (unless it is an inner label)."""
     img = ctx.image
     code = code_ranges(img)
@@ -757,9 +758,10 @@ def declared_recheck(ctx: RuleContext):
                                        f"declared {sk} {d.lo:#x}..{d.hi:#x} fn={fn:#x}, the walk finds {t.value['skind']} {t.lo:#x}..{t.hi:#x} "
                                        f"fn={t.value.get('fn', 0):#x}", a=d.by, b=t.by)
         elif sk == "fptr":
-            for a in range(d.lo, d.hi - 3, 4):
+            w = img.ptr_size
+            for a in range(d.lo, d.hi - w + 1, w):
                 if a not in relocs or not in_ranges(relocs[a], code):
-                    yield ctx.conflict(Severity.error, "L6", a, a + 4, f"declared fptr {d.lo:#x}..{d.hi:#x}: the dword at {a:#x} is not a "
+                    yield ctx.conflict(Severity.error, "L6", a, a + w, f"declared fptr {d.lo:#x}..{d.hi:#x}: the dword at {a:#x} is not a "
                                                                       f"relocated code address", a=d.by)
                     break
 

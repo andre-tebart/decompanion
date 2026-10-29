@@ -2,6 +2,12 @@
 
 PE32 is the only implementation (image/pe32.py). Everything is addressed by VA (image base + RVA), the
 same numbers the sources and the declarations use.
+
+What a format answers: the sections (Section: code / executable / writable / uninitialized from the format's
+characteristics, holds_code), the entry point, imports (iat slots) and exports, the absolute relocation sites,
+the Rich header entries, the byte ranges of its own machinery as (what, lo, hi) region triples in the format's
+vocabulary (header_regions, directory_regions, import_regions, export_regions), the address width (ptr_size,
+read_ptr) and the instruction set its machine type implies (default_isa).
 """
 from __future__ import annotations
 
@@ -45,6 +51,11 @@ class Section:
     def uninitialized(self):
         return bool(self.chars & 0x80)
 
+    @property
+    def holds_code(self):
+        """A code section: marked as containing code or as executable."""
+        return self.code or self.executable
+
 
 @dataclass(frozen=True, slots=True)
 class Import:
@@ -75,8 +86,12 @@ class DataDirectory:
 
 
 class Image:
-    """Base class; subclasses fill the attributes in __init__ and implement the directory readers."""
+    """Base class; subclasses fill the attributes in __init__ and implement the directory readers. The
+    constructor raises ValueError for a file the format does not read."""
 
+    key = "base"
+    ptr_size = 4                     # bytes of an address stored in the image (an iat slot, a relocated field)
+    byteorder = "little"
     path: Path
     data: bytes
     base: int
@@ -136,11 +151,19 @@ class Image:
             n -= k
         return bytes(out)
 
+    def section_data(self, s: Section) -> bytes:
+        """The file bytes of a section (its raw data, without the zero tail the loader adds)."""
+        return self.data[s.raw_off:s.raw_off + s.raw_size]
+
     def u32(self, va: int) -> int:
         return int.from_bytes(self.read(va, 4), "little")
 
     def u16(self, va: int) -> int:
         return int.from_bytes(self.read(va, 2), "little")
+
+    def read_ptr(self, va: int) -> int:
+        """The address stored at va (ptr_size bytes in the image's byte order)."""
+        return int.from_bytes(self.read(va, self.ptr_size), self.byteorder)
 
     def cstr(self, va: int, limit: int = 4096) -> bytes:
         o = self.off(va)
@@ -152,7 +175,30 @@ class Image:
     def in_image(self, va: int) -> bool:
         return self.base <= va < self.end
 
-    # ------------------------------------------------------------------ directories (implemented per format)
+    # ------------------------------------------------------------------ implemented per format
+    @property
+    def default_isa(self) -> str | None:
+        """The key of the instruction-set plugin the machine type implies (None: unknown machine)."""
+        return None
+
+    def header_regions(self) -> list[tuple[str, int, int]]:
+        """(what, lo, hi) of the format's headers in front of the first section."""
+        raise NotImplementedError
+
+    def directory_regions(self) -> list[tuple[str, int, int]]:
+        """(what, lo, hi) of the directories that are byte ranges of their own inside a section (relocations,
+        resources, debug, ...); the import and export machinery is import_regions / export_regions."""
+        raise NotImplementedError
+
+    def import_regions(self) -> list[tuple[str, int, int]]:
+        """(what, lo, hi) of the import machinery besides the address-table slots (descriptors, lookup tables,
+        names, table terminators)."""
+        raise NotImplementedError
+
+    def export_regions(self) -> list[tuple[str, int, int]]:
+        """(what, lo, hi) of the export machinery (directory, address / name / ordinal tables, names)."""
+        raise NotImplementedError
+
     def imports(self) -> list[Import]:
         raise NotImplementedError
 

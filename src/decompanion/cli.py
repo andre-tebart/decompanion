@@ -309,18 +309,28 @@ def cmd_toolchain(args):
 
 
 def cmd_init(args):
-    from .init import init_project
-    init_project(Path(args.dir), Path(args.target_path), args.toolchain_root, args.name, args.target_name)
+    from .init import TOOLCHAIN_ROOT_MISSING, init_project
+    if not args.toolchain_root:
+        print(f"dcp init: {TOOLCHAIN_ROOT_MISSING}", file=sys.stderr)
+        return 2
+    init_project(Path(args.dir), Path(args.target_path), args.toolchain_root, args.name, args.target_name, args.toolchain)
 
 
 # ------------------------------------------------------------------------------------------------- targets
 def cmd_target_list(args):
     p = Project(Path(args.root) if args.root else None)
     rows = []
+
+    def machine_isa(t):
+        try:
+            return f"{p.image_of(t.name).default_isa}(machine)"
+        except ConfigError:                     # missing file or sha256 mismatch: the list still prints
+            return "-"
+
     for i, t in enumerate(p.targets):
         sp = p.store_path(t.name)
         rows.append({"target": t.name, "default": i == 0, "path": t.path.as_posix(), "sha256": t.sha256[:16], "image": t.image,
-                     "exists": t.path.exists(), "store": sp.relative_to(p.root).as_posix(), "store_exists": sp.exists(),
+                     "isa": t.isa or machine_isa(t), "exists": t.path.exists(), "store": sp.relative_to(p.root).as_posix(), "store_exists": sp.exists(),
                      "form": "legacy" if t.legacy else "list"})
     if args.json:
         for r in rows:
@@ -596,7 +606,8 @@ def main(argv=None):
     s = cmd(sub, "init", cmd_init, "create a target project")
     s.add_argument("dir")
     s.add_argument("target_path", metavar="TARGET")
-    s.add_argument("--toolchain-root", default="C:/Tools/MSVC600-SP5PP")
+    s.add_argument("--toolchain-root", help="the toolchain installation the binary was built with (required)")
+    s.add_argument("--toolchain", help="the toolchain plugin (default: the only registered one)")
     s.add_argument("--name", help="the project's name (default: the directory's)")
     s.add_argument("--target-name", help="the target's name (default: the binary's stem)")
 

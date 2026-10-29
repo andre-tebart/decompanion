@@ -6,13 +6,22 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+from . import register
 from .base import DataDirectory, Export, Image, Import, Section
 
 DIRECTORY_NAMES = ["export", "import", "resource", "exception", "security", "basereloc", "debug", "architecture",
                    "globalptr", "tls", "load_config", "bound_import", "iat", "delay_import", "com_descriptor", "reserved"]
+# The directories S.imports / S.exports walk themselves (import, export, iat) or that lie outside the mapped image
+# (security: a file offset, not an RVA).
+NOT_REGIONS = ("import", "export", "iat", "security")
+MACHINE_ISA = {0x14c: "x86"}        # IMAGE_FILE_MACHINE_I386
 
 
+@register
 class PE32(Image):
+    key = "pe32"
+    ptr_size = 4
+
     def __init__(self, path: Path):
         self.path = Path(path)
         self.data = self.path.read_bytes()
@@ -54,6 +63,52 @@ class PE32(Image):
             if dd.name == name and dd.va:
                 return dd
         return None
+
+    @property
+    def default_isa(self):
+        return MACHINE_ISA.get(self.machine)
+
+    # ------------------------------------------------------------------ regions
+    def header_regions(self):
+        """The PE headers own [image base, image base + SizeOfHeaders): DOS header and stub, PE signature, file
+        and optional headers, section table (pe.header), and the Rich header where the linker wrote one
+        (pe.rich)."""
+        lo, hi = self.base, self.base + self.headers_size
+        rich = self.rich_range()
+        if rich:
+            return [("pe.header", a, b) for a, b in ((lo, rich[0]), (rich[1], hi)) if b > a] + [("pe.rich", rich[0], rich[1])]
+        return [("pe.header", lo, hi)]
+
+    def directory_regions(self):
+        """pe.<directory name> for every data directory with an address and a size inside a section, except
+        import / export / iat (their machinery is import_regions / export_regions) and security (a file
+        offset)."""
+        out = []
+        for dd in self.directories:
+            if not dd.va or not dd.size or dd.name in NOT_REGIONS:
+                continue
+            if self.section_of(dd.va) is None:
+                continue
+            out.append(("pe." + dd.name, dd.va, dd.va + dd.size))
+        return out
+
+    def import_regions(self):
+        """pe.import_desc (descriptors), pe.ilt (lookup tables), pe.names (DLL names, hint/name strings), pe.iat
+        (the terminating zero slot of each address table)."""
+        r = self.import_descriptor_ranges()
+        out = [("pe.import_desc", a, b) for a, b in r["pe.import_desc"]]
+        out += [("pe.ilt", a, b) for a, b in r["pe.ilt"]]
+        out += [("pe.names", a, b) for a, b in sorted(set(r["pe.names"]))]
+        out += [("pe.iat", b - 4, b) for _, b in r["pe.iat"]]
+        return out
+
+    def export_regions(self):
+        """pe.export_dir, pe.eat, pe.ent, pe.eot (the export directory and its address, name pointer and ordinal
+        tables) and pe.names (the DLL name and the export names)."""
+        r = self.export_ranges()
+        out = [(what, a, b) for what in ("pe.export_dir", "pe.eat", "pe.ent", "pe.eot") for a, b in r[what]]
+        out += [("pe.names", a, b) for a, b in sorted(set(r["pe.names"]))]
+        return out
 
     # ------------------------------------------------------------------ imports
     def imports(self) -> list[Import]:

@@ -28,7 +28,7 @@ class FakeProject:
         self.toolchain = None
 
     def input_hash(self, name):
-        return {"image": "img", "config": self.cfg_hash}[name]
+        return {"image": "img", "plugins": "plg", "config": self.cfg_hash}[name]
 
     def input(self, name):
         return {"config": {"x": self.x}}[name]

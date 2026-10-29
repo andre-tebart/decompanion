@@ -1,25 +1,27 @@
 """The code walk (rule S.codewalk): recursive descent over the code sections, and the Walker it uses.
 
-Conventions it rests on (VC6 / LINK, derived level):
+Conventions it rests on (derived level; VC6 / LINK are the toolchain they were stated for):
   W1  a function's code is contiguous: every block of a function lies between its start and the next
       function's start, and its jump tables follow its code. A direct jump that crosses a known start is
       therefore a tail call to another function (VC6 emits `pop ..; jmp f` for `return f(args)`), and a
       jump-table entry never points past the next start.
-  W2  a direct `call` target is a function start, unless it lies inside the calling function's own range
+  W2  a direct call target is a function start, unless it lies inside the calling function's own range
       (a local subroutine of assembly-written library code): then it is an inner label of that function.
   W3  a code address pushed or stored as an immediate at a relocation site, and a code address stored in a
       data section (a function pointer), is a function start.
-  W4  a function ends at `ret`, at an unconditional `jmp`, and at alignment fill reached by fall-through; a
-      jump target is code whatever its first instruction.
+  W4  a function ends at a return, at an unconditional jump (direct or indirect), and at alignment fill
+      (Toolchain.fill_forms) reached by fall-through; a jump target is code whatever its first instruction.
 The walk is repeated with the growing set of starts until that set is stable, so no walk ever runs into a
 start found later. A walk that still runs into bytes another function owns is a conflict (C.walk): one of the
 two starts is wrong.
 
+The walk knows no instruction set: it reads the decoder of the target's ISA plugin (isa/base.py: Ins records
+with a flow kind, direct targets, immediates, memory displacements, the table an indirect jump reads, fill
+marks; TableShape for the extent of a jump table and its byte index table; field_starts for where a relocated
+field may sit inside an instruction). x86-32 is isa/x86.py.
+
 How it is computed (none of this changes a result):
-- Every instruction is decoded once per rule run into a compact record (Ins). capstone's light decoder gives
-  address, size, mnemonic and operand text; the full operand details are read only for an instruction whose
-  text names a number inside the image (a memory operand or an immediate the walk records), a branch whose
-  operand is not a plain number, and the first instruction of every mnemonic (its call / jump / ret group).
+- Every instruction is decoded once per rule run (the decoder memoises its records by address).
 - A root's walk is a function of the bytes, the claims of other rules, and the starts between the root and
   the next start (W1 confines it there). Each iteration therefore replays a root's recorded walk instead of
   repeating it when the next start after the root is unchanged and the walk saw no byte another walk owns;
@@ -28,110 +30,13 @@ How it is computed (none of this changes a result):
 from __future__ import annotations
 
 import bisect
-import re
-import struct
 from collections import defaultdict
 
-from ..disasm import CS_GRP_CALL, CS_GRP_JUMP, CS_GRP_RET, X86_OP_IMM, X86_OP_MEM, X86_OP_REG, X86_REG_INVALID, decoder
+from ..isa.base import CALL, CJUMP, IJUMP, JUMP, JUMPS, RET, Decoder
 from ..ledger.fact import Kind, Level, Severity
 from .engine import RuleContext, rule
 
 D = Level.derived
-M32 = 0xffffffff
-F_NONE, F_CALL, F_JUMP, F_RET = 0, 1, 2, 3
-HEX = re.compile(r"0x([0-9a-f]+)")
-NUMBER = re.compile(r"^(?:0x[0-9a-f]+|[0-9]+)$")
-
-
-class Ins:
-    """One decoded instruction, reduced to what the walk reads: flow (none / call / jump / ret), the immediate
-    first operand of a call or jump (`target`), the memory operands whose displacement lies in the image
-    (`mem`: (address, operand size)), every immediate operand (`imms`), the table of `jmp [index*4 + table]`
-    (`jtab`), and whether the bytes are one alignment fill form."""
-    __slots__ = ("addr", "size", "mn", "flow", "target", "mem", "imms", "jtab", "fill")
-
-    def __init__(self, addr, size, mn, flow, target, mem, imms, jtab, fill):
-        self.addr, self.size, self.mn, self.flow, self.target = addr, size, mn, flow, target
-        self.mem, self.imms, self.jtab, self.fill = mem, imms, jtab, fill
-
-
-class Decoder:
-    """Decodes the code range of an image into Ins records, memoised by address for one rule run."""
-
-    def __init__(self, img, code_lo, code_hi, fill_forms):
-        self.img = img
-        self.lo, self.hi = code_lo, code_hi
-        self.code = img.read(code_lo, code_hi - code_lo)
-        self.md = decoder()
-        self.fill_forms = frozenset(fill_forms)
-        self.cache: dict[int, Ins] = {}
-        self.flows: dict[str, int] = {}          # mnemonic -> flow, from the first full decode of it
-        self.ibase, self.iend = img.base, img.end
-
-    def _in_image(self, v):
-        return self.ibase <= v < self.iend
-
-    def full(self, addr, size) -> Ins:
-        """The record from capstone's operand details."""
-        o = addr - self.lo
-        ins = next(self.md.disasm(self.code[o:o + size], addr, 1))
-        flow = F_CALL if ins.group(CS_GRP_CALL) else F_JUMP if ins.group(CS_GRP_JUMP) else F_RET if ins.group(CS_GRP_RET) else F_NONE
-        self.flows.setdefault(ins.mnemonic, flow)
-        ops = ins.operands
-        target = ops[0].imm if flow in (F_CALL, F_JUMP) and ops and ops[0].type == X86_OP_IMM else None
-        mem = tuple((op.mem.disp & M32, op.size) for op in ops
-                    if op.type == X86_OP_MEM and op.mem.disp and self._in_image(op.mem.disp & M32))
-        imms = tuple(op.imm for op in ops if op.type == X86_OP_IMM)
-        jtab = None
-        if ins.mnemonic == "jmp" and ops and ops[0].type == X86_OP_MEM and ops[0].mem.base == X86_REG_INVALID \
-                and ops[0].mem.index != X86_REG_INVALID and ops[0].mem.scale == 4:
-            jtab = ops[0].mem.disp & M32
-        return Ins(addr, ins.size, ins.mnemonic, flow, target, mem, imms, jtab, bytes(ins.bytes) in self.fill_forms)
-
-    def make(self, addr, size, mn, ops) -> Ins:
-        flow = self.flows.get(mn)
-        if flow is None:
-            return self.full(addr, size)
-        if flow in (F_CALL, F_JUMP):
-            if not NUMBER.match(ops):
-                return self.full(addr, size)
-            target = int(ops, 0)
-        else:
-            target = None
-        for h in HEX.findall(ops):
-            v = int(h, 16)
-            if self._in_image(v) or self._in_image(-v & M32):
-                return self.full(addr, size)
-        o = addr - self.lo
-        return Ins(addr, size, mn, flow, target, (), (), None, self.code[o:o + size] in self.fill_forms)
-
-    def detail(self, addr):
-        """capstone's full instruction at addr (for the few reads the records do not keep)."""
-        o = addr - self.lo
-        return next(self.md.disasm(self.code[o:o + 16], addr, 1))
-
-    def decode(self, addr):
-        """Instructions from addr on, in address order, until the bytes stop decoding or the code ends."""
-        cache, lo, hi = self.cache, self.lo, self.hi
-        while lo <= addr < hi:
-            ins = cache.get(addr)
-            if ins is not None:
-                yield ins
-                addr = ins.addr + ins.size
-                continue
-            o = addr - lo
-            got = False
-            for a, size, mn, ops in self.md.disasm_lite(self.code[o:o + 0x400], addr):
-                got = True
-                ins = cache.get(a)
-                if ins is None:
-                    ins = cache[a] = self.make(a, size, mn, ops)
-                yield ins
-                addr = a + size
-            if not got:
-                return
-            if addr < lo + o + 0x400 - 16:
-                return
 
 
 class Record:
@@ -156,6 +61,7 @@ class Walker:
         self.owner = [0] * n
         self.kind = bytearray(n)         # 1 code, 2 table data, 3 placed by another rule
         self.calls = defaultdict(set)    # target -> call sites
+        self.call_size = {}              # call site -> size of the call instruction
         self.jumps = defaultdict(set)    # direct jump target -> sites (within the function)
         self.tails = defaultdict(set)    # tail-call target -> sites
         self.imms = defaultdict(set)     # code immediate -> sites
@@ -196,8 +102,9 @@ class Walker:
     # ------------------------------------------------------------------ records
     def merge(self, rec: Record):
         """Add a record's references to the walk's (claims are applied separately)."""
-        for t, s in rec.calls:
+        for t, s, n in rec.calls:
             self.calls[t].add(s)
+            self.call_size[s] = n
         for t, s in rec.jumps:
             self.jumps[t].add(s)
         for t, s in rec.tails:
@@ -253,6 +160,7 @@ class Walker:
         rec = self.rec if self.rec is not None else Record()
         kind, own, L, hi = self.kind, self.owner, self.lo, self.hi
         stops, reloc_sites = self.stops, self.reloc_sites
+        field_starts = self.dec.field_starts
         work = [start]
         while work:
             a = work.pop()
@@ -294,59 +202,53 @@ class Walker:
                     for disp, osize in ins.mem:
                         rec.operands.append((ia, size, disp, osize))
                     flow = ins.flow
-                    if flow == F_CALL and ins.target is not None:
+                    if flow == CALL and ins.target is not None:          # W2
                         t = ins.target
                         if L <= t < hi:
-                            rec.calls.append((t, ia))
-                    elif flow != F_JUMP:
+                            rec.calls.append((t, ia, size))
+                    elif flow not in JUMPS:                              # W3: a code immediate in a relocated field
                         for v in ins.imms:
-                            if L <= v < hi and any((ia + k) in reloc_sites for k in range(1, size - 3)):
+                            if L <= v < hi and any(k in reloc_sites for k in field_starts(ins)):
                                 rec.imms.append((v, ia))
-                    if flow == F_RET:
+                    if flow == RET:                                      # W4
                         break
-                    if flow == F_JUMP:
-                        if ins.target is not None:
-                            t = ins.target
-                            if L <= t < hi:
-                                if self.crosses_stop(ia, t) or t in stops and t != owner:
-                                    rec.tails.append((t, ia))
-                                else:
-                                    rec.jumps.append((t, ia))
-                                    work.append(t)
-                            if ins.mn == "jmp":
-                                break
-                            continue
-                        if ins.jtab is not None:
-                            self.jump_table(ins.jtab, recent, owner, work, rec)
+                    if flow == JUMP or flow == CJUMP:
+                        t = ins.target
+                        if L <= t < hi:
+                            if self.crosses_stop(ia, t) or t in stops and t != owner:   # W1: a tail call
+                                rec.tails.append((t, ia))
+                            else:
+                                rec.jumps.append((t, ia))
+                                work.append(t)
+                        if flow == JUMP:                                 # W4
+                            break
+                        continue
+                    if flow == IJUMP:                                    # W4
+                        if ins.table is not None:
+                            self.jump_table(ins, recent, owner, work, rec)
                         break
                 break
         if self.rec is None:
             self.merge(rec)
         return self.extent[owner]
 
-    def jump_table(self, tbl, recent, owner, work, rec):
+    def jump_table(self, jump, recent, owner, work, rec):
+        """The table an indirect jump reads (W1: its entries are code of the owner, before the next start):
+        entries are claimed while each holds an address in [owner, next start) and the bound the decoder found
+        (TableShape.bound, unless an index table selects the entry) is not reached; an index table of `bound`
+        entries is claimed when none of its bytes is owned yet."""
+        tbl = jump.table
         if not self.in_code(tbl):
             return
-        bound = None
-        byte_tbl = None
-        for r in reversed(recent[:-1]):
-            if r.mn not in ("cmp", "movzx", "mov"):
-                continue
-            ins = self.dec.detail(r.addr)
-            if ins.mnemonic == "cmp" and len(ins.operands) == 2 and ins.operands[1].type == X86_OP_IMM \
-                    and ins.operands[0].type == X86_OP_REG and bound is None and 0 <= ins.operands[1].imm < 0x400:
-                bound = ins.operands[1].imm + 1
-            if ins.mnemonic in ("movzx", "mov") and len(ins.operands) == 2 and ins.operands[1].type == X86_OP_MEM \
-                    and ins.operands[1].size == 1 and (ins.operands[1].mem.index != X86_REG_INVALID or ins.operands[1].mem.base != X86_REG_INVALID) \
-                    and self.in_code(ins.operands[1].mem.disp & M32) and byte_tbl is None:
-                byte_tbl = ins.operands[1].mem.disp & M32
+        shape = self.dec.table_shape(jump, recent)
+        bound, byte_tbl, w = shape.bound, shape.index_table, shape.entry_size
         limit = self.next_stop(owner)
         n = 0
         a = tbl
-        while self.in_code(a) and a + 4 <= self.hi:
+        while self.in_code(a) and a + w <= self.hi:
             if bound is not None and not byte_tbl and n >= bound:
                 break
-            v = struct.unpack_from("<I", self.code, a - self.lo)[0]
+            v = self.dec.read_entry(a, w)
             if not (owner <= v < limit):
                 break
             o = a - self.lo
@@ -356,17 +258,16 @@ class Walker:
                 else:
                     rec.probes.append(a)
                 break
-            self.claim(a, a + 4, owner, 2)
+            self.claim(a, a + w, owner, 2)
             work.append(v)
             n += 1
-            a += 4
+            a += w
         if n:
             rec.tables.append((tbl, a, owner, "jumptable"))
         if byte_tbl is not None and bound is not None:
-            end = byte_tbl + bound
+            end = byte_tbl + bound * shape.index_size
             free = True
-            for i in range(bound):
-                p = byte_tbl + i
+            for p in range(byte_tbl, end):
                 if not self.in_code(p):
                     continue
                 o = p - self.lo
@@ -395,7 +296,7 @@ class Walker:
 
 @rule("S.codewalk", version="2", ceiling=D, outputs=("symbol", "start", "ref"),
       needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs"),
-      helpers=(Ins, Decoder, Record, Walker))
+      helpers=(Record, Walker))
 def codewalk(ctx: RuleContext):
     """Recursive descent over the code sections from every known start (exports, the entry point, the symbols
     of placed library sections, the entry the CRT calls), adding the starts the walk reveals (conventions
@@ -403,10 +304,11 @@ def codewalk(ctx: RuleContext):
     pointers stored in data sections) and repeating until the set of starts is stable. A walked
     function owns [start, last byte it reached + 1) as a `func` symbol of derived extent (bytes inside it
     the walk did not reach are counted as holes); its jump tables and byte index tables are `jumptable` /
-    `idxtable` symbols; calls, jumps, tail calls, immediates and memory operands pointing into the image are
-    `ref` facts. A walk that runs into bytes another function owns is a conflict (C.walk)."""
+    `idxtable` symbols; calls (over the call instruction), tail calls, immediates and memory operands pointing
+    into the image are `ref` facts. A walk that runs into bytes another function owns is a conflict (C.walk).
+    Instructions come from the target's instruction-set plugin (isa/), fill forms from the toolchain."""
     img, tc = ctx.image, ctx.project.toolchain
-    code_secs = [s for s in img.sections if s.code or s.executable]
+    code_secs = [s for s in img.sections if s.holds_code]
     if not code_secs:
         return
     lo = min(s.va for s in code_secs)
@@ -436,7 +338,7 @@ def codewalk(ctx: RuleContext):
     derived: dict[int, str] = {}
     w = None
     inner: dict[int, int] = {}
-    dec = Decoder(img, lo, hi, tc.fill_forms)
+    dec = ctx.project.isa.decoder(img, lo, hi, tc.fill_forms)
     records: dict[int, Record] = {}
     for _ in range(25):
         roots = dict(known)
@@ -498,7 +400,7 @@ def codewalk(ctx: RuleContext):
             yield ctx.fact(tlo, thi, Kind.symbol, {"skind": sk, "extent": "derived", "fn": owner}, D)
     for t, sites in w.calls.items():
         for s in sorted(sites):
-            yield ctx.fact(s, s + 5, Kind.ref, {"rkind": "call", "to": t}, D)
+            yield ctx.fact(s, s + w.call_size[s], Kind.ref, {"rkind": "call", "to": t}, D)
     for t, sites in w.tails.items():
         for s in sorted(sites):
             yield ctx.fact(s, s + 1, Kind.ref, {"rkind": "tail", "to": t}, D)

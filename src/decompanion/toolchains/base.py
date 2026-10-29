@@ -1,5 +1,18 @@
 """The toolchain seam: everything the rules know about the compiler and linker that produced the image,
-behind one class per toolchain family. VC6 is the only implementation (toolchains/vc6)."""
+behind one class per toolchain family. VC6 is the only implementation (toolchains/vc6).
+
+What a plugin answers (the rules ask, they never know the answers themselves):
+  object_format          the objfmt plugin of its objects and archives ("coff")
+  fill_forms             the byte forms of alignment fill between functions; fill_origin(bytes) names a run
+  function_alignment     the boundary every compiled function starts at
+  import_stubs(data)     the import stubs (linker-made `jump through an import slot` thunks) in a code section's
+                         bytes, import_stub_size their size, stub_placement the linker's layout convention
+  user_entry_names()     the decorated symbols of the user's entry functions -> their C names
+  archive_tools(stamps)  the objects' tool stamps (objfmt tool_stamps) decoded to Rich (prodid, build)
+  rich_product / rich_candidates / declare / prefill / build_name   the Rich header vocabulary
+  default_archives()     the static library archives of a new project; default_cflags() its assumed flags
+  import_library_name(dll)   the import library a DLL is linked through
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,6 +29,10 @@ class RichProduct:
 
 class Toolchain:
     key = "base"
+    object_format = ""              # the objfmt plugin key of the toolchain's objects and archives
+    function_alignment = 1          # every compiled function starts at a multiple of this
+    import_stub_size = 0            # bytes of one import stub (0: the toolchain makes none)
+    stub_placement = ""             # the linker's placement convention for import stubs, as prose (S.thunk cites it)
 
     def __init__(self, root: Path | None, config: dict):
         self.root = Path(root) if root else None
@@ -26,6 +43,17 @@ class Toolchain:
     def fill_forms(self) -> tuple[bytes, ...]:
         """The byte forms the linker / compiler leave as alignment fill between functions."""
         raise NotImplementedError
+
+    def fill_origin(self, run: bytes) -> str:
+        """What a fill run before a function start says about the boundary (L.analyze B-FILL): a short word
+        naming the form, e.g. linker padding between contributions vs compiler alignment inside one object."""
+        raise NotImplementedError
+
+    def import_stubs(self, data: bytes):
+        """(offset, slot) of every import stub in `data` (the raw bytes of a code section): the bytes of a stub
+        whose jump goes through the import address-table slot `slot` (a VA). Candidates only: the same bytes
+        may be compiled code; S.thunk decides by stub_placement."""
+        return iter(())
 
     def rich_product(self, prodid: int) -> RichProduct:
         raise NotImplementedError
@@ -38,11 +66,16 @@ class Toolchain:
         """The declaration spelling of a Rich compiler or linker entry ('cl 12.00.9044', 'link 6.00.8447')."""
         return f"{entry['tool']} {entry['build']}"
 
+    def archive_tools(self, stamps: dict[int, int]) -> dict[tuple[int, int], int]:
+        """(Rich prodid, build) -> objects, from the archives' tool stamps (ObjectFormat.tool_stamps: raw stamp
+        value -> objects)."""
+        return {}
+
     def rich_candidates(self, entries, comp_ids=None) -> dict:
         """The decoded Rich header: every entry with its tool, family, language, build, object count and the
-        number of configured archive objects whose @comp.id names the same (prodid, build); the compiler
-        candidates (every compiler entry) and the linker candidates (every linker entry). Nothing is picked:
-        which candidate built the user's objects is a declaration ([[target]] compiler / linker)."""
+        number of configured archive objects whose tool stamp (archive_tools) names the same (prodid, build);
+        the compiler candidates (every compiler entry) and the linker candidates (every linker entry). Nothing
+        is picked: which candidate built the user's objects is a declaration ([[target]] compiler / linker)."""
         comp_ids = comp_ids or {}
         decoded = []
         for prodid, build, count in entries:
@@ -81,12 +114,30 @@ class Toolchain:
         return {}
 
     def crt_user_entry(self, entry_symbol: str) -> str:
-        """The user entry the CRT entry calls (DllMain, WinMain, main) or ''."""
+        """The decorated user entry the CRT entry calls or ''."""
         return ""
 
-    # -------------------------------------------------------------- the toolchain on disk (later milestones)
+    def user_entry_names(self) -> dict[str, str]:
+        """The decorated symbols of the user's entry functions (what the CRT start-up calls) -> their C names."""
+        return {}
+
+    # -------------------------------------------------------------- the toolchain on disk
     def library_archives(self) -> list[Path]:
+        """Every library archive of the toolchain installation."""
         return []
+
+    def default_archives(self) -> list[str]:
+        """The static library archives a new project places members of (S.crt.code), as config strings
+        (`{toolchain.root}` stands for the toolchain root)."""
+        return []
+
+    def default_cflags(self) -> list[str]:
+        """The compiler flags a new target's declaration assumes until they are probed (for a human to verify)."""
+        return []
+
+    def import_library_name(self, dll: str) -> str:
+        """The file name (lower case) of the import library a DLL is linked through."""
+        raise NotImplementedError
 
     def compile(self, *a, **k):
         raise NotImplementedError

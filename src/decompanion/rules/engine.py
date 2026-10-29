@@ -14,8 +14,9 @@ A rule is a function decorated with @rule:
   runs). `kind:symbol` stands for every registered rule that lists `symbol` in its outputs, so a rule that
   closes a kind (the catch-all, the byte map) needs no list of producers. Dependencies by rule, not by kind,
   keep the graph acyclic by construction: a rule cannot read the kind it produces.
-- `inputs` are named external inputs the project provides (image, config, libs, decl, src, ...). The image is
-  an input of every rule.
+- `inputs` are named external inputs the project provides (image, config, libs, decl, src, ...). The image and
+  the plugins (the code behind the image, toolchain, object-format and instruction-set seams, and which of
+  them the target selects) are inputs of every rule.
 - `ceiling` is the best level the criterion can justify; a yielded fact above it is a programming error. The
   rule lowers the level itself with min_level() when it rests on a premise fact (a declared boundary, a
   derived start): the engine cannot know which facts were premises and which were merely verified.
@@ -188,7 +189,7 @@ class Engine:
 
     # ------------------------------------------------------------------ running
     def input_hash(self, r: Rule, needed: tuple[str, ...]) -> str:
-        parts = [r.code_hash, r.version, self.project.input_hash("image")]
+        parts = [r.code_hash, r.version, self.project.input_hash("image"), self.project.input_hash("plugins")]
         for n in needed:
             cur = self.store.current_run(n)
             if cur is None:

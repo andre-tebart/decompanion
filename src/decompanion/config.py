@@ -2,14 +2,20 @@
 toolchain plugin, one store per target, the named external inputs with their content hashes).
 
 decompanion.toml
-  [[target]]     name = "server"  path = "...server.dll"  sha256 = "..."  image = "pe32"
+  [[target]]     name = "server"  path = "...server.dll"  sha256 = "..."  image = "pe32"  isa = "x86"
                  compiler = "cl 12.00.9044"  linker = "link 6.00.8447"  cflags = ["/O2", "/Gy"]  reason = "..."
+                 (image: the image-format plugin, default the only registered one; isa: the instruction-set
+                 plugin, default the one the image's machine type implies)
                  archives = [...]            (optional: this target's library archives instead of [libs])
                  (one table per binary built from the codebase; the first is the default target; the toolchain
                  declaration is per target: binaries of one tree may still differ in what built them)
   [toolchain]    plugin = "vc6"  root = "C:/Tools/MSVC600-SP5PP"
-                 (compiler / linker / cflags / reason here are defaults a target without its own inherits)
+                 (plugin default: the only registered one; compiler / linker / cflags / reason here are
+                 defaults a target without its own inherits)
   [libs]         archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", ...]     (the default of every target)
+
+The plugins (image format, toolchain, object format, instruction set) come from the registries of their
+packages; this module names none of them.
   [sources]      roots = ["src"]  include = ["include"]
 
 The single-table form `[target]` of milestone 1 is still read (one target named after the file's stem); `dcp
@@ -28,14 +34,15 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-from .image.pe32 import PE32
+from . import image as image_plugins
+from . import isa as isa_plugins
+from . import objfmt as objfmt_plugins
+from . import toolchains as toolchain_plugins
 from .ledger.fact import canonical
 from .ledger.store import Store, file_hash, sha256
-from .toolchains.vc6 import VC6
 
-IMAGE_FORMATS = {"pe32": PE32}
-TOOLCHAINS = {"vc6": VC6}
 CONFIG_NAME = "decompanion.toml"
+PLUGIN_PACKAGES = (image_plugins, toolchain_plugins, objfmt_plugins, isa_plugins)
 TARGET_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 
@@ -44,7 +51,7 @@ class ConfigError(RuntimeError):
 
 
 TOOLCHAIN_KEYS = ("compiler", "linker", "cflags", "reason")
-TARGET_KEYS = ("name", "path", "sha256", "image", "archives", *TOOLCHAIN_KEYS)
+TARGET_KEYS = ("name", "path", "sha256", "image", "isa", "archives", *TOOLCHAIN_KEYS)
 
 
 @dataclass(frozen=True)
@@ -52,10 +59,11 @@ class Target:
     name: str
     path: Path
     sha256: str
-    image: str = "pe32"
+    image: str | None = None   # the image-format plugin (None: no format declared and several registered)
     legacy: bool = False       # read from the single-table [target] form
     toolchain: tuple = ()      # ((key, value), ...) of the toolchain keys the target table declares itself
     archives: tuple | None = None   # the target's own library archives (strings as written), else None
+    isa: str | None = None     # the instruction-set plugin as declared (None: the image's machine type decides)
 
 
 def find_root(start: Path | None = None) -> Path:
@@ -95,11 +103,33 @@ def parse_targets(cfg: dict, expand) -> list[Target]:
         if archives is not None and not (isinstance(archives, list) and all(isinstance(a, str) for a in archives)):
             raise ConfigError(f"{CONFIG_NAME}: target {name!r}: archives is not a list of paths")
         tc = tuple((k, tuple(tab[k]) if isinstance(tab[k], list) else tab[k]) for k in TOOLCHAIN_KEYS if k in tab)
-        out.append(Target(name, path, tab.get("sha256", ""), tab.get("image", "pe32"), legacy, tc,
-                          tuple(archives) if archives is not None else None))
+        out.append(Target(name, path, tab.get("sha256", ""), tab.get("image") or image_plugins.default_key(), legacy, tc,
+                          tuple(archives) if archives is not None else None, tab.get("isa")))
     if not out:
         raise ConfigError(f"{CONFIG_NAME}: the [[target]] list is empty")
     return out
+
+
+def toolchain_plugin_key(tc: dict) -> str | None:
+    """[toolchain] plugin, else the only registered toolchain plugin."""
+    return tc.get("plugin") or toolchain_plugins.default_key()
+
+
+_plugins_digest: str | None = None
+
+
+def plugins_hash(selection: str) -> str:
+    """The hash of the plugin code every rule reads through the seams (image, toolchain, object format and
+    instruction-set packages, every .py file) and of the selection: editing a plugin reruns the rules."""
+    global _plugins_digest
+    if _plugins_digest is None:
+        h = hashlib.sha256()
+        for pkg in PLUGIN_PACKAGES:
+            d = Path(pkg.__file__).parent
+            for p in sorted(d.rglob("*.py")):
+                h.update(p.relative_to(d.parent).as_posix().encode() + b"\0" + p.read_bytes())
+        _plugins_digest = h.hexdigest()
+    return sha256(_plugins_digest, selection)
 
 
 class Project:
@@ -110,9 +140,11 @@ class Project:
         self.targets = parse_targets(self.cfg, self.expand)
         self.target_name = self.target(target).name     # the current target (default: the first)
         tc = self.cfg.get("toolchain") or {}
-        plugin = TOOLCHAINS.get(tc.get("plugin", "vc6"))
+        key = toolchain_plugin_key(tc)
+        plugin = toolchain_plugins.TOOLCHAINS.get(key)
         if plugin is None:
-            raise ConfigError(f"unknown toolchain plugin {tc.get('plugin')!r}")
+            raise ConfigError(f"unknown toolchain plugin {key!r} (known: {', '.join(toolchain_plugins.TOOLCHAINS)}); "
+                              f"name one with [toolchain] plugin = ...")
         self.toolchain = plugin(self.expand(tc["root"]) if tc.get("root") else None, tc)
         self.build_dir = self.root / "build"
         self._hashes: dict[str, str] = {}
@@ -171,15 +203,39 @@ class Project:
     @cached_property
     def image(self):
         t = self.target()
-        fmt = IMAGE_FORMATS.get(t.image)
+        fmt = image_plugins.FORMATS.get(t.image)
         if fmt is None:
-            raise ConfigError(f"unknown image format {t.image!r}")
+            raise ConfigError(f"target {t.name}: unknown image format {t.image!r} (known: {', '.join(image_plugins.FORMATS)})")
         if not t.path.exists():
             raise ConfigError(f"target {t.name}: {t.path} does not exist")
         img = fmt(t.path)
         if t.sha256 and img.sha256 != t.sha256:
             raise ConfigError(f"target {t.name}: {t.path} has sha256 {img.sha256}, the declared one is {t.sha256}")
         return img
+
+    @property
+    def isa_name(self) -> str | None:
+        """The current target's instruction set: its `isa` key, else what the image's machine type implies."""
+        t = self.target()
+        return t.isa or self.image.default_isa
+
+    @cached_property
+    def isa(self):
+        """The current target's instruction-set plugin (isa/)."""
+        key = self.isa_name
+        plugin = isa_plugins.get(key) if key else None
+        if plugin is None:
+            raise ConfigError(f"target {self.target_name}: unknown instruction set {key!r} (known: {', '.join(isa_plugins.ISAS)}); "
+                              f"declare isa = ... in its [[target]] table")
+        return plugin
+
+    @cached_property
+    def objfmt(self):
+        """The object-format plugin of the toolchain's objects and archives (objfmt/)."""
+        plugin = objfmt_plugins.get(self.toolchain.object_format)
+        if plugin is None:
+            raise ConfigError(f"toolchain {self.toolchain.key}: unknown object format {self.toolchain.object_format!r}")
+        return plugin
 
     def image_of(self, name: str):
         """The image of any target (the current one's is `image`); checked against its declared sha256."""
@@ -221,7 +277,7 @@ class Project:
         came from (target | toolchain | missing)."""
         tc = self.cfg.get("toolchain") or {}
         own = dict(self.target(name).toolchain)
-        out = {"plugin": tc.get("plugin", "vc6"), "root": tc.get("root", "")}
+        out = {"plugin": toolchain_plugin_key(tc), "root": tc.get("root", "")}
         src = {}
         for k in TOOLCHAIN_KEYS:
             if k in own:
@@ -260,6 +316,8 @@ class Project:
             h = sha256(canonical(self.toolchain_decl))
         elif name == "targets":
             h = sha256(canonical(self.input("targets")))
+        elif name == "plugins":
+            h = plugins_hash(f"{self.target().image}/{self.toolchain.key}/{self.toolchain.object_format}/{self.target().isa or ''}")
         else:
             raise ConfigError(f"unknown input {name!r}")
         self._hashes[name] = h
