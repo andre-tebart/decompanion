@@ -164,7 +164,7 @@ def cmd_session_wrap(args):
             cmd_promote(args)
         promoted = buf.getvalue().strip()
     c = S.changes(root, base)
-    out = [f"# layout session {S.now()[:10]} (base {c.base}, head {c.head}, {c.commits} commits)", ""]
+    out = [f"# session {S.now()[:10]} (base {c.base}, head {c.head}, {c.commits} commits)", ""]
     for name, p, lr in targets:
         b, a = (rec.get("states") or {}).get(name, {}), states[name]
         out.append(f"target {name}: errors {b.get('errors', '?')} -> {a['errors']}, fragments {b.get('functions', '?')} -> "
@@ -192,6 +192,13 @@ def cmd_session_wrap(args):
         r = rows.get(a)
         g = f"{r['code']} + {r['readability']}  {r['name']}" if r else "no grade (not compiled)"
         out.append(f"  {a:#010x}  {unit:<16} {g}")
+    for name, tp, _ in targets:                       # the grades against the baseline at the base commit
+        ch = S.grade_changes(root, base, name, G.function_grades(tp.store))
+        drafted = {a for _, a, _ in c.drafted}
+        ch = [x for x in ch if x[0] not in drafted or x[3] is not None]
+        out.append(f"grades changed ({name}): {len(ch)}")
+        for a, unit, fname, b, aft in ch:
+            out.append(f"  {a:#010x}  {unit:<16} {fname}: {b or 'new'} -> {aft or 'gone'}")
     other = [l for l in c.names if " unit " not in l]
     out.append(f"renames: {len(other)}")
     for l in other:
@@ -207,8 +214,13 @@ def cmd_session_wrap(args):
                        f"open_bytes {r['open_bytes']}")
     recs = LV.next_records(v, 1)
     out.append("")
-    out.append("next: " + (f"{fmt_addr(recs[0]['addr'])} {recs[0]['kind']} {recs[0]['size']} bytes, unit {recs[0]['unit'] or '-'}"
-                           if recs else "nothing open in the game code"))
+    if recs:
+        out.append(f"next: {fmt_addr(recs[0]['addr'])} {recs[0]['kind']} {recs[0]['size']} bytes, unit {recs[0]['unit'] or '-'}")
+    else:                                            # layout complete: the next item of the base queue (dcp next)
+        q = G.queue(p.store, "base")
+        out.append("next: nothing open in the game code; " + (
+            f"base queue {fmt_addr(q[0]['addr'])} {q[0]['name']} ({q[0]['unit']}, {q[0]['code']} + {q[0]['readability']}), "
+            f"{len(q)} items" if q else "the base queue is empty"))
     if promoted:
         out.append("baseline: " + promoted.splitlines()[0] + " (commit ledger/grades.tsv with the session)")
     out.append("gate: " + ("ok" if ok else "FAIL"))

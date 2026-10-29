@@ -78,8 +78,9 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
    (`L.unit.extent`), and the checks L1, L3..L11 (`rules/layout.py`). The layout tooling (milestone 4): a
    draft for every function from the analyzer (`dcp setup`, `dcp report`), the reading commands (`dcp disasm`, `dump`, `refs`,
    `layout literals`, `layout starts`, `layout fptrs`), drafting (`dcp unit new|join|rename`, `dcp draft`, `dcp rename`,
-   `names.log`), the session protocol (`dcp session start|status|wrap`) and the agent skill `dcp-layout`. See
-   [docs/layout.md](docs/layout.md).
+   `names.log`), the session protocol (`dcp session start|status|wrap`; the wrap report lists the grade changes
+   against the session's base) and the agent skills `dcp-layout` and `dcp-match-base` (8 functions from `dcp
+   next` raised to shape + readable or escalated). See [docs/layout.md](docs/layout.md).
 3. **match** (`dcp build`, `grade`, `next`, `link`, `check`): one amalgamation per unit and target (head.c +
    fragments in address order behind `#line`), one CL.EXE per stale unit in a pool (stale = source, flags or
    include-set contents changed: an edited header recompiles only its includers), masked compare with the DLL
@@ -393,5 +394,5 @@ src/decompanion/
   analyzers/ __init__ (registry) base.py ghidra.py rea.py none.py   # Analyzer seam: starts, names, pseudocode, dialect
 tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / clang tests when installed; `-m ghidra` adds the 30 s Ghidra export
 docs/                                # plan.md, layout.md, match.md, architecture.md
-skills/                              # dcp-layout/SKILL.md (installed into a project's .claude/skills/)
+skills/                              # dcp-layout/, dcp-match-base/ SKILL.md (installed into a project's .claude/skills/)
 ```

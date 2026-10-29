@@ -1,4 +1,4 @@
-"""The session protocol of a solo layout session (`dcp session start` / `dcp session wrap`): a gate at the start,
+"""The session protocol of a solo session, layout or match-base (`dcp session start` / `dcp session wrap`): a gate at the start,
 the computed report at the end. Nothing here is written by hand: the report comes from git (the session's base
 commit against the working tree), the store and names.log; the only record is .dcp/session.json (git-ignored:
 the base commit and the start time).
@@ -27,6 +27,31 @@ FRAGMENT = re.compile(r"^src/([^/]+)/f_([0-9a-fA-F]+)\.c$")
 def git(root: Path, *args) -> str:
     r = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else ""
+
+
+def grade_changes(root: Path, base: str, target: str, rows: list[dict]) -> list[tuple]:
+    """The functions of one target whose grade differs from the baseline ledger/grades.tsv at the base commit:
+    [(addr, unit, name, before 'code+readability[ level]' or None for a new fragment, after)], in address order.
+    A fragment gone since the base is listed with after None."""
+    def fmt(code, rd, level):
+        return f"{code}+{rd}" + (f" {level}" if level else "")
+    before = {}
+    for line in git(root, "show", f"{base}:ledger/grades.tsv").splitlines()[1:]:
+        cols = line.split("\t")
+        if len(cols) >= 7 and cols[0] == target:
+            before[int(cols[1], 16)] = (cols[3], cols[2], fmt(cols[4], cols[5], cols[6]))
+    out = []
+    now = {}
+    for r in rows:
+        now[r["addr"]] = r
+        b = before.get(r["addr"])
+        a = fmt(r["code"], r["readability"], r.get("level") or "")
+        if b is None or b[2] != a:
+            out.append((r["addr"], r["unit"], r["name"], b[2] if b else None, a))
+    for addr, (unit, name, b) in before.items():
+        if addr not in now:
+            out.append((addr, unit, name, b, None))
+    return sorted(out)
 
 
 def dirty(root: Path) -> list[str]:
