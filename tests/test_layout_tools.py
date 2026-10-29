@@ -240,17 +240,21 @@ def test_declared_start_is_walked(tmp_path):
     assert dcp(root, "check")[0] == 0
 
 
-def test_l10_fragment_without_bytes(tmp_path):
+def test_source_only_start_owns_its_code(tmp_path):
+    """A fragment whose start only the source names (the walk does not reach it, it does not byte-match) owns its
+    code up to the next stop by the contiguity convention (L.src.extent), its trailing fill too; no L10."""
     root = patched(tmp_path)
     assert dcp(root, "unit", "new", "tail", "--range", "0x10001050..0x10001060", "--by", "guess", "--why", "f4")[0] == 0
     (root / "src" / "tail" / "f_10001058.c").write_text("/* 0x10001058, only the source names this start */\n"
                                                         "int f5(void)\n{\n    return 0;\n}\n", newline="\n")
     code, out = dcp(root, "layout", "units", "-v")
-    assert "L10" in out
-    l10 = [c for c in Project(root).store.conflicts() if c.check == "L10"]
-    assert len(l10) == 1 and "owns no bytes" in l10[0].message and l10[0].severity.value == "warn"
-    assert dcp(root, "check")[0] == 0                       # a warning, not an error
-    assert dcp(root, "check", "--strict")[0] == 1
+    p = Project(root)
+    own = [f for f in p.store.facts(Kind.symbol) if f.run == "L.src.extent"]
+    funcs = [(f.lo, f.hi) for f in own if f.value["skind"] == "func"]
+    assert funcs == [(0x10001058, 0x1000105b)]                         # xor eax,eax; ret
+    assert all(f.level is Level.declared for f in own)
+    assert not [c for c in p.store.conflicts() if c.check == "L10"]
+    assert dcp(root, "check")[0] == 0
 
 
 def test_unit_status_rule():

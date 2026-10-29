@@ -174,7 +174,7 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
     return q, qf
 
 
-@rule("G.grade", version="1", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", *WALK),
+@rule("G.grade", version="2", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
       inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, context, brace_end, DC, C,
                                                          build_compile.plan))
 def grade(ctx: RuleContext):
@@ -189,7 +189,7 @@ def grade(ctx: RuleContext):
     p, img, tc = ctx.project, ctx.image, ctx.project.toolchain
     funcs, missing = compiled_functions(ctx)
     matched = {f.lo for f in ctx.facts(Kind.symbol) if f.run == "M.match"}
-    walk = {f.lo: f for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "func" and f.run == "S.codewalk"}
+    walk = {f.lo: f for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "func" and f.run in ("S.codewalk", "L.src.extent")}
     lint = ctx.input("lint")
     lint_calls = lint.get("calls") if lint else None
     # Q7 only for units whose text is what the last lint parsed

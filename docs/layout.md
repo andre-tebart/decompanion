@@ -133,9 +133,16 @@ Checks added in milestone 4 (warnings: `dcp check --strict` fails on them, `dcp 
 - **L9** an analyzer's function of the game code whose body (its address ranges, which Ghidra's export
   reports) holds one of our starts other than its own entry: the analyzer merged two functions, its draft
   holds both.
+- **L.src.extent** (declared): a fragment the walk does not reach and that does not byte-match owns its code
+  from its start to the next stop (any known start, claimed byte, declared boundary or section end) less the
+  trailing alignment fill: the contiguity convention W1. After any claimed code, a gap under the function
+  alignment up to the next stop is a match's padding or alignment fill. An image without base relocations (an
+  exe) hides most call-only functions from the walk; without this rule their units stay open and out of the
+  match queues (GildeGold.exe: 616 KB of open code, 72 of 92 units open; with it: none).
 - **L10** code inside a unit that a fragment claims but nothing explains: (a) a fragment whose start the walk
-  does not know (a declared start in unknown code) and that does not byte-match owns no bytes, its code stays
-  open; (b) a byte-matched fragment whose walk runs past its compiled section (rare: R1's tail check).
+  does not know, that does not byte-match and that L.src.extent cannot extend (a claimed byte right at its
+  start, or only fill) owns no bytes, its code stays open; (b) a byte-matched fragment whose walk runs past its
+  compiled section (rare: R1's tail check).
 
 Checks of source decisions the byte match and the link let pass (errors, rules/layout.py):
 
