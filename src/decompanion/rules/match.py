@@ -68,7 +68,7 @@ def compiled_functions(ctx, sources=None):
 
 
 # ------------------------------------------------------------------------------------------------ M.compile
-@rule("M.compile", version="1", ceiling=P, outputs=("build",), inputs=("objects", "src", "targets", "config", "toolchain"),
+@rule("M.compile", version="1", ceiling=P, outputs=("build",), inputs=("objects", "src", "decl", "targets", "config", "toolchain"),
       needs=("S.sections",), helpers=(build_compile.plan, build_compile.flags_for, build_compile.unit_overrides))
 def compile_facts(ctx: RuleContext):
     """One `build` fact per translation unit of the current target (build/amalg.py: a unit with at least one
@@ -255,9 +255,14 @@ def reloc_checks(ctx: RuleContext):
                     lit = lit[:z + 1] if z >= 0 else lit
                 have = img.read(to, len(lit))
                 if have != lit:
+                    hint = ""
+                    if k == "string" and lit[:-1].decode("latin-1").replace("\\", "/").startswith(f"src/{s.value['unit']}/"):
+                        z = img.read(to, 260).split(b"\0")[0].decode("latin-1")    # our __FILE__ against the original's
+                        hint = (f"; the unit's original file name? dcp decl add \"{to:#010x} file tu={s.value['unit']} "
+                                f"path={z} -- ...\"")
                     yield ctx.conflict(Severity.error, "M9" if k == "string" else "M10", site, site + r.width,
                                        f"{s.value['symbol']} at {s.lo:#x}: our {'literal' if k == 'string' else 'constant'} "
-                                       f"{lit[:40]!r} differs from the original's bytes {have[:40]!r} at {to:#x}", a=s.by)
+                                       f"{lit[:40]!r} differs from the original's bytes {have[:40]!r} at {to:#x}{hint}", a=s.by)
                 continue
             if not target.named or k is not None:
                 continue

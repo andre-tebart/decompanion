@@ -305,13 +305,14 @@ def leak_issues(units: list[UnitX], leaks: list[Leak]) -> list[Issue]:
 
 
 # ------------------------------------------------------------------------------------------------ loaders
-@rule("L.decl", version="2", ceiling=DE, outputs=("boundary", "symbol", "name", "start"), inputs=("decl", "targets"),
+@rule("L.decl", version="3", ceiling=DE, outputs=("boundary", "symbol", "name"), inputs=("decl", "targets"),
       loader=True, helpers=(decl_mod,))
 def load_decl(ctx: RuleContext):
     """Every line of decl/*.dcl that belongs to the current target becomes one declared fact, producer
     decl:<file>:<line>, reason = the text after `--` (grammar: ledger/decl.py). boundary -> boundary fact
     {side, tu, named_by}; bytes dead -> symbol dead; jumptable / idxtable fn= -> symbol of that kind; foreign
-    kind= -> symbol foreign; fptr -> symbol fptr; name N -> name (origin decl); start -> start (how decl).
+    kind= -> symbol foreign; fptr -> symbol fptr; name N -> name (origin decl); start: L.decl.start; file tu= path=
+    -> checked only: the image holds the path, NUL-terminated, at the address, and one unit has one file name.
     Errors (check L.decl, severity error): a malformed line, an unknown kind or key, a missing reason, an
     unknown target prefix, an unsorted file, a duplicate key, an address outside the image or a range across
     sections, a text.dcl line outside a code section or a data.dcl line inside one. An error is reported in
@@ -325,6 +326,7 @@ def load_decl(ctx: RuleContext):
         lo = e.lo if e.lo is not None and img.in_image(e.lo) else img.base
         yield ctx.conflict(Severity.error, "L.decl", lo, lo + 1, f"{e.file}:{e.line}: {e.message}", a=f"decl:{e.file}:{e.line}")
     code = code_ranges(img)
+    file_of: dict[str, str] = {}
     for d in decls:
         if (d.target or targets[0]) != p.target_name:
             continue
@@ -354,7 +356,31 @@ def load_decl(ctx: RuleContext):
             yield ctx.declared(d.lo, d.hi, Kind.symbol, {"skind": "fptr", "extent": "declared"}, d.by, d.reason)
         elif k == "name":
             yield ctx.declared(d.lo, d.lo + 1, Kind.name, {"name": d.words[0], "origin": "decl"}, d.by, d.reason)
-        elif k == "start":
+        elif k == "file":
+            want = d.keys["path"].encode("latin-1") + b"\0"
+            have = img.read(d.lo, len(want))
+            if have != want:
+                yield ctx.conflict(Severity.error, "L.decl", d.lo, d.lo + 1,
+                                   f"{d.file}:{d.line}: the image holds {have!r} at {d.lo:#x}, not the declared file name {want!r}", a=d.by)
+            tu = d.keys["tu"]
+            if tu in file_of:
+                yield ctx.conflict(Severity.error, "L.decl", d.lo, d.lo + 1,
+                                   f"{d.file}:{d.line}: unit {tu} already has the file name {file_of[tu]}", a=d.by)
+            file_of.setdefault(tu, d.keys["path"])
+
+
+@rule("L.decl.start", version="1", ceiling=DE, outputs=("start",), inputs=("decl", "targets"), loader=True, helpers=(decl_mod,))
+def load_decl_starts(ctx: RuleContext):
+    """The `start` lines of decl/*.dcl for the current target, inside a code section, as declared start facts
+    (how decl). Its own loader so that the setup walk, which takes them as roots, reruns only when a start
+    declaration changes, not on every boundary edit (the run key follows this rule's output). Malformed lines
+    are L.decl's errors."""
+    p, img = ctx.project, ctx.image
+    targets = [t["name"] for t in ctx.input("targets")]
+    decls, _ = decl_mod.load(ctx.input("decl"), p.root, targets)
+    code = code_ranges(img)
+    for d in decls:
+        if d.kind == "start" and (d.target or targets[0]) == p.target_name and in_ranges(d.lo, code):
             yield ctx.declared(d.lo, d.lo + 1, Kind.start, {"skind": "func", "how": "decl"}, d.by, d.reason)
 
 

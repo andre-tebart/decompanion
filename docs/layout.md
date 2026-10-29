@@ -29,7 +29,8 @@ One fact per line:
 | `foreign` | `ADDR..END foreign kind=NAME` | a blob no compiler of the toolchain produced |
 | `name` | `ADDR name NAME` | a name for an address without source |
 | `fptr` | `ADDR..END fptr` | function pointers stored in a code section |
-| `start` | `ADDR start` | a function start the walk does not find |
+| `start` | `ADDR start` | a function start the walk does not find; the walk takes it as a root (rule L.decl.start), and what it reaches from there is declared |
+| `file` | `ADDR file path=PATH tu=NAME` (data.dcl) | the unit's original file name, at the address of its `__FILE__` string (L.decl checks the image's bytes); the amalgamation compiles the unit under that name, so `__FILE__` matches, and maps diagnostics back to the fragments. An M9 on a `__FILE__` literal prints the line to add |
 
 Examples:
 

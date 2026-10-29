@@ -19,6 +19,8 @@ Conventions it rests on (derived level; VC6 / LINK are the toolchain they were s
       functions, never inside one (VC6 emits `jmp f` for `return f(...)` where f is the next function; without
       base relocations nothing else marks f's start). The alignment keeps an inline `int 3` jumped over inside
       a function (`__asm int 3`, the same byte as int3 fill) from passing for padding.
+Declared starts (decl/text.dcl `start`, rule L.decl.start) are roots like the others; every fact that rests on
+one (its function, its references, the starts only its code reaches, and so on) is declared, not derived.
 The walk is repeated with the growing set of starts until that set is stable, so no walk ever runs into a
 start found later. A walk that still runs into bytes another function owns is a conflict (C.walk): one of the
 two starts is wrong.
@@ -318,8 +320,8 @@ class Walker:
         return code, table
 
 
-@rule("S.codewalk", version="5", ceiling=D, outputs=("symbol", "start", "ref"),
-      needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs"),
+@rule("S.codewalk", version="6", ceiling=D, outputs=("symbol", "start", "ref"),
+      needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs", "L.decl.start"),
       helpers=(Record, Walker))
 def codewalk(ctx: RuleContext):
     """Recursive descent over the code sections from every known start (exports, the entry point, the symbols
@@ -407,36 +409,57 @@ def codewalk(ctx: RuleContext):
         derived.update(new)
     roots = dict(known)
     roots.update({k: v for k, v in derived.items() if k not in roots})
+
+    def owner_at(s):
+        return w.owner[s - lo] if lo <= s < hi and w.kind[s - lo] == 1 else None
+
+    # the roots that rest on a declared start: the declared ones, then every start found only from their code
+    premise = {r for r, how in roots.items() if how == "decl"}
+    found: dict[int, set] = defaultdict(set)
+    for table in (w.calls, w.tails, w.imms):
+        for t, sites in table.items():
+            found[t].update(owner_at(s) for s in sites)
+    grew = bool(premise)
+    while grew:
+        grew = False
+        for r in roots:
+            if r not in premise and r in derived and r in found and found[r] and found[r] <= premise:
+                premise.add(r)
+                grew = True
+
+    def level_of(owner):
+        return Level.declared if owner in premise else D
+
     for r in sorted(roots):
         e = w.extent.get(r, r)
         if e <= r:
             continue
         n_walked, n_table = w.counts(r, r, e)
         holes = (e - r) - n_walked - n_table
-        yield ctx.fact(r, r + 1, Kind.start, {"skind": "func", "how": roots[r]}, D)
+        yield ctx.fact(r, r + 1, Kind.start, {"skind": "func", "how": roots[r]}, level_of(r))
         v = {"skind": "func", "extent": "derived", "walked": n_walked, "holes": holes}
         labels = sorted(t for t, o in inner.items() if o == r)
         if labels:
             v["inner"] = labels
-        yield ctx.fact(r, e, Kind.symbol, v, D)
+        yield ctx.fact(r, e, Kind.symbol, v, level_of(r))
     for tlo, thi, owner, sk in w.tables:
         if thi > tlo:
-            yield ctx.fact(tlo, thi, Kind.symbol, {"skind": sk, "extent": "derived", "fn": owner}, D)
+            yield ctx.fact(tlo, thi, Kind.symbol, {"skind": sk, "extent": "derived", "fn": owner}, level_of(owner))
     for t, sites in w.calls.items():
         for s in sorted(sites):
-            yield ctx.fact(s, s + w.call_size[s], Kind.ref, {"rkind": "call", "to": t}, D)
+            yield ctx.fact(s, s + w.call_size[s], Kind.ref, {"rkind": "call", "to": t}, level_of(owner_at(s)))
     for t, sites in w.tails.items():
         for s in sorted(sites):
-            yield ctx.fact(s, s + 1, Kind.ref, {"rkind": "tail", "to": t}, D)
+            yield ctx.fact(s, s + 1, Kind.ref, {"rkind": "tail", "to": t}, level_of(owner_at(s)))
     for t, sites in w.imms.items():
         for s in sorted(sites):
-            yield ctx.fact(s, s + 1, Kind.ref, {"rkind": "immediate", "to": t}, D)
+            yield ctx.fact(s, s + 1, Kind.ref, {"rkind": "immediate", "to": t}, level_of(owner_at(s)))
     seen = set()
     for site, size, target, osize in w.operands:
         if (site, target) in seen:
             continue
         seen.add((site, target))
-        yield ctx.fact(site, site + size, Kind.ref, {"rkind": "operand", "to": target, "size": osize}, D)
+        yield ctx.fact(site, site + size, Kind.ref, {"rkind": "operand", "to": target, "size": osize}, level_of(owner_at(site)))
     for owner, addr, other in sorted(set(w.overlaps)):
         yield ctx.conflict(Severity.error, "C.walk", addr, addr + 1,
                            f"the walk from {owner:#x} ({roots.get(owner, 'inner')}) runs into bytes owned by {other:#x}: one start is wrong",

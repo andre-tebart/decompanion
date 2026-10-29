@@ -77,6 +77,25 @@ def test_order(tmp_path):
     assert any("no such file" in m for m in msgs) and any("leaves out 2" in m for m in msgs)
 
 
+def test_declared_file_name(tmp_path):
+    """A unit compiled under its original file name: every part behind `#line n "<name>"`, numbered on, a
+    `#line N` pin starts its own segment, and a reported line maps back to the part and its line."""
+    from decompanion.build import amalg
+    write(tmp_path, "src/u/head.c", "int x;\n")
+    write(tmp_path, "src/u/f_10001000.c", "/* 0x10001000, a */\nint a(void)\n{\n#line 200\n    return 1;\n}\n")
+    write(tmp_path, "src/u/f_10001020.c", "/* 0x10001020, b */\nint b(void)\n{\n    return 2;\n}\n")
+    sc = srcscan.scan(tmp_path)
+    a = amalg.units(tmp_path, sc, "t", "t", {"u": "D:\\dev\\u.c"})[0]
+    assert a.text.splitlines()[0] == '#line 1 "D:\\\\dev\\\\u.c"'                # backslashes escaped for CL
+    assert '#line 2 "D:\\\\dev\\\\u.c"' in a.text and '#line 8 "D:\\\\dev\\\\u.c"' in a.text
+    assert a.locate(1) == [("src/u/head.c", 1)]
+    assert a.locate(3) == [("src/u/f_10001000.c", 2)]                       # `int a(void)`
+    assert a.locate(200) == [("src/u/f_10001000.c", 5)]                     # after the pin
+    assert a.locate(9) == [("src/u/f_10001020.c", 2)]
+    plain = amalg.units(tmp_path, sc, "t", "t")[0]
+    assert plain.file_name is None and plain.text.startswith('#line 1 "src/u/head.c"')
+
+
 def test_memo(tmp_path):
     write(tmp_path, "src/u/f_10001000.c", "/* 0x10001000, x */\nvoid f(void)\n{\n}\n")
     a = srcscan.scan(tmp_path, "h1")

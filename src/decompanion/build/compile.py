@@ -25,6 +25,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dataclasses import replace
+
+from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..ledger.fact import canonical
 from ..ledger.store import sha256
@@ -113,7 +116,26 @@ def plan(project, scan=None) -> list[A.Amalg]:
     """The amalgamations of the project's current target."""
     if scan is None:
         scan = srcscan.scan(project.root, project.input_hash("src"))
-    return A.units(project.root, scan, project.target_name, project.default_target)
+    targets = [t["name"] for t in project.input("targets")]
+    decls, _ = decl_mod.load(project.input("decl"), project.root, targets)
+    names = decl_mod.unit_files(decls, project.target_name, project.default_target)
+    return A.units(project.root, scan, project.target_name, project.default_target, names)
+
+
+def located(a, diagnostics: list) -> list:
+    """The compiler's diagnostics with a declared file name mapped back to the part files (Amalg.locate)."""
+    if not a.file_name:
+        return diagnostics
+    out = []
+    for d in diagnostics:
+        hits = a.locate(d.line) if d.file.lower() == a.file_name.lower() else []
+        if hits:
+            f, line = hits[0]
+            also = "; or " + ", ".join(f"{g}({k})" for g, k in hits[1:]) if len(hits) > 1 else ""
+            out.append(replace(d, file=f, line=line, message=d.message + also))
+        else:
+            out.append(d)
+    return out
 
 
 def obj_path(root: Path, obj_hash: str) -> Path:
@@ -146,7 +168,8 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
         work[a.unit] = (a, flags, dirs, key)
         if st.include_set(key) is None:
             todo_pre.append(a.unit)
-    ours = {a.unit: {str((Path(root) / m.file).resolve()).lower() for m in a.members} for a in amalgs}
+    ours = {a.unit: {str((Path(root) / m.file).resolve()).lower() for m in a.members}
+            | ({str(Path(a.file_name).resolve()).lower()} if a.file_name else set()) for a in amalgs}
 
     def preprocess(unit):
         """(unit, include set or None when the preprocessor fails)."""
@@ -183,6 +206,7 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
         if (root / tmp).exists():
             (root / tmp).unlink()
         res = tc.compile(Path(a.path), tmp, flags, dirs, root)
+        res = replace(res, diagnostics=located(a, res.diagnostics))
         _, files = preprocess(unit)                                   # the set as the unit reads it now
         obj_hash = ""
         if res.ok:

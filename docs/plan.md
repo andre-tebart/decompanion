@@ -505,8 +505,15 @@ Byte parity with rea's baseline: 2664 of 2664 functions, every unit compiles. Wh
 - `dcp link` builds an import library a DLL lacks from the image's import directory (`make_import_library` of
   the toolchain seam; mss32.dll), import records carry their hint.
 
+Added after the migration commit (user decision: the framework pieces first), closing M9 and L1 of gildegold:
+- decl kind `file` (data.dcl, at the `__FILE__` string's address, checked against the image): the
+  amalgamation numbers its parts on behind `#line n "<original name>"` and maps the diagnostics back
+  (Amalg.segments; a `#line N` pin starts a segment). The M9 message proposes the line.
+- the walk takes decl `start` lines as roots (own loader L.decl.start, so boundary edits do not rerun the
+  walk); facts resting on a declared start are declared (premise propagation through calls, tails, immediates).
+
 Left open, visible in `dcp check` of gildegold (the user accepted gate=FAIL for the migration commit): rea's
-data debt (D5 tentative definitions 530, M9 `__FILE__` literals 125, D4 69, D1 9, M.data.content 1, data
-C.overlap), one L1 where the exe walk swallows a call target, and the link's unresolved names (CRT functions
+data debt (D5 tentative definitions 530, D4 69, D1 9, M.data.content 1, data C.overlap), and the link's
+unresolved names (CRT functions
 under placeholder names, an ICF-folded stub, GUID libraries not declared, two Miles stubs) that rea resolved
 with hand-written alias tables.

@@ -58,6 +58,27 @@ def test_exe_landmarks(guild):
     assert "game=0x00401000..0x005dd3e0" in out
 
 
+def test_declared_start_and_file(guild):
+    """A declared start is a walk root (its function and what it reaches are declared, not derived); a declared
+    file name must be the image's string at its address."""
+    from decompanion.config import Project
+    from decompanion.ledger.fact import Kind, Level
+    p = Project(guild, "exe")
+    syms = {f.lo: f for f in p.store.facts(Kind.symbol) if f.run == "S.codewalk"}
+    assert 0x4eba80 not in syms and syms[0x4eb480].hi > 0x4eba80        # the walk swallows ahm_LoadDfn
+    assert dcp(guild, "--target", "exe", "decl", "add", "0x4eba80 start -- called from 0x4eb4a3 (ahm_LoadPrototypes)")[0] == 0
+    assert dcp(guild, "--target", "exe", "decl", "add",
+               "0x5fbd94 file tu=d3_interface path=D:\\develop\\Units\\d3\\d3_interface.c -- __FILE__")[0] == 0
+    assert dcp(guild, "--target", "exe", "decl", "add", "0x5fbd94 file tu=other path=D:\\wrong.c -- __FILE__")[0] != 0  # duplicate key
+    code, out = dcp(guild, "--target", "exe", "setup", "--no-analyzer")
+    assert code == 0, out
+    p = Project(guild, "exe")
+    syms = {f.lo: f for f in p.store.facts(Kind.symbol) if f.run == "S.codewalk"}
+    assert syms[0x4eba80].level is Level.declared and syms[0x4eb480].hi <= 0x4eba80
+    assert syms[0x4eb480].level is Level.derived
+    assert not [c for c in p.store.conflicts() if c.check == "L.decl"]
+
+
 def test_import_library_from_the_image(guild, tmp_path):
     """mss32.dll has no import library in any installation: one is built from the exe's import directory, its
     members import the decorated names exactly (name type NAME) with the exe's hints."""

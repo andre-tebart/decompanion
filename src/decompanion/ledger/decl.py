@@ -26,6 +26,7 @@ from pathlib import Path
 IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 UNIT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
 HEX = re.compile(r"^0x[0-9a-fA-F]+$")
+PATH = re.compile(r'^[^\s"]+$')
 LINE = re.compile(r"^(?:(?P<target>[A-Za-z][A-Za-z0-9_-]*):)?(?P<lo>0x[0-9a-fA-F]+)(?:\.\.(?P<hi>0x[0-9a-fA-F]+))?"
                   r"(?:\s+(?P<body>.*?))?\s*$")
 
@@ -52,7 +53,11 @@ KINDS: dict[str, Spec] = {
     "foreign": Spec(required={"kind": "ident"}, range=True, doc="a blob no compiler of the toolchain produced (asm, a resource ...)"),
     "name": Spec(words=("ident",), doc="a name for an address without source (a function or data symbol)"),
     "fptr": Spec(range=True, doc="function pointers stored in a code section (dwords, each a relocated code address)"),
-    "start": Spec(doc="a function start the setup walk does not find (reached only through a computed jump or not at all)"),
+    "start": Spec(doc="a function start the setup walk does not find (reached only through a computed jump or not at all); "
+                      "the walk takes it as a root, and what it reaches from there stays declared"),
+    "file": Spec(required={"tu": "unit", "path": "path"},
+                 doc="the original file name of a unit (its __FILE__), declared at the address of the string in the image "
+                     "(data.dcl); the amalgamation compiles the unit under that name"),
 }
 
 
@@ -104,6 +109,10 @@ def _value(kind: str, key: str, shape, v: str):
     if shape == "ident":
         if not IDENT.match(v):
             raise DeclError(f"{kind}: {key}={v} is not an identifier")
+        return v
+    if shape == "path":
+        if not PATH.match(v):
+            raise DeclError(f"{kind}: {key}={v} is not a path (no blanks, no quotes)")
         return v
     if v not in shape:
         raise DeclError(f"{kind}: {key}={v} is not one of {'|'.join(shape)}")
@@ -180,6 +189,15 @@ class LoadError:
 
 def sort_key(d: Decl, order: dict[str, int], default: str) -> tuple[int, int]:
     return (order.get(d.target or default, len(order)), d.lo)
+
+
+def unit_files(decls: list[Decl], target: str, default: str) -> dict[str, str]:
+    """unit -> its declared original file name (`file` declarations of one target; the first one per unit)."""
+    out: dict[str, str] = {}
+    for d in decls:
+        if d.kind == "file" and (d.target or default) == target:
+            out.setdefault(d.keys["tu"], d.keys["path"])
+    return out
 
 
 def load(files: list[Path], root: Path, targets: list[str]) -> tuple[list[Decl], list[LoadError]]:

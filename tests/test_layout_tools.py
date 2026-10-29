@@ -11,7 +11,7 @@ from conftest import dcp, make_project
 
 from decompanion.config import Project
 from decompanion.ledger import query
-from decompanion.ledger.fact import Kind
+from decompanion.ledger.fact import Kind, Level
 
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
 needs_vc6 = pytest.mark.skipif(not (VC6 / "VC98" / "Bin" / "CL.EXE").exists(), reason="VC6 not installed")
@@ -227,12 +227,24 @@ def test_bytes_dead_owned_by_the_unit(tmp_path):
     assert not errors(root)
 
 
-def test_l10_fragment_without_bytes(tmp_path):
+def test_declared_start_is_walked(tmp_path):
     root = patched(tmp_path)
     assert dcp(root, "decl", "add", "0x10001058 start -- a function only a table reaches (test)")[0] == 0
     assert dcp(root, "unit", "new", "tail", "--range", "0x10001050..0x10001060", "--by", "guess", "--why", "f4")[0] == 0
     code, out = dcp(root, "draft", "0x10001058")
     assert code == 0, out
+    p = Project(root)
+    walked = {f.lo: f for f in p.store.facts(Kind.symbol) if f.run == "S.codewalk"}
+    assert walked[0x10001058].level is Level.declared and walked[0x10001058].hi == 0x1000105b   # xor eax,eax; ret
+    assert not [c for c in p.store.conflicts() if c.check == "L10"]
+    assert dcp(root, "check")[0] == 0
+
+
+def test_l10_fragment_without_bytes(tmp_path):
+    root = patched(tmp_path)
+    assert dcp(root, "unit", "new", "tail", "--range", "0x10001050..0x10001060", "--by", "guess", "--why", "f4")[0] == 0
+    (root / "src" / "tail" / "f_10001058.c").write_text("/* 0x10001058, only the source names this start */\n"
+                                                        "int f5(void)\n{\n    return 0;\n}\n", newline="\n")
     code, out = dcp(root, "layout", "units", "-v")
     assert "L10" in out
     l10 = [c for c in Project(root).store.conflicts() if c.check == "L10"]
