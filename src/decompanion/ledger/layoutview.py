@@ -9,7 +9,7 @@ import bisect
 from dataclasses import dataclass, field
 
 from ..rules import layout as L
-from . import ghidra
+from . import drafts
 from .fact import Kind, Level
 
 
@@ -156,7 +156,7 @@ def next_records(v: View, count: int = 1, start: int | None = None):
         nxt = starts_sorted[k] if k < len(starts_sorted) else v.game[1]
         rec = {"addr": lo, "kind": what, "size": (nxt - lo) if what != "unknown" else (hi - lo), "next_start": nxt,
                "unit": u.tu if u else None, "unit_status": (v.unit_fact(u).value["status"] if u else None),
-               "ghidra": ghidra.draft(v.store, img_sha, lo) is not None, "lines": []}
+               "analyzed": drafts.draft(v.store, img_sha, lo) is not None, "lines": []}
         if what == "func":
             rec["extent"] = (f.lo, f.hi)
         for s in v.starts.get(lo, []):

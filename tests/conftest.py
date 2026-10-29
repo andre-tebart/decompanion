@@ -133,7 +133,19 @@ reason = "test project"
 
 [libs]
 archives = []
+
+[analyzer]
+plugin = "none"
 '''
+
+
+def use_rea(root: Path, path: Path):
+    """Switch the project's analyzer to `rea` reading the batch_decompile file `path`."""
+    cfg = root / "decompanion.toml"
+    text = cfg.read_text()
+    assert '[analyzer]\nplugin = "none"\n' in text
+    text = text.replace('[analyzer]\nplugin = "none"\n', f'[analyzer]\nplugin = "rea"\nfile = "{path.as_posix()}"\n')
+    cfg.write_text(text, newline="\n")
 
 
 def make_project(d: Path, two: bool = False) -> Path:

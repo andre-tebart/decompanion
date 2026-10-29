@@ -3,7 +3,7 @@
 Loaders turn typed state into declared facts (rules/engine.py `loader`):
   L.decl     decl/*.dcl (ledger/decl.py)
   L.src      the address comments of the sources (ledger/srcscan.py)
-  L.ghidra   the starts of imported Ghidra drafts (ledger/ghidra.py)
+  L.analyzer the starts of the analyzer's drafts (ledger/drafts.py)
 Computed:
   L.analyze      boundary evidence per function: literal first users (B-LIT), the fill before a start (B-FILL),
                  leaked source paths (B-LEAK)
@@ -11,8 +11,8 @@ Computed:
   M.bytes.declared  declared dead / foreign bytes inside a unit belong to it (R5)
 Checks: L1 (a source start inside other code), L3 (literal order contradicts the unit order), L4 (a boundary
 not at a start / inside fill), L5 (a placeholder name that spells no start), L6 (a declaration the facts now
-contradict), L7 (extents overlap, a source outside its unit), L8 (two leaked paths in one unit), L9 (a Ghidra
-function body spans one of our starts, warning), L10 (walked code inside a unit that no fragment, declaration
+contradict), L7 (extents overlap, a source outside its unit), L8 (two leaked paths in one unit), L9 (an
+analyzer's function body spans one of our starts, warning), L10 (walked code inside a unit that no fragment, declaration
 or other function explains, warning), L11 (address comment vs file name, in L.src). L2 (a function of a unit
 without a source fragment, "undrafted") is informational: `dcp layout next` / `dcp layout units` report it, it
 is no conflict.
@@ -440,22 +440,23 @@ def load_src(ctx: RuleContext):
                                a=b1, b=b2)
 
 
-@rule("L.ghidra", version="2", ceiling=DE, outputs=("start",), inputs=("ghidra",), loader=True)
-def load_ghidra(ctx: RuleContext):
-    """Every imported Ghidra draft (`dcp ghidra export` / `dcp ghidra import`) whose entry lies in a code section
-    is a declared function start (how ghidra, reason "ghidra analysis"; value: Ghidra's name and, from an
-    export, its body's size in bytes): Ghidra's function discovery is an external tool's claim, so it is a
-    declaration, never a computed fact. A function Ghidra made at one of our own starts (seeded by `dcp ghidra
-    export`) is no claim of Ghidra's and gives no start fact."""
+@rule("L.analyzer", version="3", ceiling=DE, outputs=("start",), inputs=("drafts",), loader=True)
+def load_analyzer(ctx: RuleContext):
+    """Every draft of the analyzer (`dcp setup` runs its export; analyzers/) whose entry lies in a code section is
+    a declared function start (how = the analyzer's key, by decl:analyzer:<key>:<file>, reason "<key>
+    analysis"; value: the analyzer's name and, when it reports ranges, its body's size in bytes): an external
+    tool's function discovery is a claim, so it is a declaration, never a computed fact. A function the
+    analyzer made at one of our own starts on our request (seeded: Ghidra's export creates one where it has
+    none) is no claim of the analyzer's and gives no start fact."""
     code = code_ranges(ctx.image)
-    for e in ctx.input("ghidra"):
+    for e in ctx.input("drafts"):
         if in_ranges(e.start, code) and not e.seeded:
-            v = {"skind": "func", "how": "ghidra"}
+            v = {"skind": "func", "how": e.analyzer}
             if e.name:
                 v["name"] = e.name
             if e.size is not None:
                 v["size"] = e.size
-            yield ctx.declared(e.start, e.start + 1, Kind.start, v, f"decl:ghidra:{e.source}", "ghidra analysis")
+            yield ctx.declared(e.start, e.start + 1, Kind.start, v, f"decl:analyzer:{e.analyzer}:{e.source}", f"{e.analyzer} analysis")
 
 
 # ------------------------------------------------------------------------------------------------ L.analyze
@@ -808,22 +809,22 @@ def our_starts(ctx) -> tuple[dict, set]:
     return ours, inner
 
 
-@rule("L9.ghidra.span", version="1", ceiling=DE, inputs=("ghidra",),
+@rule("L9.analyzer.span", version="2", ceiling=DE, inputs=("drafts",),
       needs=("L.decl", "L.src", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.codewalk", "S.thunk"),
       helpers=(our_starts, game_range, lib_starts_of))
-def ghidra_span(ctx: RuleContext):
-    """L9 (warning): an imported Ghidra function of the game code (its entry before the first library byte)
-    whose body (its address ranges, `dcp ghidra export`) holds one of our function starts other than its own
-    entry: a start fact of any producer but L.ghidra (export, entry, library, walk, declaration, fragment) or
-    the start of a placed or walked function; inner labels of a walked function do not count. Ghidra merged two
-    functions (typically across a call that does not return): its pseudocode holds both, and a draft from it
-    must stop at our start. A warning, not an error: Ghidra's body is an external tool's analysis (a
-    declaration), our starts rest on the bytes and stated conventions. Library code is placed by its own
-    members' bytes; Ghidra's view of it is no layout question and is not checked."""
+def analyzer_span(ctx: RuleContext):
+    """L9 (warning): an analyzer's function of the game code (its entry before the first library byte) whose
+    body (its address ranges, when the analyzer reports them: Ghidra's export does) holds one of our function
+    starts other than its own entry: a start fact of any producer but L.analyzer (export, entry, library, walk,
+    declaration, fragment) or the start of a placed or walked function; inner labels of a walked function do
+    not count. The analyzer merged two functions (typically across a call that does not return): its
+    pseudocode holds both, and a draft from it must stop at our start. A warning, not an error: the body is an
+    external tool's analysis (a declaration), our starts rest on the bytes and stated conventions. Library code
+    is placed by its own members' bytes; the analyzer's view of it is no layout question and is not checked."""
     ours, inner = our_starts(ctx)
     keys = sorted(a for a in ours if a not in inner)
     glo, ghi, _ = game_range(ctx.image, lib_starts_of(ctx.facts(Kind.symbol)))
-    for e in ctx.input("ghidra"):
+    for e in ctx.input("drafts"):
         if not (glo <= e.start < ghi):
             continue
         hits = []
@@ -836,10 +837,10 @@ def ghidra_span(ctx: RuleContext):
         if hits:
             hits.sort()
             yield ctx.conflict(Severity.warn, "L9", e.start, max(hi for _, hi in e.ranges),
-                               f"Ghidra's function {e.start:#x} ({e.name or '-'}, {e.size} bytes) spans our start"
+                               f"{e.analyzer}'s function {e.start:#x} ({e.name or '-'}, {e.size} bytes) spans our start"
                                f"{'s' if len(hits) > 1 else ''} " + ", ".join(f"{a:#x} ({ours[a]})" for a in hits[:6])
                                + (f" (+{len(hits) - 6} more)" if len(hits) > 6 else "") + ": its draft holds more than one function",
-                               a=f"decl:ghidra:{e.source}")
+                               a=f"decl:analyzer:{e.analyzer}:{e.source}")
 
 
 @rule("L10.unexplained", version="1", ceiling=DE, needs=("L.unit.extent", "L.src", "M.match", "S.codewalk", "L.decl"))

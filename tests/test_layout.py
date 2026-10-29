@@ -1,4 +1,4 @@
-"""Layout rules on the synthetic dll: loaders, evidence, unit extents, the checks, propose, the Ghidra import."""
+"""Layout rules on the synthetic dll: loaders, evidence, unit extents, the checks, propose, the analyzer's drafts."""
 import json
 from pathlib import Path
 
@@ -100,7 +100,10 @@ def test_propose(tiny):
     assert "unit=net" in out and "status=separated" in out
 
 
-def test_ghidra_import(tiny, tmp_path):
+def test_rea_analyzer(tiny, tmp_path):
+    """[analyzer] plugin = "rea": dcp setup reads the saved batch_decompile file (the export), L.analyzer declares
+    its starts, a second setup is a no-op, an edited file is read again, a foreign digest is skipped."""
+    from conftest import use_rea
     p = Project(tiny)
     j = {"subject": {"digest": {"sha256": p.image.sha256}},
          "normalized_result": {"items": [
@@ -109,17 +112,30 @@ def test_ghidra_import(tiny, tmp_path):
              {"address": "0x10001000", "status": "error", "error": "timeout"}]}}
     f = tmp_path / "batch.json"
     f.write_text(json.dumps(j), newline="\n")
-    code, out = dcp(tiny, "ghidra", "import", str(f))
-    assert code == 0 and "imported=1" in out and "failed=1" in out
-    starts = [s for s in facts(tiny, Kind.start) if s.value["how"] == "ghidra"]
-    assert [(s.lo, s.level, s.reason, s.by) for s in starts] == [(0x10001050, Level.declared, "ghidra analysis", "decl:ghidra:batch.json")]
-    code, out = dcp(tiny, "ghidra", "show", "0x10001052")
-    assert code == 0 and "int FUN_10001050(void)" in out
+    use_rea(tiny, f)
+    code, out = dcp(tiny, "setup")
+    assert code == 0 and "analyzer=rea  exported=1  failed=1" in out, out
+    assert "analyzer=rea  drafts=1  export=up-to-date" in out
+    starts = [s for s in facts(tiny, Kind.start) if s.value["how"] == "rea"]
+    assert [(s.lo, s.level, s.reason, s.by) for s in starts] == [(0x10001050, Level.declared, "rea analysis", "decl:analyzer:rea:batch.json")]
+    code, out = dcp(tiny, "setup")
+    assert code == 0 and "exported=" not in out                 # the same image, file and starts: nothing runs
+    code, out = dcp(tiny, "draft", "0x10001052", "--show")
+    assert code == 0 and "int FUN_10001050(void)" in out and out.startswith("/* rea draft of 0x10001050")
     code, out = dcp(tiny, "layout", "next", "--start", "0x10001050")
-    assert "ghidra=yes" in out
+    assert "analyzed=yes" in out
+    j["normalized_result"]["items"][0]["procedure"]["name"] = "Answer"
+    f.write_text(json.dumps(j), newline="\n")
+    code, out = dcp(tiny, "setup")
+    assert "analyzer=rea  exported=1" in out                    # the file changed: read again
+    assert [s.value.get("name") for s in facts(tiny, Kind.start) if s.value["how"] == "rea"] == ["Answer"]
+    code, out = dcp(tiny, "refs", "Answer")
+    assert "origin=analyzer" in out
     j["subject"]["digest"]["sha256"] = "0" * 64
     f.write_text(json.dumps(j), newline="\n")
-    assert dcp(tiny, "ghidra", "import", str(f))[0] == 1
+    code, out = dcp(tiny, "setup")
+    assert code == 0 and "analyzer=rea  exported=0" in out and "skipped=batch.json" in out, out
+    assert not [s for s in facts(tiny, Kind.start) if s.value["how"] == "rea"]
 
 
 def test_lit_issues_pure():

@@ -217,10 +217,10 @@ def source_files(root: Path) -> list[Path]:
 
 def cmd_refs(args):
     """Everything that names one function or datum: its definition and address comment, every fact that names
-    the address (name facts of every origin, declarations, the Ghidra draft), the symbol and unit there, every
+    the address (name facts of every origin, declarations, the analyzer's draft), the symbol and unit there, every
     reference to it and from it (with the ledger's names), and every line of src/ and include/ that mentions
     one of its names as a whole word or its address as a number."""
-    from .ledger import ghidra as G
+    from .ledger import drafts as G
     from .ledger.names import Names
     p, e = open_project(args)
     refresh(p, e)
@@ -251,7 +251,7 @@ def cmd_refs(args):
                 print("  " + record(start=f.value.get("how"), level=f.level.name, by=f.by))
         d = G.draft(st, p.image.sha256, a)
         if d is not None:
-            print("  " + record(ghidra=d.name or None, size=d.size, source=d.source) + "  (dcp ghidra show)")
+            print("  " + record(analyzer=d.analyzer, draft=d.name or None, size=d.size, source=d.source) + f"  (dcp draft {a:#x} --show)")
         lo, hi = (sym.lo, sym.hi) if sym is not None and sym.lo == a else (a, a + 1)
         refs_to = [f for f in st.facts(Kind.ref) if f.value.get("to") == a or (lo <= f.value.get("to", -1) < hi and not lo <= f.lo < hi)]
         refs_from = [f for f in st.facts(Kind.ref, lo, hi)] if hi > lo + 1 else []
@@ -416,10 +416,10 @@ def cmd_layout_literals(args):
 # ------------------------------------------------------------------------------------------------ layout starts
 def cmd_layout_starts(args):
     """Every function start in a range (default: the game code) with its evidence: every `how` of its start
-    facts (export, entry, crt, libref, call, tail, immediate, fptr, ghidra, decl, source), the number of code
+    facts (export, entry, crt, libref, call, tail, immediate, fptr, decl, source, the analyzer's key), the number of code
     sites that reach it (call, tail, immediate, relocation, operand), the size to the next start, the walk's
-    extent, what precedes it (B-FILL), its unit, whether a fragment drafts it and whether a Ghidra draft exists."""
-    from .ledger import ghidra as G
+    extent, what precedes it (B-FILL), its unit, whether a fragment drafts it and whether the analyzer has a draft."""
+    from .ledger import drafts as G
     from .ledger import layoutview as LV
     from .ledger.names import Names
     from .rules import layout as L
@@ -443,7 +443,7 @@ def cmd_layout_starts(args):
         if r.value["rkind"] in ("call", "tail", "immediate", "reloc", "operand"):
             callers[r.value["to"]] = callers.get(r.value["to"], 0) + 1
     ends = sorted(set(keys) | {sec.end for sec in p.image.sections if sec.holds_code})
-    ghidra = {x.start for x in G.entries(p.store)}
+    analyzed = {x.start for x in G.entries(p.store)}
     fn_at = {flo: (flo, fhi) for flo, fhi, _ in v.funcs}
     rows = [a for a in keys if lo <= a < hi]
     print(record(target=p.target_name, starts=len(rows), range=(lo, hi), game=(glo, ghi)))
@@ -454,5 +454,5 @@ def cmd_layout_starts(args):
         fl = v.fills.get(a) or {}
         print(record(start=a, how=",".join(sorted(starts[a] - {""})) or "symbol", callers=callers.get(a, 0), size=nxt - a,
                      extent=fn_at.get(a), fill=fl.get("pre"), unit=u.tu if u else None, drafted=a in v.sources,
-                     ghidra=a in ghidra, name=names.name(a)))
+                     analyzed=a in analyzed, name=names.name(a)))
     return 0

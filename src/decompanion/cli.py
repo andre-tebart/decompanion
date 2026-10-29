@@ -96,12 +96,44 @@ def target_names(args) -> list[str | None]:
 
 
 def cmd_setup(args):
+    """Run every rule; then, unless --no-analyzer, the configured analyzer's export when its key is stale (or
+    --analyzer-force) and the rules again (L.analyzer and what reads its facts); then the report. A missing
+    analyzer is a warning line, not a failure; a failed export exits 1 after the report."""
+    failed = False
     for i, name in enumerate(target_names(args)):
         if i:
             print()
         p, e = open_project(args, name)
         refresh(p, e, verbose=args.verbose, force=args.force)
+        if not args.no_analyzer:
+            failed = not run_analyzer(p, e, args) or failed
         cmd_report(args, p, e)
+    return 1 if failed else 0
+
+
+def run_analyzer(p, e, args) -> bool:
+    """The analyzer step of `dcp setup` (build/analyzer.py); False when the export failed."""
+    from .build import analyzer as AX
+    o = AX.run(p, force=args.analyzer_force)
+    if o.status == "unavailable":
+        print(f"analyzer={o.analyzer} unavailable: {o.reason}", file=sys.stderr)
+    elif o.status == "failed":
+        print(f"analyzer={o.analyzer} failed: {o.reason}", file=sys.stderr)
+        return False
+    elif o.status == "exported":
+        ex = o.export
+        out = ex.out.relative_to(p.root).as_posix() if ex.out is not None and ex.out.is_relative_to(p.root) else None
+        print(record(analyzer=o.analyzer, exported=o.stored, failed=len(ex.failed), skipped=len(ex.skipped) or None, ms=ex.ms,
+                     where=o.where, out=out))
+        for f in ex.failed[:20]:
+            print("  failed  " + f)
+        for f, digest in ex.skipped:
+            other = next((t.name for t in p.targets if t.name != p.target_name and p.image_of(t.name).sha256 == digest), None)
+            print("  " + record(skipped=f, sha256=digest[:16], target=other))
+        refresh(p, e, verbose=args.verbose)
+    if o.note:
+        print(f"analyzer={o.analyzer}: {o.note}", file=sys.stderr)
+    return True
 
 
 def candidate_entry(tc, e) -> str:
@@ -149,6 +181,8 @@ def cmd_report(args, p=None, e=None):
     if game:
         c = Counter(f.value["status"] for f in game)
         print(f"units: {len(game)}  " + "  ".join(f"{k}={v}" for k, v in sorted(c.items())) + "  (dcp layout units)")
+    from .cli_layout import print_analyzer
+    print_analyzer(p, getattr(args, "verbose", False))
     conf = st.conflicts()
     c = Counter(x.severity.value for x in conf)
     print("conflicts: " + ("  ".join(f"{k}={v}" for k, v in sorted(c.items())) if conf else "0"))
@@ -502,7 +536,7 @@ def cmd_layout_next(args):
         return
     for r in recs:
         print(record(next=r["addr"], kind=r["kind"], size=r["size"], next_start=r["next_start"], unit=r["unit"],
-                     unit_status=r["unit_status"], ghidra=r["ghidra"]))
+                     unit_status=r["unit_status"], analyzed=r["analyzed"]))
         for what, kv in r["lines"]:
             print("  " + what + "  " + record(**kv))
 
@@ -602,46 +636,6 @@ def cmd_layout_propose(args):
     return 1 if mine else 0
 
 
-# ------------------------------------------------------------------------------------------------- ghidra
-def cmd_ghidra_import(args):
-    from .ledger import ghidra as G
-    p, e = open_project(args)
-    img_sha = p.image.sha256
-    total = 0
-    for path in args.json_files:
-        digest, entries, failed = G.parse(Path(path))
-        if digest and digest != img_sha:
-            other = next((t.name for t in p.targets if t.name != p.target_name and p.image_of(t.name).sha256 == digest), None)
-            hint = f" (that is target {other}: --target {other})" if other else ""
-            print(f"dcp ghidra import: {path} analysed sha256 {digest[:16]}, target {p.target_name} is {img_sha[:16]}{hint}", file=sys.stderr)
-            return 1
-        n = G.store_entries(p.store, img_sha, entries)
-        total += n
-        print(record(file=Path(path).name, imported=n, failed=len(failed)))
-        for f in failed:
-            print("  failed  " + f)
-    p.forget_input("ghidra")
-    refresh(p, e)
-    print(record(target=p.target_name, drafts=len(G.entries(p.store)), imported=total))
-
-
-def cmd_ghidra_show(args):
-    from .ledger import ghidra as G
-    p, e = open_project(args)
-    refresh(p, e)
-    a = parse_addr(args.addr)
-    d = G.draft(p.store, p.image.sha256, a)
-    if d is None:
-        f = next((f for f in p.store.facts(Kind.symbol, a, a + 1) if f.value.get("skind") == "func"), None)
-        if f is not None:
-            d = G.draft(p.store, p.image.sha256, f.lo)
-    if d is None:
-        print(f"no Ghidra draft at {fmt_addr(a)} (dcp ghidra import JSON...)")
-        return 1
-    print(f"/* Ghidra draft of {fmt_addr(d.start)} {d.name} (requested {fmt_addr(d.requested)}, from {d.source}) */")
-    sys.stdout.write(d.text)
-
-
 # ------------------------------------------------------------------------------------------------- worktrees
 def cmd_wt_new(args):
     from .repo import wt
@@ -694,8 +688,11 @@ def main(argv=None):
     s.add_argument("-v", "--verbose", action="store_true")
     s.add_argument("--force", action="store_true", help="rerun every rule")
     s.add_argument("--all-targets", action="store_true", help="every target in config order")
-    s = cmd(sub, "report", cmd_report, "the setup report")
+    s.add_argument("--no-analyzer", action="store_true", help="skip the analyzer's export")
+    s.add_argument("--analyzer-force", action="store_true", help="export again although the export key is unchanged")
+    s = cmd(sub, "report", cmd_report, "the setup report (with the analyzer's drafts)")
     s.add_argument("--all-targets", action="store_true", help="every target in config order")
+    s.add_argument("-v", "--verbose", action="store_true", help="list every analyzer-only and ours-only start")
     s = cmd(sub, "why", cmd_why, "everything known about an address")
     s.add_argument("addr", nargs="+")
     s.add_argument("--refs", action="store_true")
@@ -793,16 +790,7 @@ def main(argv=None):
     from . import cli_layout as CLU
     CLU.register_unit(un, cmd)
 
-    g = sub.add_parser("ghidra", help="Ghidra drafts").add_subparsers(dest="sub", required=True)
-    s = cmd(g, "import", cmd_ghidra_import, "import saved REA batch_decompile results")
-    s.add_argument("json_files", nargs="+", metavar="JSON")
-    s = cmd(g, "show", cmd_ghidra_show, "print the Ghidra draft of a function")
-    s.add_argument("addr")
     from . import cli_layout as CL
-    s = cmd(g, "export", CL.cmd_ghidra_export, "Ghidra headless: decompile every function of the target and import the drafts")
-    s.add_argument("--force", action="store_true", help="export again although this image was exported with this script")
-    s = cmd(g, "status", CL.cmd_ghidra_status, "drafts, starts only Ghidra has, starts only we have, L9")
-    s.add_argument("-v", "--verbose", action="store_true", help="list everything")
     CL.register(sub, cmd)
 
     w = sub.add_parser("wt", help="worktrees with an overlay store").add_subparsers(dest="sub", required=True)

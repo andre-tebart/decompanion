@@ -10,20 +10,20 @@ Order (the first origin that names an address wins):
            toolchain (`_fclose` -> fclose); of `a|b` aliases the first in sorted order
   import   an import slot (`KERNEL32.dll!GetTickCount` -> GetTickCount) and the import thunk that jumps through
            it (`thunk:WS2_32.dll!#3`: by ordinal, no name)
-  ghidra   the name Ghidra gave a function it found (`dcp ghidra export`), unless it is Ghidra's own placeholder
-           (FUN_, thunk_FUN_, LAB_, SUB_)
-A thunk or slot imported by ordinal takes Ghidra's name for it when there is one (Ghidra knows the ordinals of
-the common system DLLs).
+  analyzer the name the analyzer gave a function it found (its drafts, `dcp setup`), unless the analyzer calls
+           it one of its own placeholders (Analyzer.is_placeholder; Ghidra: FUN_, thunk_FUN_, LAB_, ...)
+A thunk or slot imported by ordinal takes the analyzer's name for it when there is one (Ghidra knows the
+ordinals of the common system DLLs).
 """
 from __future__ import annotations
 
 import bisect
 import re
 
+from ..analyzers import dialect
 from .fact import Kind
 
-ORDER = ("source", "decl", "export", "entry", "lib", "import", "ghidra")
-GHIDRA_PLACEHOLDER = re.compile(r"^(?:thunk_)?(?:FUN|LAB|SUB|DAT|PTR)_[0-9a-fA-F]+$")
+ORDER = ("source", "decl", "export", "entry", "lib", "import", "analyzer")
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 
 
@@ -31,7 +31,7 @@ class Names:
     """address -> (C name, origin), name -> addresses; data symbols and strings for operand annotation."""
 
     def __init__(self, project, store):
-        from . import ghidra
+        from . import drafts
         self.project = project
         self.store = store
         tc = project.toolchain
@@ -52,9 +52,11 @@ class Names:
                 name = raw
             if name and IDENT.match(name):
                 cands.setdefault(f.lo, []).append((rank.get(origin, len(ORDER)), name, origin))
-        for e in ghidra.entries(store):
-            if e.name and not GHIDRA_PLACEHOLDER.match(e.name) and IDENT.match(e.name):
-                cands.setdefault(e.start, []).append((rank["ghidra"], e.name, "ghidra"))
+        az = {}
+        for e in drafts.entries(store):
+            d = az.get(e.analyzer) or az.setdefault(e.analyzer, dialect(e.analyzer))
+            if e.name and not d.is_placeholder(e.name) and IDENT.match(e.name):
+                cands.setdefault(e.start, []).append((rank["analyzer"], e.name, "analyzer"))
         self.at: dict[int, tuple[str, str]] = {}
         self.by_name: dict[str, list[int]] = {}
         for a, cs in cands.items():

@@ -140,16 +140,43 @@ def cmd_unit_rename(args):
 
 
 # ------------------------------------------------------------------------------------------------ draft
+def show_draft(p, e, args):
+    """The analyzer's draft of the function at (or around) ADDR, unchanged: a comment line, then its text."""
+    from .cli import fmt_addr
+    from .cli_read import resolve
+    from .ledger import drafts as G
+    from .ledger.names import Names
+    refresh(p, e)
+    if not args.addr:
+        return err("draft", "--show needs ADDR")
+    a = resolve(p, Names(p, p.store), args.addr)
+    if a is None:
+        return err("draft", f"{args.addr}: no such address or name")
+    d = G.draft(p.store, p.image.sha256, a)
+    if d is None:
+        f = next((f for f in p.store.facts(Kind.symbol, a, a + 1) if f.value.get("skind") == "func"), None)
+        if f is not None:
+            d = G.draft(p.store, p.image.sha256, f.lo)
+    if d is None:
+        print(f"no draft at {fmt_addr(a)} (analyzer={p.analyzer.key}; dcp setup runs its export)")
+        return 1
+    print(f"/* {d.analyzer} draft of {fmt_addr(d.start)} {d.name} (requested {fmt_addr(d.requested)}, from {d.source}) */")
+    sys.stdout.write(d.body)
+    return 0
+
+
 def cmd_draft(args):
-    """Write the fragment of the function at ADDR (source/draft.py): the address comment, Ghidra's pseudocode with
-    the ledger's names (else a @rough skeleton with the disassembly), the declarations it needs. --next drafts the
-    function `dcp layout next` shows."""
+    """Write the fragment of the function at ADDR (source/draft.py): the address comment, the analyzer's pseudocode
+    with the ledger's names (else a @rough skeleton with the disassembly), the declarations it needs. --next drafts
+    the function `dcp layout next` shows. --show prints the analyzer's draft as it stored it and writes nothing."""
     from .cli_read import resolve
     from .ledger import layoutview as LV
     from .ledger.names import Names
     from .source import draft as DR
     from .source import edit as E
     p, e = open_project(args)
+    if args.show:
+        return show_draft(p, e, args)
     v = view_of(p, e)
     names = Names(p, p.store)
     if args.next:

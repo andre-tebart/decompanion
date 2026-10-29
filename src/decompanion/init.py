@@ -40,6 +40,12 @@ archives = [{archives}]
 [sources]
 roots = ["src"]
 include = ["include"]
+
+[analyzer]
+# The third-party analyzer `dcp setup` runs for a draft of every function (src/decompanion/analyzers/): "ghidra"
+# (headless; root, java_home, timeout = seconds per function), "rea" (file = saved batch_decompile results),
+# "none" (dcp draft writes @rough skeletons from the disassembly). Its function starts are declarations.
+{analyzer}
 '''
 
 
@@ -109,6 +115,21 @@ TOOLCHAIN_ROOT_MISSING = ("the toolchain root is required: the directory of the 
                           "binary was built with (VC6: the folder that holds VC98/), e.g. --toolchain-root C:/Tools/MSVC600")
 
 
+def analyzer_lines() -> list[str]:
+    """The [analyzer] keys of a new project: the default analyzer with the installation it finds, else none."""
+    from . import analyzers
+    cls = analyzers.get(None)
+    inst = cls({}, None).available()
+    if not inst.ok:
+        return [f"# {cls.key}: {inst.reason}", 'plugin = "none"']
+    out = [f"plugin = {toml_str(cls.key)}"]
+    for k in ("root", "java_home"):
+        v = inst.detail.get(k)
+        if v is not None:
+            out.append(f"{k} = {toml_str(Path(v).as_posix())}")
+    return out
+
+
 def toolchain_plugin(key: str | None):
     """The toolchain plugin class `key`, else the only registered one."""
     key = key or toolchain_plugins.default_key()
@@ -148,7 +169,7 @@ def init_project(dir_: Path, target: Path, toolchain_root: str, name: str | None
     files = {
         "decompanion.toml": CONFIG.format(
             name=name, plugin=toml_str(tc.key), tc_root=toml_str(toolchain_root), archives=", ".join(toml_str(a) for a in archives),
-            target_block="\n".join(target_block(tname, target, sha, fmt, isa, compiler, linker, cflags, reason)) + "\n"),
+            analyzer="\n".join(analyzer_lines()), target_block="\n".join(target_block(tname, target, sha, fmt, isa, compiler, linker, cflags, reason)) + "\n"),
         ".gitattributes": GITATTRIBUTES,
         ".gitignore": GITIGNORE,
         ".editorconfig": "root = true\n\n[*]\ncharset = utf-8\nend_of_line = lf\ninsert_final_newline = true\n",
@@ -173,6 +194,7 @@ def init_project(dir_: Path, target: Path, toolchain_root: str, name: str | None
     print(f"initialised {dir_} for {target.name} as target {tname} (sha256 {sha[:16]})")
     print(f"  declared: image={fmt} isa={isa} toolchain={tc.key} compiler={compiler or '-'} linker={linker or '-'} "
           f"cflags={' '.join(cflags) or '-'}  reason={reason!r}")
+    print("  analyzer: " + "  ".join(l for l in analyzer_lines() if not l.startswith("#")))
     if skills:
         print(f"  skills: {', '.join(sorted({s.split('/')[2] for s in skills}))} in .claude/skills/ (dcp skills install updates them)")
     print("next: cd there, uv sync, uv run dcp toolchain (verify the declaration), uv run dcp setup")

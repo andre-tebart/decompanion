@@ -3,7 +3,7 @@
 A worktree is a git worktree of the target project at ../<project>-wt/<NAME> on branch wt/<NAME>. Its build/
 starts empty; .dcp/main_store names the main checkout's build directory, and every store of the worktree
 (build/<target>.sqlite) overlays main's store of the same target: a rule run whose inputs main already ran
-is copied from main instead of recomputed, blobs (Ghidra drafts, disassembly) are read from main. `dcp seed
+is copied from main instead of recomputed, blobs (the analyzer's drafts, disassembly) are read from main. `dcp seed
 PATH` is the plain-copy fallback: it copies this checkout's stores into another checkout's build/.
 """
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """The layout tooling of milestone 4 on the synthetic dll: the reading commands (disasm, dump, refs, layout
 literals / starts), drafting (unit new, draft, rename, unit rename, unit join, names.log), L9, L10, declared
-dead bytes owned by their unit, the Ghidra status, the session gate and report, the skills."""
+dead bytes owned by their unit, the analyzer lines of the report, the session gate and report, the skills."""
 import json
 import subprocess
 from pathlib import Path
@@ -27,8 +27,10 @@ def errors(root) -> list:
     return [c for c in Project(root).store.conflicts() if c.severity.value in ("bug", "error")]
 
 
-def ghidra(root: Path, tmp: Path, items: list) -> int:
-    """Import a Ghidra JSON (the export's shape) with these items: (address, name, pseudocode, body ranges)."""
+def analyze(root: Path, tmp: Path, items: list) -> int:
+    """Drafts from a batch_decompile file (the Ghidra export's shape, read by the `rea` analyzer in dcp setup) with
+    these items: (address, name, pseudocode, body ranges)."""
+    from conftest import use_rea
     sha = Project(root).image.sha256
     js = {"subject": {"digest": {"sha256": sha}}, "normalized_result": {"items": [
         {"address": f"{a:#010x}", "status": "ok", "procedure": {"address": f"{a:#010x}", "name": n}, "pseudocode": text,
@@ -37,8 +39,9 @@ def ghidra(root: Path, tmp: Path, items: list) -> int:
         for a, n, text, rs in items]}}
     f = tmp / "export.json"
     f.write_text(json.dumps(js), newline="\n")
-    code, out = dcp(root, "ghidra", "import", str(f))
-    assert code == 0, out
+    use_rea(root, f)
+    code, out = dcp(root, "setup")
+    assert code == 0 and f"exported={len(items)}" in out, out
     return code
 
 
@@ -85,7 +88,7 @@ def test_layout_starts_and_literals(tiny):
 # ------------------------------------------------------------------------------------------------ drafting
 def test_unit_new_draft_rename(tiny, tmp_path):
     assert dcp(tiny, "setup")[0] == 0
-    ghidra(tiny, tmp_path, [(0x10001000, "FUN_10001000", F1, [(0x10001000, 0x1000100f)]),
+    analyze(tiny, tmp_path, [(0x10001000, "FUN_10001000", F1, [(0x10001000, 0x1000100f)]),
                             (0x10001020, "FUN_10001020", F2, [(0x10001020, 0x10001026)])])
     code, out = dcp(tiny, "unit", "new", "net", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code")
     assert code == 0, out
@@ -94,9 +97,9 @@ def test_unit_new_draft_rename(tiny, tmp_path):
     assert (tiny / "src/net/open.md").read_text().startswith("# net\n\n## Open work\n")
     assert "NET_H" in (tiny / "include/net.h").read_text()
     n_err = len(errors(tiny))
-    # f1 from Ghidra: the callees spelled as placeholders of their unit, the data label kept, declarations added
+    # f1 from the analyzer (Ghidra's dialect): the callees spelled as placeholders of their unit, the data label kept, declarations added
     code, out = dcp(tiny, "draft", "--next")
-    assert code == 0 and "drafted=0x10001000" in out and "body=ghidra" in out, out
+    assert code == 0 and "drafted=0x10001000" in out and "body=rea" in out, out
     f1 = (tiny / "src/net/f_10001000.c").read_text()
     assert f1.startswith("/* 0x10001000, net_10001000 */\nvoid net_10001000(void)\n{")
     assert "net_10001020();" in f1 and "net_10001030();" in f1 and "DAT_10002000 = 0;" in f1
@@ -111,7 +114,7 @@ def test_unit_new_draft_rename(tiny, tmp_path):
     assert (tiny / "src/net/f_10001020.c").read_text().startswith("/* 0x10001020, net_10001020 */\nundefined4 net_10001020(void)\n")
     assert "net_10001020" not in (tiny / "src/net/head.c").read_text()
     assert "undefined4 net_10001020(void);" in (tiny / "include/net.h").read_text()
-    # f3 without a Ghidra draft: the @rough skeleton with the disassembly
+    # f3 without a draft: the @rough skeleton with the disassembly
     code, out = dcp(tiny, "draft", "--next")
     assert "drafted=0x10001030" in out and "body=skeleton" in out, out
     f3 = (tiny / "src/net/f_10001030.c").read_text()
@@ -172,15 +175,16 @@ def test_unit_join(tiny):
 
 
 # ------------------------------------------------------------------------------------------------ checks
-def test_l9_and_ghidra_status(tiny, tmp_path):
+def test_l9_and_analyzer_report(tiny, tmp_path):
     assert dcp(tiny, "setup")[0] == 0
-    ghidra(tiny, tmp_path, [(0x10001000, "FUN_10001000", F1, [(0x10001000, 0x10001040)]),
+    analyze(tiny, tmp_path, [(0x10001000, "FUN_10001000", F1, [(0x10001000, 0x10001040)]),
                             (0x10001058, "FUN_10001058", F2, [(0x10001058, 0x1000105b)])])
     l9 = [c for c in Project(tiny).store.conflicts() if c.check == "L9"]
     assert len(l9) == 1 and l9[0].severity.value == "warn" and "0x10001020" in l9[0].message and "0x10001030" in l9[0].message
-    code, out = dcp(tiny, "ghidra", "status")
-    assert code == 0 and "drafts=2" in out and "l9=1" in out and "ghidra_only=1" in out and "ours_only=3" in out, out
-    assert "ghidra_only=0x10001058" in out
+    code, out = dcp(tiny, "report")
+    assert code == 0 and "analyzer=rea  drafts=2  export=up-to-date" in out, out
+    assert "l9=1" in out and "analyzer_only=1" in out and "ours_only=3" in out, out
+    assert "analyzer_only=0x10001058" in out
     code, out = dcp(tiny, "check", "--strict")
     assert code == 1 and "L9" in out
 
@@ -296,13 +300,55 @@ def test_skills_install(tiny):
     assert "skills=0" in out                                 # nothing changed
 
 
-def test_ghidra_export_without_ghidra(tiny, capsys):
+def test_setup_without_ghidra(tiny, capsys):
+    """The configured analyzer is missing: one warning line, setup still exits 0, nothing else breaks."""
     cfg = tiny / "decompanion.toml"
-    cfg.write_text(cfg.read_text() + '\n[ghidra]\nroot = "C:/nowhere/ghidra"\n', newline="\n")
-    code, out = dcp(tiny, "ghidra", "export")
-    assert code == 1
-    assert "Ghidra not found ([ghidra] root = C:" in capsys.readouterr().err
+    cfg.write_text(cfg.read_text().replace('plugin = "none"', 'plugin = "ghidra"\nroot = "C:/nowhere/ghidra"'), newline="\n")
+    code, out = dcp(tiny, "setup")
+    assert code == 0 and "analyzer=ghidra  drafts=0  export=none" in out, out
+    err = [l for l in capsys.readouterr().err.splitlines() if l.startswith("analyzer=")]
+    assert len(err) == 1 and err[0].startswith("analyzer=ghidra unavailable: Ghidra not found ([analyzer] root = C:/nowhere/ghidra)")
     assert dcp(tiny, "layout", "next")[0] == 0               # nothing else breaks
+    code, out = dcp(tiny, "setup", "--no-analyzer")
+    assert code == 0 and "unavailable" not in capsys.readouterr().err
+
+
+def test_no_analyzer_drafts_rough_skeletons(tiny, capsys):
+    """plugin = "none": setup exports nothing (one warning line), dcp draft writes a @rough skeleton from the
+    disassembly."""
+    code, out = dcp(tiny, "setup")
+    assert code == 0 and "analyzer=none  drafts=0" in out, out
+    err = [l for l in capsys.readouterr().err.splitlines() if l.startswith("analyzer=")]
+    assert err == ["analyzer=none: no analyzer configured: no drafts, dcp draft writes @rough skeletons"]
+    assert dcp(tiny, "unit", "new", "net", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code")[0] == 0
+    code, out = dcp(tiny, "draft", "--next")
+    assert code == 0 and "drafted=0x10001000" in out and "body=skeleton" in out, out
+    f1 = (tiny / "src/net/f_10001000.c").read_text()
+    assert f1.startswith("/* 0x10001000, net_10001000 @rough */\nvoid __cdecl net_10001000(void)\n{\n    /* disassembly")
+    assert not (tiny / "include/dcp_ghidra.h").exists()
+
+
+def test_analyzer_registry():
+    from decompanion import analyzers
+    from decompanion.analyzers.base import Analyzer
+    assert {"ghidra", "rea", "none"} <= set(analyzers.ANALYZERS)
+    assert analyzers.DEFAULT == "ghidra" and analyzers.get(None) is analyzers.ANALYZERS["ghidra"]
+    assert analyzers.get("nothing") is None
+    for key, cls in analyzers.ANALYZERS.items():
+        assert issubclass(cls, Analyzer) and cls.key == key
+    g = analyzers.dialect("ghidra")
+    assert g.is_placeholder("FUN_10001000") and g.is_placeholder("thunk_FUN_10001000") and not g.is_placeholder("Init")
+    assert g.data_labels("x = PTR_s_hello_10002030 + DAT_10002000;") == {0x10002030: "undefined *", 0x10002000: "undefined4"}
+    assert analyzers.dialect("rea").types_header == g.types_header and analyzers.dialect("none").types_header is None
+    assert analyzers.ANALYZERS["none"]({}, None).available().ok
+    assert not analyzers.ANALYZERS["rea"]({}, None).available().ok      # no file named
+
+
+def test_unknown_analyzer(tiny, capsys):
+    cfg = tiny / "decompanion.toml"
+    cfg.write_text(cfg.read_text().replace('plugin = "none"', 'plugin = "ida"'), newline="\n")
+    assert dcp(tiny, "setup")[0] == 2
+    assert "unknown analyzer plugin 'ida'" in capsys.readouterr().err
 
 
 def test_rename_leaves_strings_and_includes():

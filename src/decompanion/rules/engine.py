@@ -23,10 +23,10 @@ A rule is a function decorated with @rule:
 - The run key is sha256(code of the function, version, out_hash of each needed run, hash of each input). A
   rule whose key matches a stored run is skipped; `dcp rules` shows which ran and how long they took.
   `helpers` (functions or modules the rule calls) join the code hash, so editing a helper reruns the rule.
-- A `loader` rule (L.decl, L.src, L.ghidra) turns typed state written by a human (a declarations file, the
-  sources, an imported Ghidra analysis) into facts. It is the only kind of rule that may emit facts whose
-  producer is a file line (`decl:<file>:<line>`, `src:<file>:<line>`) instead of the rule: ctx.declared()
-  stamps them at level declared and refuses a missing reason.
+- A `loader` rule (L.decl, L.src, L.analyzer) turns typed state written by a human or an external tool (a
+  declarations file, the sources, the analyzer's drafts) into facts. It is the only kind of rule that may
+  emit facts whose producer is a file line (`decl:<file>:<line>`, `src:<file>:<line>`) instead of the rule:
+  ctx.declared() stamps them at level declared and refuses a missing reason.
 """
 from __future__ import annotations
 

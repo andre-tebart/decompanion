@@ -1,10 +1,11 @@
-// Decompile every function of the current program and write one JSON file in the shape `dcp ghidra import`
-// reads (the REA batch_decompile result): subject.digest.sha256, normalized_result.items[] with address,
+// Decompile every function of the current program and write one JSON file in the REA batch_decompile shape
+// (what analyzers/ghidra.py `parse` reads): subject.digest.sha256, normalized_result.items[] with address,
 // status, procedure {address, name}, pseudocode, plus the function's body (start, end, size, ranges).
 // Usage (analyzeHeadless post-script): -postScript DcpExport.java <out.json> [<timeout seconds> [<starts file>]]
 // The starts file lists one hex address per line: function starts the ledger knows; where Ghidra has no function
 // the script creates one before decompiling (so every start of ours gets a draft), and reports how many it made.
-// Shipped with decompanion (src/decompanion/data/ghidra/); run by `dcp ghidra export`.
+// Shipped with decompanion (src/decompanion/data/ghidra/); run by the ghidra analyzer plugin
+// (src/decompanion/analyzers/ghidra.py) inside `dcp setup`.
 //@category decompanion
 
 import java.io.BufferedWriter;

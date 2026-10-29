@@ -24,6 +24,8 @@ The match phase (milestone 3) adds the tools themselves:
   entry_object(kind, dir)    a generated object the start-up code needs (None when the libraries hold it)
   module_definition(name, exports)   the export definition file text of a dll
   probe_grid()           the flag grid of `dcp toolchain probe`: (group, alternatives) pairs
+Drafting (milestone 4): declaring_header(name), import_header(dll), the language beyond standard C (keywords,
+default_convention, sized_conventions) that `dcp draft` spells declarations with.
 """
 from __future__ import annotations
 
@@ -217,6 +219,12 @@ class Toolchain:
     def import_header(self, dll: str) -> str | None:
         """The system header that declares the functions an imported DLL exports, None when unknown."""
         return None
+
+    # the language the compiler reads beyond standard C (`dcp draft` spells declarations with them)
+    keywords: frozenset = frozenset()       # the compiler's own keywords (calling conventions, extended types)
+    default_convention = ""                 # the calling convention a skeleton prototype spells ('' : none)
+    sized_conventions: tuple = ()           # conventions whose decorated name carries the parameters' size: a
+                                            # declaration of such a function needs its full prototype
 
     # -------------------------------------------------------------- the tools (milestone 3)
     def available(self) -> bool:

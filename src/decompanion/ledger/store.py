@@ -13,7 +13,7 @@ Tables
   run       rule, version, code_hash, input_hash, out_hash, current, ms, at
   fact      run_id, lo, hi, kind, value, level, by, reason      (only facts of current runs are visible)
   conflict  run_id, severity, check, lo, hi, message, a, b
-  blob      hash, kind, data                disassembly, include sets, logs, lib sections, Ghidra drafts
+  blob      hash, kind, data                disassembly, include sets, logs, lib sections, drafts
   bytemap   lo, hi, cls, level, symbol, unit, source, section   non-overlapping, total over the image
   tu        unit, amalg, src_hash, flags, flags_hash, include_hash, obj_hash, ok, log, diags, at
             one row per translation unit of the target (build/compile.py): the hashes of the last compile's
@@ -247,9 +247,13 @@ class Store:
 
     def put_blob(self, hash_: str, kind: str, data: bytes, replace: bool = False):
         """Store a blob. Content-addressed blobs never change (INSERT OR IGNORE); a blob keyed by something else
-        (a Ghidra draft keyed by image and start) is replaced when `replace`."""
+        (an analyzer's draft keyed by image and start) is replaced when `replace`."""
         verb = "INSERT OR REPLACE" if replace else "INSERT OR IGNORE"
         self.db.execute(f"{verb} INTO blob (hash, kind, data) VALUES (?, ?, ?)", (hash_, kind, data))
+
+    def drop_blobs(self, kind: str):
+        """Delete every blob of one kind from this store (never from the main store under an overlay)."""
+        self.db.execute("DELETE FROM blob WHERE kind=?", (kind,))
 
     def blobs(self, kind: str) -> dict[str, bytes]:
         """Every blob of one kind, main store first, the overlay's own replacing it: {hash: data}."""

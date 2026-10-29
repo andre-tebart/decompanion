@@ -63,7 +63,7 @@ def gate(args, quiet=False) -> tuple[bool, list, dict]:
 
 
 def overview(p):
-    """The unit table summary, the first open function and the toolchain level of one target."""
+    """The unit table summary, the first open function, the toolchain level and the analyzer of one target."""
     from .ledger import layoutview as LV
     v = LV.View.load(p, p.store)
     rows = LV.unit_rows(v)
@@ -80,7 +80,7 @@ def overview(p):
     recs = LV.next_records(v, 1)
     if recs:
         r = recs[0]
-        print("  " + record(next=r["addr"], kind=r["kind"], size=r["size"], unit=r["unit"], ghidra=r["ghidra"]))
+        print("  " + record(next=r["addr"], kind=r["kind"], size=r["size"], unit=r["unit"], analyzed=r["analyzed"]))
     else:
         print("  next: nothing open in the game code (layout complete when every unit is separated and named)")
     decl = p.toolchain_decl
@@ -88,6 +88,9 @@ def overview(p):
     proven = sorted(f.value["flag"] for f in probed if f.level.name == "proven")
     print("  " + record(toolchain=decl.get("compiler") or None, cflags=" ".join(decl.get("cflags") or []) or None,
                         level="declared" if not proven else "proven:" + ",".join(proven)))
+    from .ledger import drafts
+    n = len(drafts.entries(p.store))
+    print("  " + (record(analyzer=p.analyzer.key) if p.analyzer.key == "none" and not n else record(analyzer=p.analyzer.key, drafts=n)))
 
 
 def cmd_session_start(args):

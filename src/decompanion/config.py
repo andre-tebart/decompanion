@@ -13,10 +13,13 @@ decompanion.toml
                  (plugin default: the only registered one; compiler / linker / cflags / reason here are
                  defaults a target without its own inherits)
   [libs]         archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", ...]     (the default of every target)
-
-The plugins (image format, toolchain, object format, instruction set) come from the registries of their
-packages; this module names none of them.
   [sources]      roots = ["src"]  include = ["include"]
+  [analyzer]     plugin = "ghidra"  root = "C:/Tools/ghidra_12.1.4_PUBLIC"  java_home = "..."  timeout = 60
+                 (the third-party analyzer `dcp setup` runs for drafts; default: ghidra; plugin "rea" reads
+                 file = "..." (saved batch_decompile results), "none" exports nothing)
+
+The plugins (image format, toolchain, object format, instruction set, analyzer) come from the registries of
+their packages; this module names none of them.
 
 The single-table form `[target]` of milestone 1 is still read (one target named after the file's stem); `dcp
 target add` rewrites it into the list form.
@@ -34,6 +37,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
+from . import analyzers as analyzer_plugins
 from . import image as image_plugins
 from . import isa as isa_plugins
 from . import objfmt as objfmt_plugins
@@ -230,6 +234,17 @@ class Project:
         return plugin
 
     @cached_property
+    def analyzer(self):
+        """The analyzer plugin of [analyzer] plugin = ... (analyzers/; default: ghidra), with its table."""
+        cfg = self.cfg.get("analyzer") or {}
+        key = cfg.get("plugin") or analyzer_plugins.DEFAULT
+        plugin = analyzer_plugins.get(key)
+        if plugin is None:
+            raise ConfigError(f"unknown analyzer plugin {key!r} (known: {', '.join(analyzer_plugins.ANALYZERS)}); "
+                              f"name one with [analyzer] plugin = ...")
+        return plugin(cfg, self.expand)
+
+    @cached_property
     def objfmt(self):
         """The object-format plugin of the toolchain's objects and archives (objfmt/)."""
         plugin = objfmt_plugins.get(self.toolchain.object_format)
@@ -309,9 +324,9 @@ class Project:
             h = self.tree_hash([self.root / "decl"], ("*.dcl",))
         elif name == "src":
             h = self.tree_hash([self.root / "src", self.root / "include"], ("*.c", "*.h"))
-        elif name == "ghidra":
-            st = self.store
-            h = sha256(st.main_meta("ghidra") or "", st.meta("ghidra") or "")
+        elif name == "drafts":
+            from .ledger import drafts
+            h = drafts.input_hash(self.store)
         elif name == "toolchain":
             h = sha256(canonical(self.toolchain_decl))
         elif name == "targets":
@@ -333,7 +348,7 @@ class Project:
         return h
 
     def forget_input(self, name: str):
-        """Drop a memoised input hash (after a command changed the input, e.g. `dcp ghidra import`)."""
+        """Drop a memoised input hash (after a command changed the input, e.g. the analyzer's export)."""
         self._hashes.pop(name, None)
 
     @staticmethod
@@ -361,9 +376,9 @@ class Project:
             return sorted((self.root / "decl").glob("*.dcl")) if (self.root / "decl").exists() else []
         if name == "src":
             return self.root
-        if name == "ghidra":
-            from .ledger import ghidra
-            return ghidra.entries(self.store)
+        if name == "drafts":
+            from .ledger import drafts
+            return drafts.entries(self.store)
         if name == "toolchain":
             return self.toolchain_decl
         if name == "targets":

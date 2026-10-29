@@ -43,7 +43,7 @@ class Kind(StrEnum):
     section = "section"      # {name, chars, raw_lo, raw_hi}; exactly one per mapped byte
     region = "region"        # {what}: pe.header, pe.import_desc, pe.ilt, pe.iat, pe.names, pe.export_*, pe.reloc, pe.rsrc, pad
     symbol = "symbol"        # {skind, name?, extent}; exactly one per byte (unknown.code / unknown.data close the map)
-    start = "start"          # {skind: func, how}; a point fact: something starts here (export, entry, call, crt, fptr, decl, source, ghidra)
+    start = "start"          # {skind: func, how}; a point fact: something starts here (export, entry, call, crt, fptr, decl, source, <analyzer key>)
     name = "name"            # {name, origin}; origin: export, import, lib, entry, source, decl
     source = "source"        # {file, line, unit, symbol}
     unit = "unit"            # {tu, lib?} (library members) / {tu, status, start_level, end_level, ...} (game units, L.unit.extent)

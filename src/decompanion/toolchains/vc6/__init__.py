@@ -83,6 +83,9 @@ class VC6(Toolchain):
     function_alignment = FUNCTION_ALIGNMENT
     import_stub_size = STUB_SIZE
     stub_placement = STUB_PLACEMENT
+    keywords = frozenset("__cdecl __stdcall __fastcall __thiscall __int64 __declspec __asm".split())
+    default_convention = "__cdecl"                          # CL's default (/Gd)
+    sized_conventions = ("__stdcall", "__fastcall", "__thiscall")   # `_f@12`, `@f@8`: the name needs the parameters
 
     @property
     def fill_forms(self):
