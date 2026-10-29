@@ -19,7 +19,9 @@ The fixes, each the answer the check itself names:
       order): the longest run already in address order stays, every other definition moves in front of the
       definition that follows it in address order (or behind the last one before it), with its own-line
       comment and trailing comment (also one that runs on over the following lines); a non-static
-      definition that moves below its old place leaves `extern T x;` there for the uses in between. A
+      definition that moves below its old place leaves `extern T x;` there for the uses in between; a
+      definition that would move above a type, macro or declaration it uses (defined in between) is left
+      for a human (the move would not compile; move that one first). A
       statement with several declarators is left for a human.
 A fix that the scan cannot apply exactly (no such statement, no array, a room that is no whole number of
 elements, several declarators) is listed as `manual` with the reason.
@@ -316,6 +318,40 @@ def lis(seq: list[int]) -> set[int]:
     return out
 
 
+C_WORDS = {"auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern",
+           "float", "for", "goto", "if", "int", "long", "register", "return", "short", "signed", "sizeof", "static",
+           "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "__int8", "__int16",
+           "__int32", "__int64", "__cdecl", "__stdcall", "__fastcall", "__declspec"}
+
+
+def defined_in(code: str, idents: set[str]) -> str | None:
+    """The first of `idents` that the (comment-blanked) code defines or declares: a macro, a typedef name, a
+    struct / union / enum tag, an enum constant, a variable or function declaration. None when none is."""
+    for x in sorted(idents):
+        e = re.escape(x)
+        pats = (rf"#\s*define\s+{e}\b",
+                rf"\btypedef\b[^;]*?\b{e}\s*(?:\[[^\]]*\]\s*)*;", rf"\btypedef\b[^;]*\(\s*\*\s*{e}\s*\)",
+                rf"\b(?:struct|union|enum)\s+{e}\s*\{{", rf"\}}\s*{e}\s*[;,]",
+                rf"[{{,]\s*{e}\s*(?:=[^,}}]*)?[,}}]",
+                rf"\b[A-Za-z_][\w \t\*]*\b{e}\s*(?:\[[^\]]*\]\s*)*(?:=|;|,|\()")
+        if any(re.search(p, code) for p in pats):
+            return x
+    return None
+
+
+def between(files: Files, order: list[str], a: tuple[str, int], b: tuple[str, int]) -> str:
+    """The comment-blanked code of the unit from position a (file, offset) up to position b, in amalgamation
+    order (a before b)."""
+    rank = {f: i for i, f in enumerate(order)}
+    (fa, oa), (fb, ob) = a, b
+    if fa == fb:
+        return files.parsed(fa)[0].code[oa:ob]
+    parts = [files.parsed(fa)[0].code[oa:]]
+    parts += [files.parsed(f)[0].code for f in order[rank[fa] + 1:rank[fb]]]
+    parts.append(files.parsed(fb)[0].code[:ob])
+    return "\n".join(parts)
+
+
 def d4_edits(files: Files, model, unit_order: dict[str, list[str]]) -> tuple[list[Edit], list[str]]:
     """unit_order: unit -> its part files in amalgamation order."""
     edits, manual = [], []
@@ -347,6 +383,15 @@ def d4_edits(files: Files, model, unit_order: dict[str, list[str]]) -> tuple[lis
             t = later[0] if later else anchors[-1]
             tst = statement_at(files, t.file, t.line)
             at = tst.start if later else tst.end
+            up = (rank.get(t.file, len(rank)), at) < (rank.get(d.file, len(rank)), st.start)
+            if up and t.file in rank and d.file in rank:
+                code = files.parsed(d.file)[0].code
+                used = set(re.findall(r"[A-Za-z_]\w*", code[st.s0:st.s1])) - C_WORDS - {d.name}
+                x = defined_in(between(files, unit_order[unit], (t.file, at), (d.file, st.start)), used)
+                if x is not None:
+                    manual.append(f"D4 {d.name} {d.file}:{d.line}: it uses {x}, which the unit defines between "
+                                  f"{t.file} (before {t.name}) and its place; move {x} up first")
+                    continue
             block = files.text(d.file)[st.start:st.end]
             if not block.endswith("\n"):
                 block += "\n"

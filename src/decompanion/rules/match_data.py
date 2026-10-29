@@ -109,6 +109,17 @@ def content_hits(img, data: bytes, mask: bytes, limit: int = 2) -> list[int]:
     return out
 
 
+def padding_masked(data: bytes, mask: bytes, least: int) -> bytes:
+    """The mask with the possible alignment padding masked too: the zero bytes from the least size on (an
+    object's COFF size runs to the next symbol; the padding in front of it is zero in our object, a nonzero
+    byte there is the symbol's own and stays compared)."""
+    m = bytearray(mask)
+    for k in range(max(0, least), len(data)):
+        if data[k] == 0:
+            m[k] = 1
+    return bytes(m)
+
+
 def symbol_bytes(sym, size):
     """(bytes, mask) of a data symbol of an initialised section."""
     sec = sym.section
@@ -154,13 +165,13 @@ def data_site(ctx: RuleContext):
                                                 "extent": "site", "kind": kind or "-"}, P)
 
 
-@rule("M.data.content", version="2", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",),
+@rule("M.data.content", version="3", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",),
       helpers=(data_objects, site_confirmed, compiled_functions, starts_of, content_hits, masked_equal, symbol_bytes, extent,
-               least_size, C))
+               least_size, padding_masked, C))
 def data_content(ctx: RuleContext):
     """A data definition with an address comment that M.data.site does not place, defined in an initialised
-    section of its object with at least 4 bytes that are no relocated field and not all zero, whose bytes
-    (relocated fields masked) equal the image's at the declared address and occur at no other address of the
+    section of its object with at least 4 bytes that are no relocated field, no possible alignment padding
+    (padding_masked) and not all zero, whose bytes (relocated fields and possible padding masked) equal the image's at the declared address and occur at no other address of the
     image's initialised data sections: a `global` symbol proven {extent: content}. Found elsewhere only once
     and not at the declared address: an error (M.data.content): the declaration names another object's place."""
     img = ctx.image
@@ -169,6 +180,8 @@ def data_content(ctx: RuleContext):
         if sym is None or kind not in ("data", "rdata") or confirmed.get(f.lo) == f.value["symbol"]:
             continue
         data, mask = symbol_bytes(sym, size)
+        if data is not None:
+            mask = padding_masked(data, mask, least_size(sym, size))
         if data is None or sum(1 for k in range(len(data)) if not mask[k]) < 4 or not any(
                 data[k] for k in range(len(data)) if not mask[k]):
             continue

@@ -51,7 +51,7 @@ Without the toolchain installed nothing compiles; the units are reported as warn
 | `M.draft` (R2) | ≤ declared | a compiled function that is no match owns the walk's extent: a `source` fact (what: draft) with why it differs |
 | `M8.reloc` | proven | for a match, or a dll function whose absolute sites the aid lines up, at every relocation site where our instruction and the original's at the same offset are the same (equal size, equal outside our relocated fields): M8 our relocation names X registered elsewhere than the original's site holds; M9 string literal bytes differ; M10 float constant bits differ |
 | `M.data.site` | proven | a byte-matched function's relocation confirms a data definition's address comment |
-| `M.data.content` | proven | the definition's initialised bytes equal the image's at the declared address and occur nowhere else in initialised data |
+| `M.data.content` | proven | the definition's initialised bytes (relocated fields and possible alignment padding masked) equal the image's at the declared address and occur nowhere else in initialised data |
 | `M.data.draft` | declared | every other data definition with an address |
 | `D.data` | — | D1 extent overlaps the next symbol (an error when even the least size reaches it, a warning when only alignment padding may: COFF has no sizes, an object's size runs to the next symbol), D4 definition order vs address order per unit and section kind (in the amalgamation's order, `order` files included), D5 a tentative definition in uninitialised data, D6 a pointer-table entry refers elsewhere than the original's |
 
@@ -67,7 +67,7 @@ declarations in address order with section, size, room up to the next symbol, le
 dimension to the room before the next symbol (externs with the old dimension follow), only for D1 errors and
 only when it shrinks; D4 keeps the longest run of a unit's definitions already in address order and moves
 every other one in front of its successor by address (a non-static one moving down leaves `extern T x;` for
-the uses above). Without `--write` it lists the edits and the cases left for a human, with their reason.
+the uses above; one that would move above a type, macro or declaration it uses is left for a human). Without `--write` it lists the edits and the cases left for a human, with their reason.
 With `--write` it first compiles the sources (the checks read the objects), then trial-compiles each unit with
 its edits (build/obj/trial/, no store, no sources touched) and compares its functions: a unit keeps all its
 edits when it compiles and keeps every byte match, else each edit group is tried alone in parallel and only
