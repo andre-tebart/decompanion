@@ -84,7 +84,9 @@ Two grades per (function, target), computed by `G.grade` (rules/grade.py) into `
 **code** `draft → shape → byte`
 - B1 byte: M.match holds.
 - B2 shape: every differing hunk of the instruction diff is `fill`, `order` (same multiset), or explained by
-  the ISA (`regs`, `slots`, `order` after a register renaming, `sib`, `fpu`); or the leftover `code` hunks are
+  the ISA (`regs`, `slots`, `order` after a register renaming, `sib`, `fpu`; x86: `[esp + N]` is compared as it
+  was at the hunk's start, so a store moved across a `push` / `pop` is `order`, or `slots` when its slot changed
+  too); or the leftover `code` hunks are
   the same multiset on both sides; or one bijective register / slot renaming explains the whole function.
 - B3 draft: otherwise, or no compiled object.
 
@@ -92,7 +94,7 @@ Two grades per (function, target), computed by `G.grade` (rules/grade.py) into `
 definition, Q3 no image address literal, Q4 no `*(T *)` cast or macro hiding one, Q5 no ROUGH / SKELETON /
 TODO / FIXME / XXX / `@rough`, Q6 the address comment (or another comment) describes the function, Q7 every call
 goes through a prototype (only for units the last `dcp lint` parsed; otherwise not evaluated, and `dcp grade`
-says so).
+says so), Q8 our code is at least half the original's size (a stub or an unfinished body is no readable function).
 
 **unit**: code = the lowest of its functions; readable only when every function is and the unit's name has an
 origin other than `guess` (`boundary start ... by=leaked|tag`).

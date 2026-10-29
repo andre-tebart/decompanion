@@ -27,6 +27,9 @@ Readability rules, on the fragment's text (comments and strings blanked for the 
                   header starts with the function's address and carries text after it.
   Q7 prototypes   every call goes through a prototype (clang lint, `dcp lint`): evaluated only when a lint run
                   is recorded for the target (input `lint`); without one Q7 is not evaluated and says so.
+  Q8 complete     our compiled code is at least half the original's code size (the walk's or the source
+                  extent's): a stub (`void f(void) {}`) or an unfinished body cannot be followed as the original,
+                  however good its names (without it a named, described stub graded readable).
 Unit grades: code = the lowest code grade of its functions; readable only when every function is readable
 and the unit's name has an origin other than `guess` (its start boundary's `by=`).
 """
@@ -174,11 +177,11 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
     return q, qf
 
 
-@rule("G.grade", version="2", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
+@rule("G.grade", version="3", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
       inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, context, brace_end, DC, C,
                                                          build_compile.plan))
 def grade(ctx: RuleContext):
-    """The grades of every function fragment of the current target and of every unit (the rules B1..B3, Q1..Q7
+    """The grades of every function fragment of the current target and of every unit (the rules B1..B3, Q1..Q8
     and the unit grades of rules/grade.py's module docstring), as `grade` facts: a function's at its address
     {of: function, name, unit, file, code, readability, level (deep / stuck from the address comment's tag, ''
     for base), failing (the failing rules with evidence), dist (differing instructions, differing bytes, our
@@ -235,6 +238,9 @@ def grade(ctx: RuleContext):
     per_unit = {}
     for s, g, why, hunks, dist in sorted(rows, key=lambda r: r[0].lo):
         q, qf = readability_cached(ctx.store, p.root, tree, s.value, s.lo, rng, lint_calls if s.value["unit"] in linted else None)
+        if dist.get("size") and dist.get("orig") and dist["size"] * 2 < dist["orig"]:     # Q8: a stub is not readable
+            q, qf = "draft", qf + [f"Q8 complete: our code is {dist['size']} bytes, the original's {dist['orig']}: the body is "
+                                    f"a stub or unfinished (at least half the original's size)"]
         level = "stuck" if s.value.get("stuck") is not None else ("deep" if s.value.get("deep") is not None else "")
         v = {"of": "function", "name": s.value["symbol"], "unit": s.value["unit"], "file": s.value["file"], "code": g,
              "readability": q, "level": level, "failing": why + qf, "dist": dist}

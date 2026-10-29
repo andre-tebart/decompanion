@@ -14,8 +14,8 @@ deep queue, `dcp next --deep`), not this session's.
 Hard rules
 - Every tool is `uv run dcp ...` from the project root (`--target NAME` for a target other than the first).
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
-- Write and edit files only with the Write / Edit tools (UTF-8, LF). Never edit `build/` (derived state, the
-  store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` write it).
+- Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
+  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` write it).
 - The sources are the state: the address comment on line 1 of every fragment (`/* 0x10001234, what it does */`),
   the declarations in `decl/*.dcl`, renames in `names.log` (written by `dcp rename`), notes in
   `src/<unit>/open.md`. Nothing else; no session log.

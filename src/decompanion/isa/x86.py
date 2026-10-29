@@ -211,6 +211,34 @@ def rename_slots(lines, mapping):
     return [SLOT_RE.sub(lambda m: "[" + m[1] + mapping.get(m[2], m[2]) + "]", t) for t in lines]
 
 
+ESP_RE = re.compile(r"\[esp((?: [+-] " + NUM + r")?)\]")
+ESP_ADJ = re.compile(r"^(sub|add) esp, (" + NUM + r")$")
+
+
+def esp_normalised(lines):
+    """The lines with every `[esp + N]` rewritten to the offset it had at the first line (the bytes pushed by
+    `push` / `sub esp, N` before it are subtracted, `pop` / `add esp, N` added back): the same stack slot reads
+    the same on both sides of a hunk whose stores moved across a push. A `call` leaves esp as it was."""
+    out, delta = [], 0
+
+    def fix(m):
+        v = int(m[1].replace(" ", ""), 0) if m[1] else 0
+        v -= delta
+        return "[esp]" if v == 0 else (f"[esp + {hex(v)}]" if v > 0 else f"[esp - {hex(-v)}]")
+
+    for t in lines:
+        out.append(ESP_RE.sub(fix, t))
+        mn = t.split(" ", 1)[0]
+        a = ESP_ADJ.match(t)
+        if mn in ("push", "pushfd"):
+            delta += 4
+        elif mn in ("pop", "popfd"):
+            delta -= 4
+        elif a:
+            delta += int(a[2], 0) * (1 if a[1] == "sub" else -1)
+    return out
+
+
 def find_map(xa, xb, regex, norm, rename, gpr, limit=6):
     """A token renaming that makes xa equal to xb, or None."""
     if len(xa) != len(xb):
@@ -328,6 +356,17 @@ class X86(Isa):
                 rm = {k: v for k, v in zip(toks, perm) if k != v}
                 if rm and collections.Counter(rename_regs(xa, rm)) == collections.Counter(xb):
                     return "order", "same instructions, other order, after " + " ".join(f"{k}->{v}" for k, v in rm.items())
+        if len(xa) == len(xb) and any(t.split(" ", 1)[0] in ("push", "pop") or ESP_ADJ.match(t) for t in xa + xb):
+            na, nb = esp_normalised(xa), esp_normalised(xb)       # stores moved across a push / pop
+            if collections.Counter(na) == collections.Counter(nb):
+                return "order", "same instructions, other order across a push / pop (esp offsets taken at the hunk's start)"
+            slots = sorted({mm[2] for t in na + nb for mm in SLOT_RE.finditer(t) if mm[1] == "esp"})
+            if len(slots) <= 5:
+                for perm in itertools.permutations(slots):
+                    sm = {k: v for k, v in zip(slots, perm) if k != v}
+                    if sm and collections.Counter(rename_slots(na, sm)) == collections.Counter(nb):
+                        return "slots", ("other order across a push / pop (esp offsets taken at the hunk's start), "
+                                         + " ".join(f"[{k or '+0'}]->[{v or '+0'}]" for k, v in sm.items()))
         s = sib_explain(xa, xb)
         if s:
             return "sib", s
