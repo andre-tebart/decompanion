@@ -170,3 +170,26 @@ def test_link_library_class_dx6(tiny):
     assert line.startswith(f"_IID_IDirectDraw4  ->  {(DX6 / 'dxguid.lib').as_posix()}  (")
     mouse = next(l for l in out["library"] if l.startswith("_GUID_SysMouse"))
     assert (DX6 / "dxguid.lib").as_posix() in mouse and "VC98/Lib/DXGUID.LIB" in mouse
+
+
+def test_library_order_from_the_image():
+    """The link orders libraries as the image shows: per section, the first contributions follow one another
+    (placed members, import thunks, library units); unconstrained libraries keep their given place."""
+    from types import SimpleNamespace as NS
+    from decompanion.ledger.fact import Kind
+    text, rdata = NS(name=".text"), NS(name=".rdata")
+    units = [NS(lo=0x5de4a0, value={"tu": "lib:LIBC.LIB/a.obj", "lib": "LIBC.LIB"}),
+             NS(lo=0x5dd3e0, value={"tu": "lib:DINPUT.LIB/b.obj", "lib": "DINPUT.LIB"}),
+             NS(lo=0x5eef50, value={"tu": "lib:LIBC.LIB/c.obj", "lib": "LIBC.LIB"}),
+             NS(lo=0x5eeee0, value={"tu": "lib:STRMIIDS.LIB/d.obj", "lib": "STRMIIDS.LIB"})]
+    names = [NS(lo=0x5de486, value={"name": "thunk:DDRAW.dll!DirectDrawCreate", "origin": "import"})]
+    store = NS(facts=lambda kind: units if kind is Kind.unit else names)
+    image = NS(section_of=lambda a: text if a < 0x5eb000 else rdata)
+    tc = NS(import_library_name=lambda dll: dll.lower().rsplit(".", 1)[0] + ".lib")
+    lib = NS(lo=0x5de460, keys={"lib": "mss32.lib"})
+    project = NS(store=store, image=image, toolchain=tc)
+    libs = [Path("C:/x/LIBC.LIB"), Path("C:/x/DINPUT.LIB"), Path("C:/x/STRMIIDS.LIB"), Path("b/ddraw.lib"),
+            Path("b/gdi32.lib"), Path("b/mss32.lib")]
+    out, chains = L.library_order(project, libs, {"mss32lib": lib})
+    assert [p.name.lower() for p in out] == ["dinput.lib", "strmiids.lib", "gdi32.lib", "mss32.lib", "ddraw.lib", "libc.lib"]
+    assert ".text: dinput.lib < mss32.lib < ddraw.lib < libc.lib" in chains

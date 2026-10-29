@@ -286,6 +286,59 @@ def crt_code(ctx: RuleContext):
             yield ctx.fact(a, a + 1, Kind.name, {"name": "|".join(ns), "origin": "lib", "unit": pl.unit}, P)
 
 
+@rule("S.lib.data", version="2", ceiling=P, outputs=("symbol", "name", "unit"), inputs=("libs",), needs=("S.crt.code", "S.crt.data"))
+def lib_data(ctx: RuleContext):
+    """A data-only member of an archive (no code section; S.crt.data places only the data that placed code
+    points to) is placed by content: an initialised data section without relocations, at least 8 bytes long
+    with at least 8 nonzero bytes, whose bytes occur exactly once in the image's initialised data sections, and
+    not over a section already placed (and no .idata$* section: the PE rules own the import tables), owns
+    [that address, + size) as a `crt.data` symbol, its member a `unit`
+    fact {tu, lib}, every named symbol a name (a GUID of an interface-id library, a CRT string table). Two
+    members with the same bytes at one address are one placement (the first member; `candidates` counts them)."""
+    img = ctx.image
+    raws = [(s, img.section_data(s)) for s in img.sections if not s.holds_code and not s.uninitialized]
+    done = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "crt.data")
+    seen: dict[tuple[int, bytes], dict] = {}
+    pending = []
+    for lib in ctx.input("libs"):
+        for o in ctx.project.objfmt.archive_objects(lib):
+            if o.code_sections:
+                continue
+            for sec in o.sections[1:]:
+                if sec.code or sec.discard or sec.data is None or sec.relocs or sec.size < 8 or sec.name.startswith(".idata"):
+                    continue                        # .idata$*: an import member's tables, the image's import region
+                data = bytes(sec.data)
+                if sum(1 for b in data if b) < 8:
+                    continue
+                hits = []
+                for s, raw in raws:
+                    k = raw.find(data)
+                    while k >= 0 and len(hits) < 2:
+                        hits.append(s.va + k)
+                        k = raw.find(data, k + 1)
+                if len(hits) != 1:
+                    continue
+                lo, hi = hits[0], hits[0] + sec.size
+                key = (lo, data)
+                if key in seen:
+                    seen[key]["candidates"] += 1
+                    continue
+                if any(lo < b and a < hi for a, b in done):
+                    continue
+                unit = f"lib:{lib.name}/{o.name}"
+                first = next((s for s in sec.syms if s.named), None)
+                v = {"skind": "crt.data", "name": first.name if first else f"{o.name}:{sec.name}", "extent": "proven",
+                     "unit": unit, "section": sec.name, "bss": False, "how": "content", "candidates": 1}
+                seen[key] = v
+                done.append((lo, hi))
+                pending.append((lo, hi, v, unit, lib.name, [s for s in sec.syms if s.named]))
+    for lo, hi, v, unit, libname, named in pending:          # after every member: `candidates` is final
+        yield ctx.fact(lo, hi, Kind.symbol, v, P)
+        yield ctx.fact(lo, hi, Kind.unit, {"tu": unit, "lib": libname}, P)
+        for s in named:
+            yield ctx.fact(lo + s.value, lo + s.value + 1, Kind.name, {"name": s.name, "origin": "lib", "unit": unit}, P)
+
+
 @rule("S.crt.refs", version="1", ceiling=P, outputs=("name", "start"), inputs=("libs",), needs=("S.crt.code",))
 def crt_refs(ctx: RuleContext):
     """Every absolute or relative relocation of a placed library section names the address it resolves to
@@ -446,7 +499,7 @@ def entry_user(ctx: RuleContext):
             yield ctx.fact(f.lo, f.lo + 1, Kind.name, {"name": user[f.value["name"]], "origin": "entry"}, D)
 
 
-@rule("S.strings", version="2", ceiling=D, outputs=("symbol",), needs=("S.relocs", "S.sections", "S.crt.data"))
+@rule("S.strings", version="3", ceiling=D, outputs=("symbol",), needs=("S.relocs", "S.sections", "S.crt.data", "S.lib.data"))
 def strings(ctx: RuleContext):
     """A relocation target in a data section whose bytes are at least 4 printable ASCII characters (0x20..0x7e,
     tab, CR, LF) followed by NUL is a string literal: the start is where the pointer points (proven), the extent

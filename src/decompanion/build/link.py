@@ -13,6 +13,10 @@ What goes in (Toolchain.link, LinkJob):
   libraries    the target's archives (the static CRT), the import library of every DLL the image imports
                (Toolchain.import_library_name, found in the toolchain's library directories or the project's
                libs/), the toolchain's default libraries
+  lib order    the libraries in the order the image shows (library_order: per section, the first contributions of
+               placed archive members, import thunks and library units in address order; a topological sort
+               keeps the given order where the image says nothing), since LINK places library contributions in
+               the order it searches the libraries
   lib units    the object of a unit declared `libunit tu=UNIT lib=ARCHIVE` (a library member compiled from source)
                is no command-line object: it becomes a member of that archive (a copy under build/link/<target>/
                when the archive is the toolchain's, Toolchain.add_library_members), so LINK places it among the
@@ -75,6 +79,67 @@ class LinkReport:
 
 def file_digest(p: Path) -> str:
     return hashlib.sha256(Path(p).read_bytes()).hexdigest() if Path(p).exists() else "missing"
+
+
+def library_order(project, libs: list, lib_units: dict) -> tuple[list, list[str]]:
+    """The libraries in the order the image shows (LINK places library contributions in the order it searches the
+    libraries): in each section of the image, the archives whose contributions are placed (`unit` facts {lib}),
+    the import libraries whose thunks are named (S.thunk), and the archives of library units (decl `libunit`)
+    follow one another in address order of their first contribution; every such pair is a precedence, and a
+    topological sort keeps the given order wherever the image says nothing. Returns (libraries, the chains
+    used); a contradiction (a cycle) keeps the given order and says so."""
+    st, img, tc = project.store, project.image, project.toolchain
+
+    def key(x):
+        return Path(x).name.lower()
+
+    first: dict[str, dict[str, int]] = {}
+
+    def seen(k, at):
+        sec = img.section_of(at)
+        if sec is not None:
+            d = first.setdefault(sec.name, {})
+            d[k] = min(d.get(k, at), at)
+
+    for f in st.facts(Kind.unit):
+        if "lib" in f.value:
+            seen(f.value["lib"].lower(), f.lo)
+    for f in st.facts(Kind.name):
+        n = f.value.get("name", "")
+        if f.value.get("origin") == "import" and n.startswith("thunk:"):
+            seen(tc.import_library_name(n[6:].split("!")[0]), f.lo)
+    for d in lib_units.values():
+        seen(d.keys["lib"].lower(), d.lo)
+    keys = []
+    for x in libs:
+        if key(x) not in keys:
+            keys.append(key(x))
+    pos = {k: i for i, k in enumerate(keys)}
+    succ: dict[str, set] = {k: set() for k in keys}
+    chains = []
+    for sec, d in sorted(first.items()):
+        chain = [k for k, _ in sorted(d.items(), key=lambda kv: kv[1]) if k in pos]
+        if len(chain) > 1:
+            chains.append(f"{sec}: " + " < ".join(chain))
+        for a, b in zip(chain, chain[1:]):
+            succ[a].add(b)
+    indeg = {k: 0 for k in keys}
+    for a in keys:
+        for b in succ[a]:
+            indeg[b] += 1
+    out, ready = [], sorted((k for k in keys if not indeg[k]), key=pos.get)
+    while ready:
+        k = ready.pop(0)
+        out.append(k)
+        for b in succ[k]:
+            indeg[b] -= 1
+            if not indeg[b]:
+                ready.append(b)
+        ready.sort(key=pos.get)
+    if len(out) != len(keys):
+        return list(libs), chains + ["the image's orders contradict each other: the given order is kept"]
+    rank = {k: i for i, k in enumerate(out)}
+    return sorted(libs, key=lambda x: rank[key(x)]), chains
 
 
 def find_library(project, name: str) -> Path | None:
@@ -191,6 +256,9 @@ def full_link(project, log=None) -> LinkReport:
             rep.errors.append(f"library unit(s) {', '.join(u for u, _ in units)}: {why}")
             continue
         rep.notes.append(f"{dest.name} holds the library unit(s) {', '.join(u for u, _ in units)}")
+    libs, chains = library_order(project, libs, lib_units)
+    if chains:
+        rep.notes.append("library order from the image: " + "; ".join(chains))
     rep.errors += missing_libs
     def_file = None
     open_exports = []
