@@ -60,6 +60,8 @@ def test_disasm_dump_refs(tiny):
     assert "text=hello" in out and "text=world" in out and "text=c:\\src\\net\\net.c" in out
     assert "at=0x10002040  u32=0x10001050" in out
     assert "string@0x10002030" in out                       # the symbols starting in a row
+    code, out = dcp(tiny, "dump", "0x10002000", "8", "--float")
+    assert code == 0 and "at=0x10002000  f32=" in out and "f64=" in out
     code, out = dcp(tiny, "refs", "GetCounter")
     assert code == 0, out
     assert "address=0x10001020" in out and "named=GetCounter  origin=decl" in out
@@ -255,6 +257,8 @@ def test_unlinked_helper_builds_without_a_grade(tiny):
     assert not [c for c in Project(tiny).store.conflicts() if c.check in ("M.gen", "M.compile")]
     code, out = dcp(tiny, "layout", "units", "-v")
     assert "unlinked=twice  file=src/net/u_twice.c" in out
+    code, out = dcp(tiny, "disasm", "--ours", "get")
+    assert code == 0 and "ours=get" in out and "relocations=1" in out and "; reloc counter" in out, out
 
 
 # ------------------------------------------------------------------------------------------------ session and skills
