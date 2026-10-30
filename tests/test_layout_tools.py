@@ -420,3 +420,57 @@ def test_rename_collides_only_with_code(tiny):
     assert code == 0 and "completes it" in out, out
     assert "int crc32(void)" in (tiny / "src/a/f_10001020.c").read_text()
     assert (tiny / "names.log").read_text().splitlines()[-1].split(" ", 1)[1].startswith("0x10001020 func a_10001020 -> crc32")
+
+
+def test_rename_reports_every_outcome(tiny, capsys):
+    """Every refused rename prints an error record (stdout) and exits 1 without writing; every rename prints what
+    it changed: the record, then one line per file with its replacements (a rename that silently did nothing
+    was a match-base report: a name only inside a string literal counted as found)."""
+    write(tiny, "src/a/head.c", '#include "a.h"\n')
+    write(tiny, "include/a.h", "int a_HdrOnly(void);  /* 0x10001050 */\nextern int a_Unk10002000;  /* 0x10002000 */\n"
+                               "#define a_Unk10002000B (*(short *)&a_Unk10002000)  /* 0x10002000 */\n")
+    write(tiny, "src/a/f_10001000.c", "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return a_Unk10002000 + a_Unk10002000B;\n}\n")
+    write(tiny, "src/a/f_10001020.c", '/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return (int)"a_InString";\n}\n')
+    write(tiny, "src/a/d_10002000.c", "int a_Unk10002000 = 0x1234;  /* 0x10002000 */\n")
+    log = tiny / "names.log"
+    kept = (".c", ".h", ".dcl", ".log")
+
+    def refused(*args, says):
+        before = {f: f.read_text() for f in tiny.rglob("*") if f.suffix in kept}
+        code, out = dcp(tiny, "rename", *args, "--why", "x")
+        assert code == 1 and "error=" in out and says in out, out
+        assert says in capsys.readouterr().err
+        assert {f: f.read_text() for f in tiny.rglob("*") if f.suffix in kept} == before
+
+    # a name only in a header: renamed there, the file listed
+    code, out = dcp(tiny, "rename", "a_HdrOnly", "a_Probe", "--why", "x")
+    assert code == 0 and "files=1  replacements=1" in out and "  file=include/a.h  replacements=1" in out, out
+    # a data name: every file listed; its view keeps its own name, a note says so
+    code, out = dcp(tiny, "rename", "a_Unk10002000", "a_Counter", "--why", "the counter")
+    assert code == 0 and "kind=data  at=0x10002000  files=3  replacements=4" in out, out
+    assert "file=src/a/d_10002000.c  replacements=1" in out and "file=include/a.h  replacements=2" in out
+    assert "the views of a_Unk10002000 keep their names: a_Unk10002000B" in out
+    # the view by its own name
+    code, out = dcp(tiny, "rename", "a_Unk10002000B", "a_CounterLo", "--why", "the low half")
+    assert code == 0 and "kind=data  at=0x10002000  files=2" in out, out
+    assert "#define a_CounterLo (*(short *)&a_Counter)" in (tiny / "include/a.h").read_text()
+    # an address, plain and target-prefixed: the ledger's name of it
+    code, out = dcp(tiny, "rename", "tiny:0x10001000", "a_Main", "--why", "the entry")
+    assert code == 0 and "is a_10001000" in out and "renamed=a_10001000  to=a_Main  kind=func  at=0x10001000" in out, out
+    code, out = dcp(tiny, "rename", "0x10001000", "a_Entry", "--why", "the entry")
+    assert code == 0 and "renamed=a_Main  to=a_Entry" in out, out
+    assert log.read_text().splitlines()[-1].split(" ", 1)[1].startswith("0x10001000 func a_Main -> a_Entry")
+    # refusals: an error record each, nothing written
+    refused("a_InString", "a_Other", says="only inside string literals")
+    refused("a_10001020", "a_Counter", says="a_Counter exists already")
+    refused("a_Nowhere", "a_Other", says="occurs nowhere")
+    refused("nosuch:0x10001000", "a_Other", says="no target 'nosuch'")
+    refused("0x10001040", "a_Other", says="knows no name of 0x10001040")
+    refused("a_10001020", "9bad", says="no C identifier")
+    refused("a-b", "a_Other", says="neither a C identifier nor an address")
+    refused("a_Counter", "a_Counter", says="the same name")
+    # a name declared only in decl/*.dcl: the declaration line is renamed
+    write(tiny, "decl/data.dcl", "# data\n0x10002040 name a_Table -- the pointer table\n")
+    code, out = dcp(tiny, "rename", "a_Table", "a_Handlers", "--why", "x")
+    assert code == 0 and "decl=1" in out and "file=decl/data.dcl  replacements=1" in out, out
+    assert "0x10002040 name a_Handlers -- the pointer table" in (tiny / "decl/data.dcl").read_text()

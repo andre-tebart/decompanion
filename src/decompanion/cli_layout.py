@@ -108,7 +108,7 @@ def register(sub, cmd):
     s.add_argument("--show", action="store_true", help="print the analyzer's draft of ADDR, write nothing")
     s.add_argument("--unit", help="the unit (default: the unit whose extent holds the address)")
     s = cmd(sub, "rename", DR.cmd_rename, "rename one identifier over src/ and include/ (names.log)")
-    s.add_argument("old")
+    s.add_argument("old", metavar="OLD", help="the identifier, or [TARGET:]0xADDR for the ledger's name of the address")
     s.add_argument("new")
     s.add_argument("--why", required=True)
     from . import cli_session as SE

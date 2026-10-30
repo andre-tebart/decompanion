@@ -221,59 +221,121 @@ def cmd_draft(args):
 
 
 # ------------------------------------------------------------------------------------------------ rename
+DECL_NAME = r"(?m)(?<= name ){old}(?= |$)"
+
+
+def rename_fail(args, msg: str, old=None) -> int:
+    """A refused or failed rename: the error record on stdout (key=value, like every result), the message on
+    stderr; exit 1."""
+    print(record(rename=old or args.old, to=args.new, error=msg))
+    return err("rename", msg)
+
+
 def cmd_rename(args):
-    """Rename one identifier: every whole-word occurrence in src/ and include/ (comments and strings too), an
-    unlinked fragment's file u_<old>.c, the `name` declarations of decl/*.dcl; refused when OLD occurs nowhere, or
-    when NEW occurs already and is not OLD's own (the ledger names another address NEW, or OLD has no address):
-    NEW written by hand in part for OLD's address is completed. names.log records the event, with the address the ledger knows for OLD
-    (a name fact, or the address a placeholder spells). The rename done by hand already (OLD nowhere, NEW the
-    ledger's name of OLD's address) is only recorded: names.log gets the event, no file changes."""
+    """Rename one identifier: every whole-word occurrence in src/ and include/ (code and comments; string
+    literals and #include lines are left alone), an unlinked fragment's file u_<old>.c, the `name`
+    declarations of decl/*.dcl. OLD is a C identifier or an address (`0xADDR`, `TARGET:0xADDR`): the ledger's
+    name of the address on that target. Refused (an error record, exit 1, nothing written) when OLD names
+    nothing renamable: no such address name, OLD occurs nowhere, or only inside string literals / #include
+    lines; when NEW is no C identifier or equals OLD; when NEW occurs already and is not OLD's own (the ledger
+    names another address NEW, or OLD has no address): NEW written by hand in part for OLD's address is
+    completed. A success prints the rename record (files, replacements, decl lines, moved files) and one line
+    per changed file with its replacements. names.log records the event, with the address the ledger knows
+    for OLD (a name fact, or the address a placeholder spells). The rename done by hand already (OLD nowhere,
+    NEW the ledger's name of OLD's address) is only recorded: names.log gets the event, no file changes. The
+    views of OLD (OLD with an upper-case view suffix, srcscan.PLACEHOLDER_ADDR) keep their names: a note
+    lists them."""
+    import re
+    from .config import ConfigError
     from .ledger import srcscan
     from .ledger.names import Names
     from .source import edit as E
-    p, e = open_project(args)
+    old_arg, given = args.old.strip(), None
+    tgt, _, addr = old_arg.rpartition(":")
+    by_addr = addr.lower().startswith("0x")
+    try:
+        p, e = open_project(args, tgt or None) if by_addr else open_project(args)
+    except ConfigError as ex:
+        return rename_fail(args, f"{old_arg}: {ex}")
     refresh(p, e)
-    if not E.IDENT.match(args.new) or not E.IDENT.match(args.old):
-        return err("rename", "OLD and NEW are C identifiers")
-    before = {(x.check, x.lo, x.message) for x in errors(p)}
+    if not E.IDENT.match(args.new):
+        return rename_fail(args, f"NEW {args.new!r} is no C identifier")
     names = Names(p, p.store)
-    hits = names.by_name.get(args.old)
-    ph = srcscan.PLACEHOLDER_ADDR.fullmatch(args.old)
-    a = sorted(hits)[0] if hits else (srcscan.placeholder_value(ph) if ph else None)
+    if by_addr:
+        try:
+            a = parse_addr(addr)
+        except ValueError:
+            return rename_fail(args, f"{old_arg} is no address")
+        old = names.name(a)
+        if old is None:
+            return rename_fail(args, f"the ledger knows no name of {a:#010x} on target {p.target_name}")
+        print(f"note: {old_arg} is {old} (the ledger's name on target {p.target_name})")
+        args.old, given = old, a
+    elif not E.IDENT.match(old_arg):
+        return rename_fail(args, f"OLD {old_arg!r} is neither a C identifier nor an address (0xADDR, TARGET:0xADDR)")
+    old = args.old
+    if old == args.new:
+        return rename_fail(args, f"OLD and NEW are the same name {old}")
+    before = {(x.check, x.lo, x.message) for x in errors(p)}
+    hits = names.by_name.get(old)
+    ph = srcscan.PLACEHOLDER_ADDR.fullmatch(old)
+    a = given if given is not None else sorted(hits)[0] if hits else (srcscan.placeholder_value(ph) if ph else None)
     kind = "ident"
     if a is not None:
         sym = names.symbol(a)
         sk = sym.value.get("skind") if sym is not None else None
         starts = {f.lo for f in p.store.facts(Kind.start, a, a + 1)}
         kind = "func" if sk in ("func", "thunk") and (sym.lo == a or a in starts) else "data"
-    if not E.uses(p.root, args.old):
+    decl_pat = re.compile(DECL_NAME.format(old=re.escape(old)))
+    decls = [path for path in sorted((p.root / "decl").glob("*.dcl")) if decl_pat.search(path.read_text())]
+    used = E.uses(p.root, old)
+    if not used and not decls:
         if a is not None and a in names.by_name.get(args.new, ()):
-            E.log_names(p.root, [(a, kind, args.old, args.new)], args.why)
-            print(record(recorded=args.old, to=args.new, kind=kind, at=a, files=0) + "  (renamed by hand already: names.log only)")
+            E.log_names(p.root, [(a, kind, old, args.new)], args.why)
+            print(record(recorded=old, to=args.new, kind=kind, at=a, files=0) + "  (renamed by hand already: names.log only)")
             return 0
-        return err("rename", f"{args.old} occurs nowhere in src/ or include/" + (
+        return rename_fail(args, f"{old} occurs nowhere in src/, include/ or decl/" + (
             f" and {args.new} is not the ledger's name of {a:#x}" if a is not None else ""))
+    if used and not E.rename_words(p.root, {old: args.new}, dry=True) and not decls:
+        where = ", ".join(f"{f}:{l}" for f, l in used[:4])
+        return rename_fail(args, f"{old} occurs only inside string literals or #include lines ({where}): nothing to "
+                                 f"rename (a header file's name is no identifier; edit a string by hand)")
     clash = E.code_uses(p.root, args.new)
     elsewhere = sorted(set(names.by_name.get(args.new, ())) - ({a} if a is not None else set()))
     if clash and (a is None or elsewhere):
-        return err("rename", f"{args.new} exists already ({clash[0][0]}:{clash[0][1]})"
-                             + (f", the ledger's name at {', '.join(f'{x:#x}' for x in elsewhere)}" if elsewhere else "")
-                             + ": refused (a collision)")
+        return rename_fail(args, f"{args.new} exists already ({clash[0][0]}:{clash[0][1]})"
+                                 + (f", the ledger's name at {', '.join(f'{x:#x}' for x in elsewhere)}" if elsewhere else "")
+                                 + ": refused (a collision)")
     if clash:                                       # NEW is OLD's own address's name, written by hand in part
         print(f"note: {args.new} occurs already ({clash[0][0]}:{clash[0][1]}) and names no other address: the rename "
               f"completes it")
-    n = E.rename_words(p.root, {args.old: args.new})
-    for f in sorted((p.root / "src").glob(f"*/u_{args.old}.c")):
+    n = E.rename_words(p.root, {old: args.new})
+    moved = []
+    for f in sorted((p.root / "src").glob(f"*/u_{old}.c")):
         E.move(p.root, f, f.with_name(f"u_{args.new}.c"))
-        print(f"moved {f.relative_to(p.root).as_posix()} -> u_{args.new}.c")
-    for path in sorted((p.root / "decl").glob("*.dcl")):
+        moved.append((f.relative_to(p.root).as_posix(), f"u_{args.new}.c"))
+    decl_lines = 0
+    for path in decls:
         t = path.read_text()
-        new = "\n".join((l.replace(f" name {args.old} ", f" name {args.new} ") if " name " in l else l) for l in t.splitlines()) + "\n"
-        if new != t:
+        new, k = decl_pat.subn(args.new, t)
+        if k:
             E.write(path, new)
-            print(f"decl  {path.relative_to(p.root).as_posix()}: name {args.old} -> {args.new}")
-    E.log_names(p.root, [(a, kind, args.old, args.new)], args.why)
-    print(record(renamed=args.old, to=args.new, kind=kind, at=a, files=len(n), replacements=sum(n.values())))
+            decl_lines += k
+            n[path.relative_to(p.root).as_posix()] = k
+    if not n and not moved:
+        return rename_fail(args, f"{old}: nothing was renamed (no whole-word occurrence outside string literals and "
+                                 f"#include lines)")
+    E.log_names(p.root, [(a, kind, old, args.new)], args.why)
+    print(record(renamed=old, to=args.new, kind=kind, at=a, files=len(n), replacements=sum(n.values()), decl=decl_lines,
+                 moved=len(moved)))
+    for f, k in sorted(n.items()):
+        print("  " + record(file=f, replacements=k))
+    for f, to in moved:
+        print("  " + record(moved=f, to=to))
+    views = sorted(w for w in E.words_with_prefix(p.root, old) if w != old and w[len(old)].isupper() and ph
+                   and (m := srcscan.PLACEHOLDER_ADDR.fullmatch(w)) and srcscan.placeholder_value(m) == a)
+    if views:
+        print(f"note: the views of {old} keep their names: {', '.join(views[:8])} (rename each: dcp rename VIEW NEW)")
     p, e = rebuilt(args, p, e)
     bad = errors(p)
     new = [x for x in bad if (x.check, x.lo, x.message) not in before]

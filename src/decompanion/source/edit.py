@@ -86,10 +86,10 @@ def replace_words(text: str, mapping: dict[str, str]) -> tuple[str, int]:
     return "".join(out), n
 
 
-def rename_words(root: Path, mapping: dict[str, str]) -> dict[str, int]:
+def rename_words(root: Path, mapping: dict[str, str], dry: bool = False) -> dict[str, int]:
     """Replace every whole-word occurrence of each old name by its new one in one pass over src/ and include/
     (code and comments: a name in an address comment or a description follows the rename; not inside string
-    literals or #include lines). Returns {file: replacements}."""
+    literals or #include lines). Returns {file: replacements}; `dry` counts them and writes nothing."""
     if not mapping:
         return {}
     out = {}
@@ -100,8 +100,20 @@ def rename_words(root: Path, mapping: dict[str, str]) -> dict[str, int]:
             continue
         new, n = replace_words(text, mapping)
         if n:
-            write(p, new)
+            if not dry:
+                write(p, new)
             out[p.relative_to(root).as_posix()] = n
+    return out
+
+
+def words_with_prefix(root: Path, prefix: str) -> set[str]:
+    """Every identifier of src/ and include/ that starts with prefix (prefix itself included when it occurs)."""
+    pat = re.compile(rf"\b{re.escape(prefix)}\w*")
+    out = set()
+    for p in sources(root):
+        text = fsmemo.read_text(p)
+        if prefix in text:
+            out |= set(pat.findall(text))
     return out
 
 

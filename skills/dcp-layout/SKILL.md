@@ -165,7 +165,7 @@ A helper the original inlined everywhere (so no address) lives in `src/<unit>/u_
   `uv run dcp unit rename OLD NEW --by leaked|tag --why "..."` (directory, header and guard, includes, boundary
   lines, placeholders `OLD_<addr>`, names.log). Commit `<old> -> <new> (layout, <by>)`.
 - **Function and data names**: `uv run dcp rename OLD NEW --why "..."` (whole words in src/ and include/,
-  refuses a collision, names.log). Rename a placeholder as soon as the meaning is clear; `uv run dcp refs NAME`
+  refuses a collision with an `error=` record and exit 1, lists every changed file, names.log). Rename a placeholder as soon as the meaning is clear; `uv run dcp refs NAME`
   first shows every use.
 
 ## Headers

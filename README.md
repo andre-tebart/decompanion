@@ -386,7 +386,7 @@ uv run dcp unit new NAME --range 0xA..0xB --by guess --why "..."   # propose + h
 uv run dcp draft --next                        # the next function's fragment (the analyzer's pseudocode or a @rough skeleton)
 uv run dcp unit join A B --why "..."           # B into A (grades must not change)
 uv run dcp unit rename OLD NEW --by leaked|tag|guess --why "..."
-uv run dcp rename OLD NEW --why "..."          # one identifier; names.log
+uv run dcp rename OLD NEW --why "..."          # one identifier (OLD may be [TARGET:]0xADDR); names.log
 uv run dcp session start                       # the gate and the overview; starts the session clock
 uv run dcp session status                      # the clock: elapsed, left, over
 uv run dcp session wrap                        # build, link, check, promote, the computed report

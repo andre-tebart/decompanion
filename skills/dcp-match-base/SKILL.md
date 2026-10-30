@@ -99,9 +99,12 @@ work, however long.
 ### 2.3 Readability (`gates=Q...`)
 - Q1 / Q2 placeholder names (`ai_Unk4a13e0`, `param_1`, `iVar2`, `DAT_...`): name what you understood.
   Functions and data: `uv run dcp rename OLD NEW --why "the evidence"` (project-wide, whole words, names.log;
-  `dcp refs` first). Rename first, then edit: the rename writes the new name everywhere and logs it (a name
-  already written by hand in some places is completed by the rename, not refused). Locals and parameters:
-  edit the fragment.
+  `dcp refs` first; OLD may be `0xADDR` / `exe:0xADDR` for the ledger's name). Rename first, then edit: the
+  rename writes the new name everywhere and logs it (a name already written by hand in some places is
+  completed by the rename, not refused). It prints every changed file with its replacements; a refusal is an
+  `error=` record with exit 1 and nothing written: read it, never assume the rename happened. A view
+  (`ai_Unk7603a0B`) keeps its name when its datum is renamed (the note lists it): rename it on its own.
+  Locals and parameters: edit the fragment.
 - Q3 address literals and Q4 raw access (`*(T *)(p + 0x1c)`, macros built on such casts): a typed field, a
   struct, the symbol (see the hard rule on addresses). A datum the unit reads as another type is a view macro
   with the address comment on its line: `#define NAME (*(T *)&datum)  /* 0xADDR */`, or

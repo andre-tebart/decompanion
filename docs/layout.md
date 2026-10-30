@@ -230,7 +230,7 @@ uv run dcp unit new adler32 --range 0x10001000..0x10001130 --by guess --why "zli
 uv run dcp draft --next                       # the function `dcp layout next` shows (or: dcp draft 0xADDR)
 uv run dcp unit join A B --why "..."          # B directly after A
 uv run dcp unit rename OLD NEW --by leaked|tag|guess --why "..."
-uv run dcp rename OLD NEW --why "..."         # one identifier
+uv run dcp rename OLD NEW --why "..."         # one identifier (OLD: a name, or [TARGET:]0xADDR for its ledger name)
 ```
 
 `dcp unit new` = `dcp layout unit propose` (refuses its own L3 / L4 / L7 / L8 errors) + `src/<unit>/head.c`,
@@ -262,8 +262,13 @@ the includes at A's header, drops B's start boundary and A's end at it (B's end 
 error count changed (evidence to keep them apart). `dcp unit rename` moves the directory, header (and guard) and
 notes, fixes includes, the boundary lines' `tu=` (and `by=` on the start), the placeholders. `dcp rename`
 replaces whole words in code and comments of src/ and include/ (not in string literals or #include lines),
-refuses a name that is already an identifier of the code, renames `u_<old>.c` and `name` declarations. All
-three append to `names.log`:
+refuses a name that is already an identifier of the code, renames `u_<old>.c` and `name` declarations. OLD may
+be an address (`0x4a3000`, `exe:0x4a3000`): the ledger's name of it on that target. Every outcome is printed:
+a rename prints its record (kind, address, files, replacements, decl lines, moved files) and one `file=...
+replacements=N` line per changed file, plus a note when views of OLD (OLD with an upper-case view suffix) keep
+their names; a refusal (OLD nowhere, or only inside string literals / #include lines, no name at the address,
+an unknown target, NEW no identifier, the same name, a collision) prints an `error=` record and exits 1 with
+nothing written. All three append to `names.log`:
 
 ```
 2026-10-29T14:42:23 0x10001000 func adler32_10001000 -> adler32 by:main why:zlib 1.1.3 adler32 (byte-identical with zlib's source)
