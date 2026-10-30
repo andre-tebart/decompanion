@@ -41,6 +41,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
+from .. import timing
 from ..ledger.fact import Conflict, Fact, Kind, Level
 from ..ledger.store import Store, sha256
 
@@ -259,7 +260,13 @@ class Engine:
                 else:
                     raise RuleError(f"{r.id} yielded {type(item).__name__}")
             ms = int((time.perf_counter() - t0) * 1000)
+            t1 = time.perf_counter()
             self.store.record_run(r.id, r.version, r.code_hash, ih, facts, conflicts, ms)
+            rec = (time.perf_counter() - t1) * 1000
+            timing.add("refresh.rules", ms)
+            timing.add("refresh.record", rec)
+            timing.add(f"rule.{r.id}", ms)
+            timing.add(f"record.{r.id}", rec)
             results.append(RunResult(r.id, True, ms, len(facts), len(conflicts)))
             if log:
                 log(f"ran {r.id}: {len(facts)} facts, {len(conflicts)} conflicts, {ms} ms")

@@ -46,12 +46,30 @@ class Member:
 
 @dataclass
 class Amalg:
+    """One amalgamation. Its text (and segments) is composed on first use; src_hash, the hash of the text, is
+    memoised per (compose's code, file name, each part's path and content hash), so a build that compiles no
+    unit reads no part file (fsmemo.derived)."""
     target: str
     unit: str
     members: list = field(default_factory=list)
-    text: str = ""
     file_name: str | None = None                      # the declared original file name, else None
-    segments: list = field(default_factory=list)      # (first reported line, n lines, part file, its first line)
+    root: Path | None = None                          # the project root the members are relative to
+    _composed: tuple | None = field(default=None, repr=False, compare=False)
+    _src_hash: str | None = field(default=None, repr=False, compare=False)
+
+    def _compose(self) -> tuple[str, list]:
+        if self._composed is None:
+            self._composed = compose(self.root, self.members, self.file_name)
+        return self._composed
+
+    @property
+    def text(self) -> str:
+        return self._compose()[0]
+
+    @property
+    def segments(self) -> list:
+        """(first reported line, n lines, part file, its first line) per segment (a declared file name only)."""
+        return self._compose()[1]
 
     def locate(self, line: int) -> list[tuple[str, int]]:
         """The (part file, line) a reported line of the declared file name stands for (several when pinned lines
@@ -65,7 +83,15 @@ class Amalg:
 
     @property
     def src_hash(self) -> str:
-        return sha256(self.text)
+        if self._src_hash is None:
+            key = sha256("amalg.src_hash", _compose_code(), self.file_name or "",
+                         *(f"{m.file}={fsmemo.sha256(Path(self.root) / m.file)}" for m in self.members))
+            h = fsmemo.derived(key)
+            if h is None:
+                h = sha256(self.text)
+                fsmemo.put_derived(key, h)
+            self._src_hash = h
+        return self._src_hash
 
     @property
     def fragments(self) -> list[Member]:
@@ -78,6 +104,18 @@ class Amalg:
 
 def line_directive(rel: str) -> str:
     return f'#line 1 "{rel}"\n'
+
+
+_compose_digest: str | None = None
+
+
+def _compose_code() -> str:
+    """The hash of compose's own code (a memoised src_hash is only valid for the code that composed it)."""
+    global _compose_digest
+    if _compose_digest is None:
+        import inspect
+        _compose_digest = sha256(inspect.getsource(compose), inspect.getsource(line_directive))
+    return _compose_digest
 
 
 PIN = re.compile(r"^[ \t]*#[ \t]*line[ \t]+(\d+)[ \t]*$")
@@ -155,9 +193,7 @@ def units(root: Path, scan: srcscan.Scan, target: str, default: str, file_names:
             members += sorted(unlinked, key=lambda m: m.file)
         if (d / "tail.c").exists():
             members.append(Member((d / "tail.c").relative_to(root).as_posix(), None, None, "tail"))
-        a = Amalg(target, unit, members, file_name=(file_names or {}).get(unit))
-        a.text, a.segments = compose(root, members, a.file_name)
-        out.append(a)
+        out.append(Amalg(target, unit, members, file_name=(file_names or {}).get(unit), root=root))
     return out
 
 

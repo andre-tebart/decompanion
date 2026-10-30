@@ -32,6 +32,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from .. import fsmemo
 from ..rules.grade import CODE_RANK, falls, parse_baseline
 from . import srcscan
 from .fact import Kind
@@ -183,6 +184,7 @@ def set_level(root: Path, rel: str, level: str | None, reason: str | None) -> st
     else:
         new_raw = "//" + new_body
     p.write_text(text[:cs] + new_raw + text[ce:], newline="\n")
+    fsmemo.wrote(p)
     return action
 
 

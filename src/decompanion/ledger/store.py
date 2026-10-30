@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -86,7 +87,32 @@ class StoredFact:
         return getattr(self.fact, item)
 
 
+_open: dict[tuple, tuple] = {}
+KEEP_OPEN = False         # dcp serve: a store stays open across requests (its decoded-facts memo with it)
+
+
 class Store:
+    @classmethod
+    def open(cls, path: Path, overlay_of: Path | None = None) -> Store:
+        """The store at path: a new connection, or (KEEP_OPEN) the one this process opened before, as long as it is
+        the same file (deleted and recreated: a new connection)."""
+        if not KEEP_OPEN:
+            return cls(path, overlay_of)
+        key = (str(Path(path).resolve()).lower(), str(overlay_of or ""))
+        try:
+            ident = (os.stat(path).st_ino, os.stat(overlay_of).st_ino if overlay_of and Path(overlay_of).exists() else 0)
+        except OSError:
+            ident = None
+        hit = _open.get(key)
+        if hit is not None and ident is not None and hit[0] == ident:
+            return hit[1]
+        if hit is not None:
+            hit[1].close()
+        st = cls(path, overlay_of)
+        ident = (os.stat(path).st_ino, os.stat(overlay_of).st_ino if overlay_of and Path(overlay_of).exists() else 0)
+        _open[key] = (ident, st)
+        return st
+
     def __init__(self, path: Path, overlay_of: Path | None = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -159,13 +185,31 @@ class Store:
     def record_run(self, rule: str, version: str, code_hash: str, input_hash: str,
                    facts: list[Fact], conflicts: list[Conflict], ms: int) -> int:
         """Store a finished run with its output, make it current, drop the facts of the rule's older runs
-        (only the latest run of a rule is kept: the store is a cache, not a history)."""
-        facts = sorted(facts, key=Fact.key)
+        (only the latest run of a rule is kept: the store is a cache, not a history). When the output equals the
+        current run's (out_hash), the run row takes the new key and its facts stay as they are, ids and all
+        (the conflicts are written again: out_hash does not cover their a / b)."""
+        keyed = sorted(((f.key(), f) for f in facts), key=lambda t: t[0])
         conflicts = sorted(conflicts, key=lambda c: (c.lo, c.hi, c.check, c.message))
-        out_hash = sha256(*(canonical(f.key() + (int(f.level), f.by, f.reason or "")) for f in facts),
+        out_hash = sha256(*(canonical(k + (int(f.level), f.by, f.reason or "")) for k, f in keyed),
                           *(canonical((c.lo, c.hi, c.check, c.severity.value, c.message)) for c in conflicts))
         self.db.execute("BEGIN")
         try:
+            same = None if os.environ.get("DCP_NO_SHORTCUTS") else self.db.execute(
+                "SELECT id FROM run WHERE rule=? AND current=1 AND out_hash=?", (rule, out_hash)).fetchone()
+            if same is not None:
+                run_id = same[0]
+                for (oid,) in self.db.execute("SELECT id FROM run WHERE rule=? AND id<>?", (rule, run_id)).fetchall():
+                    self.db.execute("DELETE FROM fact WHERE run_id=?", (oid,))
+                    self.db.execute("DELETE FROM conflict WHERE run_id=?", (oid,))
+                    self.db.execute("DELETE FROM run WHERE id=?", (oid,))
+                self.db.execute("UPDATE run SET version=?, code_hash=?, input_hash=?, ms=? WHERE id=?",
+                                (version, code_hash, input_hash, ms, run_id))
+                self.db.execute("DELETE FROM conflict WHERE run_id=?", (run_id,))
+                self.db.executemany(
+                    "INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)",
+                    [(run_id, c.severity.value, c.check, c.lo, c.hi, c.message, c.a, c.b) for c in conflicts])
+                self.db.execute("COMMIT")
+                return run_id
             old = [r[0] for r in self.db.execute("SELECT id FROM run WHERE rule=?", (rule,)).fetchall()]
             for oid in old:
                 self.db.execute("DELETE FROM fact WHERE run_id=?", (oid,))
@@ -177,7 +221,7 @@ class Store:
             run_id = cur.lastrowid
             self.db.executemany(
                 "INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)",
-                [(run_id, f.lo, f.hi, f.kind.value, canonical(f.value), int(f.level), f.by, f.reason) for f in facts])
+                [(run_id, f.lo, f.hi, f.kind.value, k[3], int(f.level), f.by, f.reason) for k, f in keyed])
             self.db.executemany(
                 "INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)",
                 [(run_id, c.severity.value, c.check, c.lo, c.hi, c.message, c.a, c.b) for c in conflicts])
@@ -224,15 +268,18 @@ class Store:
 
     def _facts_cached(self, kind: Kind, rules) -> list[StoredFact]:
         cache = self.__dict__.setdefault("_run_facts", {})
-        runs = self.db.execute("SELECT id, rule FROM run WHERE current=1").fetchall()
+        runs = self.db.execute("SELECT id, rule, at FROM run WHERE current=1").fetchall()
+        live = {(rid, at) for rid, _, at in runs}
+        for k in [k for k in cache if k[:2] not in live]:         # a run recorded again: its old facts go
+            del cache[k]
         want = set(rules) if rules else None
         rows = []
-        for rid, rule in runs:
+        for rid, rule, at in runs:
             if want is not None and rule not in want:
                 continue
-            got = cache.get((rid, kind))
+            got = cache.get((rid, at, kind))          # (id, at): an id SQLite reuses after a delete is another run
             if got is None:
-                got = cache[(rid, kind)] = [
+                got = cache[(rid, at, kind)] = [
                     (r[4], self._row_fact((r[0], rule, *r[1:]))) for r in self.db.execute(
                         "SELECT id, lo, hi, kind, value, level, by, reason FROM fact WHERE run_id=? AND kind=?", (rid, kind.value))]
             rows.extend(got)

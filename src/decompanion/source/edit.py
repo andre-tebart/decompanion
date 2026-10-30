@@ -16,6 +16,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from .. import fsmemo
+
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
 DCP_BLOCK = "/* dcp draft: declarations of functions and data the fragments use that no included header declares */"
@@ -31,13 +33,15 @@ def sources(root: Path) -> list[Path]:
     for d in ("src", "include"):
         base = Path(root) / d
         if base.exists():
-            out += sorted(p for p in base.rglob("*") if p.suffix in (".c", ".h") and p.is_file())
+            out += sorted((Path(p) for _, p in fsmemo.walk(base, ("*.c", "*.h")) if p[-2:] in (".c", ".h")),
+                          key=lambda p: str(p).lower())
     return out
 
 
 def write(path: Path, text: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, newline="\n")
+    fsmemo.wrote(path)
 
 
 def code_words(text: str) -> set[str]:
@@ -51,7 +55,10 @@ def uses(root: Path, name: str) -> list[tuple[str, int]]:
     pat = re.compile(rf"\b{re.escape(name)}\b")
     out = []
     for p in sources(root):
-        for i, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
+        text = fsmemo.read_text(p)
+        if not pat.search(text):
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
             if pat.search(line):
                 out.append((p.relative_to(root).as_posix(), i))
     return out
@@ -86,12 +93,19 @@ def rename_words(root: Path, mapping: dict[str, str]) -> dict[str, int]:
     if not mapping:
         return {}
     out = {}
+    any_old = re.compile("|".join(map(re.escape, mapping)))     # a file without any old name is not parsed
     for p in sources(root):
-        new, n = replace_words(p.read_text(errors="replace"), mapping)
+        text = fsmemo.read_text(p)
+        if not any_old.search(text):
+            continue
+        new, n = replace_words(text, mapping)
         if n:
             write(p, new)
             out[p.relative_to(root).as_posix()] = n
     return out
+
+
+_blank: dict[tuple[str, str], str] = {}     # (file, sha256) -> its text with comments, strings and includes blanked
 
 
 def code_uses(root: Path, name: str) -> list[tuple[str, int]]:
@@ -100,9 +114,16 @@ def code_uses(root: Path, name: str) -> list[tuple[str, int]]:
     pat = re.compile(rf"\b{re.escape(name)}\b")
     out = []
     for p in sources(root):
-        text = p.read_text(errors="replace")
-        blank = TOKEN.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
-        blank = re.sub(r"(?m)^[ \t]*#[ \t]*include\b[^\n]*", "", blank)
+        text = fsmemo.read_text(p)
+        if not pat.search(text):
+            continue
+        key = (str(p), fsmemo.sha256(p))
+        blank = _blank.get(key)
+        if blank is None:
+            if len(_blank) > 20000:
+                _blank.clear()
+            blank = TOKEN.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+            blank = _blank[key] = re.sub(r"(?m)^[ \t]*#[ \t]*include\b[^\n]*", "", blank)
         for i, line in enumerate(blank.splitlines(), 1):
             if pat.search(line):
                 out.append((p.relative_to(root).as_posix(), i))
@@ -147,6 +168,7 @@ def move(root: Path, src: Path, dst: Path):
             raise EditError(f"git mv {src} {dst}: {r.stderr.strip()}")
     else:
         Path(src).rename(dst)
+    fsmemo.wrote(dst)
 
 
 def remove(root: Path, path: Path):
@@ -159,6 +181,7 @@ def remove(root: Path, path: Path):
             raise EditError(f"git rm {path}: {r.stderr.strip()}")
     if Path(path).exists():
         Path(path).unlink()
+    fsmemo.wrote(path)
 
 
 # ------------------------------------------------------------------------------------------------ head.c / headers

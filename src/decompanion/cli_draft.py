@@ -23,10 +23,18 @@ def view_of(p, e):
     return LV.View.load(p, p.store)
 
 
-def rebuilt(args):
+def rebuilt(args, p=None, e=None):
     """The project after an edit of the sources: the stale units compiled (when the toolchain is installed: the
-    objects must define the new names, M.gen) and the rules refreshed."""
-    from .cli import build_target
+    objects must define the new names, M.gen) and the rules refreshed. A project the command opened already is
+    used again (its inputs are hashed afresh: refresh forgets src and decl)."""
+    from .build import compile as B
+    from .cli import build_target, lint_built
+    if p is not None:
+        if p.toolchain.available() and p.store.facts(Kind.build):
+            B.ensure(p)
+            lint_built(p)
+        refresh(p, e)
+        return p, e
     p, e = open_project(args)
     if p.toolchain.available() and p.store.facts(Kind.build):
         p, e, _ = build_target(args, getattr(args, "target", None), quiet=True)
@@ -227,6 +235,7 @@ def cmd_rename(args):
     refresh(p, e)
     if not E.IDENT.match(args.new) or not E.IDENT.match(args.old):
         return err("rename", "OLD and NEW are C identifiers")
+    before = {(x.check, x.lo, x.message) for x in errors(p)}
     names = Names(p, p.store)
     hits = names.by_name.get(args.old)
     ph = srcscan.PLACEHOLDER_ADDR.fullmatch(args.old)
@@ -265,8 +274,11 @@ def cmd_rename(args):
             print(f"decl  {path.relative_to(p.root).as_posix()}: name {args.old} -> {args.new}")
     E.log_names(p.root, [(a, kind, args.old, args.new)], args.why)
     print(record(renamed=args.old, to=args.new, kind=kind, at=a, files=len(n), replacements=sum(n.values())))
-    p, e = rebuilt(args)
+    p, e = rebuilt(args, p, e)
     bad = errors(p)
+    new = [x for x in bad if (x.check, x.lo, x.message) not in before]
     if bad:
-        print(f"check: {len(bad)} error(s) after the rename (dcp check lists them)")
-    return 1 if bad else 0
+        print(f"check: {len(new)} new error(s) after the rename, {len(bad) - len(new)} from before (dcp check lists them)")
+    for x in new[:10]:
+        print(f"  {x.severity.value} {x.check} {x.lo:#010x}: {x.message}")
+    return 1 if new else 0

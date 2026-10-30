@@ -556,3 +556,28 @@ now caught):
   adds it; it reopens the obligation libs.archives. The archives' first linker members are indexed once per
   content hash in the blob store, and only when such names remain.
 - The warm `dcp check` of gildegold is unchanged (~5.2 s).
+
+Added next (user decision, 2026-10-30: "it needs to be as fast as possible for fast feedback loops"; the
+architecture chosen: a resident daemon plus the loop fixes; eager background compiles and per-unit rule partitions
+later). Measured on gildegold with tools/bench.py (one-line edits of a function's fragment, applied and reverted):
+- `dcp serve` (daemon.py, client.py): one process per project root on a named pipe; the `dcp` script forwards
+  argv, cwd and environment and streams stdout / stderr back, or runs in-process when no daemon answers. Requests
+  run one at a time; a changed decompanion restarts it (the supervisor around the daemon process). What it keeps
+  is what the process memos keep, all keyed by content: no request sees an older state than a new process would.
+- fsmemo: one stat per file per epoch (a directory listing gives the stamps), content hashes persisted per
+  project with git's racy rule; tree_hash, the source scan, the lint and the word scans of `dcp rename` read
+  only changed files. A plan per source state; the amalgamation's text is composed only for a unit that compiles
+  (its hash is memoised by its parts' hashes).
+- compiled_functions compares one function once per (object, symbol, address, next start, image, relocations);
+  M.match memoises the end of a matched function's code; G.grade its code grade row and readability.
+- record_run keeps the facts (and ids) of a run whose output did not change; the byte map is rebuilt only when a
+  run holding map facts was recorded again.
+- `dcp build` lints the units it compiled before its one refresh (grade / next lint no more); `dcp rename`
+  refreshes once after its edits and fails only on errors it caused (feedback item 8).
+- Found on the way: SQLite reuses a deleted run's id for the next run, so the decoded-facts memo keys on
+  (id, time); compiled_functions' memo returned fact objects of an older L.src run with the same addresses.
+- Result (median, warm daemon): build after an edit 7.5 s -> 1.8 .. 2.8 s (CL 0.55 s, the refresh ~1.1 s),
+  diffclass / asmdiff / grade / next / dump / why 1.2 .. 6.1 s -> 0.2 s, rename 13 s -> 3.6 s. In-process
+  (no daemon): build after an edit 7.5 s -> 5.0 s, diffclass / asmdiff / grade / next 2.2 .. 6.1 s -> 0.6 s,
+  dump / why / draft --show 1.2 s -> 0.55 s, rename 13 s -> 6.2 s. `tools/bench.py --verify` (a forced
+  recompute in a fresh process, DCP_NO_SHORTCUTS=1) agrees with the incremental store after every scenario.

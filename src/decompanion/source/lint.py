@@ -32,6 +32,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from .. import fsmemo
 from ..build import compile as B
 from ..ledger import srcscan
 from ..ledger.fact import canonical
@@ -46,7 +47,7 @@ CALLEE = re.compile(r"'(\w+)'")
 DECL = re.compile(r"^\s*((?:[A-Za-z_]\w*[\s\*]+)+?)\b([A-Za-z_]\w*)\s*\(")
 KEYWORDS = {"return", "else", "goto", "case", "sizeof", "if", "while", "for", "switch", "do", "typedef", "default"}
 DEFAULT_CLANG = "C:/Program Files/LLVM/bin/clang.exe"
-VERSION = "1"
+VERSION = "2"
 
 
 def clang_path(project) -> Path | None:
@@ -130,6 +131,9 @@ def file_scope_prototypes(rel: str, text: str) -> list[tuple[int, str]]:
     return out
 
 
+_protos: dict[tuple[str, str], list] = {}     # (file, sha256 of its text) -> its file-scope prototypes
+
+
 def alldecls_text(root: Path) -> str:
     lines = ["#include <windows.h>"]
     inc = Path(root) / "include"
@@ -138,9 +142,15 @@ def alldecls_text(root: Path) -> str:
             lines.append(f'#include "{h.name}"')
     src = Path(root) / "src"
     if src.exists():
-        for p in sorted(src.rglob("*.c")):
-            rel = p.relative_to(root).as_posix()
-            for line, stmt in file_scope_prototypes(rel, p.read_text(errors="replace")):
+        for rel, p in fsmemo.walk(src, ("*.c",)):
+            rel = "src/" + rel
+            key = (rel, fsmemo.sha256(p))
+            protos = _protos.get(key)
+            if protos is None:
+                if len(_protos) > 50000:
+                    _protos.clear()
+                protos = _protos[key] = file_scope_prototypes(rel, fsmemo.read_text(p))
+            for line, stmt in protos:
                 lines.append(f'#line {line} "{rel}"')
                 lines.append(stmt)
     return "\n".join(lines) + "\n"
@@ -171,11 +181,11 @@ def lint(project, log=None) -> dict:
     tus = st.tus()
     jobs, results = [], {}
     for a in amalgs:
-        B.A.write(root, a)
-        inc =(tus.get(a.unit) or {}).get("include_hash", "")
-        key = sha256("lint", VERSION, a.text, canonical(FLAGS), inc, canonical([str(d) for d in sysdirs]))
+        inc = (tus.get(a.unit) or {}).get("include_hash", "")
+        key = sha256("lint", VERSION, a.src_hash, canonical(FLAGS), inc, canonical([str(d) for d in sysdirs]))
         hit = st.blob_json(key)
         if hit is None:
+            B.A.write(root, a)                            # clang reads it
             jobs.append((a, key))
         else:
             results[a.unit] = hit
@@ -189,7 +199,7 @@ def lint(project, log=None) -> dict:
                 results[a.unit] = diags
     text = alldecls_text(root)
     akey = sha256("alldecls", VERSION, text, canonical(FLAGS), canonical([str(d) for d in sysdirs]),
-                  *(p.read_text(errors="replace") for p in sorted((Path(root) / "include").glob("*.h"))) if (Path(root) / "include").exists() else "")
+                  *(fsmemo.sha256(p) for p in sorted((Path(root) / "include").glob("*.h"))) if (Path(root) / "include").exists() else "")
     cross = st.blob_json(akey)
     if cross is None:
         out = Path(root) / "build" / "lint" / project.target_name / "alldecls.c"

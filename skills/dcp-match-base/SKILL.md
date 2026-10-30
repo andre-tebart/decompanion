@@ -13,6 +13,9 @@ deep queue, `dcp next --deep`), not this session's.
 
 Hard rules
 - Every tool is `uv run dcp ...` from the project root (`--target NAME` for a target other than the first).
+  First check `uv run dcp serve --status`; when no daemon runs, start `uv run dcp serve` as a background process
+  and leave it running: every `uv run dcp` of the project then runs in it (about 0.2 s a call instead of 1 .. 3 s,
+  same output). Without it every command still works, only slower. A worktree needs its own (`dcp serve` there).
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
   state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` write it). Shell heredocs,

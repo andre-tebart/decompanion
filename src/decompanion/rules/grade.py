@@ -81,7 +81,7 @@ def brace_end(code: str, k: int) -> int:
     return len(code)
 
 
-@functools.lru_cache(maxsize=8)
+@functools.lru_cache(maxsize=2)
 def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
     """(raw macro names (Q4), described addresses (Q6)) over every source and header of the tree (collected by
     the source scan, per file)."""
@@ -159,6 +159,9 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
 
 
 _ctx_digest: dict[str, str] = {}
+_read_memo: dict[str, tuple] = {}        # readability_cached's key -> (grade, failing), this process
+_code_memo: dict[tuple, tuple] = {}      # (compare key, the original's extent, matched) -> a function's code grade row
+MEMO_MAX = 15000
 
 
 def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None):
@@ -174,11 +177,18 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
         dig = _ctx_digest[tree] = sha256(json.dumps(sorted(raw)), json.dumps(sorted(described)))
     key = sha256("readability", READABILITY_VERSION, fsmemo.sha256(p), json.dumps(fn_value, sort_keys=True), f"{addr:x}",
                  dig, json.dumps(list(image_range)), json.dumps(lint.get(fn_value["file"]) if lint is not None else None))
+    hit = _read_memo.get(key)
+    if hit is not None:
+        return hit
+    if len(_read_memo) > MEMO_MAX:
+        _read_memo.clear()
     hit = store.blob_json(key)
     if hit is not None:
+        _read_memo[key] = (hit[0], hit[1])
         return hit[0], hit[1]
     q, qf = readability(root, tree, fn_value, addr, image_range, lint)
     store.put_blob_json(key, "readability", [q, qf])
+    _read_memo[key] = (q, qf)
     return q, qf
 
 
@@ -207,8 +217,15 @@ def grade(ctx: RuleContext):
     plug = p.input_hash("plugins")
     rng = (img.base, img.end)
     rows = []
+    if len(_code_memo) > MEMO_MAX:
+        _code_memo.clear()
     for s, obj, sym, code, c in funcs:
         w = walk.get(s.lo)
+        mk = (getattr(c, "fkey", None), w.hi if w is not None else None, s.lo in matched, DC.VERSION)
+        hit = _code_memo.get(mk) if mk[0] is not None else None
+        if hit is not None:
+            rows.append((s, *hit))
+            continue
         skey = sha256("codesize", DC.VERSION, plug, code.code_data.hex(), code.code_mask.hex(), f"{s.lo:x}")
         size = ctx.store.blob_json(skey)
         if size is None:
@@ -236,6 +253,8 @@ def grade(ctx: RuleContext):
             else:
                 why.append("B2 shape: " + v.summary())
         rows.append((s, g, why, hunks, {"ins": dist_ins, "bytes": nbytes, "size": size, "orig": orig_size}))
+        if mk[0] is not None:
+            _code_memo[mk] = rows[-1][1:]
     for s, reason in missing:
         w = walk.get(s.lo)
         rows.append((s, "draft", [f"B3 draft: {reason}"], {}, {"ins": None, "bytes": None, "size": None,

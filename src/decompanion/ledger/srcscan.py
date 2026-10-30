@@ -594,21 +594,22 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
     if tree_hash is not None and (str(root), tree_hash) in _cache:
         return _cache[(str(root), tree_hash)]
     out = Scan()
-    path, disk = _file_cache(root)
+    path, disk = None, None                  # the on-disk memo, read on the first file this process has not scanned
     used, changed = {}, False
     for d, pats in (("src", ("*.c", "*.h")), ("include", ("*.h",))):
         base = root / d
         if not base.exists():
             continue
-        files = sorted({p for pat in pats for p in base.rglob(pat)})
-        for p in files:
-            rel = p.relative_to(root).as_posix()
-            text = fsmemo.read_text(p)
+        for rel, p in sorted({(d + "/" + r, p) for r, p in fsmemo.walk(base, pats)}, key=lambda t: t[0].lower()):
             key = (rel, fsmemo.sha256(p))
-            piece = _files.get(key) or disk.get(key)
+            piece = _files.get(key)
+            if piece is None:
+                if disk is None:
+                    path, disk = _file_cache(root)
+                piece = disk.get(key)
             if piece is None:
                 piece = Scan()
-                scan_file(rel, text, piece)
+                scan_file(rel, fsmemo.read_text(p), piece)
                 changed = True
             _files[key] = used[key] = piece
             out.files += 1
@@ -621,7 +622,7 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
             out.ptrcasts += piece.ptrcasts
             out.views += piece.views
             out.rawobj += piece.rawobj
-    if path is not None and (changed or len(used) != len(disk)):
+    if path is not None and (changed or len(used) != len(disk)):      # (nothing new to this process: no write)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
@@ -635,6 +636,8 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
             scan_order(p.relative_to(root).as_posix(), p.read_text(errors="replace"),
                        sorted(q.name for q in p.parent.glob("*.c")), out)
     if tree_hash is not None:
+        if len(_cache) > 2:                       # a long-lived process (dcp serve) sees a new tree per edit
+            _cache.clear()
         _cache[(str(root), tree_hash)] = out
     return out
 

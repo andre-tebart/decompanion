@@ -13,6 +13,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import rules  # noqa: F401  (registers every rule)
+from . import fsmemo, timing
 from .config import ConfigError, Project
 from .ledger import query
 from .ledger.fact import Kind, Level, canonical
@@ -69,20 +70,26 @@ def jsonable(v):
 
 
 def open_project(args, target: str | None = None) -> tuple[Project, Engine]:
-    p = Project(Path(args.root) if getattr(args, "root", None) else None, target or getattr(args, "target", None))
-    e = Engine(p, p.store)
+    with timing.phase("open"):
+        p = Project(Path(args.root) if getattr(args, "root", None) else None, target or getattr(args, "target", None))
+        e = Engine(p, p.store)
     return p, e
 
 
 def refresh(p: Project, e: Engine, verbose=False, force=False, only=None):
     t0 = time.perf_counter()
+    fsmemo.new_epoch()
+    if force:
+        fsmemo.forget_all()                 # a forced refresh trusts no persisted hash
     for name in ("src", "decl"):          # a command may have written either since its last refresh (rename, draft,
         p.forget_input(name)              # data fix, escalate, decl add); the file memo keeps the rehash cheap
-    res = e.run(only, force=force, log=(lambda s: print(s, file=sys.stderr)) if verbose else None)
+    with timing.phase("refresh"):
+        res = e.run(only, force=force, log=(lambda s: print(s, file=sys.stderr)) if verbose else None)
     ran = [r for r in res if r.ran]
     if verbose or ran:
         print(f"rules: {len(ran)} ran of {len(res)}, {int((time.perf_counter() - t0) * 1000)} ms (target {p.target_name})", file=sys.stderr)
-    query.ensure_bytemap(p.store)
+    with timing.phase("bytemap"):
+        query.ensure_bytemap(p.store)
     return res
 
 
@@ -363,8 +370,19 @@ def build_target(args, name, quiet=False):
     from .build import compile as B
     p, e = open_project(args, name)
     rep = B.ensure(p, log=None if quiet else print, force=getattr(args, "force", False))
+    lint_built(p)
     refresh(p, e)
     return p, e, rep
+
+
+def lint_built(p):
+    """A project that lints (a `dcp lint` ran before, clang is there): lint the units that changed since, before the
+    refresh, so the one refresh of a build sees the objects and the lint together (grade / next find it current)."""
+    from .source import lint as LI
+    stale = LI.stale(p)
+    if stale and LI.clang_path(p) is not None:
+        with timing.phase("lint"):
+            LI.lint(p)
 
 
 def cmd_build(args):
@@ -692,6 +710,10 @@ def main(argv=None):
     s = cmd(sub, "check", cmd_check, "the gate: build, no bug or error conflict, the link resolves (every target unless --target)")
     s.add_argument("--strict", action="store_true", help="warnings fail too")
     s.add_argument("--against", metavar="REV", help="no grade fell against ledger/grades.tsv at this git revision")
+    s = sub.add_parser("serve", help="run the project's daemon: every dcp command of the project runs in it (daemon.py)")
+    s.add_argument("--stop", action="store_true", help="stop the running daemon")
+    s.add_argument("--status", action="store_true", help="print the running daemon's state")
+    s.set_defaults(fn=cmd_serve)
     s = cmd(sub, "rules", cmd_rules, "the rule graph and run status")
     s.add_argument("-v", "--verbose", action="store_true", help="print each rule's criterion")
     from . import cli_decide as CD
@@ -792,7 +814,7 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
     try:
-        return args.fn(args) or 0
+        return run_command(args)
     except ConfigError as ex:
         print(f"dcp: {ex}", file=sys.stderr)
         return 2
@@ -805,6 +827,40 @@ def main(argv=None):
             print(f"dcp: {ex}", file=sys.stderr)
             return 2
         raise
+
+
+def cmd_serve(args):
+    """`dcp serve` reached cli.main (the dcp script handles it in client.py first): the same."""
+    from . import client
+    return client.serve((["--root", args.root] if args.root else []) + (["--stop"] if args.stop else [])
+                        + (["--status"] if args.status else []))
+
+
+def run_command(args):
+    """args.fn(args) with the timing line (DCP_TIMING) and the profile (DCP_PROFILE) around it."""
+    import os
+    from . import fsmemo
+    timing.reset()
+    fsmemo.new_epoch()
+    try:
+        if os.environ.get("DCP_PROFILE"):
+            import cProfile
+            import pstats
+            prof = cProfile.Profile()
+            try:
+                return prof.runcall(args.fn, args) or 0
+            finally:
+                name = "-".join(x for x in (args.cmd, getattr(args, "sub", None)) if x)
+                out = Path(getattr(args, "root", None) or ".").resolve() / "build" / "profile"
+                out.mkdir(parents=True, exist_ok=True)
+                path = out / f"{name}-{time.strftime('%Y%m%d-%H%M%S')}.prof"
+                prof.dump_stats(path)
+                print(f"profile: {path}", file=sys.stderr)
+                pstats.Stats(prof, stream=sys.stderr).sort_stats("cumulative").print_stats(30)
+        return args.fn(args) or 0
+    finally:
+        fsmemo.flush()
+        timing.report()
 
 
 if __name__ == "__main__":

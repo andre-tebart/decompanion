@@ -98,6 +98,32 @@ analyzer) -> `dcp session start`. decompanion takes none of the decisions: every
 status` names when it is due, with the evidence it has and the command that resolves it; every declaration needs
 `--why`.
 
+### Speed: `dcp serve`
+
+`dcp serve` (src/decompanion/daemon.py) runs one resident process per project root; every `dcp` command of the
+project then runs in it (client.py forwards the command line, the cwd and the environment, and streams the output
+back), so a command pays neither the interpreter start and imports nor the first read of the image, the sources,
+the store and the objects. Without a daemon (or with DCP_NO_DAEMON=1) the command runs in its own process: the
+same code, the same output. `dcp serve --status` / `--stop`; a changed decompanion restarts it by itself.
+
+What makes the loop fast, in the daemon and outside it: content hashes of the source files persisted per project
+(build/cache/stamps.pickle, trusted only for an unchanged, non-racy stamp; fsmemo.py), one plan per source state,
+the compare of each function memoised by its object, address and next start (an edit compares one unit's
+functions again), a rule run whose output did not change keeps its facts, `dcp build` lints the units it compiled
+before its one refresh. gildegold, a one-line edit of a function (median, warm daemon):
+
+| step | before | now |
+|---|---|---|
+| `dcp build` (one unit compiled) | 7.5 s | 1.8 .. 2.8 s |
+| `dcp diffclass` / `asmdiff` / `grade` / `next` | 2.2 / 2.2 / 6.1 / 2.2 s | 0.2 s each |
+| `dcp dump` / `why` / `draft --show` | 1.2 s | 0.2 s |
+| `dcp rename` (one unit) | 13 s | 3.6 s |
+
+DCP_TIMING=1 prints where a command's time went (DCP_TIMING=2: per rule), DCP_PROFILE=1 runs it under cProfile
+(build/profile/). tools/bench.py replays the loop on a project (edits applied and reverted) and, with --verify,
+checks the store against a forced recompute in a fresh process with the persisted hashes and the kept runs off
+(DCP_NO_SHORTCUTS=1, DCP_NO_DAEMON=1).
+
 ### Quick start: server.dll (outputs trimmed, real numbers)
 
 1. Create the project. Init records the binary only (name, path, sha256, image format, ISA) and the analyzer the

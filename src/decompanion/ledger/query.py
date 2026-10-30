@@ -19,10 +19,26 @@ def _cls(f) -> str:
     return f.kind.value
 
 
+_maps: dict[tuple, bool] = {}       # (store, run id, at) -> the run has facts of a kind the byte map is made of
+
+
 def ensure_bytemap(store: Store) -> str:
-    """Rebuild the byte map when the symbol / region / section / unit / source facts changed. Returns the hash."""
-    runs = store.db.execute("SELECT rule, out_hash FROM run WHERE current=1 ORDER BY rule").fetchall()
-    h = sha256(*(f"{r}={o}" for r, o in runs))
+    """Rebuild the byte map when the symbol / region / section / unit / source facts changed. Returns the hash: of
+    the current runs (id and time) that hold such facts; the map rows name fact ids, so a run recorded again
+    changes it although its output is the same."""
+    runs = store.db.execute("SELECT rule, id, at FROM run WHERE current=1 ORDER BY rule").fetchall()
+    kinds = [k.value for k in MAP_KINDS]
+    parts = []
+    for rule, rid, at in runs:
+        k = (str(store.path), rid, at)
+        has = _maps.get(k)
+        if has is None:
+            has = _maps[k] = store.db.execute(
+                f"SELECT 1 FROM fact WHERE run_id=? AND kind IN ({','.join('?' * len(kinds))}) LIMIT 1",
+                (rid, *kinds)).fetchone() is not None
+        if has:
+            parts.append(f"{rule}={rid}@{at!r}")
+    h = sha256("bytemap.v2", *parts)
     if store.meta("bytemap") == h:
         return h
     symbols = store.facts(Kind.symbol) + store.facts(Kind.region)

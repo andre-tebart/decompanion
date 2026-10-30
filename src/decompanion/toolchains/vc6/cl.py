@@ -120,8 +120,11 @@ def preprocess_includes(tools: Tools, src: Path, flags: list[str], include_dirs:
     if r.returncode != 0:
         return [], (r.stderr or "").replace("\r\n", "\n")
     me = Path(cwd, src).resolve()
-    seen = {}
+    seen, done = {}, set()
     for m in LINE_DIRECTIVE.finditer(r.stdout):
+        if m.group(1) in done:                    # thousands of #line directives name a few hundred files
+            continue
+        done.add(m.group(1))
         raw = re.sub(r"\\(.)", r"\1", m.group(1))
         p = Path(raw)
         p = (p if p.is_absolute() else Path(cwd, p)).resolve()

@@ -23,7 +23,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+from .. import fsmemo
+
+IDENT =re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 UNIT = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-]*$")
 HEX = re.compile(r"^0x[0-9a-fA-F]+$")
 PATH = re.compile(r'^[^\s"]+$')
@@ -279,4 +281,5 @@ def insert(path: Path, d: Decl, targets: list[str]) -> int:
     lines.insert(at, d.text())
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", newline="\n")
+    fsmemo.wrote(path)
     return at + 1

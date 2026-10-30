@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
-from .. import fsmemo
+from .. import fsmemo, timing
 from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..ledger.fact import canonical
@@ -76,8 +76,8 @@ _listing: dict[str, str] = {}
 
 
 def dir_listing_hash(d: Path) -> str:
-    """The hash of the names below one directory, memoised per process (the system include directories are
-    shared by every unit: one walk each per run)."""
+    """The hash of the names below one directory, memoised per build (the system include directories are
+    shared by every unit: one walk each per build)."""
     key = str(d)
     h = _listing.get(key)
     if h is None:
@@ -116,14 +116,29 @@ class Hasher:
         return sha256(*(f"{f.lower()}={self.file(f)}" for f in sorted(files, key=str.lower)))
 
 
+_plans: dict[tuple, list] = {}
+
+
 def plan(project, scan=None) -> list[A.Amalg]:
-    """The amalgamations of the project's current target."""
+    """The amalgamations of the project's current target, memoised per process by the root, the target and the
+    hashes of everything they are made of (the sources, the declarations, the target list)."""
+    key = None
     if scan is None:
+        key = (str(project.root), project.target_name, project.default_target, project.input_hash("src"),
+               project.input_hash("decl"), project.input_hash("targets"))
+        hit = _plans.get(key)
+        if hit is not None:
+            return hit
         scan = srcscan.scan(project.root, project.input_hash("src"))
     targets = [t["name"] for t in project.input("targets")]
     decls, _ = decl_mod.load(project.input("decl"), project.root, targets)
     names = decl_mod.unit_files(decls, project.target_name, project.default_target)
-    return A.units(project.root, scan, project.target_name, project.default_target, names)
+    out = A.units(project.root, scan, project.target_name, project.default_target, names)
+    if key is not None:
+        if len(_plans) > 2:
+            _plans.clear()
+        _plans[key] = out
+    return out
 
 
 def located(a, diagnostics: list) -> list:
@@ -153,7 +168,14 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
     tc = project.toolchain
     st = project.store
     rep = Report(project.target_name)
-    amalgs = plan(project)
+    fsmemo.new_epoch()
+    for name in ("src", "decl"):         # the command may have written either since it hashed them (rename, data fix)
+        project.forget_input(name)
+    _listing.clear()                     # a header added since the last build (a long-lived process: dcp serve)
+    if force:
+        fsmemo.forget_all()
+    with timing.phase("ensure.plan"):
+        amalgs = plan(project)
     rep.units = len(amalgs)
     if amalgs and not tc.available():
         rep.unavailable = True
@@ -163,17 +185,20 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
     rows = st.tus()
     hasher = Hasher()
     todo_pre, work = [], {}
+    t_keys = time.perf_counter()
     for a in amalgs:
-        A.write(root, a)
         flags, _ = flags_for(project, a.target, a.unit)
         dirs = include_dirs(a.unit)
         search = [Path(root, d) if not Path(d).is_absolute() else Path(d) for d in tc.include_search_dirs(dirs)]
         key = sha256(a.src_hash, sha256(canonical(flags)), listing_hash(search))
         work[a.unit] = (a, flags, dirs, key)
         if st.include_set(key) is None:
+            A.write(root, a)                                  # the preprocessor reads it
             todo_pre.append(a.unit)
-    ours = {a.unit: {str((Path(root) / m.file).resolve()).lower() for m in a.members}
-            | ({str(Path(a.file_name).resolve()).lower()} if a.file_name else set()) for a in amalgs}
+    def ours(a) -> set[str]:
+        """The unit's own part files (and declared file name), resolved: not part of its include set."""
+        return ({str((Path(root) / m.file).resolve()).lower() for m in a.members}
+                | ({str(Path(a.file_name).resolve()).lower()} if a.file_name else set()))
 
     def preprocess(unit):
         """(unit, include set or None when the preprocessor fails)."""
@@ -181,16 +206,21 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
         files, err = tc.includes(Path(a.path), flags, dirs, root)
         if err:
             return unit, None
-        return unit, [str(f) for f in files if str(f).lower() not in ours[unit]]
+        own = ours(a)
+        return unit, [str(f) for f in files if str(f).lower() not in own]
 
+    timing.add("ensure.keys", (time.perf_counter() - t_keys) * 1000)
     n = jobs or os.cpu_count() or 4
+    t_pre = time.perf_counter()
     if todo_pre:
         with ThreadPoolExecutor(n) as pool:
             for unit, files in pool.map(preprocess, todo_pre):
                 if files is not None:
                     st.put_include_set(work[unit][3], files)
                 rep.preprocessed += 1
+    timing.add("ensure.pre", (time.perf_counter() - t_pre) * 1000)
     stale = []
+    t_inc = time.perf_counter()
     for unit, (a, flags, dirs, key) in work.items():
         files = st.include_set(key)
         row = rows.get(unit)
@@ -202,6 +232,10 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
                  and (not row["ok"] or obj_path(root, row["obj_hash"]).exists()))
         if not fresh:
             stale.append(unit)
+            A.write(root, a)
+        elif not (root / a.path).exists():
+            A.write(root, a)                                  # the amalgamation on disk is `dcp unit cat`'s and lint's
+    timing.add("ensure.inc", (time.perf_counter() - t_inc) * 1000)
 
     def compile_one(unit):
         a, flags, dirs, key = work[unit]
@@ -226,7 +260,7 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
     if stale:
         if log:
             log(f"build: compiling {len(stale)} of {len(amalgs)} units (target {project.target_name})")
-        with ThreadPoolExecutor(n) as pool:
+        with timing.phase("ensure.cl"), ThreadPoolExecutor(n) as pool:
             results = list(pool.map(compile_one, stale))
         for unit, res, files, obj_hash in results:
             a, flags, dirs, key = work[unit]

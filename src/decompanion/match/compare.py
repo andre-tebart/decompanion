@@ -29,6 +29,8 @@ def read_object(project, obj_hash: str):
         p = Path(project.root) / "build" / "obj" / f"{obj_hash}.obj"
         if not p.exists():
             return None
+        if len(_objs) > 400:                      # a long-lived process (dcp serve): every compile adds one
+            _objs.clear()
         o = _objs[obj_hash] = project.objfmt.read_object(p)
     return o
 

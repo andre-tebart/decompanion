@@ -45,7 +45,7 @@ from . import image as image_plugins
 from . import isa as isa_plugins
 from . import objfmt as objfmt_plugins
 from . import toolchains as toolchain_plugins
-from . import fsmemo
+from . import fsmemo, timing
 from .ledger.fact import canonical
 from .ledger.store import Store, file_hash, sha256
 
@@ -175,6 +175,7 @@ class Project:
         self.toolchain = plugin(self.expand(tc["root"]) if tc.get("root") else None, tc)
         self.build_dir = self.root / "build"
         self._hashes: dict[str, str] = {}
+        fsmemo.attach(self.root)
 
     def expand(self, s: str) -> Path:
         tc = self.cfg.get("toolchain") or {}
@@ -288,7 +289,7 @@ class Project:
     def store(self) -> Store:
         main = self.main_build_dir()
         overlay = main / f"{self.target_name}.sqlite" if main is not None else None
-        return Store(self.store_path(), overlay_of=overlay)
+        return Store.open(self.store_path(), overlay_of=overlay)
 
     def lib_archives_of(self, name: str | None = None) -> list[Path]:
         """The library archives of a target: its own `archives` list, else the project's [libs] archives."""
@@ -376,6 +377,12 @@ class Project:
     def input_hash(self, name: str) -> str:
         if name in self._hashes:
             return self._hashes[name]
+        with timing.phase(f"hash.{name}"):
+            h = self._input_hash(name)
+        self._hashes[name] = h
+        return h
+
+    def _input_hash(self, name: str) -> str:
         if name == "image":
             h = file_hash(self.image_path)
         elif name == "config":
@@ -409,7 +416,6 @@ class Project:
             h = sha256(self.store.meta("lint") or "")
         else:
             raise ConfigError(f"unknown input {name!r}")
-        self._hashes[name] = h
         return h
 
     def forget_input(self, name: str):
@@ -423,11 +429,10 @@ class Project:
             if not d.exists():
                 continue
             h.update(d.name.encode() + b"\1")
-            for pat in patterns:
-                for p in sorted(d.rglob(pat)):
-                    h.update(p.relative_to(d).as_posix().encode())
-                    h.update(b"\0")
-                    h.update(bytes.fromhex(fsmemo.sha256(p)))
+            for rel, p in fsmemo.walk(d, patterns):
+                h.update(rel.encode())
+                h.update(b"\0")
+                h.update(bytes.fromhex(fsmemo.sha256(p)))
         return h.hexdigest()
 
     def input(self, name: str):

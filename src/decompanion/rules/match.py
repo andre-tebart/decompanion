@@ -39,6 +39,9 @@ def starts_of(ctx) -> list[int]:
 
 
 _compiled: dict[str, tuple] = {}
+_per_fn: dict[tuple, tuple] = {}         # (image, plugins, object, symbol, address, next start, relocs) -> (code, compare)
+_index: dict[str, dict] = {}             # object hash -> its function index
+PER_FN_MAX = 15000                       # about three compiles of every function: the current ones and recent edits
 
 
 def compiled_functions(ctx, sources=None):
@@ -56,13 +59,27 @@ def compiled_functions(ctx, sources=None):
     srcs = sources if sources is not None else [f for f in ctx.facts(Kind.source) if f.value.get("what") == "func" and f.run == "L.src"]
     key = sha256(p.target_name, str(p.root), json.dumps({u: r.get("obj_hash") for u, r in sorted(tus.items())}),
                  json.dumps(starts), json.dumps(relocs), json.dumps([(f.lo, f.value["unit"], f.value["symbol"]) for f in srcs]))
+    # the result holds the source facts themselves (the rules read their file, level, tags): a hit needs the very
+    # same fact objects, i.e. the same L.src run (the memo keeps them alive, so an id is never reused meanwhile)
+    key = (key, tuple(map(id, srcs)))
     hit = _compiled.get(key)
     if hit is not None:
         return hit
     if len(_compiled) > 4:
         _compiled.clear()
+    if len(_per_fn) > PER_FN_MAX:
+        _per_fn.clear()
+        _index.clear()
+    # one function's compare depends on its object, its symbol, its address, the next start, the image and the
+    # relocation sites only: an edit of one unit compares that unit's functions again, not every function
+    world = (p.input_hash("image"), p.input_hash("plugins"), sha256(json.dumps(relocs)))
     objs = C.objects(p, tus)
-    index = {u: C.function_index(o, tc) for u, o in objs.items()}
+    index = {}
+    for u, o in objs.items():
+        oh = tus[u]["obj_hash"]
+        if oh not in _index:
+            _index[oh] = C.function_index(o, tc)
+        index[u] = _index[oh]
     out, missing = [], []
     for s in sorted(srcs, key=lambda f: f.lo):
         unit, name = s.value["unit"], s.value["symbol"]
@@ -74,10 +91,16 @@ def compiled_functions(ctx, sources=None):
         if sym is None:
             missing.append((s, f"the object of unit {unit} defines no function {name}"))
             continue
-        code = objs[unit].function_code(sym)
         i = bisect.bisect_right(starts, s.lo)
         nxt = starts[i] if i < len(starts) else img.end
-        out.append((s, objs[unit], sym, code, C.compare(img, code, s.lo, relocs, nxt, tc.fill_forms)))
+        fk = (*world, tus[unit]["obj_hash"], name, s.lo, nxt)
+        got = _per_fn.get(fk)
+        if got is None:
+            code = objs[unit].function_code(sym)
+            c = C.compare(img, code, s.lo, relocs, nxt, tc.fill_forms)
+            c.fkey = fk                  # what the compare was computed from: the key of memos built on it (G.grade)
+            got = _per_fn[fk] = (code, c)
+        out.append((s, objs[unit], sym, *got))
     _compiled[key] = (out, missing)
     return out, missing
 
@@ -158,6 +181,9 @@ def compile_facts(ctx: RuleContext):
 
 
 # ------------------------------------------------------------------------------------------------ M.match / M.draft
+_code_end: dict[tuple, int] = {}         # the end of a matched function's last instruction that is no fill (0: none)
+
+
 @rule("M.match", version="1", ceiling=P, outputs=("symbol", "source"), needs=("L.src", *WALK), inputs=("objects",),
       helpers=(compiled_functions, starts_of, C))
 def match(ctx: RuleContext):
@@ -177,16 +203,23 @@ def match(ctx: RuleContext):
     funcs, _ = compiled_functions(ctx)
     img, isa, tc = ctx.image, ctx.project.isa, ctx.project.toolchain
     tables = sorted((f.lo, f.value.get("fn")) for f in ctx.facts(Kind.symbol) if f.value.get("skind") in ("jumptable", "idxtable"))
+    world = (ctx.project.input_hash("image"), ctx.project.input_hash("plugins"))
+    if len(_code_end) > PER_FN_MAX:
+        _code_end.clear()
     for s, obj, sym, code, c in funcs:
         if not c.matched:
             continue
         a, end = s.lo, s.lo + c.size
         code_end = next((lo for lo, fn in tables if fn == a and a < lo < end), end)
-        lines = isa.listing(code.data[:code_end - a], a, code.mask[:code_end - a], (img.base, img.end), tc.fill_forms)
-        while lines and lines[-1].fill:
-            lines.pop()
-        if lines:
-            code_end = min(code_end, lines[-1].addr + lines[-1].size)
+        lk = (*world, a, bytes(code.data[:code_end - a]), bytes(code.mask[:code_end - a]))
+        last = _code_end.get(lk)
+        if last is None:
+            lines = isa.listing(code.data[:code_end - a], a, code.mask[:code_end - a], (img.base, img.end), tc.fill_forms)
+            while lines and lines[-1].fill:
+                lines.pop()
+            last = _code_end[lk] = lines[-1].addr + lines[-1].size if lines else 0
+        if last:
+            code_end = min(code_end, last)
         v = {"skind": "func", "extent": "matched", "name": s.value["symbol"], "unit": s.value["unit"], "file": s.value["file"],
              "relocs": c.aid}
         yield ctx.fact(a, code_end, Kind.symbol, v, P)
