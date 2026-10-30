@@ -208,9 +208,17 @@ as it is and with the includes after head.c's last one, and only the trial's new
 `supersedes` (a declaration of the unit the header declares differently), `duplicate` (one it repeats with
 the same type: safe to drop), `clash` (two headers disagree), `header` (the header does not compile in this
 unit's include set), `call` (a call the header's prototype rejects, with the original's pushes and `add esp`
-at that function's call of the callee), `prototyped` (calls that compiled without a prototype and now convert
-their arguments), `other`; then the functions to re-grade. `--write` inserts the includes and drops the
-duplicates, only when nothing else is left and the trial without them has no new error. About 1 s a unit.
+at that function's call of the callee), `vc6` (an error only VC6's own front end reports: both files also go
+through `CL /Zs` with the unit's flags, since clang accepts what VC6 rejects, e.g. C2079 for a struct passed by
+value that is incomplete in the unit), `prototyped` (calls that compiled without a prototype and now convert
+their arguments; per call site `constants: safe` when every argument is a constant whose push cannot change,
+else re-grade: an expression, an integer constant to a float parameter), `other`; then the functions to
+re-grade and two warnings: `declaration-set` (the includes add declarations or --write drops duplicates: under
+VC6 /O2 the declaration set alone moves code generation, so every function of the unit is re-graded, byte ones
+first, and they are listed) and `q6` (a duplicate's comment is the only description of a function: dropping it
+drops the function to draft under Q6). `--write` inserts the includes and drops the duplicates, only when
+nothing else is left and the trial without them has no new error (clang's or VC6's). About 1 s a unit (more
+with the VC6 trial).
 
 ## The gate (`dcp check`)
 

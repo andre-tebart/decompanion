@@ -259,6 +259,11 @@ class Toolchain:
         absolute paths. An empty list and the log when the preprocessor fails."""
         raise NotImplementedError
 
+    def syntax_check(self, src: Path, flags: list[str], include_dirs: list[Path], cwd: Path) -> CompileResult | None:
+        """The compiler's front end over `src` without an object (what it rejects that clang accepts), or None
+        when the toolchain has no such mode."""
+        return None
+
     def include_search_dirs(self, include_dirs: list[Path]) -> list[Path]:
         """The directories an include of a unit compiled with these include dirs may resolve to: the given ones
         and the toolchain's own header directories."""

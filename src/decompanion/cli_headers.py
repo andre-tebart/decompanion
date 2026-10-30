@@ -2,9 +2,12 @@
 record per line, key=value tokens, addresses 0x%08x, counts before lists.
 
   dcp headers conflicts UNIT HEADER..   what including the headers into the unit's head.c collides with, by a
-                                        trial parse (clang, as dcp lint): supersedes / duplicate / clash / call /
-                                        prototyped / other, then the functions to re-grade. --write inserts the
-                                        includes and drops the duplicates, only when nothing else is left.
+                                        trial parse (clang, as dcp lint, and VC6's front end, CL /Zs): clash /
+                                        header / supersedes / call / vc6 / other / prototyped / duplicate, the
+                                        warnings (the declaration set changes; a dropped duplicate carries the
+                                        only description of a function), then the functions to re-grade.
+                                        --write inserts the includes and drops the duplicates, only when nothing
+                                        else is left.
 """
 from __future__ import annotations
 
@@ -14,8 +17,8 @@ from .cli import fmt_addr, open_project, record, refresh
 from .source import headers as H
 from .source import lint as L
 
-ORDER = ("clash", "header", "supersedes", "call", "other", "prototyped", "duplicate")
-BLOCKING = ("clash", "header", "supersedes", "call", "other")
+ORDER = ("clash", "header", "supersedes", "call", "vc6", "other", "prototyped", "duplicate")
+BLOCKING = ("clash", "header", "supersedes", "call", "vc6", "other")
 
 
 def cmd_headers_conflicts(args):
@@ -32,13 +35,14 @@ def cmd_headers_conflicts(args):
             return 2
         hdrs.append(r)
     try:
-        a, head, items = H.analyse(p, args.unit, hdrs)
+        a, head, items, info = H.analyse(p, args.unit, hdrs)
     except LookupError as ex:
         print(record(unit=args.unit, error=str(ex)))
         return 2
     from .cli_match import find_function
     n = Counter(i.kind for i in items)
-    print(record(unit=args.unit, headers=",".join(hdrs), **{k: n.get(k, 0) for k in ORDER}))
+    print(record(unit=args.unit, headers=",".join(hdrs), **{k: n.get(k, 0) for k in ORDER},
+                 **({} if info["vc6"] else {"vc6_trial": "unavailable"})))
     regrade = {}
     for kind in ORDER:
         for i in (x for x in items if x.kind == kind):
@@ -56,16 +60,39 @@ def cmd_headers_conflicts(args):
             if i.sites:
                 print(f"    sites: {', '.join(i.sites[:8])}" + (f" (+{len(i.sites) - 8})" if len(i.sites) > 8 else ""))
             for fn in ([i.fn] if i.fn is not None else []) + i.fns:
-                if kind in ("supersedes", "call", "prototyped", "other"):
+                if kind in ("supersedes", "call", "vc6", "prototyped", "other"):
                     regrade.setdefault(fn, set()).add(kind)
     rows = []
     for fn in sorted(regrade):
         r = find_function(p, fmt_addr(fn))
         rows.append((fn, r))
-    print(record(regrade=len(rows), unit_functions="all (the declaration set alone can move stack slots)"))
+    print(record(regrade=len(rows)))
     for fn, r in rows:
         print("  " + record(fn=fn, name=r["name"] if r else None, code=r["code"] if r else None,
                             why=",".join(sorted(regrade[fn]))))
+    dropped = sum(1 for i in items if i.kind == "duplicate")
+    added = info["declset"]["added"]
+    if added or dropped:
+        # VC6 /O2: the declaration set of a unit alone moves code generation (gildegold: removing uncalled
+        # prototypes flipped byte matches to shape)
+        fns = []
+        for m in a.members:
+            if m.role == "fragment" and m.name:
+                r = find_function(p, m.name)
+                fns.append((m.addr, m.name, r["code"] if r else None))
+        fns.sort(key=lambda x: ({"byte": 0, "shape": 1}.get(x[2], 2), x[0] or 0))
+        print(record(warning="declaration-set", added=added, **{"dropped" if args.write else "duplicates": dropped},
+                     functions=len(fns), byte=sum(1 for f in fns if f[2] == "byte"),
+                     shape=sum(1 for f in fns if f[2] == "shape"))
+              + "  (the unit's declaration set changes: VC6 /O2 can move code by it alone; re-grade every function "
+                "of the unit, byte ones first; the byte and shape ones follow)")
+        for addr, name, code in fns:
+            if code in ("byte", "shape"):
+                print("  " + record(fn=addr, name=name, code=code))
+    for it, addr in info["q6"]:
+        print(record(warning="q6", name=it.name, at=it.at, addr=addr)
+              + "  (the duplicate's comment is the only description of the function: Q6 fails when it is dropped; "
+                "move the words to the function's address comment first)")
     if not args.write:
         return 0 if not any(n[k] for k in BLOCKING) else 1
     blocking = sum(n[k] for k in BLOCKING)
@@ -73,13 +100,16 @@ def cmd_headers_conflicts(args):
         print(record(write="refused", why=f"{blocking} conflicts left; only includes and duplicates are written"))
         return 1
     drop = {int(i.at.rsplit(":", 1)[1]) for i in items if i.kind == "duplicate"}
-    _, _, base, tri, new = H.trial(p, args.unit, hdrs, drop)
+    _, _, base, tri, new, vc6 = H.trial(p, args.unit, hdrs, drop)
     seen = {H._key(g) for g in base}
     left = [g for g in tri if g[0]["kind"] == "error" and H._key(g) not in seen]
-    if left:
-        print(record(write="refused", why=f"without the duplicates the trial has {len(left)} new errors"))
+    vleft = H.vc6_new(vc6)
+    if left or vleft:
+        print(record(write="refused", why=f"without the duplicates the trial has {len(left) + len(vleft)} new errors"))
         for g in left[:10]:
             print("  " + L.fmt_group(g))
+        for d in vleft[:10]:
+            print(f"  vc6 {d['file']}:{d['line']}: {d['msg']}")
         return 1
     (p.root / head).write_text(new.replace('   /* dcp headers conflicts: trial */', ''), newline="\n")
     print(record(write=head, included=",".join(hdrs), dropped=len(drop)) + "  (dcp build, then dcp check and re-grade the unit)")

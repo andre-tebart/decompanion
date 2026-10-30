@@ -72,8 +72,11 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
   are not compared at all until it compiles (a missing include, a macro of another header in its way).
   `dcp grade` and `dcp next` lint the changed units themselves, so their Q7 is current.
 - `uv run dcp headers conflicts UNIT HEADER..` - before including a header into head.c: what it collides with
-  (supersedes / duplicate / clash / header / call with the original's pushes / prototyped) and the functions to
-  re-grade; `--write` makes the include when only duplicates are in the way.
+  (supersedes / duplicate / clash / header / call with the original's pushes / vc6, what only VC6 rejects /
+  prototyped, per call `safe` or re-grade) and the functions to re-grade; `--write` makes the include when only
+  duplicates are in the way. `warning=declaration-set`: re-grade every function of the unit after the include,
+  byte ones first (VC6 /O2 moves code by the declaration set alone). `warning=q6`: move the dropped duplicate's
+  words into the function's address comment first, or the function falls to draft.
 
 ### 2.2 Code below shape (`section=draft`)
 Explain every `code` hunk from the evidence and fix the C's meaning: a wrong condition, operand or constant, a

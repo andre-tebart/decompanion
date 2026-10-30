@@ -265,3 +265,48 @@ def test_headers_conflicts(tiny):
     assert code == 0 and "dropped=1" in out, out
     head = (tiny / "src/net/head.c").read_text()
     assert '#include "net.h"' in head and "extern int counter" not in head and "trial" not in head, head
+
+
+@pytest.mark.skipif(not Path("C:/Program Files/LLVM/bin/clang.exe").exists(), reason="clang not installed")
+def test_headers_conflicts_warnings(tiny):
+    """prototyped calls by argument class; the declaration-set warning; a dropped duplicate that carries the only
+    description of its function (Q6)."""
+    write(tiny, "include/net.h", "int add2(int a, int b);  /* 0x10001020 */\nvoid setf(float f);\nint spare(void);\n")
+    write(tiny, "src/net/head.c", "int add2(int a, int b);  /* 0x10001020, adds two numbers */\n")
+    write(tiny, "src/net/f_10001020.c", "/* 0x10001020 */\nint add2(int a, int b)\n{\n    return a + b;\n}\n")
+    write(tiny, "src/net/f_10001030.c", "/* 0x10001030, logs hello */\nvoid log_hello(int x)\n{\n"
+                                        "    setf(1);\n    setf(x);\n    g(1, \"a\");\n}\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net")
+    assert "vc6_trial=unavailable" in out, out
+    assert "kind=prototyped  name=setf" in out and "safe=0 (constant arguments" in out and "regrade=2" in out, out
+    assert "src/net/f_10001030.c:4 (an integer constant to a floating parameter: re-grade)" in out, out
+    assert "src/net/f_10001030.c:5 (expressions: re-grade)" in out, out
+    assert "warning=declaration-set  added=2  duplicates=1  functions=2  byte=0  shape=0" in out, out      # setf, spare
+    assert "warning=q6  name=add2  at=src/net/head.c:1  addr=0x10001020" in out, out
+    # a call with constant integer arguments to an int prototype is safe
+    write(tiny, "include/net.h", "int add2(int a, int b);\nint add3(int a, char *s);\n")
+    write(tiny, "src/net/f_10001030.c", "/* 0x10001030, logs hello */\nvoid log_hello(int x)\n{\n"
+                                        "    add3(-1, (char *)\"a\");\n}\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net")
+    assert "kind=prototyped  name=add3" in out and "safe=1" in out and "regrade=0" in out, out
+    assert "f_10001030.c:4 (constants: safe)" in out, out
+
+
+VC6_ROOT = Path("C:/Tools/MSVC600-SP5PP")
+
+
+@pytest.mark.skipif(not Path("C:/Program Files/LLVM/bin/clang.exe").exists(), reason="clang not installed")
+@pytest.mark.skipif(not (VC6_ROOT / "VC98" / "Bin" / "CL.EXE").exists(), reason="VC6 not installed")
+def test_headers_conflicts_vc6(tiny):
+    """clang accepts a struct parameter by value whose type the unit never completes; VC6 rejects it (C2079):
+    the VC6 trial reports it as a blocking `vc6` item and --write refuses."""
+    cfg = tiny / "decompanion.toml"
+    cfg.write_text(cfg.read_text().replace('root = "C:/nowhere/vc6"\n', f'root = "{VC6_ROOT.as_posix()}"\n', 1), newline="\n")
+    write(tiny, "include/net.h", "void paint(struct COLOR c);\n")
+    write(tiny, "src/net/head.c", "int counter = 1;  /* 0x10002000 */\n")
+    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net")
+    assert code == 1 and "supersedes=0" in out and "vc6=1" in out, out
+    assert "kind=vc6" in out and "C2079" in out and "COLOR" in out, out
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
+    assert code == 1 and "write=refused" in out, out

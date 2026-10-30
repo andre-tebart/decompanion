@@ -213,6 +213,10 @@ class VC6(Toolchain):
         """CL.EXE /nologo /c <flags> /I<dir>... /Fo<obj> <src> in cwd."""
         return cl.compile_one(self.tools, Path(src), Path(obj), list(flags), list(include_dirs), Path(cwd))
 
+    def syntax_check(self, src, flags, include_dirs, cwd) -> CompileResult:
+        """CL.EXE /nologo /Zs <flags> /I<dir>... <src>: the front end only (C2079 and the like), no object."""
+        return cl.syntax_check(self.tools, Path(src), list(flags), list(include_dirs), Path(cwd))
+
     def includes(self, src, flags, include_dirs, cwd):
         """CL.EXE /E (the /P listing on stdout): the paths of its `#line` directives."""
         return cl.preprocess_includes(self.tools, Path(src), list(flags), list(include_dirs), Path(cwd))

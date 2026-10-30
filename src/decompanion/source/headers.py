@@ -14,14 +14,27 @@ are what the include causes:
               call (or the function's start) and the `add esp, N` after it (VC6 merges the cleanup of
               consecutive calls, so a missing one says nothing)
   prototyped  a call that compiled without a prototype (implicit or K&R) and now has one: it compiles, but its
-              argument conversions (int -> float, the width of a short) may change the code; re-grade it
+              argument conversions (int -> float, the width of a short) may change the code. Per call site
+              (every call of the callee in the unit's bodies): `constants: safe` when each argument is a
+              constant whose push the prototype cannot change (an integer or string constant to a parameter that
+              is no float / double, a floating constant to a double), else re-grade (an expression, an integer
+              constant to a floating parameter, a floating constant to a float)
   header      an error inside a header itself in this unit's include set (a type it needs, a missing include)
+  vc6         an error only VC6's front end reports (the toolchain's syntax check, `CL /Zs` with the unit's flags,
+              over the same two files): clang accepts what VC6 rejects, a struct parameter passed by value whose
+              type is incomplete in the unit (C2079) the known case; at a line no clang item names
   other       any other new error
 
-Then the functions to re-grade: the ones with a `call` / `prototyped` / `supersedes` line in their fragment,
-and every function of the unit after any header change (the declaration set alone can move a function's stack
-slots). The tool reads only; `--write` inserts the includes and drops the `duplicate` lines of head.c, and only
-when the trial without them has no new error at all.
+Then the functions to re-grade (a `call` / `vc6` / `supersedes` / `other` line in their fragment, a `prototyped`
+call that is not safe) and two warnings:
+  declaration-set  the includes add declarations to the unit, or --write drops head.c duplicates: under VC6 /O2
+                   the declaration set of a unit alone moves code generation (gildegold: removing uncalled
+                   prototypes flipped byte matches to shape), so every function of the unit is re-graded, byte
+                   ones first (listed: byte, then shape)
+  q6               a duplicate's comment is the only text describing a function's address (rule Q6 reads it):
+                   dropping the line drops the function to draft; move the words to its address comment first
+The tool reads only; `--write` inserts the includes and drops the `duplicate` lines of head.c, and only when
+the trial without them has no new error at all (clang's or VC6's).
 """
 from __future__ import annotations
 
@@ -116,6 +129,10 @@ class Reader:
     def line(self, loc: str) -> str:
         return " ".join(self.raw(loc).split())[:160]
 
+    def memo_text(self, f: str) -> str | None:
+        p = self.root / f
+        return fsmemo.read_text(p) if p.exists() else None
+
     def raw(self, loc: str) -> str:
         f, _, n = loc.rpartition(":")
         if f not in self.memo:
@@ -126,15 +143,42 @@ class Reader:
         return ls[k - 1] if 0 < k <= len(ls) else ""
 
 
-def _clang(project, a, text: str, tag: str) -> list[dict]:
+def _write(project, a, text: str, tag: str) -> Path:
     root = Path(project.root)
     out = root / "build" / "lint" / project.target_name / "trial" / f"{a.unit}.{tag}.c"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, newline="\n")
+    return out.relative_to(root)
+
+
+def _clang(project, a, rel: Path) -> list[dict]:
+    root = Path(project.root)
     tc = project.toolchain
     sysdirs = [d for d in tc.include_search_dirs([]) if Path(d).exists()]
-    return L.run_clang(L.clang_path(project), out.relative_to(root), root, sysdirs,
-                       [root / d for d in B.include_dirs(a.unit)])
+    return L.run_clang(L.clang_path(project), rel, root, sysdirs, [root / d for d in B.include_dirs(a.unit)])
+
+
+def _vc6(project, a, rel: Path) -> list[dict] | None:
+    """The toolchain's own front end over a trial file (VC6: CL /Zs with the unit's flags), as lint-style
+    diagnostics; None when it is not installed or has no syntax-only mode. clang accepts what VC6 rejects:
+    a struct passed by value whose type is incomplete in the unit (C2079)."""
+    tc = project.toolchain
+    if not tc.available():
+        return None
+    root = Path(project.root)
+    flags, _ = B.flags_for(project, a.target, a.unit)
+    res = tc.syntax_check(rel, flags, B.include_dirs(a.unit), root)
+    if res is None:
+        return None
+    out = []
+    for d in res.diagnostics:
+        f = Path(d.file) if d.file else Path("")
+        try:
+            f = (f if f.is_absolute() else root / f).resolve().relative_to(root.resolve()).as_posix() if d.file else ""
+        except ValueError:
+            f = f.as_posix()
+        out.append({"file": f, "line": d.line, "kind": d.severity, "msg": f"{d.code}: {d.message}", "flag": ""})
+    return out
 
 
 def _reader(a, head_text):
@@ -162,8 +206,8 @@ def _key(g):
 
 
 def trial(project, unit: str, headers: list[str], drop: set[int] = frozenset()):
-    """(baseline groups, trial groups, head.c's trial text) of the unit with `headers` included and head.c's
-    lines `drop` (1-based) removed."""
+    """(amalgamation, head.c, baseline groups, trial groups, head.c's trial text, (VC6 baseline, VC6 trial) or
+    None) of the unit with `headers` included and head.c's lines `drop` (1-based) removed."""
     a = next((x for x in B.plan(project) if x.unit == unit), None)
     if a is None:
         raise LookupError(f"no unit {unit} in target {project.target_name}")
@@ -176,17 +220,29 @@ def trial(project, unit: str, headers: list[str], drop: set[int] = frozenset()):
     new = insert_includes(kept, headers)
     base_text, base_segs = A.compose(a.root, a.members, a.file_name)
     new_text, new_segs = A.compose(a.root, a.members, a.file_name, read=_reader(a, new))
-    with ThreadPoolExecutor(2) as pool:
-        fb = pool.submit(_clang, project, a, base_text, "base")
-        fn = pool.submit(_clang, project, a, new_text, "trial")
+    rb, rn = _write(project, a, base_text, "base"), _write(project, a, new_text, "trial")
+    with ThreadPoolExecutor(4) as pool:
+        fb, fn = pool.submit(_clang, project, a, rb), pool.submit(_clang, project, a, rn)
+        vb, vn = pool.submit(_vc6, project, a, rb), pool.submit(_vc6, project, a, rn)
         base, tri = _map(a, base_segs, fb.result()), _map(a, new_segs, fn.result())
-    return a, head, L.grouped(base), L.grouped(tri), new
+        vbase, vtri = vb.result(), vn.result()
+    vc6 = None if vbase is None or vtri is None else (_map(a, base_segs, vbase), _map(a, new_segs, vtri))
+    return a, head, L.grouped(base), L.grouped(tri), new, vc6
+
+
+def vc6_new(vc6) -> list[dict]:
+    """The VC6 errors only the trial has (by file and message: the trial's head.c lines are shifted)."""
+    if vc6 is None:
+        return []
+    vbase, vtri = vc6
+    seen = {(d["file"], d["msg"]) for d in vbase if d["kind"] == "error"}
+    return [d for d in vtri if d["kind"] == "error" and (d["file"], d["msg"]) not in seen]
 
 
 def analyse(project, unit: str, headers: list[str]):
     from ..ledger.names import Names
     root = Path(project.root)
-    a, head, base, tri, new_head = trial(project, unit, headers)
+    a, head, base, tri, new_head, vc6 = trial(project, unit, headers)
     old_lines = fsmemo.read_text(root / head).split("\n")
     last_inc = max((i for i, l in enumerate(old_lines) if INCLUDE.match(l)), default=-1)
     n_added = len(headers)
@@ -255,32 +311,201 @@ def analyse(project, unit: str, headers: list[str]):
         fm = FRAG.search(d["file"])
         items.append(Item("other", name, fix(d), fix(g[1]) if len(g) > 1 else None, d["msg"], rd.line(fix(d)),
                           fn=int(fm.group(1), 16) if fm else None))
+    # what VC6 itself rejects and clang accepted (C2079: a struct by value, incomplete in this unit)
+    reported = {i.at for i in items}            # VC6's own C2371 of a `supersedes` line says the same
+    for d in vc6_new(vc6):
+        at = fix(d) if d["file"] else "(command line)"
+        if at in reported:
+            continue
+        reported.add(at)
+        fm = FRAG.search(d["file"])
+        q = QUOTED.search(d["msg"])
+        items.append(Item("vc6", q.group(1) if q else None, at, None, d["msg"], rd.line(at) if d["file"] else "",
+                          fn=int(fm.group(1), 16) if fm else None))
     per_callee: dict[str, list] = {}
     for (f, callee), lines in sorted(base_calls.items()):
         if (f, callee) in trial_calls or not is_unit(f):
             continue
         per_callee.setdefault(callee, []).extend((f, ln) for ln in lines)
+    # the headers' declarations (and those of what they include)
+    hdr_names, hdr_decls = {}, {}
+    for rel in header_closure(root, unit, headers):
+        text = fsmemo.read_text(root / rel)
+        for n, ln in declared_names(rel, text).items():
+            hdr_names.setdefault(n, f"{rel}:{ln}")
+        for d in L.file_scope_decls(rel, text):
+            hdr_decls.setdefault(d.name, d)
     for callee, sites in sorted(per_callee.items()):
-        fns = sorted({int(m.group(1), 16) for f, _ in sites if (m := FRAG.search(f))})
+        sites = call_sites(root, a, callee) or sites        # clang warns at the first implicit call only
+        classes = [(f, ln, call_class(rd.memo_text(f), ln, callee, hdr_decls.get(callee))) for f, ln in sites]
+        risky = [(f, ln) for f, ln, c in classes if not c[0]]
+        fns = sorted({int(m.group(1), 16) for f, _ in risky if (m := FRAG.search(f))})
+        n_safe = len(sites) - len(risky)
         it = Item("prototyped", callee, f"{sites[0][0]}:{sites[0][1]}", msg=f"{len(sites)} calls compiled without a "
-                  "prototype; the header's now converts their arguments", fns=fns)
-        it.sites = [f"{f}:{ln}" for f, ln in sites]
+                  f"prototype; the header's now converts their arguments: safe={n_safe} (constant arguments, the "
+                  f"pushes cannot change) regrade={len(risky)} (float widening / integer promotion may change them)",
+                  fns=fns)
+        it.sites = [f"{f}:{ln} ({c[1]})" for f, ln, c in classes]
         items.append(it)
     # duplicates: head.c names the headers declare too, without a diagnostic
-    hdr_names = {}
-    for h in headers:
-        for d in B.include_dirs(unit):
-            p = root / d / h
-            if p.exists():
-                rel = p.relative_to(root).as_posix()
-                for n, ln in declared_names(rel, fsmemo.read_text(p)).items():
-                    hdr_names.setdefault(n, f"{rel}:{ln}")
-                break
     for n, ln in sorted(declared_names(head, "\n".join(old_lines)).items(), key=lambda kv: kv[1]):
         if n in hdr_names and n not in conflicting:
             items.append(Item("duplicate", n, f"{head}:{ln}", hdr_names[n], "the header declares it the same way",
                               rd.line(f"{head}:{ln}"), rd.line(hdr_names[n])))
-    return a, head, items
+    info = {"vc6": vc6 is not None, "declset": declaration_set(root, a, head, headers, hdr_names),
+            "q6": only_descriptions(project, head, old_lines, [i for i in items if i.kind == "duplicate"])}
+    return a, head, items, info
+
+
+def call_sites(root: Path, a, callee: str) -> list[tuple[str, int]]:
+    """(file, line) of every call of `callee` inside a function body of the unit's files."""
+    pat = re.compile(r"\b" + re.escape(callee) + r"\s*\(")
+    out = []
+    for m in a.members:
+        S = srcscan.Source(m.file, fsmemo.read_text(Path(root) / m.file))
+        code = srcscan.blank_alternatives(S.code)
+        depth, pos = 0, 0
+        for hit in pat.finditer(code):
+            for c in code[pos:hit.start()]:
+                depth += (c == "{") - (c == "}")
+            pos = hit.start()
+            if depth > 0:
+                out.append((m.file, S.line_of(hit.start())))
+    return out
+
+
+def header_closure(root: Path, unit: str, headers: list[str]) -> list[str]:
+    """The project-relative paths of the headers and every header they include (quoted, in the unit's include
+    directories), each once."""
+    out, todo = [], list(headers)
+    while todo:
+        h = todo.pop(0)
+        for d in B.include_dirs(unit):
+            p = Path(root) / d / Path(h).name
+            if p.exists():
+                rel = p.relative_to(root).as_posix()
+                if rel not in out:
+                    out.append(rel)
+                    todo += [m.group(1) for m in L.INCLUDE_LINE.finditer(fsmemo.read_text(p))]
+                break
+    return out
+
+
+def declaration_set(root: Path, a, head: str, headers: list[str], hdr_names: dict) -> dict:
+    """What the includes do to the unit's declaration set: the names the headers add (declared nowhere in the
+    unit or its current headers) and the head.c declarations --write drops as duplicates."""
+    have = set()
+    for m in a.members:
+        have |= set(declared_names(m.file, fsmemo.read_text(Path(root) / m.file)))
+    current = [m.group(1) for m in L.INCLUDE_LINE.finditer(fsmemo.read_text(Path(root) / head))]
+    for rel in header_closure(root, a.unit, current):
+        have |= set(declared_names(rel, fsmemo.read_text(Path(root) / rel)))
+    return {"added": len(set(hdr_names) - have)}
+
+
+def only_descriptions(project, head: str, old_lines: list[str], dups: list) -> list[tuple]:
+    """(duplicate, address) for each head.c duplicate whose comment is the only text describing a function's
+    address in the tree (readability rule Q6 reads it): dropping the line drops the description."""
+    from collections import Counter
+    if not dups:
+        return []
+    sc = srcscan.scan(project.root, project.input_hash("src"))
+    total = Counter(sc.described)
+    out = []
+    for it in dups:
+        ln = int(it.at.rsplit(":", 1)[1])
+        tmp = srcscan.Scan()
+        srcscan.scan_file(head, old_lines[ln - 1] if 0 < ln <= len(old_lines) else "", tmp)
+        mine = Counter(tmp.described)
+        for addr, n in mine.items():
+            if total[addr] - n <= 0:
+                out.append((it, addr))
+    return out
+
+
+INT_CONST = re.compile(r"[-+~]?\s*(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*|'(?:\\.|[^'\\])+'|sizeof\b.*|NULL")
+FLOAT_CONST = re.compile(r"[-+]?\s*(?:\d+\.\d*|\.\d+|\d+(?=[eE]))(?:[eE][-+]?\d+)?[fFlL]?")
+CAST = re.compile(r"^\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*[\s\w]*\**\s*\)")
+
+
+def _arg_kind(arg: str) -> str:
+    """int | float | string | expr: the class of one call argument."""
+    s = arg.strip()
+    while True:
+        m = CAST.match(s)
+        if not m or not s[m.end():].strip():
+            break
+        s = s[m.end():].strip()
+    while s.startswith("(") and s.endswith(")"):
+        s = s[1:-1].strip()
+    if s.startswith('"'):
+        return "string"
+    if FLOAT_CONST.fullmatch(s):
+        return "float"
+    if INT_CONST.fullmatch(s):
+        return "int"
+    return "expr"
+
+
+def call_args(text: str, line: int, callee: str) -> list[str] | None:
+    """The argument texts of the first call of `callee` on line `line` (1-based) of a source text."""
+    lines = text.split("\n")
+    if not 0 < line <= len(lines):
+        return None
+    off = sum(len(l) + 1 for l in lines[:line - 1])
+    m = re.compile(r"\b" + re.escape(callee) + r"\s*\(").search(text, off, off + len(lines[line - 1]))
+    if not m:
+        return None
+    args, depth, cur, i = [], 1, "", m.end()
+    while i < len(text) and depth:
+        c = text[i]
+        if c in "\"'":
+            j = i + 1
+            while j < len(text) and text[j] != c:
+                j += 2 if text[j] == "\\" else 1
+            cur += text[i:j + 1]
+            i = j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                break
+        if c == "," and depth == 1:
+            args.append(cur)
+            cur = ""
+        else:
+            cur += c
+        i += 1
+    if cur.strip() or args:
+        args.append(cur)
+    return [x.strip() for x in args]
+
+
+def call_class(text: str | None, line: int, callee: str, decl) -> tuple[bool, str]:
+    """(safe, why) of a call that compiled without a prototype and gets the header's: safe when every
+    argument is a constant whose push the prototype cannot change (an integer or string constant to a
+    parameter that is no float / double; a floating constant only to a double)."""
+    args = call_args(text or "", line, callee)
+    if args is None:
+        return False, "call not found: re-grade"
+    params = []
+    if decl is not None and decl.func:
+        s = decl.spelling
+        k = s.find("(", s.find(callee))
+        params = [p.strip() for p in s[k + 1:s.rfind(")")].split(",")] if k >= 0 else []
+    kinds = [_arg_kind(x) for x in args]
+    if "expr" in kinds:
+        return False, "expressions: re-grade"
+    for j, kd in enumerate(kinds):
+        p = params[j] if j < len(params) else ""
+        floating = bool(re.search(r"\b(float|double)\b", p)) and "*" not in p
+        if kd == "float" and not re.search(r"\bdouble\b", p):
+            return False, "a floating constant to a float / non-double parameter: re-grade"
+        if kd in ("int", "string") and floating:
+            return False, "an integer constant to a floating parameter: re-grade"
+    return True, "constants: safe" if args else "no arguments: safe"
 
 
 def call_evidence(project, names, fn: int | None, callee: str | None) -> list[str]:

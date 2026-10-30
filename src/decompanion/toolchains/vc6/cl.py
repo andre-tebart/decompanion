@@ -110,6 +110,18 @@ def compile_one(tools: Tools, src: Path, obj: Path, flags: list[str], include_di
     return CompileResult(ok, log, diags, refused)
 
 
+def syntax_check(tools: Tools, src: Path, flags: list[str], include_dirs: list[Path], cwd: Path) -> CompileResult:
+    """CL /nologo /Zs <flags> /I<dirs> <src>: the syntax and type checks of the front end, no object."""
+    if not tools.available():
+        msg = f"VC6 not found under the toolchain root {tools.root} (VC98/Bin/CL.EXE)"
+        return CompileResult(False, msg + "\n", [Diagnostic("", 0, "error", "toolchain", msg)])
+    keep = [f for f in flags if f.upper() not in ("/C", "/ZS") and not f.upper().startswith(("/FO", "/FA", "/FD", "/FR"))]
+    r = tools.run("CL.EXE", ["/nologo", "/Zs", *keep, *include_args(include_dirs), str(src)], cwd)
+    log = (r.stdout + r.stderr).replace("\r\n", "\n")
+    diags, refused = diagnostics(log)
+    return CompileResult(r.returncode == 0 and not refused, log, diags, refused)
+
+
 def preprocess_includes(tools: Tools, src: Path, flags: list[str], include_dirs: list[Path], cwd: Path) -> tuple[list[Path], str]:
     """The include set: CL /E (the /P listing on stdout) and every distinct path its `#line` directives name,
     resolved against cwd, without the unit itself."""
