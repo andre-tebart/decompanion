@@ -28,8 +28,8 @@ BLOCKING = ("clash", "header", "supersedes", "call", "vc6", "other")
 def cmd_headers_conflicts(args):
     p, e = open_project(args)
     refresh(p, e)
-    if L.clang_path(p) is None:
-        print(record(error="clang not found ([lint] clang = ... in decompanion.toml, or clang on PATH)"))
+    if not L.available(p):
+        print(record(error=L.NOT_FOUND))
         return 2
     hdrs = []
     for h in args.headers:

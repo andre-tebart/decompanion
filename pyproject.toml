@@ -8,6 +8,7 @@ description = "A per-byte ledger with an evidence ladder, and the setup / layout
 requires-python = ">=3.15"
 dependencies = [
     "capstone==5.0.9",
+    "clang==21.1.7",
 ]
 
 [project.optional-dependencies]

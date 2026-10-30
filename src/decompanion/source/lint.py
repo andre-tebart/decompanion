@@ -33,21 +33,19 @@ Exemptions, one per line, in the line clang points at or the line of a note it a
 original binary has this mismatch) and `@vc6 why` (VC6 accepts what clang does not). Nothing else silences a
 diagnostic.
 
-Cache: per unit in the store's blob table, keyed by the amalgamation's text, the clang flags and the unit's
+Cache: per unit in the store's blob table, keyed by the amalgamation's text, the clang arguments and the unit's
 include hash (the compile's: every file of its include set by content), so a unit is parsed again exactly when
 it would be compiled again; the all-declarations unit by its text and the contents of include/. The result of a
 run is the store meta `lint` (the input `lint` of M.lint and G.grade).
 
-clang: `[lint] clang = "<path>"` in decompanion.toml, else `clang` on PATH, else the LLVM default install path.
+clang: the LLVM installation's libclang in process (source/cparse.py: `[lint] libclang = "<path>"` in
+decompanion.toml, else beside `clang` on PATH, else the LLVM default install path); the units a lint parses at
+once go to cparse's worker processes, the include hash keeps a unit live for the reparse after its next edit.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
-import subprocess
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,45 +55,48 @@ from ..ledger import srcscan
 from ..ledger.fact import canonical
 from ..ledger.store import sha256
 
-FLAGS = ["--target=i386-pc-windows-msvc", "-fms-compatibility", "-fms-extensions", "-fms-compatibility-version=12",
-         "-std=gnu89", "-fsyntax-only", "-ferror-limit=0", "-fno-caret-diagnostics", "-fno-color-diagnostics",
-         "-Wno-everything", "-Wdeprecated-non-prototype", "-Wimplicit-function-declaration"]
-DIAG = re.compile(r"^(.+?):(\d+):(\d+): (error|warning|note): (.*?)(?: \[(-W[\w-]+)\])?$")
 EXEMPT = re.compile(r"@(original|vc6)\b")
-CALLEE = re.compile(r"'(\w+)'")
 DECL = re.compile(r"^\s*((?:[A-Za-z_]\w*[\s\*]+)+?)\b([A-Za-z_]\w*)\s*\(")
 # M5: a symbol declared differently in two files of the all-declarations unit; a struct / union / enum or
 # typedef defined twice counts too (two headers that define one tag cannot be included together)
 CROSS = re.compile(r"(?:conflicting types for|redeclaration of|redefinition of|typedef redefinition with different "
                    r"types) ('(\w+)'|\()")
 KEYWORDS = {"return", "else", "goto", "case", "sizeof", "if", "while", "for", "switch", "do", "typedef", "default"}
-DEFAULT_CLANG = "C:/Program Files/LLVM/bin/clang.exe"
-VERSION = "5"
+VERSION = "6"
 
 
-def clang_path(project) -> Path | None:
-    cfg = (project.cfg.get("lint") or {}).get("clang")
-    for c in ([cfg] if cfg else []) + [shutil.which("clang"), DEFAULT_CLANG]:
-        if c and Path(c).exists():
-            return Path(c)
+NOT_FOUND = ("libclang not found ([lint] libclang = ... in decompanion.toml, or an LLVM installation: clang on PATH "
+             "or C:/Program Files/LLVM)")
+
+
+def available(project) -> bool:
+    from . import cparse
+    return cparse.library(project.cfg) is not None
+
+
+def setup(project) -> None:
+    """Load the project's libclang (cparse.library) into this process."""
+    from . import cparse
+    lib = cparse.library(project.cfg)
+    if lib is None:
+        raise RuntimeError(NOT_FOUND)
+    cparse.load(lib)
+
+
+def sysdirs_of(project) -> list[Path]:
+    return [Path(d) for d in project.toolchain.include_search_dirs([]) if Path(d).exists()]
+
+
+def call_of(d) -> tuple[str, str] | None:
+    """An M7 call: (callee, `proto` through a K&R declaration / `undeclared`); None for any other diagnostic
+    (-Wdeprecated-non-prototype also stands at a K&R declaration itself)."""
+    if d["kind"] != "warning":
+        return None
+    if d["flag"] == "-Wdeprecated-non-prototype" and d["msg"].startswith("passing arguments"):
+        return d.get("name") or "?", "proto"
+    if d["flag"] == "-Wimplicit-function-declaration":
+        return d.get("name") or "?", "undeclared"
     return None
-
-
-def run_clang(clang: Path, src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path]) -> list[dict]:
-    cmd = [str(clang), *FLAGS, *(x for d in sysdirs for x in ("-isystem", str(d))), *(f"-I{d}" for d in incdirs), str(src)]
-    r = subprocess.run(cmd, cwd=root, capture_output=True, text=True, errors="replace")
-    out = []
-    for line in (r.stdout + r.stderr).splitlines():
-        m = DIAG.match(line)
-        if not m:
-            continue
-        f = Path(m.group(1))
-        try:
-            f = (f if f.is_absolute() else root / f).resolve().relative_to(root.resolve()).as_posix()
-        except ValueError:
-            f = f.as_posix()
-        out.append({"file": f, "line": int(m.group(2)), "kind": m.group(4), "msg": m.group(5), "flag": m.group(6) or ""})
-    return out
 
 
 def grouped(diags):
@@ -637,7 +638,8 @@ def alldecls(root: Path) -> AllDecls:
                 if w in avail and w not in used:
                     used[w] = avail[w]
                     todo |= set(IDENTS.findall(avail[w][2][len("#define "):])) - set(used)
-            for name, (mrel, line, text) in sorted(used.items(), key=lambda kv: (kv[1][0], kv[1][1])):
+            used = sorted(used.items(), key=lambda kv: (kv[1][0], kv[1][1]))     # by place: the text is the cache key
+            for name, (mrel, line, text) in used:
                 lines += [f'#pragma push_macro("{name}")', f"#undef {name}", f'#line {line} "{mrel}"', text]
             for d in mine:
                 if d.kind == "knr" and d.name in knr_done:
@@ -648,7 +650,7 @@ def alldecls(root: Path) -> AllDecls:
                     lines.append(d.stmt)
                 if id(d) in compared or (id(d) in chosen and d.name in need_def):
                     copy(d)
-            for name in used:
+            for name, _ in reversed(used):
                 lines += [f"#undef {name}", f'#pragma pop_macro("{name}")']
     for d in every:
         if id(d) in compared:
@@ -792,8 +794,7 @@ def cross_conflicts(ad: AllDecls, diags: list, lines: "Lines") -> list[str]:
     pairs: dict[str, list] = {}
     for g in cross:
         d = g[0]
-        m = CROSS.match(d["msg"])
-        name = m.group(2)
+        name = d.get("name") if CROSS.match(d["msg"]).group(2) else None
         if name in decided:
             continue
         if any((x["file"], x["line"]) in errlines for x in g):
@@ -861,42 +862,43 @@ def stale(project) -> list[str] | None:
 def lint(project, log=None) -> dict:
     """Lint every unit of the current target and the all-declarations unit; store and return the result
     {units: {unit: amalg hash}, errors: [M6 lines], cross: [M5 lines], calls: {fragment file: [callee (kind)]}}."""
-    root, st, tc = project.root, project.store, project.toolchain
-    clang = clang_path(project)
-    if clang is None:
-        raise RuntimeError("clang not found ([lint] clang = ... in decompanion.toml, or clang on PATH)")
-    sysdirs = [d for d in tc.include_search_dirs([]) if Path(d).exists()]
+    from . import cparse
+    root, st = project.root, project.store
+    setup(project)
+    sysdirs = sysdirs_of(project)
+    clang = (cparse.VERSION, cparse.version(), canonical(cparse.ARGS), canonical([str(d) for d in sysdirs]))
     amalgs = B.plan(project)
     tus = st.tus()
-    jobs, results = [], {}
+    jobs, keys, results = [], [], {}
     for a in amalgs:
         inc = (tus.get(a.unit) or {}).get("include_hash", "")
-        key = sha256("lint", VERSION, a.src_hash, canonical(FLAGS), inc, canonical([str(d) for d in sysdirs]))
+        key = sha256("lint", VERSION, *clang, a.src_hash, inc)
         hit = st.blob_json(key)
         if hit is None:
             B.A.write(root, a)                            # clang reads it
-            jobs.append((a, key))
+            # kept live (the include hash): the next lint of the unit alone (an edit of it) is a reparse
+            jobs.append((Path(a.path), root, sysdirs, [Path(root) / d for d in B.include_dirs(a.unit)], inc))
+            keys.append((a.unit, key))
         else:
             results[a.unit] = hit
-    def run(job):
-        a, key = job
-        return a, key, run_clang(clang, Path(a.path), root, sysdirs, [Path(root) / d for d in B.include_dirs(a.unit)])
-    if jobs:
-        with ThreadPoolExecutor(os.cpu_count() or 4) as pool:
-            for a, key, diags in pool.map(run, jobs):
-                st.put_blob_json(key, "lint", diags)
-                results[a.unit] = diags
     ad = alldecls(root)
     text = ad.text
-    akey = sha256("alldecls", VERSION, text, canonical(FLAGS), canonical([str(d) for d in sysdirs]),
+    akey = sha256("alldecls", VERSION, *clang, text,
                   *(fsmemo.sha256(p) for p in sorted((Path(root) / "include").glob("*.h"))) if (Path(root) / "include").exists() else "")
     cross = st.blob_json(akey)
     if cross is None:
         out = Path(root) / "build" / "lint" / project.target_name / "alldecls.c"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text, newline="\n")
-        cross = run_clang(clang, out.relative_to(root), root, sysdirs, [Path(root) / "include"])
-        st.put_blob_json(akey, "lint", cross)
+        jobs.append((out.relative_to(root), root, sysdirs, [Path(root) / "include"], None))
+        keys.append((None, akey))
+    for (unit, key), diags in zip(keys, cparse.many(jobs) if jobs else []):
+        st.put_blob_json(key, "lint", diags)
+        if unit is None:
+            cross = diags
+        else:
+            results[unit] = diags
+    jobs = [k for k in keys if k[0] is not None]
     lines = Lines(root)
     errors, calls = [], {}
     for a in amalgs:
@@ -906,13 +908,10 @@ def lint(project, log=None) -> dict:
                 continue
             if d["kind"] == "error":
                 errors.append(fmt_group(g))
-            elif d["kind"] == "warning":
-                m = CALLEE.search(d["msg"])
-                callee = m.group(1) if m else "?"
-                if d["flag"] == "-Wdeprecated-non-prototype" and d["msg"].startswith("passing arguments"):
-                    calls.setdefault(d["file"], []).append(f"{callee}() at line {d['line']}")
-                elif d["flag"] == "-Wimplicit-function-declaration":
-                    calls.setdefault(d["file"], []).append(f"{callee} (undeclared) at line {d['line']}")
+            elif c := call_of(d):
+                callee, how = c
+                calls.setdefault(d["file"], []).append(f"{callee}() at line {d['line']}" if how == "proto" else
+                                                       f"{callee} (undeclared) at line {d['line']}")
     conflicts = cross_conflicts(ad, cross, lines)
     conflicts += private_violations(root, private_headers(root))
     res = {"units": {a.unit: a.src_hash for a in amalgs},

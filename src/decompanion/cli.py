@@ -300,7 +300,7 @@ def cmd_check(args):
     for name in names:
         p, e, rep = build_target(args, name, quiet=True)
         from .source import lint as LI
-        if p.store.facts(Kind.build) and LI.clang_path(p) is not None:
+        if p.store.facts(Kind.build) and LI.available(p):
             from .cli_match import lint_target
             lint_target(p, e)
         conf = p.store.conflicts()
@@ -389,11 +389,11 @@ def build_target(args, name, quiet=False):
 
 
 def lint_built(p):
-    """A project that lints (a `dcp lint` ran before, clang is there): lint the units that changed since, before the
+    """A project that lints (a `dcp lint` ran before, libclang is there): lint the units that changed since, before the
     refresh, so the one refresh of a build sees the objects and the lint together (grade / next find it current)."""
     from .source import lint as LI
     stale = LI.stale(p)
-    if stale and LI.clang_path(p) is not None:
+    if stale and LI.available(p):
         with timing.phase("lint"):
             LI.lint(p)
 

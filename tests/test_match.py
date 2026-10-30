@@ -21,6 +21,7 @@ from decompanion.match import diffclass as DC
 from decompanion.objfmt.base import FunctionCode
 from decompanion.objfmt.coff import DIR32, Reloc
 from decompanion.rules.grade import falls, parse_baseline
+from decompanion.source import cparse
 
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
 needs_vc6 = pytest.mark.skipif(not (VC6 / "VC98" / "Bin" / "CL.EXE").exists(), reason="VC6 not installed")
@@ -423,11 +424,11 @@ def test_header_edit_recompiles_only_includers(tiny):
     assert "compiled=0" in dcp(tiny, "build")[1]
 
 
-CLANG = Path("C:/Program Files/LLVM/bin/clang.exe")
+LIBCLANG = cparse.library(None)
 
 
 @needs_vc6
-@pytest.mark.skipif(not CLANG.exists(), reason="clang not installed")
+@pytest.mark.skipif(LIBCLANG is None, reason="libclang not installed")
 def test_lint_q7_and_exemption(tiny):
     with_vc6(tiny)
     write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\nint helper();\n")
@@ -447,7 +448,7 @@ def test_lint_q7_and_exemption(tiny):
 
 
 @needs_vc6
-@pytest.mark.skipif(not CLANG.exists(), reason="clang not installed")
+@pytest.mark.skipif(LIBCLANG is None, reason="libclang not installed")
 def test_lint_m5_between_headers(tiny):
     with_vc6(tiny)
     write(tiny, "include/a.h", "typedef struct BITS { int x; } BITS;\nint f(char *p);  /* @original a.c's spelling */\n")
@@ -472,7 +473,7 @@ def test_lint_m5_between_headers(tiny):
 
 
 @needs_vc6
-@pytest.mark.skipif(not CLANG.exists(), reason="clang not installed")
+@pytest.mark.skipif(LIBCLANG is None, reason="libclang not installed")
 def test_lint_m5_per_symbol(tiny):
     """M5 against the definition, one line per symbol: a.h comes first and disagrees, b.h agrees with the
     definition (clang alone would blame b.h); data from the sources too (a unit's GAPDATA view); a K&R

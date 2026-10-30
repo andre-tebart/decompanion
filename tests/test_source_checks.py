@@ -17,6 +17,7 @@ from decompanion.ledger import srcscan
 from decompanion.ledger.fact import Level
 from decompanion.objfmt import coff
 from decompanion.rules import layout as LY
+from decompanion.source import cparse
 
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
 DX6 = Path("C:/Tools/DXSDK61/lib")
@@ -242,7 +243,7 @@ def test_library_order_from_the_image():
 
 
 # ------------------------------------------------------------------------------------------------ dcp headers conflicts
-@pytest.mark.skipif(not Path("C:/Program Files/LLVM/bin/clang.exe").exists(), reason="clang not installed")
+@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
 def test_headers_conflicts(tiny):
     write(tiny, "include/net.h", "extern int counter;\nextern short width;\nint add2(int a, int b);\n")
     write(tiny, "src/net/head.c", "extern int counter;  /* the same as net.h */\nextern char width;\n")
@@ -267,7 +268,7 @@ def test_headers_conflicts(tiny):
     assert '#include "net.h"' in head and "extern int counter" not in head and "trial" not in head, head
 
 
-@pytest.mark.skipif(not Path("C:/Program Files/LLVM/bin/clang.exe").exists(), reason="clang not installed")
+@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
 def test_headers_conflicts_warnings(tiny):
     """prototyped calls by argument class; the declaration-set warning; a dropped duplicate that carries the only
     description of its function (Q6)."""
@@ -292,7 +293,7 @@ def test_headers_conflicts_warnings(tiny):
     assert "f_10001030.c:4 (constants: safe)" in out, out
 
 
-@pytest.mark.skipif(not Path("C:/Program Files/LLVM/bin/clang.exe").exists(), reason="clang not installed")
+@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
 def test_headers_conflicts_multi_name_and_position(tiny):
     """Every name of a multi-name `extern a, b, c;` line is a duplicate (the line keeps its other names when
     written); the include goes before the first statement using a duplicate when that is above the last
@@ -337,7 +338,7 @@ def test_drop_names_and_include_pos():
 VC6_ROOT = Path("C:/Tools/MSVC600-SP5PP")
 
 
-@pytest.mark.skipif(not Path("C:/Program Files/LLVM/bin/clang.exe").exists(), reason="clang not installed")
+@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
 @pytest.mark.skipif(not (VC6_ROOT / "VC98" / "Bin" / "CL.EXE").exists(), reason="VC6 not installed")
 def test_headers_conflicts_vc6(tiny):
     """clang accepts a struct parameter by value whose type the unit never completes; VC6 rejects it (C2079):

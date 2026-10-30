@@ -313,7 +313,7 @@ uv run dcp asmdiff NAME                   # the instruction diff (capstone, both
 uv run dcp diffclass NAME                 # the hunk classes
 uv run dcp escalate NAME "why"            # @deep why (dcp stuck NAME "why"; --clear)
 uv run dcp link                           # the full link, unresolved externals classified
-uv run dcp lint                           # clang: M5 (one line per symbol, against its definition) / M6 / M7, Q7
+uv run dcp lint                           # libclang: M5 (one line per symbol, against its definition) / M6 / M7, Q7
 uv run dcp headers conflicts UNIT H..     # what including headers into head.c collides with, clang + VC6 /Zs (--write: includes + duplicates)
 uv run dcp toolchain probe                # the flag grid over the byte-matched functions
 uv run dcp promote [--accept-falls]       # raise the grade baseline ledger/grades.tsv (main only; refuses a fall)
@@ -417,13 +417,13 @@ src/decompanion/
   data/     ghidra/DcpExport.java dcp_ghidra.h   # the Ghidra post-script, Ghidra's type names (analyzers/ghidra.py)
   match/    compare.py diffclass.py              # masked compare, instruction diff and hunk classes
   repo/     wt.py session.py         # worktrees and seed; the session record and report
-  source/   lint.py draft.py units.py edit.py   # clang; the files dcp draft / unit / rename write
+  source/   cparse.py lint.py draft.py units.py edit.py   # libclang (the C front end); the files dcp draft / unit / rename write
   image/    __init__ (registry) base.py pe32.py         # Image seam: sections, directories, regions, relocations
   objfmt/   __init__ (registry) base.py coff.py         # ObjectFormat seam: archives, objects, relocation view
   toolchains/ __init__ (registry) base.py vc6/          # Toolchain seam: fill, stubs, entries, Rich, defaults
   isa/      __init__ (registry) base.py x86.py          # Isa seam: instruction records, flow kinds, table shapes
   analyzers/ __init__ (registry) base.py ghidra.py rea.py none.py   # Analyzer seam: starts, names, pseudocode, dialect
-tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / clang tests when installed; `-m ghidra` adds the 30 s Ghidra export
+tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / libclang tests when installed; `-m ghidra` adds the 30 s Ghidra export
 docs/                                # plan.md, layout.md, match.md, architecture.md
 skills/                              # dcp-layout/, dcp-match-base/ SKILL.md (installed into a project's .claude/skills/)
 ```

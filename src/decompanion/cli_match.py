@@ -374,10 +374,10 @@ def current_lint(p, e) -> str:
     st = LI.stale(p)
     if st is None:
         return "Q7 not evaluated (no lint run: dcp lint)"
-    if st and LI.clang_path(p) is not None:
+    if st and LI.available(p):
         lint_target(p, e)
         return f"Q7 linted now ({len(st)} changed units)"
-    return f"Q7 stale: {len(st)} units changed, clang not found" if st else "Q7 current"
+    return f"Q7 stale: {len(st)} units changed, libclang not found" if st else "Q7 current"
 
 
 def cmd_lint(args):
@@ -387,8 +387,8 @@ def cmd_lint(args):
     failed = False
     for name in target_names(args):
         p, e, rep = build_target(args, name, quiet=True)
-        if LI.clang_path(p) is None:
-            print("dcp lint: clang not found ([lint] clang = ... in decompanion.toml, or clang on PATH)", file=sys.stderr)
+        if not LI.available(p):
+            print("dcp lint: " + LI.NOT_FOUND, file=sys.stderr)
             return 2
         res = lint_target(p, e)
         ncalls = sum(len(v) for v in res["calls"].values())

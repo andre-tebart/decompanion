@@ -51,11 +51,11 @@ from .. import fsmemo
 from ..build import amalg as A
 from ..build import compile as B
 from ..ledger import srcscan
+from . import cparse
 from . import lint as L
 
 INCLUDE = re.compile(r"^[ \t]*#[ \t]*include\b")
 QUOTED = re.compile(r"'(\w+)'")
-C_WORDS = {"struct", "union", "enum", "int", "char", "short", "long", "void", "unsigned", "signed", "float", "double"}
 ARGS = re.compile(r"too (few|many) arguments to function call, expected (?:at least )?(\d+), have (\d+)")
 CONFLICT = re.compile(r"^(?:conflicting types for|redefinition of|redeclaration of|typedef redefinition with "
                       r"different types|non-static declaration of|static declaration of)\b")
@@ -80,16 +80,9 @@ class Item:
 
 
 def symbol_of(g) -> str | None:
-    """The symbol a diagnostic group is about: the first quoted identifier that is no C keyword, else the
-    `struct X` a typedef redefinition names."""
-    for d in g:
-        for m in QUOTED.finditer(d["msg"]):
-            if m.group(1) not in C_WORDS:
-                return m.group(1)
-        m = re.search(r"'struct (\w+)'", d["msg"])
-        if m:
-            return m.group(1)
-    return None
+    """The symbol a diagnostic group is about: the first one named (cparse.name_of), the diagnostic's own before
+    its notes'."""
+    return next((d["name"] for d in g if d.get("name")), None)
 
 
 def resolve_header(root: Path, unit: str, h: str) -> str | None:
@@ -254,13 +247,6 @@ def _write(project, a, text: str, tag: str) -> Path:
     return out.relative_to(root)
 
 
-def _clang(project, a, rel: Path) -> list[dict]:
-    root = Path(project.root)
-    tc = project.toolchain
-    sysdirs = [d for d in tc.include_search_dirs([]) if Path(d).exists()]
-    return L.run_clang(L.clang_path(project), rel, root, sysdirs, [root / d for d in B.include_dirs(a.unit)])
-
-
 def _vc6(project, a, rel: Path) -> list[dict] | None:
     """The toolchain's own front end over a trial file (VC6: CL /Zs with the unit's flags), as lint-style
     diagnostics; None when it is not installed or has no syntax-only mode. clang accepts what VC6 rejects:
@@ -349,10 +335,13 @@ def trial(project, unit: str, headers: list[str], drop: dict | None = None, at: 
     base_text, base_segs = A.compose(a.root, a.members, a.file_name)
     new_text, new_segs = A.compose(a.root, a.members, a.file_name, read=_reader(a, new))
     rb, rn = _write(project, a, base_text, "base"), _write(project, a, new_text, "trial")
-    with ThreadPoolExecutor(4) as pool:
-        fb, fn = pool.submit(_clang, project, a, rb), pool.submit(_clang, project, a, rn)
+    L.setup(project)
+    root = Path(project.root)
+    clang = (root, L.sysdirs_of(project), [root / d for d in B.include_dirs(a.unit)], None)
+    with ThreadPoolExecutor(2) as pool:                     # VC6's two runs while clang parses both
         vb, vn = pool.submit(_vc6, project, a, rb), pool.submit(_vc6, project, a, rn)
-        base, tri = _map(a, base_segs, fb.result()), _map(a, new_segs, fn.result())
+        db, dn = cparse.many([(rb, *clang), (rn, *clang)])
+        base, tri = _map(a, base_segs, db), _map(a, new_segs, dn)
         vbase, vtri = vb.result(), vn.result()
     vc6 = None if vbase is None or vtri is None else (_map(a, base_segs, vbase), _map(a, new_segs, vtri))
     return a, head, L.grouped(base), L.grouped(tri), new, vc6, pos
@@ -378,10 +367,8 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
     base_calls = {}
     for g in base:
         d = g[0]
-        if d["kind"] == "warning" and d["flag"] in ("-Wimplicit-function-declaration", "-Wdeprecated-non-prototype"):
-            m = QUOTED.search(d["msg"])
-            if m:
-                base_calls.setdefault((d["file"], m.group(1)), []).append(d["line"])
+        if (c := L.call_of(d)) and c[0] != "?":
+            base_calls.setdefault((d["file"], c[0]), []).append(d["line"])
 
     def fix(d):                                      # trial head.c lines -> head.c on disk
         if d["file"] == head:
@@ -401,9 +388,8 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
     for g in tri:
         d = g[0]
         if d["kind"] == "warning":
-            m = QUOTED.search(d["msg"])
-            if m and d["flag"] in ("-Wimplicit-function-declaration", "-Wdeprecated-non-prototype"):
-                trial_calls.add((d["file"], m.group(1)))
+            if (c := L.call_of(d)) and c[0] != "?":
+                trial_calls.add((d["file"], c[0]))
             continue
         if d["kind"] != "error" or _key(g) in seen:
             continue
@@ -411,7 +397,7 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
         m = ARGS.search(d["msg"])
         if m:
             note = next((x for x in g[1:] if "declared here" in x["msg"]), None)
-            callee = QUOTED.search(note["msg"]).group(1) if note and QUOTED.search(note["msg"]) else name
+            callee = (note.get("name") if note else None) or name
             fm = FRAG.search(d["file"])
             it = Item("call", callee, fix(d), fix(note) if note else None, d["msg"], rd.line(fix(d)),
                       rd.line(fix(note)) if note else "", int(fm.group(1), 16) if fm else None)

@@ -259,4 +259,4 @@ entries), `ledger/names.py` (one C name per address by a fixed order of origins)
 Where the match phase lives: `build/` (amalg, compile, link, probe: they run the tools; no rule runs a tool),
 `match/` (compare, diffclass: pure functions over objects and listings), `rules/match.py` / `match_data.py` /
 `grade.py` (the rules; they read objects through the store's `tu` table, input `objects`), `ledger/grades.py`
-(queues, baseline, the level ladder), `source/lint.py` (clang), `cli_match.py` (the commands).
+(queues, baseline, the level ladder), `source/cparse.py` (libclang: the C front end), `source/lint.py` (the declaration checker), `cli_match.py` (the commands).

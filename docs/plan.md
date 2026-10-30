@@ -703,3 +703,45 @@ it, four tool fixes from the header passes: `dcp why NAME` resolves names; `dcp 
 name of a multi-name extern line (and --write keeps the line's other declarators), inserts the includes before
 the first statement using a duplicate when that is above head.c's last include (`--at LINE` chooses), and
 warns q6 for function addresses only.
+
+## 18. libclang as the one C front end (planned 2026-10-30, user decision: "use libclang to do all the source parsing")
+
+The sources are read by about a dozen hand-written parsers (srcscan's regex tokenizer and declaration scanner,
+lint's declaration parser, the scanners of headers / datafix / edit / grade / draft / vc6.declaring_header), and
+clang ran as a subprocess whose text diagnostics were regex-scraped. The goal: one front end (source/cparse.py)
+that parses each unit the way VC6 sees it, every reader and editor taking facts and exact extents from it. In
+stages, each with gildegold as the check (old output against new):
+- stage 0 (done): libclang parses every gildegold unit with the lint flags; the diagnostics equal clang.exe's.
+- stage 1 (done): lint and `dcp headers conflicts` on libclang.
+- stage 2: the readers (srcscan, lint's declaration scan, grade's readability, headers' scans, the VC98 index)
+  from one per-unit model, diffed against the regex scan by tools/scandiff.py before the regex code goes.
+- stage 3: the editors (data fix, rename, the declaration-block edits, set_level, unit join) from the model's
+  extents.
+tree-sitter was weighed and not taken: it would be a second front end that guesses what clang knows (no types,
+no macros: `WINAPI`, `__declspec`, `T * x;`); its niches (comments, `#define` bodies, dead branches, a file
+alone) libclang covers (the text between tokens, the preprocessing record, lexing a skipped range, the unit as
+context). It comes back only if parse cost breaks the edit loop, and only for lexical facts.
+
+Done, stage 1 (2026-10-30):
+- libclang (user decision: the LLVM installation's, not the PyPI wheel: libclang 23 parses a gildegold unit about
+  2.3x faster than the wheel's 18; the `clang` bindings package is the dependency): `[lint] libclang = ...`,
+  else beside `clang` on PATH, else the LLVM default path; `[lint] clang` is gone. Its version is part of every
+  lint cache key.
+- cparse.diagnostics: the lint-style list, with `name` (the identifier clang quotes, else the cursor's or token's
+  at the location): calls through a function pointer, `?` before, now named (5 gildegold M7 lines). The message
+  stays the only source of a diagnostic's arguments (a call written through a macro: the cursor at its location
+  is the expansion, which may hold several calls). `#line` is applied by cparse from the text (line_map), not
+  taken from clang, whose precompiled preamble drops the `#line` directives it holds.
+- lint.call_of: one definition of an M7 call (-Wdeprecated-non-prototype also stands at a K&R declaration), for
+  lint and headers alike.
+- Speed (user decision: worker processes for parses in bulk): libclang in threads of one process does not scale
+  (93 units in 2.4 s on 12 threads, against 1.2 s for parallel clang.exe), so cparse.many sends several parses
+  to a process pool that lives as long as the process (warm in the daemon); a single unit to keep (an edit's
+  unit) is parsed in process and kept live (the last 4), its next parse a reparse over its preamble (a small unit
+  in ~10 ms; a large one still parses its own code: gildegold's he, 19 000 lines, ~0.13 s).
+- Found on the way: the all-declarations unit's text depended on the hash seed (its pop_macro order came from a
+  set), so its cache never hit and clang ran on it on every lint; now in place order. line_map counted lines
+  quadratically (8 s on the 22 000 `#line` directives of alldecls).
+- gildegold: `dcp lint` equal to the clang.exe run but for the 5 named pointer calls (m6=0 m5=0 m7=4710);
+  `dcp headers conflicts ls cm.h ai_types.h` and `he d3.h am.h` equal. Lint (no daemon): cold 8.8 -> 6.4..8.2 s,
+  warm 5.4 -> 4.5 s, after a one-line edit of he (compile included) 10.8 -> 10.5 s.

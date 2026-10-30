@@ -205,8 +205,11 @@ the library's flags and prove nothing about the user's units.
 
 ## Lint (`dcp lint`)
 
-clang (`[lint] clang = ...`, else on PATH, else `C:/Program Files/LLVM/bin/clang.exe`) parses each
-amalgamation as C89 with MS compatibility against the toolchain's headers: M6 / M7 and Q7. M5 comes from an
+clang, in process through the LLVM installation's libclang (source/cparse.py; `[lint] libclang = ...`, else the
+libclang.dll beside `clang` on PATH, else `C:/Program Files/LLVM/bin/libclang.dll`), parses each amalgamation as
+C89 with MS compatibility against the toolchain's headers: M6 / M7 and Q7. The units one lint parses go to
+worker processes; a unit relinted alone (after an edit of it) is parsed in process and kept live, so the next
+edit reparses it over its precompiled preamble. M5 comes from an
 all-declarations unit (build/lint/<target>/alldecls.c): the system headers the sources include, every
 `include/*.h` (a header after the headers that define the names it uses, and after its includer), the
 sources' file-scope prototypes and extern data declarations behind `#line` (with the macros of their unit they
@@ -231,8 +234,8 @@ definition's spelling, so a unit's own spelling belongs in that unit, as a cast 
 names the defining unit and the spelling to repeat. A header the original only included into some units
 (zlib's deflate.h / infutil.h each define `struct internal_state`) says so with `@private UNIT[,UNIT..]` in its
 first 20 lines: it is left out of the all-declarations unit, and a file outside those units that includes it is
-an M5 error. Per-unit results are cached by the unit's text, the flags and its include hash. `dcp check` lints
-when clang is installed.
+an M5 error. Per-unit results are cached by the unit's text, the clang arguments, libclang's version and the unit's include
+hash. `dcp check` lints when libclang is installed.
 
 `dcp headers conflicts UNIT HEADER..` (source/headers.py) answers "what would including these headers into
 the unit's head.c collide with" before the include is made: the unit is parsed twice the way lint parses it,
