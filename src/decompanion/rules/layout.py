@@ -31,6 +31,7 @@ from dataclasses import dataclass
 
 from ..ledger import decl as decl_mod
 from ..ledger import srcscan
+from ..source import cparse
 from ..match import compare as C
 from ..ledger.fact import Kind, Level, Severity, min_level
 from .engine import RuleContext, rule
@@ -388,7 +389,7 @@ def load_decl_starts(ctx: RuleContext):
 
 
 @rule("L.src", version="4", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
-      loader=True, helpers=(srcscan,))
+      loader=True, helpers=(srcscan, cparse))         # the front end decides what the scan sees
 def load_src(ctx: RuleContext):
     """The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function
     fragment with an address gives a `source` fact {file, line, unit, symbol, what: func, deep / stuck / rough

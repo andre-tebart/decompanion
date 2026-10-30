@@ -478,6 +478,9 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
     if is_fragment:
         if len(defs) != 1:
             out.errors.append(ScanError(rel, 1, "L.src", f"a fragment defines exactly one function, this one {len(defs)}"))
+        for line, fname, efile, eline in model.get("spills", []):
+            out.errors.append(ScanError(rel, line, "L.src", f"the body of {fname} ends in {efile}:{eline}: a fragment holds "
+                                                            f"its whole function (move the rest of the body here)"))
         first = S.comments[0] if S.comments else None
         if first is None or first[0] != 0 and text[:first[0]].strip():
             out.errors.append(ScanError(rel, 1, "L.src", "the first line is not the function's address comment"))
@@ -528,11 +531,11 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
 
 _cache: dict[tuple[str, str], Scan] = {}
 _files: dict[tuple[str, str, str], Scan] = {}     # (path, sha256 of the text, model digest) -> that file's own scan
-CACHE_VERSION = 7                                 # bump when scan_file's results change
-MODEL_VERSION = "14"                               # bump when the scan's translation units change
+CACHE_VERSION = 8                                 # bump when scan_file's results change
+MODEL_VERSION = "15"                               # bump when the scan's translation units change
 _models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
 _last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read
-EMPTY = {"defs": [], "vars": [], "macros": [], "casts": [], "decls": [], "types": [], "dead": []}
+EMPTY = {"defs": [], "vars": [], "macros": [], "casts": [], "decls": [], "types": [], "dead": [], "spills": []}
 
 
 def front_end(root: Path) -> list[Path]:

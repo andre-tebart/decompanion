@@ -317,6 +317,8 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
       types [(line, name)] of every typedef, every struct / union / enum with a body and every enum constant
             defined there
       dead  [(first line, last line)] of every range the preprocessor skipped (a dead `#if` branch)
+      spills [(line, name, file, line)] of every function definition whose body ends in another file (its end
+            in decls is None)
       macros [(line, name, function-like)] of every macro the preprocessor defined there (a live `#define`)
       casts [(line, col, end line, end col, literal)] of every integer literal cast to a pointer type in code
             (_casts): from the cast's `(` to the literal's end
@@ -368,7 +370,7 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
 
     def entry(rel_: str) -> dict:
         return out.setdefault(rel_, {"defs": [], "vars": [], "macros": [], "casts": [], "decls": [], "types": [],
-                                     "dead": []})
+                                     "dead": [], "spills": []})
 
     def dead(fname: str):
         """The lines of a file the preprocessor skipped, as where() maps them."""
@@ -392,8 +394,13 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             if inlined(c):
                 continue
             w, n, e = where(c.extent.start), where(c.location), where(c.extent.end)
-            if w is None or n is None or e is None or not w[0] == n[0] == e[0]:
+            if w is None or n is None or w[0] != n[0]:
                 continue
+            if e is not None and e[0] != w[0]:
+                # a body that runs on into the next file (a fragment holds part of the next one's function):
+                # the definition stays its head's file's, its end unknown there, the spill reported
+                entry(w[0])["spills"].append((w[1], c.spelling, e[0], e[1]))
+                e = None
             static = c.storage_class == ci.StorageClass.STATIC
             body = next((x for x in c.get_children() if x.kind == ci.CursorKind.COMPOUND_STMT), None)
             b = where(body.extent.start) if body is not None else None
@@ -402,7 +409,8 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             knr = None
             if body is not None:
                 knr = [(a.spelling, PROMOTED.get(a.type.get_canonical().kind)) for a in c.get_arguments()]
-            entry(w[0])["decls"].append(("f", c.spelling, static, w[1:], n[1:], e[1:], b[1:] if b else None, knr))
+            entry(w[0])["decls"].append(("f", c.spelling, static, w[1:], n[1:], e[1:] if e else None, b[1:] if b else None,
+                                         knr))
             if c.is_definition():
                 entry(w[0])["defs"].append((w[1], w[2], c.spelling, static))
         elif k == ci.CursorKind.VAR_DECL:

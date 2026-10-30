@@ -111,7 +111,8 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
     defs = [d for d in m["decls"] if d[0] == "f" and d[1] == name and d[6] is not None]
     if not defs:
         return "draft", ["definition not found by the parser"]
-    off, end = S.offset(*defs[-1][3]), S.offset(*defs[-1][5])          # the front end's extent of the definition
+    off = S.offset(*defs[-1][3])                                     # the front end's extent of the definition
+    end = S.offset(*defs[-1][5]) if defs[-1][5] else len(S.code)     # (its body runs on into the next file: L.src)
     code = S.code[off:end]
     raw, described = context(str(root), tree)
     fails = []

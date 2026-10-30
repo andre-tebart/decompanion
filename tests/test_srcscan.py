@@ -57,6 +57,19 @@ def test_scan(tmp_path):
     assert [p.ident for p in sc.placeholders] == ["FUN_10001020"]
 
 
+def test_body_spilling_into_the_next_fragment(tmp_path):
+    """A fragment whose function's body ends in the next fragment still defines that function; the spill is an
+    L.src error naming where the body ends (the amalgamation compiles, the fragment is wrong)."""
+    write(tmp_path, "src/u/f_10001000.c", "/* 0x10001000, first */\nint first(int x)\n{\n    if (x) {\n"
+                                          "        return 1;\n    }\n")
+    write(tmp_path, "src/u/f_10001020.c", "/* 0x10001020, second */\n    return 0;\n}\nint second(void)\n{\n"
+                                          "    return 2;\n}\n")
+    sc = srcscan.scan(tmp_path)
+    assert sorted(f.name for f in sc.functions) == ["first", "second"]
+    errs = [e for e in sc.errors if e.file == "src/u/f_10001000.c"]
+    assert len(errs) == 1 and errs[0].line == 2 and "the body of first ends in src/u/f_10001020.c:3" in errs[0].message, errs
+
+
 def test_order(tmp_path):
     from decompanion.build import amalg
     write(tmp_path, "src/u/head.c", "int x;\n")

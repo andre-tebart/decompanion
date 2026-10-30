@@ -848,3 +848,11 @@ reader takes a model: a project file the scan's, a text that is none (a test's, 
 exemptions), the directives (#include lines, @private, the guards), the declaration blocks and their
 declared_in, set_level's tags, unit join's line merge, the argument classes of `headers`, the view and cast
 patterns over a `#define` body. gildegold: lint, check and conflicts equal to the commit before.
+
+Fixed after stage 3 (2026-10-30, found by the gildegold fixes): since the lint step of stage 2c, cparse.model
+dropped a function definition whose extent ends in another file, so gildegold's inftrees/f_465b00.c (the end of
+inflate_trees_dynamic's body sits at the top of the next fragment, f_465c90.c) "defined 0 functions", and M.gen /
+M1 followed. The definition now stays its head's file's (its end None: readability reads to the fragment's end)
+and the spill is its own L.src error naming where the body ends. cparse is a helper of L.src now: a change of the
+front end reruns the loader (a change of what the scan sees reached the dependent rules' stored results only
+through a forced run).
