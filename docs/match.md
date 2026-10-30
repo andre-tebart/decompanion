@@ -174,15 +174,33 @@ the library's flags and prove nothing about the user's units.
 ## Lint (`dcp lint`)
 
 clang (`[lint] clang = ...`, else on PATH, else `C:/Program Files/LLVM/bin/clang.exe`) parses each
-amalgamation as C89 with MS compatibility against the toolchain's headers, plus an all-declarations unit that
-includes every `include/*.h` and repeats every file-scope prototype of the sources: M6 / M5 / M7 and Q7. Only
-`@original why` / `@vc6 why` on the line exempt a diagnostic, and not an M5 between two headers: two headers
-that disagree (a prototype, a data type, a struct or typedef both define) can never be included into one unit,
-so a unit's own spelling belongs in that unit (a cast macro in its head.c), not in a shared header. A header the
-original only included into some units (zlib's deflate.h / infutil.h each define `struct internal_state`)
-says so with `@private UNIT[,UNIT..]` in its first 20 lines: it is left out of the all-declarations unit, and a
-file outside those units that includes it is an M5 error. Per-unit results are cached by the unit's text,
-the flags and its include hash. `dcp check` lints when clang is installed.
+amalgamation as C89 with MS compatibility against the toolchain's headers: M6 / M7 and Q7. M5 comes from an
+all-declarations unit (build/lint/<target>/alldecls.c): the system headers the sources include, every
+`include/*.h` (a header after the headers that define the names it uses, and after its includer), the
+sources' file-scope prototypes and extern data declarations behind `#line` (with the macros of their unit they
+use, `GAPDATA`), then the sources' non-static definitions (a function's head as a prototype, a K&R definition
+with its parameters, a data definition as an extern declaration). One M5 line per symbol:
+
+- **against the definition**: every other spelling is renamed and compared with the definition by
+  `__builtin_types_compatible_p` on their addresses, so the line lists the definition (file:line, unit,
+  spelling) and every declaration that disagrees (grouped by spelling) or agrees, whatever order clang would
+  see them in (`unknown`: a declaration that uses a type of its unit). Fixing one disagreement reveals no next one.
+- **without a definition in src/** (or with one that uses a type of its unit): clang's pairs, each
+  redeclaration against the first declaration seen, still one line per symbol.
+- a struct, union, enum or typedef two headers define differently.
+- **a header that does not compile there** (with its first error, and the macro of another header it collides
+  with): its declarations are not compared, so their conflicts are hidden until it compiles.
+
+A pair whose two sides read the same after whitespace normalisation, or one side of which has an error of its
+own, is clang's error recovery and not reported. Only `@original why` / `@vc6 why` on a line exempt a
+diagnostic, and for M5 only on a declaration in src/: a header is included into many units and repeats the
+definition's spelling, so a unit's own spelling belongs in that unit, as a cast macro in its head.c
+(`#define name_X ((T (*)(..))name) /* @original why */`); the M5 line of a marked header spelling says so and
+names the defining unit and the spelling to repeat. A header the original only included into some units
+(zlib's deflate.h / infutil.h each define `struct internal_state`) says so with `@private UNIT[,UNIT..]` in its
+first 20 lines: it is left out of the all-declarations unit, and a file outside those units that includes it is
+an M5 error. Per-unit results are cached by the unit's text, the flags and its include hash. `dcp check` lints
+when clang is installed.
 
 `dcp headers conflicts UNIT HEADER..` (source/headers.py) answers "what would including these headers into
 the unit's head.c collide with" before the include is made: the unit is parsed twice the way lint parses it,

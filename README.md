@@ -313,7 +313,7 @@ uv run dcp asmdiff NAME                   # the instruction diff (capstone, both
 uv run dcp diffclass NAME                 # the hunk classes
 uv run dcp escalate NAME "why"            # @deep why (dcp stuck NAME "why"; --clear)
 uv run dcp link                           # the full link, unresolved externals classified
-uv run dcp lint                           # clang: M5 / M6 / M7, readability Q7
+uv run dcp lint                           # clang: M5 (one line per symbol, against its definition) / M6 / M7, Q7
 uv run dcp headers conflicts UNIT H..     # what including headers into head.c collides with (--write: includes + duplicates)
 uv run dcp toolchain probe                # the flag grid over the byte-matched functions
 uv run dcp promote                        # write the grade baseline ledger/grades.tsv (main only)

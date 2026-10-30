@@ -337,6 +337,64 @@ def test_lint_m5_between_headers(tiny):
 
 
 @needs_vc6
+@pytest.mark.skipif(not CLANG.exists(), reason="clang not installed")
+def test_lint_m5_per_symbol(tiny):
+    """M5 against the definition, one line per symbol: a.h comes first and disagrees, b.h agrees with the
+    definition (clang alone would blame b.h); data from the sources too (a unit's GAPDATA view); a K&R
+    definition does not swallow what follows it; a header that does not compile is its own M5."""
+    with_vc6(tiny)
+    write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\n")
+    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n")
+    write(tiny, "src/log/f_10001030.c", "/* 0x10001030, logs */\nint log3(a)\nint a;\n{\n    return a;\n}\n")
+    write(tiny, "src/log/head.c", "#define GAPDATA __declspec(align(1)) unsigned char\nextern GAPDATA counter[];\n"
+                                  "int get();\nint log3(int a);\n")
+    write(tiny, "include/a.h", "long get(void);\n")
+    write(tiny, "include/b.h", "int get(void);\nextern int counter;\n")
+    code, out = dcp(tiny, "lint")
+    assert code == 1, out
+    m5 = [l for l in out.splitlines() if l.startswith("  M5 ")]
+    assert len(m5) == 2, out
+    get = next(l for l in m5 if " get declared unlike its definition" in l)
+    assert get.startswith("  M5 include/a.h:1: get declared unlike its definition src/net/f_10001020.c:2 (unit net) `int get(void)`"), get
+    assert "disagree=1 `long get(void)` at include/a.h:1; agree=2 include/b.h:1, src/log/head.c:3" in get, get
+    cnt = next(l for l in m5 if "counter" in l)
+    assert "disagree=1 `GAPDATA counter[]` at src/log/head.c:2; agree=1 include/b.h:2" in cnt, cnt
+    # the header spelling marked @original: the hint names the definition and the cast macro of a unit's view
+    write(tiny, "include/a.h", "long get(void);  /* @original why */\n")
+    code, out = dcp(tiny, "lint")
+    assert "the @original spelling is in a header (include/a.h:1): a header repeats the definition's spelling " \
+           "`int get(void);` (unit net); a unit's own view goes in its head.c as a cast macro: " \
+           "`#define get_X ((long (*)(void))get) /* @original why */`" in out, out
+    # in a unit's own declaration the exemption holds
+    write(tiny, "include/a.h", "int get(void);\n")
+    write(tiny, "src/log/head.c", "extern int counter;\nlong get(void);  /* @original why */\nint log3(int a);\n")
+    code, out = dcp(tiny, "lint")
+    assert "m5=0" in out, out
+    # a K&R definition and the prototype after it: a disagreeing one is seen
+    write(tiny, "src/log/head.c", "extern int counter;\nint log3(char *a);\n")
+    code, out = dcp(tiny, "lint")
+    assert "m5=1" in out and "log3 declared unlike its definition src/log/f_10001030.c:2" in out \
+           and "`int log3(a) int a;`" in out, out
+    # a header that does not compile in the all-declarations unit
+    write(tiny, "src/log/head.c", "extern int counter;\n")
+    write(tiny, "include/c.h", "NOSUCHTYPE *mk(void);\n")
+    code, out = dcp(tiny, "lint")
+    assert "m5=1" in out and "include/c.h:1: include/c.h does not compile in the all-declarations unit (1 errors, " \
+                             "first: unknown type name 'NOSUCHTYPE')" in out, out
+
+
+def test_lint_alldecls_scan():
+    from decompanion.source import lint as L
+    ds = L.file_scope_decls("src/u/head.c", "int a = 1, *b;\nstatic int c;\nextern struct S s[];\ntypedef int T;\n"
+                            "static int f(void) { return 0; }\nint g(x) int x; { return x; }\nint h(void);\n"
+                            "struct Q { int q; };\nchar *k(char *s)\n{\n    return s;\n}\n")
+    assert [(d.kind, d.name, d.stmt) for d in ds] == [
+        ("ddef", "a", "extern int a;"), ("ddef", "b", "extern int *b;"), ("extern", "s", "extern struct S s[];"),
+        ("knr", "g", "int g(x) int x; {}"), ("proto", "h", "int h(void);"), ("fdef", "k", "char *k(char *s);")]
+    assert all(d.stmt[d.at:d.at + len(d.name)] == d.name for d in ds)
+
+
+@needs_vc6
 def test_auto_clear_and_data_order(tiny):
     with_vc6(tiny)
     write(tiny, "src/net/head.c", "int pad = 7;  /* 0x10002004 */\nint counter = 0x1234;  /* 0x10002000 */\n")

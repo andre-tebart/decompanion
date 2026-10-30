@@ -66,6 +66,10 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
 - `uv run dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
 - `uv run dcp why 0xADDR` - everything the ledger knows about an address (names, data, tables).
 - `uv run dcp lint` - clang over the units: prototypes (Q7), cross-unit conflicts (M5), calls without one (M7).
+  An M5 line is one symbol: its definition (file:line, unit, spelling) and every declaration that disagrees
+  or agrees with it; fix every disagreeing one to the definition's spelling (or the definition, when the
+  declarations are right). `does not compile in the all-declarations unit` is a header whose declarations
+  are not compared at all until it compiles (a missing include, a macro of another header in its way).
   `dcp grade` and `dcp next` lint the changed units themselves, so their Q7 is current.
 - `uv run dcp headers conflicts UNIT HEADER..` - before including a header into head.c: what it collides with
   (supersedes / duplicate / clash / header / call with the original's pushes / prototyped) and the functions to
