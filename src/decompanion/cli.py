@@ -209,8 +209,20 @@ def cmd_why(args):
     p, e = open_project(args)
     refresh(p, e)
     st = p.store
+    from .cli_read import resolve
+    from .ledger.names import Names
+    names = None
+    missing = 0
     for s in args.addr:
-        a = parse_addr(s)
+        try:
+            a = parse_addr(s)
+        except ValueError:                           # a function or data name (as dcp disasm / dump resolve it)
+            names = names or Names(p, st)
+            a = resolve(p, names, s)
+            if a is None:
+                print(f"name={s}  target={p.target_name}  unknown (no address or name the ledger knows)")
+                missing += 1
+                continue
         w = query.why(st, a)
         row = w["row"]
         if row is None:
@@ -240,6 +252,7 @@ def cmd_why(args):
                 print(f"  ref<-  {f.value['rkind']} at={fmt_addr(f.lo)} to={fmt_addr(f.value['to'])}  by={f.by}")
         else:
             print(f"  refs: to={len(w['refs_to'])} from={len(w['refs_from'])}  (--refs lists them)")
+    return 1 if missing else 0
 
 
 def cmd_facts(args):
@@ -695,8 +708,8 @@ def main(argv=None):
     s = cmd(sub, "report", cmd_report, "the setup report (with the analyzer's drafts)")
     s.add_argument("--all-targets", action="store_true", help="every target in config order")
     s.add_argument("-v", "--verbose", action="store_true", help="list every analyzer-only and ours-only start")
-    s = cmd(sub, "why", cmd_why, "everything known about an address")
-    s.add_argument("addr", nargs="+")
+    s = cmd(sub, "why", cmd_why, "everything known about an address (or a function / data name)")
+    s.add_argument("addr", nargs="+", metavar="ADDR|NAME")
     s.add_argument("--refs", action="store_true")
     s = cmd(sub, "facts", cmd_facts, "facts intersecting a range")
     s.add_argument("range")

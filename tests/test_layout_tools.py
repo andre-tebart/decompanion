@@ -58,6 +58,10 @@ def test_disasm_dump_refs(tiny):
     assert "call 0x10001020 <GetCounter>" in out
     code, out = dcp(tiny, "disasm", "GetCounter")
     assert "instructions=2" in out and "mov eax, dword ptr [0x10002000]" in out
+    code, out = dcp(tiny, "why", "GetCounter")               # why takes a name too (it crashed on int(name, 0))
+    assert code == 0 and out.startswith("addr=0x10001020") and "cls=func" in out, out
+    code, out = dcp(tiny, "why", "NoSuchName")
+    assert code == 1 and "name=NoSuchName" in out and "unknown" in out, out
     code, out = dcp(tiny, "dump", "0x10002000", "0x48", "--str", "--dword")
     assert code == 0 and "section=.data" in out
     assert "text=hello" in out and "text=world" in out and "text=c:\\src\\net\\net.c" in out

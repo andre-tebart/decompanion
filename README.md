@@ -290,7 +290,7 @@ Reading and checking:
 
 ```
 uv run dcp status                         # the phase, the gate and the numbered next steps (setup's tail too)
-uv run dcp why 0x10008cb0 --refs          # everything known about an address
+uv run dcp why 0x10008cb0 --refs          # everything known about an address (or: dcp why Init, a function / data name)
 uv run dcp map 0x10008c00..0x10008e00     # the byte map of a range
 uv run dcp facts 0x10008cb0..0x10008d20 --kind name
 uv run dcp conflicts                      # contradictions

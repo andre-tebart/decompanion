@@ -64,7 +64,7 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
 - `uv run dcp disasm 0xADDR` - the original code; `uv run dcp dump 0xADDR [LEN]` - its constants and strings.
 - `uv run dcp refs NAME|0xADDR` - every use and declaration: the callers say what a parameter means.
 - `uv run dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
-- `uv run dcp why 0xADDR` - everything the ledger knows about an address (names, data, tables).
+- `uv run dcp why 0xADDR|NAME` - everything the ledger knows about an address or a function / data name (names, data, tables).
 - `uv run dcp lint` - clang over the units: prototypes (Q7), cross-unit conflicts (M5), calls without one (M7).
   An M5 line is one symbol: its definition (file:line, unit, spelling) and every declaration that disagrees
   or agrees with it; fix every disagreeing one to the definition's spelling (or the definition, when the
