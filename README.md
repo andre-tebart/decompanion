@@ -103,11 +103,11 @@ status` names when it is due, with the evidence it has and the command that reso
 `dcp serve` (src/decompanion/daemon.py) runs one resident process per project root; every `dcp` command of the
 project then runs in it (client.py forwards the command line, the cwd and the environment, and streams the output
 back), so a command pays neither the interpreter start and imports nor the first read of the image, the sources,
-the store and the objects. Without a daemon (or with DCP_NO_DAEMON=1) the command runs in its own process: the
-same code, the same output. `dcp serve` starts the daemon detached and returns (`--foreground` keeps it in the
+the store and the objects. The daemon is mandatory: without one a command fails and names `dcp serve` (only
+`dcp init` runs without it). `dcp serve` starts the daemon detached and returns (`--foreground` keeps it in the
 terminal; output in build/daemon.log), so the `dcp` script never stays running: on Windows uv could not replace a
 running .venv/Scripts/dcp.exe when it reinstalls decompanion. `dcp serve --status` / `--stop`; a changed
-decompanion restarts it by itself.
+decompanion restarts it by itself (the waiting command is sent to the new one).
 
 What makes the loop fast, in the daemon and outside it: content hashes of the source files persisted per project
 (build/cache/stamps.pickle, trusted only for an unchanged, non-racy stamp; fsmemo.py), one plan per source state,
@@ -124,8 +124,8 @@ before its one refresh. gildegold, a one-line edit of a function (median, warm d
 
 DCP_TIMING=1 prints where a command's time went (DCP_TIMING=2: per rule), DCP_PROFILE=1 runs it under cProfile
 (build/profile/). tools/bench.py replays the loop on a project (edits applied and reverted) and, with --verify,
-checks the store against a forced recompute in a fresh process with the persisted hashes and the kept runs off
-(DCP_NO_SHORTCUTS=1, DCP_NO_DAEMON=1).
+checks the store against a forced recompute in a fresh process (`python -m decompanion.cli`, not the daemon)
+with the persisted hashes and the kept runs off (DCP_NO_SHORTCUTS=1).
 
 ### Quick start: server.dll (outputs trimmed, real numbers)
 

@@ -1,9 +1,9 @@
-"""The `dcp` command: send the command line to the project's daemon (`dcp serve`, daemon.py) when one runs, else
-run it in this process (cli.main). It imports nothing of decompanion until it knows which: a command the daemon
-runs costs the interpreter start and one round trip.
+"""The `dcp` command: send the command line to the project's daemon (`dcp serve`, daemon.py). It imports nothing
+of decompanion: a command costs the interpreter start and one round trip.
 
-DCP_NO_DAEMON=1 always runs in-process. A daemon that does not answer (gone, or started for another root) and a
-daemon restarting after a code change leave the command to this process too.
+Every command of a project runs in its daemon: without one the command fails and names `dcp serve`. A daemon
+restarting after a code change is waited for and the command sent to the new one. Only `dcp init` and a
+command line outside any project run in this process: there is no project to serve.
 """
 from __future__ import annotations
 
@@ -14,13 +14,29 @@ import sys
 CONFIG_NAME = "decompanion.toml"
 
 
+def command(argv: list[str]) -> str | None:
+    """The command of the command line: its first word that is neither an option nor an option's value."""
+    skip = False
+    for a in argv:
+        if skip:
+            skip = False
+        elif a in ("--root", "--target"):
+            skip = True
+        elif not a.startswith("-"):
+            return a
+    return None
+
+
 def project_root(argv: list[str]) -> str | None:
-    """The --root of the command line, else the first directory from the cwd up holding decompanion.toml."""
+    """The --root of the command line when it holds decompanion.toml, else the first directory from the cwd up
+    holding one."""
     for i, a in enumerate(argv):
         if a == "--root" and i + 1 < len(argv):
-            return os.path.abspath(argv[i + 1])
+            r = os.path.abspath(argv[i + 1])
+            return r if os.path.isfile(os.path.join(r, CONFIG_NAME)) else None
         if a.startswith("--root="):
-            return os.path.abspath(a[7:])
+            r = os.path.abspath(a[7:])
+            return r if os.path.isfile(os.path.join(r, CONFIG_NAME)) else None
     d = os.getcwd()
     while True:
         if os.path.isfile(os.path.join(d, CONFIG_NAME)):
@@ -42,42 +58,53 @@ def connect(root: str):
         return None
 
 
-def via_daemon(root: str, argv: list[str]) -> int | None:
-    """Run the command in the daemon: its exit code, None when it did not run there."""
+def wait_connect(root: str, seconds: float = 10.0):
+    """A connection to the daemon of root, waiting while its daemon.json names one that does not answer yet (a
+    daemon restarting after a code change, or still starting): None when none answers within seconds."""
+    import time
+    deadline = time.monotonic() + seconds
+    while True:
+        conn = connect(root)
+        if conn is not None or time.monotonic() >= deadline:
+            return conn
+        time.sleep(0.1)
+
+
+def via_daemon(root: str, argv: list[str]) -> int:
+    """Run the command in the daemon: its exit code."""
     conn = connect(root)
-    if conn is None:
-        return None
-    try:
-        conn.send({"op": "run", "argv": argv, "cwd": os.getcwd(), "env": dict(os.environ)})
-        while True:
-            msg = conn.recv()
-            kind = msg[0]
-            if kind == "out":
-                sys.stdout.write(msg[1])
-                sys.stdout.flush()
-            elif kind == "err":
-                sys.stderr.write(msg[1])
-                sys.stderr.flush()
-            elif kind == "exit":
-                return msg[1]
-            elif kind == "restart":
-                print(f"dcp: the daemon restarts ({msg[1]}); this command runs in-process", file=sys.stderr)
-                return None
-    except (OSError, EOFError) as ex:
-        print(f"dcp: lost the daemon ({ex})", file=sys.stderr)
-        return 1
-    finally:
-        conn.close()
+    while True:
+        if conn is None:
+            print(f"dcp: no daemon runs for {root}: start it with `dcp serve`", file=sys.stderr)
+            return 2
+        try:
+            conn.send({"op": "run", "argv": argv, "cwd": os.getcwd(), "env": dict(os.environ)})
+            while True:
+                msg = conn.recv()
+                kind = msg[0]
+                if kind == "out":
+                    sys.stdout.write(msg[1])
+                    sys.stdout.flush()
+                elif kind == "err":
+                    sys.stderr.write(msg[1])
+                    sys.stderr.flush()
+                elif kind == "exit":
+                    return msg[1]
+                elif kind == "restart":
+                    print(f"dcp: the daemon restarts ({msg[1]})", file=sys.stderr)
+                    break
+        except (OSError, EOFError) as ex:
+            print(f"dcp: lost the daemon ({ex})", file=sys.stderr)
+            return 1
+        finally:
+            conn.close()
+        conn = wait_connect(root)        # the supervisor starts the new daemon: it imports, then answers
 
 
 def control(root: str, op: str) -> int:
-    import time
     conn = connect(root)
-    for _ in range(10):                  # a daemon restarting after a code change opens its pipe within a second
-        if conn is not None or not os.path.exists(os.path.join(root, "build", "daemon.json")):
-            break
-        time.sleep(0.3)
-        conn = connect(root)
+    if conn is None and os.path.exists(os.path.join(root, "build", "daemon.json")):
+        conn = wait_connect(root, 3.0)   # a daemon restarting after a code change opens its pipe within a second
     if conn is None:
         print(f"dcp serve: no daemon runs for {root}")
         return 1
@@ -158,12 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["serve"]:
         return serve(argv[1:])
-    if not os.environ.get("DCP_NO_DAEMON"):
-        root = project_root(argv)
-        if root is not None:
-            code = via_daemon(root, argv)
-            if code is not None:
-                return code
+    root = None if command(argv) == "init" else project_root(argv)
+    if root is not None:
+        return via_daemon(root, argv)
     from .cli import main as cli_main
     return cli_main(argv)
 

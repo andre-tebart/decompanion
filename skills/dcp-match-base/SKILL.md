@@ -14,9 +14,9 @@ deep queue, `dcp next --deep`), not this session's.
 Hard rules
 - Every tool is `uv run dcp ...` from the project root (`--target NAME` for a target other than the first).
   First check `uv run dcp serve --status`; when no daemon runs, start one with `uv run dcp serve` (it
-  detaches and returns) and leave it running: every `uv run dcp` of the project then runs in it (about 0.2 s a
-  call instead of 1 .. 3 s, same output). Without it every command still works, only slower. A worktree needs
-  its own (`dcp serve` there).
+  detaches and returns) and leave it running: every `uv run dcp` of the project runs in it, and without it
+  every command fails ("no daemon runs ... start it with `dcp serve`"). A worktree needs its own (`dcp serve`
+  there).
   If `uv run` fails with "failed to remove file ...dcp.exe" (access denied), an old daemon holds the exe: run
   `uv run --no-sync dcp serve --stop`, then retry.
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.

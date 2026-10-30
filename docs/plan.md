@@ -566,9 +566,12 @@ Added next (user decision, 2026-10-30: "it needs to be as fast as possible for f
 architecture chosen: a resident daemon plus the loop fixes; eager background compiles and per-unit rule partitions
 later). Measured on gildegold with tools/bench.py (one-line edits of a function's fragment, applied and reverted):
 - `dcp serve` (daemon.py, client.py): one process per project root on a named pipe; the `dcp` script forwards
-  argv, cwd and environment and streams stdout / stderr back, or runs in-process when no daemon answers. Requests
-  run one at a time; a changed decompanion restarts it (the supervisor around the daemon process). What it keeps
-  is what the process memos keep, all keyed by content: no request sees an older state than a new process would.
+  argv, cwd and environment and streams stdout / stderr back. Requests run one at a time; a changed decompanion
+  restarts it (the supervisor around the daemon process; the client waits and sends the command again). What it
+  keeps is what the process memos keep, all keyed by content: no request sees an older state than a new process
+  would. Mandatory since 2026-10-30 (user decision: "make starting the dcp server mandatory"): without a daemon a
+  command fails and names `dcp serve`; the in-process fallback and DCP_NO_DAEMON are gone (only `dcp init` and
+  a command line outside any project run in the client's process).
 - fsmemo: one stat per file per epoch (a directory listing gives the stamps), content hashes persisted per
   project with git's racy rule; tree_hash, the source scan, the lint and the word scans of `dcp rename` read
   only changed files. A plan per source state; the amalgamation's text is composed only for a unit that compiles

@@ -6,9 +6,8 @@ interpreter start and imports nor the first read of the image, the sources, the 
     dcp serve --status   is it running: pid, uptime, requests served, memory
     dcp serve --stop     stop it
 
-The `dcp` command (client.py) sends every other command line to the project's daemon when one runs and runs it in
-its own process otherwise: the same code either way, and the output, the exit code and the files written are the
-same. The daemon only keeps what the process memos keep anyway (fsmemo, the source scan, the plans, the parsed
+The `dcp` command (client.py) sends every other command line to the project's daemon; without one it fails and
+names `dcp serve` (only `dcp init` and a command line outside any project run in the client's process). The daemon only keeps what the process memos keep anyway (fsmemo, the source scan, the plans, the parsed
 objects, the compares, the decoded facts); every memo is keyed by the content it was computed from, every
 request opens the project afresh (the configuration is read again) and starts a new file epoch, so a request
 sees every change made since the last one, by dcp or by anyone else.
@@ -22,9 +21,9 @@ sees every change made since the last one, by dcp or by anyone else.
 - `dcp serve` starts a small supervisor around the daemon process (`python -m decompanion.daemon --supervise`,
   output in build/daemon.log) and returns: the `dcp` script never stays running, since on Windows uv cannot
   replace a running .venv/Scripts/dcp.exe when it reinstalls decompanion. When the code of decompanion changed (any .py of
-  the package), the daemon answers the next request with `restart` (the client runs that command itself) and
-  exits; the supervisor starts a new one.
-- A worktree is a project root of its own: it gets its own daemon (`dcp serve` there), or runs in-process.
+  the package), the daemon answers the next request with `restart` and exits; the supervisor starts a new one,
+  and the client waits for it and sends the command again.
+- A worktree is a project root of its own: it needs its own daemon (`dcp serve` there).
 - The store stays open in the daemon: stop it before deleting build/ (Windows refuses to delete an open file).
 """
 from __future__ import annotations

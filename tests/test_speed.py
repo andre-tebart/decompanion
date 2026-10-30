@@ -123,7 +123,10 @@ def test_bytemap_names_current_facts_after_same_output_rerun(tiny):
 def test_daemon_answers_like_the_process(tiny):
     assert dcp(tiny, "setup", "--no-analyzer")[0] == 0
     env = dict(os.environ)
-    env.pop("DCP_NO_DAEMON", None)
+    run = lambda *args: subprocess.run([sys.executable, "-m", "decompanion.client", "--root", str(tiny), *args],
+                                       env=env, capture_output=True, text=True)
+    no = run("map")
+    assert no.returncode == 2 and "dcp serve" in no.stderr                    # no daemon: no command runs
     d = subprocess.Popen([sys.executable, "-m", "decompanion.daemon", str(tiny)], env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -133,13 +136,13 @@ def test_daemon_answers_like_the_process(tiny):
                 break
             time.sleep(0.05)
         assert info.exists()
-
-        def run(*args, **extra):
-            return subprocess.run([sys.executable, "-m", "decompanion.client", "--root", str(tiny), *args],
-                                  env=dict(env, **extra), capture_output=True, text=True)
         for args in (("why", "0x10001020"), ("facts", "0x10001000..0x10001060"), ("map",), ("nosuchcommand",)):
-            a, b = run(*args), run(*args, DCP_NO_DAEMON="1")
-            assert (a.returncode, a.stdout) == (b.returncode, b.stdout), args
+            a = run(*args)
+            try:
+                b = dcp(tiny, *args)
+            except SystemExit as ex:                                          # argparse: the unknown command
+                b = (ex.code, "")
+            assert (a.returncode, a.stdout) == b, args
         st = subprocess.run([sys.executable, "-m", "decompanion.client", "serve", "--root", str(tiny), "--status"],
                             env=env, capture_output=True, text=True)
         assert "requests=4" in st.stdout
@@ -158,7 +161,6 @@ def test_serve_detaches_and_returns(tiny):
     replace a running .venv/Scripts/dcp.exe)."""
     assert dcp(tiny, "setup", "--no-analyzer")[0] == 0
     env = dict(os.environ)
-    env.pop("DCP_NO_DAEMON", None)
 
     def serve(*args):
         return subprocess.run([sys.executable, "-m", "decompanion.client", "serve", "--root", str(tiny), *args],

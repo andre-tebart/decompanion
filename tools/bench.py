@@ -3,8 +3,8 @@
     python tools/bench.py --root ../gildegold --fn 0x5dcf00 --swap "ai_ShotHitHeight + height::height + ai_ShotHitHeight" \
         --rename ai_ShotHitsGround [--runs 3] [--scenarios S0,S1,...] [--uv] [--verify] [--label NAME]
 
-Every command runs as its own process (the project's .venv dcp, or `uv run dcp` with --uv), with DCP_TIMING=1; a
-running `dcp serve` is used when there is one (the client decides), so the same script measures both. Scenarios,
+Every command runs as its own process (the project's .venv dcp, or `uv run dcp` with --uv), with DCP_TIMING=1, in
+the project's daemon (`dcp serve` must run). Scenarios,
 each applied to the function's fragment file and reverted (the tree is left as it was found; a dirty tree is
 refused):
 
@@ -22,7 +22,8 @@ the raw runs (wall time, exit code, the `rules:` and `timing:` lines) to <root>/
 
 --verify (--verify-build: also `dcp build --force`, the compile rows checked too): after each scenario's revert, the store is checked against a forced recompute: the current runs'
 (rule, out_hash) and the tu hash are read, `dcp setup --force --no-analyzer` reruns every rule with every
-shortcut off (DCP_NO_SHORTCUTS=1, DCP_NO_DAEMON=1), and the two must be equal.
+shortcut off (DCP_NO_SHORTCUTS=1) in a fresh process (`python -m decompanion.cli`, not the daemon), and the two
+must be equal.
 """
 from __future__ import annotations
 
@@ -49,13 +50,15 @@ class Bench:
         self.root = Path(a.root).resolve()
         exe = self.root / ".venv" / "Scripts" / ("dcp.exe" if os.name == "nt" else "dcp")
         self.cmd = ["uv", "run", "dcp"] if a.uv else [str(exe)]
+        py = self.root / ".venv" / "Scripts" / ("python.exe" if os.name == "nt" else "python")
+        self.fresh = (["uv", "run", "python"] if a.uv else [str(py)]) + ["-m", "decompanion.cli"]
         self.runs: list[dict] = []
         self.fn = a.fn
 
-    def dcp(self, scenario: str, step: str, *argv, env=None, record=True) -> dict:
+    def dcp(self, scenario: str, step: str, *argv, env=None, record=True, fresh=False) -> dict:
         e = dict(os.environ, DCP_TIMING="1", **(env or {}))
         t = time.perf_counter()
-        p = subprocess.run(self.cmd + list(argv), cwd=self.root, capture_output=True, text=True, env=e)
+        p = subprocess.run((self.fresh if fresh else self.cmd) + list(argv), cwd=self.root, capture_output=True, text=True, env=e)
         wall = time.perf_counter() - t
         lines = [l for l in p.stderr.splitlines() if l.startswith(("rules:", "timing:"))]
         row = {"scenario": scenario, "step": step, "argv": list(argv), "wall": round(wall, 3), "rc": p.returncode,
@@ -164,10 +167,10 @@ class Bench:
     def verify(self, scenario: str) -> bool:
         before = self.state()
         facts_before = self.facts
-        env = {"DCP_NO_SHORTCUTS": "1", "DCP_NO_DAEMON": "1"}
+        env = {"DCP_NO_SHORTCUTS": "1"}
         if self.a.verify_build:                         # every unit compiled again: the tu rows are checked too
-            self.dcp(scenario, "verify", "build", "--force", env=env, record=False)
-        self.dcp(scenario, "verify", "setup", "--force", "--no-analyzer", env=env, record=False)
+            self.dcp(scenario, "verify", "build", "--force", env=env, record=False, fresh=True)
+        self.dcp(scenario, "verify", "setup", "--force", "--no-analyzer", env=env, record=False, fresh=True)
         after = self.state()
         bad = sorted(r for r in set(before[0]) | set(after[0]) if before[0].get(r) != after[0].get(r))
         if self.a.verify_build:
