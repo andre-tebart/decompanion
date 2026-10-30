@@ -132,8 +132,9 @@ def start_detached(root: str) -> int:
     os.makedirs(os.path.dirname(log), exist_ok=True)
     kw: dict = {}
     if os.name == "nt":
-        kw["creationflags"] = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-                               | subprocess.CREATE_NO_WINDOW)
+        # a console without a window, not DETACHED_PROCESS (no console at all): the supervisor's children (the
+        # daemon, its CL and clang runs) inherit the hidden console instead of each getting a visible new one
+        kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
     else:
         kw["start_new_session"] = True
     with open(log, "ab") as fh:
