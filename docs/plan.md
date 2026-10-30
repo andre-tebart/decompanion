@@ -654,3 +654,22 @@ Open:
   of hmt.h, hst.h, ahm.h, amt.h, gv.h, cm.h against ai.h; headers for sblib, d3_snd, sv, f3init, io_text,
   d3_tools, ls. Then the dedicated head passes of unk_58bbd0, he, unk_575860, sv (the base queue's largest
   units).
+
+## 16. Debt guards (queued 2026-10-30, user decision: "queue them before the debt worker")
+
+The M5 pass in gildegold (fb5bb02 .. 520c492) left debt that every current rule accepts (gildegold
+notes/headers.md): consistent but weak spellings, agreeing copies of other units' symbols, and 155 cast / view
+macros. M5 checks that declarations agree, not that they are the right ones. Four rules, built after the M5
+per-symbol work (section 15's follow-up: M5 knows each symbol's definition) and before the debt pass, so the
+debt shows as errors and the gate keeps it from coming back:
+- **Copy rule:** a header or head.c / fragment declares a function or datum defined in another unit, where the
+  owner's header exists: an error unless the unit includes the owner's header instead, or the copy carries
+  `@keep why` (the VC6 declaration-set effect, with the function whose bytes move, is one such why). Without an
+  owner's header: a warning naming the owner unit (it needs a header).
+- **View-everywhere rule:** a datum that most of its readers reach through one view type T (`(*(T *)&datum)`),
+  or a parameter every caller casts to its declared type (`(int)vfs_Root`) or the definition casts on entry:
+  "retype the definition to T" (warning; an error when every reader / caller does it).
+- **Macro evidence rule:** a cast or view macro in a head (`#define X ((T (*)(..))f)`, `#define X (*(T *)&d)`)
+  carries `@original` with an address of the original whose bytes need it, else an error.
+- **Debt count:** per unit, the cast / view macros, `@keep` copies and `@original` exemptions in `dcp status`
+  (and the session wrap), so the debt stays visible as it is paid down.
