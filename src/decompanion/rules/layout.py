@@ -387,7 +387,7 @@ def load_decl_starts(ctx: RuleContext):
             yield ctx.declared(d.lo, d.lo + 1, Kind.start, {"skind": "func", "how": "decl"}, d.by, d.reason)
 
 
-@rule("L.src", version="2", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
+@rule("L.src", version="3", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
       loader=True, helpers=(srcscan,))
 def load_src(ctx: RuleContext):
     """The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function
@@ -399,7 +399,8 @@ def load_src(ctx: RuleContext):
     stray file), L11 (the file name's address differs from the comment's first address), an unknown target
     prefix, an address outside the image, a function address outside a code section, two definitions at one
     address (L.src), one name at two addresses (N2; a `static` name is compared within its unit only, two
-    units may each keep their own). Errors of the text itself (the scan's, an unknown target
+    units may each keep their own), L15 (a view's address is not its container's plus its offset, or its
+    container has no data declaration with an address; a view gives a `name` fact {view: container}). Errors of the text itself (the scan's, an unknown target
     prefix) are reported in the default target's store; errors about an address in the store of its target.
     A function or datum whose comment lists another target's address only is no fact of this target."""
     p, img = ctx.project, ctx.image
@@ -413,6 +414,7 @@ def load_src(ctx: RuleContext):
     code = code_ranges(img)
     defs_at: dict[int, list[str]] = defaultdict(list)
     names_at: dict[tuple, dict[int, str]] = defaultdict(dict)    # (name, unit of a static or None) -> address -> by
+    data_at: dict[tuple, int] = {}                                 # (name, unit of a static or None) -> address
 
     def unknown_prefix(addrs, by):
         if cur != default:
@@ -459,6 +461,38 @@ def load_src(ctx: RuleContext):
             defs_at[a].append(by)
             yield ctx.declared(a, a + 1, Kind.source, {"file": d.file, "line": d.line, "unit": d.unit, "symbol": d.name, "what": "data"}, by, reason)
         yield ctx.declared(a, a + 1, Kind.name, {"name": d.name, "origin": "source"}, by, reason)
+        data_at.setdefault((d.name, d.unit if d.static else None), a)
+    pending = []
+    for v in sc.views:
+        by = f"src:{v.file}:{v.line}"
+        yield from unknown_prefix(v.addrs, by)
+        a = srcscan.address_for(v.addrs, cur, default)
+        if a is not None:
+            pending.append((v, a, by))
+    while pending:                                    # a view may be the container of another view
+        rest = []
+        for v, a, by in pending:
+            ca = data_at.get((v.container, v.unit), data_at.get((v.container, None)))
+            if ca is None:
+                rest.append((v, a, by))
+                continue
+            if ca + v.offset != a:
+                yield ctx.conflict(Severity.error, "L15", a, a + 1,
+                                   f"{v.file}:{v.line}: view {v.name} at {a:#x}, but {v.container} ({ca:#x}) + {v.offset:#x} "
+                                   f"is {ca + v.offset:#x}", a=by)
+                continue
+            data_at.setdefault((v.name, None), a)
+            names_at[(v.name, None)][a] = by
+            yield ctx.declared(a, a + 1, Kind.name, {"name": v.name, "origin": "source", "view": v.container}, by,
+                               f"view of {v.container} +{v.offset:#x}")
+        if len(rest) == len(pending):
+            for v, a, by in rest:
+                if not v.alias:                       # an alias of no data declaration is no view
+                    yield ctx.conflict(Severity.error, "L15", a, a + 1,
+                                       f"{v.file}:{v.line}: view {v.name}: its container {v.container} has no data declaration "
+                                       f"with an address", a=by)
+            break
+        pending = rest
     for a, bys in sorted(defs_at.items()):
         if len(bys) > 1:
             yield ctx.conflict(Severity.error, "L.src", a, a + 1, f"{len(bys)} definitions at {a:#x}: " + ", ".join(b[4:] for b in bys),

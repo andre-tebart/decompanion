@@ -20,7 +20,9 @@ Readability rules, on the fragment's text (comments and strings blanked for the 
   Q2 identifiers  no placeholder identifier in the definition: the Q1 forms, `param_N`, `xVarN`, `local_N`,
                   `DAT_` / `PTR_` / `FUN_` / `LAB_` names, `unk` / `unk_` + hex.
   Q3 addresses    no integer literal inside the image's address range in the code.
-  Q4 raw access   no `*(T *)` dereference-cast, and no use of a macro any source or header defines with one.
+  Q4 raw access   no `*(T *)` dereference-cast, and no use of a macro any source or header defines with one
+                  (a function-like one, or an object-like `(*(T ...` one that is no view with an address
+                  comment: a view is a named part of a data object, srcscan View).
   Q5 markers      no draft marker in the address comment or the body: ROUGH, SKELETON, TODO, FIXME, XXX
                   (whole words) or the `@rough` tag.
   Q6 described    the address comment carries text after the address, or another comment of any source or
@@ -60,7 +62,7 @@ IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
 LITERAL = re.compile(r"(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)[uUlL]*(?![\w.])")
 DEREF_CAST = re.compile(r"\*\s*\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*"
                         r"(?:\s+[A-Za-z_]\w*)*\s*\*+\s*(?:const\s*)?\)")
-READABILITY_VERSION = "1"                          # bump when readability() changes its verdicts
+READABILITY_VERSION = "2"                          # bump when readability() changes its verdicts
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
 MARKER = re.compile(r"\b(ROUGH|SKELETON|TODO|FIXME|XXX)\b")
 DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
@@ -88,9 +90,12 @@ def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
     for name, body in sc.macros:
         defs.setdefault(name, body)
     described = set(sc.described)
-    raw = {n for n, body in defs.items() if DEREF_CAST.search(body)}
+    obj = set(sc.rawobj)                              # object-like: used without a call
+    raw = {n for n, body in defs.items() if DEREF_CAST.search(body)} | obj
     while raw:
-        pat = re.compile(r"\b(" + "|".join(sorted(map(re.escape, raw))) + r")\s*\(")
+        fn = sorted(map(re.escape, raw - obj))
+        pat = re.compile("|".join(([r"\b(" + "|".join(fn) + r")\s*\("] if fn else [])
+                                  + ([r"\b(" + "|".join(sorted(map(re.escape, obj))) + r")\b"] if obj else [])))
         more = {n for n, body in defs.items() if n not in raw and pat.search(body)}
         if not more:
             break

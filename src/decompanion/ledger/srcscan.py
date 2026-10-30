@@ -23,6 +23,15 @@ Address comments
              one address per declarator:       extern int a, b;  /* 0x1002a000, 0x1002a004 */
              a multi-line table:               the comment on the line above it
              (the same target prefixes; `/* unlinked, why */` for data the binary lacks)
+  view       a name for part of a larger data object (the original packs its data: a name inside another
+             object is a view of that storage, no object of its own), a one-line object-like macro with the
+             address comment on its line, in one of three forms:
+               #define NAME (*(T *)((char *)&CONTAINER + OFFSET))  /* 0x1002a010 */   (byte offset)
+               #define NAME (*(T *)&CONTAINER)                     /* 0x1002a000 */
+               #define NAME CONTAINER                              /* 0x1002a000 */   (an alias)
+             `(char *)CONTAINER` without `&` for an array container. CONTAINER is a data declaration of the
+             sources; the view's address is the container's plus OFFSET (check L15, rules/layout.py). A
+             dereferencing cast macro with an address comment in any other form is an error (L15).
   placeholders  an identifier that spells an address (`Unk10001000`, `FUN_10001000`, `name_10001000`) must
              name a real start (check L5, rules/layout.py)
 
@@ -55,6 +64,14 @@ STATIC = re.compile(r"\s*(?:(?:const|volatile)\s+)*static\b")
 INLINE = re.compile(r"\b(?:__inline|__forceinline|inline)\b")
 KNR = re.compile(r"^[^=(;]*\b[A-Za-z_]\w*\s*\([^()]*\)\s*[A-Za-z_][^;]*;\s*$")
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
+OBJ_DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(?![\w(])[ \t]*([^\n]*)", re.M)
+DEREF_OBJ = re.compile(r"\(\s*\*\s*\(\s*[A-Za-z_]")      # an object-like macro body that dereferences a cast: (*(T ...
+_NUM = r"(0[xX][0-9a-fA-F]+|\d+)[uUlL]*"
+_TYPEP = r"[^()]*(?:\([^()]*\)[^()]*)*"
+VIEW_BYTE = re.compile(r"\(\s*\*\s*\(" + _TYPEP + r"\)\s*\(\s*\(\s*(?:unsigned\s+|signed\s+)?char\s*\*\s*\)\s*(&\s*)?([A-Za-z_]\w*)\s*\+\s*"
+                       + _NUM + r"\s*\)\s*\)")
+VIEW_WHOLE = re.compile(r"\(\s*\*\s*\(" + _TYPEP + r"\)\s*&\s*([A-Za-z_]\w*)\s*\)")
+VIEW_ALIAS = re.compile(r"([A-Za-z_]\w*)")
 DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
 FRAGMENT = re.compile(r"^f_([0-9a-fA-F]+)\.c$")
 UNLINKED_FRAGMENT = re.compile(r"^u_([A-Za-z_]\w*)\.c$")
@@ -121,10 +138,23 @@ class PtrCast:
 
 
 @dataclass(frozen=True)
+class View:
+    """A view macro: a name for `offset` bytes into the data object `container` (L15 in rules/layout.py)."""
+    file: str
+    line: int
+    unit: str
+    name: str
+    container: str
+    offset: int
+    addrs: tuple              # ((target or None, address), ...) of its address comment
+    alias: bool = False       # `#define NAME CONTAINER`: a view only when CONTAINER is a data declaration
+
+
+@dataclass(frozen=True)
 class ScanError:
     file: str
     line: int
-    check: str                # L.src | L11 | L12
+    check: str                # L.src | L11 | L12 | L15
     message: str
 
 
@@ -139,6 +169,8 @@ class Scan:
     macros: list[tuple[str, str]] = field(default_factory=list)  # (name, body) of every function-like #define
     described: list[int] = field(default_factory=list)          # addresses an address comment describes in words
     ptrcasts: list[PtrCast] = field(default_factory=list)       # integer literals cast to a pointer type (A1)
+    views: list[View] = field(default_factory=list)             # view macros (L15)
+    rawobj: list[str] = field(default_factory=list)             # object-like macros dereferencing a cast, no view (Q4)
 
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
@@ -432,6 +464,36 @@ def ptr_casts(S: Source, out: Scan):
         add(m.group(0), m.start())
 
 
+def view_macros(S: Source, unit: str, out: Scan):
+    """The object-like one-line macros: a view (VIEW_BYTE / VIEW_WHOLE / VIEW_ALIAS with an address comment on
+    its line) goes to out.views; one whose body dereferences a cast (DEREF_OBJ) and is no view to out.rawobj,
+    and to out.errors (L15) when it has an address comment all the same."""
+    for m in OBJ_DEFINE.finditer(S.code):
+        name, body = m.group(1), m.group(2).strip()
+        if not body or body.endswith("\\"):
+            continue
+        eol = S.text.find("\n", m.start())
+        eol = len(S.text) if eol < 0 else eol
+        addrs = next((lead_addrs(b) for s, e, b in S.comments if m.start() <= s < eol and lead_addrs(b)), [])
+        line = S.line_of(m.start())
+        v = VIEW_BYTE.fullmatch(body)
+        if v:
+            container, offset, alias = v.group(2), literal_value(v.group(3)), False
+        elif (v := VIEW_WHOLE.fullmatch(body)) is not None:
+            container, offset, alias = v.group(1), 0, False
+        elif (v := VIEW_ALIAS.fullmatch(body)) is not None:
+            container, offset, alias = v.group(1), 0, True
+        else:
+            container = None
+        if container is not None and addrs and offset is not None:
+            out.views.append(View(S.rel, line, unit, name, container, offset, tuple(addrs), alias))
+        elif DEREF_OBJ.search(body):
+            out.rawobj.append(name)
+            if addrs:
+                out.errors.append(ScanError(S.rel, line, "L15", f"{name} has an address comment but is no view: write it "
+                                                                 f"(*(T *)((char *)&CONTAINER + OFFSET)) with a byte offset"))
+
+
 def scan_file(rel: str, text: str, out: Scan):
     S = Source(rel, text)
     for m in DEFINE.finditer(S.text):
@@ -493,6 +555,7 @@ def scan_file(rel: str, text: str, out: Scan):
     for off, dname, kind, addrs, unlinked in S.data(skip):
         out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked, bool(STATIC.match(S.code, off))))
     ptr_casts(S, out)
+    view_macros(S, unit, out)
     seen = set()
     for m in PLACEHOLDER_ADDR.finditer(S.code):
         ident = m.group(0)
@@ -504,7 +567,7 @@ def scan_file(rel: str, text: str, out: Scan):
 
 _cache: dict[tuple[str, str], Scan] = {}
 _files: dict[tuple[str, str], Scan] = {}          # (path, sha256 of the text) -> that file's own scan
-CACHE_VERSION = 3                                 # bump when scan_file's results change
+CACHE_VERSION = 4                                 # bump when scan_file's results change
 
 
 def _file_cache(root: Path) -> tuple[Path | None, dict]:
@@ -556,6 +619,8 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
             out.macros += piece.macros
             out.described += piece.described
             out.ptrcasts += piece.ptrcasts
+            out.views += piece.views
+            out.rawobj += piece.rawobj
     if path is not None and (changed or len(used) != len(disk)):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

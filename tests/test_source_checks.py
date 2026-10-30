@@ -93,6 +93,52 @@ def test_l13_data_at_code(tiny):
     assert code == 0 and not errors(tiny, "L13"), out
 
 
+# ------------------------------------------------------------------------------------------------ L15 views
+VIEWS_H = ("#define rec_Count (*(int *)((char *)&records + 0x4))  /* 0x10002004 */\n"
+           "#define rec_Names (*(char (*)[2][8])((char *)table + 8))  /* 0x10002008 */\n"
+           "#define rec_All (*(int (*)[4])&records)  /* 0x10002000 */\n"
+           "#define rec_Alias records  /* 0x10002000 */\n"
+           "#define rec_Bad (*(int *)((char *)&records + 0x8))  /* 0x1000200c */\n"
+           "#define rec_Elem (*(int *)(table + 1))  /* 0x10002004 */\n"
+           "#define LOCAL (*(int *)&p)\n"
+           "#define SIZE 0x10  /* 0x10, the record size */\n")
+
+
+def test_view_scan():
+    sc = srcscan.Scan()
+    srcscan.scan_file("include/views.h", VIEWS_H, sc)
+    got = [(v.name, v.container, v.offset, v.addrs, v.alias) for v in sc.views]
+    assert got == [("rec_Count", "records", 4, ((None, 0x10002004),), False),
+                   ("rec_Names", "table", 8, ((None, 0x10002008),), False),
+                   ("rec_All", "records", 0, ((None, 0x10002000),), False),
+                   ("rec_Alias", "records", 0, ((None, 0x10002000),), True),
+                   ("rec_Bad", "records", 8, ((None, 0x1000200c),), False)]
+    assert sc.rawobj == ["rec_Elem", "LOCAL"]
+    assert [(e.check, e.line) for e in sc.errors] == [("L15", 6)]       # an address comment, but no byte offset
+
+
+def test_l15_views(tiny):
+    write(tiny, "include/views.h", "extern int records[4];  /* 0x10002000 */\n" + VIEWS_H.replace(
+        "#define rec_Elem (*(int *)(table + 1))  /* 0x10002004 */\n", ""))
+    write(tiny, "src/net/head.c", '#include "views.h"\n')
+    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the count */\nint get(void)\n{\n    return rec_Count;\n}\n")
+    code, out = dcp(tiny, "check")
+    assert code == 1, out
+    l15 = sorted(errors(tiny, "L15"), key=lambda c: c.lo)
+    assert [c.lo for c in l15] == [0x10002008, 0x1000200c], out
+    assert "view rec_Names: its container table has no data declaration with an address" in l15[0].message
+    assert "view rec_Bad at 0x1000200c, but records (0x10002000) + 0x8 is 0x10002008" in l15[1].message
+    names = {f.value["name"]: f.lo for f in Project(tiny).store.facts(LY.Kind.name) if f.value.get("view")}
+    assert names == {"rec_Count": 0x10002004, "rec_All": 0x10002000, "rec_Alias": 0x10002000}
+
+
+def test_q4_object_macros(tmp_path):
+    from decompanion.rules import grade as GR
+    write(tmp_path, "include/views.h", VIEWS_H)
+    raw, _ = GR.context(str(tmp_path), "t1")
+    assert {"rec_Elem", "LOCAL"} <= raw and not raw & {"rec_Count", "rec_Names", "rec_All", "rec_Alias", "rec_Bad", "SIZE"}
+
+
 # ------------------------------------------------------------------------------------------------ L14
 def test_l14_outside_unit_pure():
     units = [LY.UnitX("sfx", 0x42b720, 0x42c3b0, Level.declared, Level.declared, "decl:decl/text.dcl:47", "decl:decl/text.dcl:48"),

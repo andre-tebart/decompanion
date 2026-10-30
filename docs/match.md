@@ -182,7 +182,7 @@ the flags and its include hash. `dcp check` lints when clang is installed.
 ## The gate (`dcp check`)
 
 Per target: build the stale units, lint (when clang is installed), refresh every rule, fail on any bug or
-error conflict (M.compile, M.gen, M1, M5, M6, M8..M10, D1, D4..D6, the setup and layout checks, A1, L13, L14:
+error conflict (M.compile, M.gen, M1, M5, M6, M8..M10, D1, D4..D6, the setup and layout checks, A1, L13..L15:
 docs/layout.md), link (once a unit is compiled) and fail on unresolved externals, then the open toolchain and
 libs obligations (after the link: a `library` name reopens libs.archives); `--against REV` adds the grade
 comparison.
