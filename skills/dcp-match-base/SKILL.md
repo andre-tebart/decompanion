@@ -112,7 +112,7 @@ work, however long.
   unit's open.md, and leave Q7 open for the calls it blocks.
 - `extern GAPDATA name[]` (`__declspec(align(1)) unsigned char`) is for the unnamed gap blocks only
   (`full_data_<addr>`; it keeps the full rebuild's data packed). An object you name gets its real type and one
-  declaration, in its unit's header.
+  declaration, in its unit's header (section 2.5, gap data).
 - `@original why` / `@vc6 why` on a declaration line only with evidence (a byte-matched caller that needs it).
 
 ### 2.4 Commit
@@ -123,8 +123,27 @@ One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte 
 - Another unit may change when the meaning needs it and the change is right for it too; a header edit
   recompiles only its includers, and no function anywhere may get worse (`uv run dcp check`: no M1).
 - Never rename struct fields or types other units' matched code uses without checking them (`dcp refs`).
-- Data errors (D1, D4, D5) are not base work; `uv run dcp data map UNIT` shows a unit's data when a function
-  needs it.
+- Data errors (D1, D4, D5) are not base work, except the ones your own change causes; `uv run dcp data map UNIT`
+  shows a unit's data when a function needs it.
+- Gap data: the `full_data_<addr>` / `full_rdata_<addr>` blocks (defined in the gap block of `src/main/tail.c`,
+  `extern GAPDATA` elsewhere) are bytes no symbol covers yet: name, type, extent and owner are all unknown, and
+  their place in main says nothing about ownership. When the function you raise shows what one is, settle all
+  four, in one commit of its own before the function: `<unit>: data <name> from the gap block (typing)`; it
+  does not count toward the 8.
+  - Name and type it from its users and its bytes (`dcp dump`, `dcp refs`; `{0,0,0,0,0,0,0xe0,0x3f}` is the
+    double 0.5). The size is the object's, not the gap's: a gap runs to the next known address and may hold
+    several objects; split it, the rest stays a `full_` block at its own address.
+  - The owner is the unit whose data block the address lies in (VC6 lays out one object's data contiguously, in
+    link order): between two of that unit's definitions in `dcp data map UNIT`, or reached only from that unit's
+    functions (`dcp layout literals`, `dcp refs`). Move the definition into that unit's head.c / tail.c in
+    address order, with its address comment, and its one declaration into `include/<unit>.h`; drop every
+    `extern GAPDATA` of it and use the typed name at each site.
+  - `uv run dcp check`: no D1 (overlap), no D4 (address order), no M1 (no function got worse); a matched user
+    still matching confirms the address (`M.data.site`). A move that breaks one of these was the wrong owner or
+    the wrong size: undo it, do not answer it with alignment or padding tricks.
+  - An address between two units' blocks with users in both is a boundary question for layout: name and type
+    it in place if you must, leave it in the gap block, and note `data: <addr> <name>, owner <A> or <B>
+    (<evidence>)` under **Open work** in open.md.
 
 ## 3. Escalation to the deep queue
 When only allocation or scheduling is left (`regs`, `slots`, `order` hunks the classes do not explain away, or
