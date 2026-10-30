@@ -374,7 +374,7 @@ def test_lint_m5_per_symbol(tiny):
     write(tiny, "src/log/head.c", "extern int counter;\nint log3(char *a);\n")
     code, out = dcp(tiny, "lint")
     assert "m5=1" in out and "log3 declared unlike its definition src/log/f_10001030.c:2" in out \
-           and "`int log3(a) int a;`" in out, out
+           and "`int log3(a) int a;` (as a prototype `int log3(int a)`)" in out, out
     # a header that does not compile in the all-declarations unit
     write(tiny, "src/log/head.c", "extern int counter;\n")
     write(tiny, "include/c.h", "NOSUCHTYPE *mk(void);\n")
@@ -392,6 +392,9 @@ def test_lint_alldecls_scan():
         ("ddef", "a", "extern int a;"), ("ddef", "b", "extern int *b;"), ("extern", "s", "extern struct S s[];"),
         ("knr", "g", "int g(x) int x; {}"), ("proto", "h", "int h(void);"), ("fdef", "k", "char *k(char *s);")]
     assert all(d.stmt[d.at:d.at + len(d.name)] == d.name for d in ds)
+    # a K&R definition compares as its default-promoted prototype (`int f()` and `int f(int, int)` agree with it)
+    (d,) = L.file_scope_decls("src/u/f.c", "int f(x, y, p, q) short x; unsigned char y; float p; char *q;\n{\n}\n")
+    assert d.kind == "knr" and d.proto == "int f(int x, int y, double p, char *q);"
 
 
 @needs_vc6

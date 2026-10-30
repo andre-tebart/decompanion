@@ -227,9 +227,28 @@ def _data_decls(head: str, names: list[str] | None = None) -> list[tuple[str, st
     return [(n, _flat("extern " + base + " " + ch) + ";") for n, ch in zip(names, cut)]
 
 
+SMALL_INT = {"char", "short"}
+INT_WORDS = {"const", "volatile", "register", "signed", "unsigned", "char", "short", "int"}
+
+
+def _promoted(decl: str, name: str) -> str:
+    """A K&R parameter declaration `T name` with T default-promoted (char / short -> int, float -> double): what
+    the caller pushes and what a prototype of the function has to say (C89 6.5.4.3 / C99 6.7.5.3p15)."""
+    k = _name_at(decl, name)
+    base = decl[:k].strip() if k >= 0 else decl
+    if "*" in decl or "[" in decl or "(" in decl:
+        return decl
+    words = base.split()
+    if words and set(words) <= INT_WORDS and set(words) & SMALL_INT:
+        return f"int {name}"
+    if [w for w in words if w not in ("const", "volatile", "register")] == ["float"]:
+        return f"double {name}"
+    return decl
+
+
 def _knr_prototype(head: str, between: str, name: str) -> str:
-    """The prototype a K&R definition's parameter declarations spell (`int` for an undeclared one): a K&R
-    definition's own type has no parameters to compare."""
+    """The prototype a K&R definition's parameter declarations spell, default-promoted (`int` for an undeclared
+    one): a K&R definition's own type has no parameters to compare."""
     m = re.search(r"\b" + re.escape(name) + r"\s*\(", head)
     k = m.end() - 1 if m else head.find("(")
     params = [w.strip() for w in head[k + 1:head.rfind(")")].split(",") if w.strip()]
@@ -238,7 +257,7 @@ def _knr_prototype(head: str, between: str, name: str) -> str:
         if not decl.strip():
             continue
         for n, d in _data_decls(decl) or []:
-            types[n] = d.removeprefix("extern ").rstrip(";").strip()
+            types[n] = _promoted(_flat(d.removeprefix("extern ").rstrip(";")), n)
     return _flat(head[:k] + "(" + (", ".join(types.get(n, f"int {n}") for n in params) or "void") + ")") + ";"
 
 
@@ -715,7 +734,8 @@ def cross_conflicts(ad: AllDecls, diags: list, lines: "Lines") -> list[str]:
         if not dis:
             continue
         unit = ref.file.split("/")[1] if ref.file.startswith("src/") else "?"
-        s = (f"{dis[0].where}: {name} declared unlike its definition {ref.where} (unit {unit}) `{ref.spelling}`: "
+        s = (f"{dis[0].where}: {name} declared unlike its definition {ref.where} (unit {unit}) `{ref.spelling}`"
+             + (f" (as a prototype `{ref.proto[:-1]}`)" if ref.proto else "") + ": "
              f"disagree={len(dis)} {_by_spelling(dis)}; agree={len(agree)}" + (f" {_locs(agree)}" if agree else "")
              + (f"; unknown={len(v['unknown'])} {_locs(v['unknown'])} (a type of its unit)" if v["unknown"] else "")
              + (f"; exempt={len(exempt)} {_locs(exempt)}" if exempt else ""))
@@ -726,7 +746,7 @@ def cross_conflicts(ad: AllDecls, diags: list, lines: "Lines") -> list[str]:
         if marked:
             view = _cast_view(marked[0])
             s += (f" / the @original spelling is in a header ({marked[0].where}): a header repeats the definition's "
-                  f"spelling `{ref.spelling};` (unit {unit}); a unit's own view goes in its head.c as a cast macro"
+                  f"spelling `{ref.proto or ref.spelling + ';'}` (unit {unit}); a unit's own view goes in its head.c as a cast macro"
                   + (f": `{view} /* @original why */`" if view else ""))
         out.append(s)
     # clang's pairs: symbols without a definition (or one with a type of its unit), tags and typedefs
@@ -765,7 +785,7 @@ def cross_conflicts(ad: AllDecls, diags: list, lines: "Lines") -> list[str]:
                 continue
             ref = ad.defs.get(name)
             hint = (" / the @original spelling is in a header: two headers that cannot be included together; "
-                    + (f"a header repeats the definition's spelling `{ref.spelling};` (unit {ref.file.split('/')[1]}), "
+                    + (f"a header repeats the definition's spelling `{ref.proto or ref.spelling + ';'}` (unit {ref.file.split('/')[1]}), "
                        if ref is not None else "")
                     + "a unit's own view goes in its head.c as a cast macro (`#define name_X ((T (*)(..))name) /* @original why */`)")
         pairs.setdefault(name or "?", []).append((g, hint))
