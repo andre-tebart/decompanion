@@ -91,7 +91,7 @@ Two grades per (function, target), computed by `G.grade` (rules/grade.py) into `
 - B3 draft: otherwise, or no compiled object.
 
 **readability** `draft → readable`: Q1 the name is no placeholder, Q2 no placeholder identifier in the
-definition, Q3 no image address literal, Q4 no `*(T *)` cast or macro hiding one, Q5 no ROUGH / SKELETON /
+definition, Q3 no image address literal, Q4 no `*(T *)` cast or macro hiding one (a view macro with its address comment is no raw access), Q5 no ROUGH / SKELETON /
 TODO / FIXME / XXX / `@rough`, Q6 the address comment (or another comment) describes the function, Q7 every call
 goes through a prototype (only for units the last `dcp lint` parsed; otherwise not evaluated, and `dcp grade`
 says so), Q8 our code is at least half the original's size (a stub or an unfinished body is no readable function).
