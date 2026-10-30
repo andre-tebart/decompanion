@@ -21,9 +21,9 @@ Hard rules
   `uv run --no-sync dcp serve --stop`, then retry.
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
-  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` write it). Shell heredocs,
-  `sed` and quoted script strings eat backslashes: change string literals (`"\n"`, `"\xNN"`) and `#define`
-  continuations with an editing tool, then check the bytes with `dcp dump` / `dcp asmdiff`.
+  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp accept` write it).
+  Shell heredocs, `sed` and quoted script strings eat backslashes: change string literals (`"\n"`, `"\xNN"`)
+  and `#define` continuations with an editing tool, then check the bytes with `dcp dump` / `dcp asmdiff`.
 - The sources are the state: the address comment on line 1 of every fragment (`/* 0x10001234, what it does */`),
   the declarations in `decl/*.dcl`, renames in `names.log` (written by `dcp rename`), notes in
   `src/<unit>/open.md`. Nothing else; no session log.
@@ -117,15 +117,16 @@ work, however long.
   lists what is in the way): include the header, delete the local declarations it supersedes, correct the
   calls and accesses that only compiled against them. Commit
   that on its own, before the function: `<unit>: head includes <x>.h (typing)`; it does not count toward the 8,
-  and `uv run dcp check` must show no M1. A byte-matched function is evidence of what the original declared:
-  when a correction changes its bytes, the correction is wrong, not the match. Find which side is: fix the
+  and `uv run dcp check` must show no M1 (an accepted fall, 2.6, is held at its accepted grade). A byte-matched
+  function is evidence of what the original declared: when a correction changes its bytes, the correction is
+  wrong, not the match, unless the match is no evidence at all (2.6). Find which side is: fix the
   header when its signature or type is the guess, or keep the original's spelling with `@original why` (the
   matched caller as evidence) when the original really called it that way. That spelling stays in the unit
   that needs it, never in a shared header (two headers that disagree can never be included together: M5): a
   cast macro in head.c next to the include (`#define d2_MoveObjS ((void (*)(short, short, int))d2_MoveObj)
-  /* @original main passes shorts */`), used at those calls. Never accept the regression,
-  and never get around a conflict with a copied prototype or a local struct view. A conflict you cannot settle
-  in the session: leave it, note `head: include/<x>.h, <symbol> unsettled (<why>)` under **Open work** in the
+  /* @original main passes shorts */`), used at those calls. A fall is no way around a conflict (2.6 says when
+  one is right), and neither is a copied prototype or a local struct view. A conflict you cannot settle in the
+  session: leave it, note `head: include/<x>.h, <symbol> unsettled (<why>)` under **Open work** in the
   unit's open.md, and leave Q7 open for the calls it blocks.
 - `extern GAPDATA name[]` (`__declspec(align(1)) unsigned char`) is for the unnamed gap blocks only
   (`full_data_<addr>`; it keeps the full rebuild's data packed). An object you name gets its real type and one
@@ -138,7 +139,8 @@ One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte 
 
 ### 2.5 Other units, headers, data
 - Another unit may change when the meaning needs it and the change is right for it too; a header edit
-  recompiles only its includers, and no function anywhere may get worse (`uv run dcp check`: no M1).
+  recompiles only its includers, and no function anywhere may get worse (`uv run dcp check`: no M1) except by
+  an accepted fall (2.6).
 - Never rename struct fields or types other units' matched code uses without checking them (`dcp refs`).
 - Data errors (D1, D4, D5) are not base work, except the ones your own change causes; `uv run dcp data map UNIT`
   shows a unit's data when a function needs it.
@@ -162,6 +164,23 @@ One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte 
     it in place if you must, leave it in the gap block, and note `data: <addr> <name>, owner <A> or <B>
     (<evidence>)` under **Open work** in open.md.
 
+### 2.6 Accepted falls (your judgement)
+The goal is a code base that is, as a whole, closer to the original's source, not the largest count of
+matches. A change can cost a function its byte or shape grade (M1 reports the fall). Accepting it is your
+call, made on this criterion: the fall is acceptable when the change brings the code base as a whole closer to
+the original (truer types, fewer views, casts and duplicated records, headers the units can include) **and**
+the match it costs is no evidence of the original's source. The typical case is a VC6 declaration-set
+tie-break: the match flips on declaration changes unrelated to the function (an empty include, an extra
+typedef, a prototype nothing calls), so it never said anything about what the original wrote. A fall from a
+wrong change is not acceptable (a signature, a type or a spelling the original's bytes contradict): fix the
+change, or keep the original's spelling (2.3). When you are not sure which it is, find out (`dcp asmdiff`,
+`dcp diffclass`, try the change without its unrelated parts) before deciding.
+Each accepted fall goes through `uv run dcp accept NAME --to shape|draft --why "<the change, why it is closer,
+why the match was no evidence>"` (main checkout; `--readability draft` when readability fell too): it lowers
+that one function's entry in `ledger/grades.tsv` and records the reason and commit next to it; `dcp check`
+then holds the function at the accepted grade. Commit `ledger/grades.tsv` with the change. `dcp promote` (and
+the wrap) raise entries only and refuse a fall no accept covers.
+
 ## 3. Escalation to the deep queue
 When only allocation or scheduling is left (`regs`, `slots`, `order` hunks the classes do not explain away, or
 the code is shape and only byte identity is missing), or a generated variant round would be needed:
@@ -178,7 +197,8 @@ Never stop early: a hard function is escalated, not a reason to end; a long queu
 of a session; that is expected base work, not a reason to escalate it.
 
 ## 5. Wrap up
-1. Keep the function in progress if it builds and nothing got worse, else revert; `uv run dcp build` exits 0.
+1. Keep the function in progress if it builds and nothing got worse (but by an accepted fall, 2.6), else
+   revert; `uv run dcp build` exits 0.
 2. `uv run dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
    computed report (errors, byte and readable counts before -> after, `grades changed` per function, renames,
    the next item). It must say `gate: ok`.

@@ -21,9 +21,13 @@ The level ladder: `@deep why` / `@stuck why` in the address comment (`dcp escala
 `dcp escalate` refuses a reason that names only missing statements (reconstruction is base work). A tag on a
 function that reached byte + readable is removed by `dcp build` (auto-clear).
 
-The baseline ledger/grades.tsv (target, address, name, unit, code, readability, level; a header line; sorted
-by target in config order, then address) is written only by `dcp promote` on the main checkout; M1 compares
-against it, `dcp check --against REV` against its version at a git revision.
+The baseline ledger/grades.tsv (target, address, name, unit, code, readability, level, accepted; a header
+line; sorted by target in config order, then address) is written only by `dcp promote` and `dcp accept` on the
+main checkout; M1 compares against it, `dcp check --against REV` against its version at a git revision.
+`dcp promote` raises entries only: a fall against the baseline is refused (listed, nothing written) unless
+`--accept-falls`. `dcp accept FN --to GRADE --why TEXT` lowers one entry and fills its accepted column
+(`byte+readable -> shape+readable at <commit>: <why>`); promote keeps the column while the function stays below
+the grade it fell from and clears it once it is back.
 """
 from __future__ import annotations
 
@@ -37,7 +41,7 @@ from ..rules.grade import CODE_RANK, falls, parse_baseline
 from . import srcscan
 from .fact import Kind
 
-HEADER = "target\taddress\tname\tunit\tcode\treadability\tlevel"
+HEADER = "target\taddress\tname\tunit\tcode\treadability\tlevel\taccepted"
 SHARD_FILE = Path(".dcp") / "shard"
 
 
@@ -199,13 +203,77 @@ def auto_clear(project, rows) -> list[str]:
 
 
 # ------------------------------------------------------------------------------------------------ baseline
-def baseline_text(projects) -> str:
-    """The text of ledger/grades.tsv from the current grades of every target (projects in config order)."""
+def grade_of(r) -> str:
+    """`code+readability` of a grade row."""
+    return f"{r['code']}+{r['readability']}"
+
+
+def at_least(r, grade: str) -> bool:
+    """True when a grade row is at or above `code+readability` in both dimensions."""
+    code, _, rd = grade.partition("+")
+    return (CODE_RANK.get(r["code"], -1) >= CODE_RANK.get(code, -1)
+            and (rd != "readable" or r["readability"] == "readable"))
+
+
+ACCEPTED = re.compile(r"^(\w+\+\w+) -> (\w+\+\w+) at (\S+): (.*)$")
+
+
+def accept_note(before: str, after: str, commit: str, why: str) -> str:
+    """The accepted column: `byte+readable -> shape+readable at 897b411: why` (tabs and newlines of the reason
+    become spaces)."""
+    return f"{before} -> {after} at {commit}: {' '.join(why.split())}"
+
+
+def note_from(note: str) -> str | None:
+    """The grade an accepted fall came from (None for an empty or unreadable column)."""
+    m = ACCEPTED.match(note or "")
+    return m.group(1) if m else None
+
+
+def render_baseline(rows) -> str:
+    """ledger/grades.tsv from (target, address, {name, unit, code, readability, level, accepted}) in order."""
     lines = [HEADER]
+    for t, a, r in rows:
+        lines.append("\t".join((t, f"{a:#010x}", r["name"], r["unit"], r["code"], r["readability"], r["level"] or "",
+                                r.get("accepted") or "")))
+    return "\n".join(lines) + "\n"
+
+
+def baseline_text(projects, old: str = "", accept_falls: bool = False, commit: str = "-") -> str:
+    """The text of ledger/grades.tsv from the current grades of every target (projects in config order). An
+    accepted column of the old text is kept while the function stays below the grade it fell from (cleared
+    once it is back there); with accept_falls, every fall against the old text is written with a note
+    `.. at COMMIT: promote --accept-falls`."""
+    base = parse_baseline(old)
+    rows = []
     for p in projects:
         for r in function_grades(p.store):
-            lines.append("\t".join((p.target_name, f"{r['addr']:#010x}", r["name"], r["unit"], r["code"], r["readability"], r["level"])))
-    return "\n".join(lines) + "\n"
+            o = base.get((p.target_name, r["addr"]))
+            note = ""
+            if o is not None:
+                src = note_from(o.get("accepted", ""))
+                if src and not at_least(r, src):
+                    note = o["accepted"]
+                if falls(o, r) and accept_falls:
+                    note = accept_note(src or grade_of(o), grade_of(r), commit, "promote --accept-falls")
+            rows.append((p.target_name, r["addr"], dict(r, accepted=note)))
+    return render_baseline(rows)
+
+
+def accept(text: str, target: str, addr: int, code: str, readability: str, note: str) -> str:
+    """The baseline text with one function's entry lowered to `code` + `readability` and its accepted column
+    set (every other line as it was, in the current format)."""
+    rows = [(t, a, r) for (t, a), r in parse_baseline(text).items()]
+    for t, a, r in rows:
+        if t == target and a == addr:
+            r.update(code=code, readability=readability, accepted=note)
+    return render_baseline(rows)
+
+
+def commit_of(root: Path) -> str:
+    """The short hash of HEAD ('-' outside a git checkout)."""
+    r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "-"
 
 
 def baseline_at(root: Path, rev: str) -> str:

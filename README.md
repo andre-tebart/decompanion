@@ -316,7 +316,8 @@ uv run dcp link                           # the full link, unresolved externals 
 uv run dcp lint                           # clang: M5 (one line per symbol, against its definition) / M6 / M7, Q7
 uv run dcp headers conflicts UNIT H..     # what including headers into head.c collides with, clang + VC6 /Zs (--write: includes + duplicates)
 uv run dcp toolchain probe                # the flag grid over the byte-matched functions
-uv run dcp promote                        # write the grade baseline ledger/grades.tsv (main only)
+uv run dcp promote [--accept-falls]       # raise the grade baseline ledger/grades.tsv (main only; refuses a fall)
+uv run dcp accept FN --to shape --why ..  # lower one function's baseline entry, the reason next to it (main only)
 uv run dcp check [--against REV]          # the gate: build, lint, conflicts, link, grade falls
 ```
 

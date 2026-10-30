@@ -1,5 +1,5 @@
 """dcp: the match-phase commands (build is in cli.py): grade, next, asmdiff, diffclass, escalate, stuck,
-promote, link, toolchain probe. Same output contract as cli.py: one record per line, key=value tokens,
+promote, accept, link, toolchain probe. Same output contract as cli.py: one record per line, key=value tokens,
 addresses 0x%08x, counts before lists.
 """
 from __future__ import annotations
@@ -233,14 +233,69 @@ def cmd_promote(args):
         projects.append(p)
     path = p0.root / "ledger" / "grades.tsv"
     old = path.read_text() if path.exists() else ""
-    text = G.baseline_text(projects)
     falls = [line for p in projects for line in G.regressions(p, old)]
+    accept_falls = getattr(args, "accept_falls", False)
+    if falls and not accept_falls:
+        print(record(promote="refused", falls=len(falls))
+              + "  (promote raises entries only: dcp accept FN --to GRADE --why TEXT for a fall wanted on purpose, "
+                "--accept-falls takes them all)")
+        for line in falls:
+            print("  fell: " + line)
+        return 1
+    text = G.baseline_text(projects, old, accept_falls, G.commit_of(p0.root))
+    accepted = sum(1 for r in G.parse_baseline(text).values() if r["accepted"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, newline="\n")
     n = text.count("\n") - 1
-    print(record(promoted=path.relative_to(p0.root).as_posix(), functions=n, targets=len(projects), falls_against_old=len(falls)))
+    print(record(promoted=path.relative_to(p0.root).as_posix(), functions=n, targets=len(projects), falls_against_old=len(falls),
+                 accepted=accepted))
     for line in falls:
-        print("  fell: " + line)
+        print("  fell (accepted): " + line)
+    return 0
+
+
+# ------------------------------------------------------------------------------------------------ accept
+def cmd_accept(args):
+    """Lower one function's entry of ledger/grades.tsv to the grade it fell to, with the reason (main checkout
+    only): M1 then holds it there."""
+    p0 = Project(Path(args.root) if args.root else None)
+    if p0.main_build_dir() is not None:
+        print("dcp accept: refused in a worktree (the baseline is changed on main only)", file=sys.stderr)
+        return 1
+    why = " ".join((args.why or "").split())
+    if not why:
+        print("dcp accept: a reason is required (--why TEXT)", file=sys.stderr)
+        return 1
+    if not args.to and not args.readability:
+        print("dcp accept: --to shape|draft or --readability draft says what the entry falls to", file=sys.stderr)
+        return 1
+    path = p0.root / "ledger" / "grades.tsv"
+    old = path.read_text() if path.exists() else ""
+    p, e = open_project(args)
+    refresh(p, e)
+    r = find_function(p, args.name)
+    if r is None:
+        print(f"dcp accept: no graded function {args.name} (dcp build first)", file=sys.stderr)
+        return 1
+    o = G.parse_baseline(old).get((p.target_name, r["addr"]))
+    if o is None:
+        print(f"dcp accept: {r['name']} is not in the baseline ledger/grades.tsv: it cannot fall", file=sys.stderr)
+        return 1
+    to = {"code": args.to or o["code"], "readability": args.readability or o["readability"]}
+    if G.at_least(to, G.grade_of(o)):
+        print(f"dcp accept: {G.grade_of(to)} is no fall from the baseline's {G.grade_of(o)}", file=sys.stderr)
+        return 1
+    if not G.at_least(r, G.grade_of(to)):
+        print(f"dcp accept: {r['name']} is {G.grade_of(r)} now, below {G.grade_of(to)}: accept the grade it has "
+              f"(or fix it)", file=sys.stderr)
+        return 1
+    if G.CODE_RANK[to["code"]] > G.CODE_RANK[o["code"]]:      # --readability alone never raises the code
+        to["code"] = o["code"]
+    commit = G.commit_of(p0.root)
+    note = G.accept_note(G.note_from(o["accepted"]) or G.grade_of(o), G.grade_of(to), commit, why)
+    path.write_text(G.accept(old, p.target_name, r["addr"], to["code"], to["readability"], note), newline="\n")
+    print(record(accepted=fmt_addr(r["addr"]), name=r["name"], target=p.target_name, was=G.grade_of(o), now=G.grade_of(to),
+                 commit=commit) + "  (commit ledger/grades.tsv with the change; dcp check holds it at the accepted grade)")
     return 0
 
 

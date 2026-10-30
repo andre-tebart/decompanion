@@ -19,7 +19,7 @@ Hard rules
   `uv run --no-sync dcp serve --stop`, then retry.
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
-  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` write it).
+  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp accept` write it).
 - The sources are the state: the address comment on line 1 of every fragment (`/* 0x10001234, what it does */`),
   the declarations in `decl/*.dcl` (unit boundaries, dead bytes, starts, names; always with a reason after
   ` -- `), renames in `names.log` (written by the dcp commands), notes in `src/<unit>/open.md`. Nothing else.

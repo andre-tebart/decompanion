@@ -299,19 +299,20 @@ def grade(ctx: RuleContext):
 
 # ------------------------------------------------------------------------------------------------ M1
 def parse_baseline(text: str) -> dict[tuple[str, int], dict]:
-    """(target, address) -> {name, unit, code, readability, level} of a ledger/grades.tsv text (a header line
-    and one tab-separated line per function: target, address, name, unit, code, readability, level)."""
+    """(target, address) -> {name, unit, code, readability, level, accepted} of a ledger/grades.tsv text (a
+    header line and one tab-separated line per function: target, address, name, unit, code, readability, level,
+    accepted; the last column, empty unless `dcp accept` lowered the entry, may be missing in an older file)."""
     out = {}
     for line in text.splitlines():
         if not line.strip() or line.startswith(("#", "target\t")):
             continue
         f = line.split("\t")
-        f += [""] * (7 - len(f))
+        f += [""] * (8 - len(f))
         try:
             a = int(f[1], 16)
         except ValueError:
             continue
-        out[(f[0], a)] = {"name": f[2], "unit": f[3], "code": f[4], "readability": f[5], "level": f[6]}
+        out[(f[0], a)] = {"name": f[2], "unit": f[3], "code": f[4], "readability": f[5], "level": f[6], "accepted": f[7]}
     return out
 
 
@@ -330,9 +331,10 @@ def falls(base: dict, now: dict | None) -> list[str]:
 @rule("M1.baseline", version="1", ceiling=P, needs=("G.grade",), inputs=("baseline",), helpers=(parse_baseline, falls))
 def baseline_check(ctx: RuleContext):
     """M1: every function of the current target in the grade baseline (ledger/grades.tsv, written only by `dcp
-    promote`) keeps its grades: code byte -> shape / draft and shape -> draft are falls, readable -> draft is
-    a fall, and a function the baseline grades that has no grade now fell too. Each fall is an error. A
-    function the baseline does not list cannot fall."""
+    promote`, lowered for one function only by `dcp accept`) keeps its grades: code byte -> shape / draft and
+    shape -> draft are falls, readable -> draft is a fall, and a function the baseline grades that has no
+    grade now fell too. Each fall is an error. A function the baseline does not list cannot fall; an accepted
+    fall holds the function at the accepted grade."""
     t = ctx.project.target_name
     base = {a: r for (tt, a), r in parse_baseline(ctx.input("baseline")).items() if tt == t}
     now = {f.lo: f.value for f in ctx.facts(Kind.grade) if f.value.get("of") == "function"}

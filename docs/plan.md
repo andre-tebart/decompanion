@@ -674,7 +674,7 @@ debt shows as errors and the gate keeps it from coming back:
 - **Debt count:** per unit, the cast / view macros, `@keep` copies and `@original` exemptions in `dcp status`
   (and the session wrap), so the debt stays visible as it is paid down.
 
-## 17. Accepted falls (queued 2026-10-30, user decision: "queue both")
+## 17. Accepted falls (queued 2026-10-30, user decision: "queue both"; done 2026-10-30)
 
 M1 holds every function at its baseline grade (ledger/grades.tsv); the only way past a fall is `dcp promote`,
 which rewrites the whole baseline and accepts every current fall at once, without a reason. The header
@@ -691,3 +691,15 @@ to be narrow:
   and the match it costs is no evidence of the original's source (a declaration-set tie-break is the typical
   case); a fall from a wrong change is not. Each accepted fall goes through `dcp accept` with its reason.
 Built after the current gildegold header pass (it promotes by hand, checking the falls against the ones it accepted).
+
+Done (2026-10-30): `dcp accept ADDR|NAME --to shape|draft [--readability draft] --why TEXT` (cli_match.py) lowers
+the one entry to the function's current grade and fills the eighth column of ledger/grades.tsv, `accepted`
+(`byte+readable -> shape+readable at <commit>: <why>`; empty otherwise; an older 7-column file reads with empty
+notes). `dcp promote` refuses a fall (listed, nothing written, exit 1) unless `--accept-falls` (each such fall
+noted `promote --accept-falls`); it keeps a note while the function stays below the grade it fell from and
+clears it once the function is back. `dcp session wrap` reports a refused promote and fails (its gate already
+fails on any M1, so it does not happen there). The skill's section 2.6 states the goal and the criterion. With
+it, four tool fixes from the header passes: `dcp why NAME` resolves names; `dcp headers conflicts` reports every
+name of a multi-name extern line (and --write keeps the line's other declarators), inserts the includes before
+the first statement using a duplicate when that is above head.c's last include (`--at LINE` chooses), and
+warns q6 for function addresses only.

@@ -224,6 +224,25 @@ def test_baseline_falls():
     assert "no grade now" in falls(b[("t", 0x10001010)], None)[0]
 
 
+def test_baseline_accept_column():
+    """The accepted column: an old 7-column file parses (empty), dcp accept lowers one entry and notes it, every
+    other line stays; the note names the grade it fell from."""
+    old = "target\taddress\tname\tunit\tcode\treadability\tlevel\nt\t0x10001000\tf\tu\tbyte\treadable\t\nt\t0x10001010\tg\tu\tshape\tdraft\tdeep\n"
+    assert parse_baseline(old)[("t", 0x10001000)]["accepted"] == ""
+    note = G.accept_note("byte+readable", "shape+readable", "abc1234", "a VC6\tdeclaration-set\ntie-break")
+    assert note == "byte+readable -> shape+readable at abc1234: a VC6 declaration-set tie-break"
+    assert G.note_from(note) == "byte+readable" and G.note_from("") is None
+    new = G.accept(old, "t", 0x10001000, "shape", "readable", note)
+    assert new == (G.HEADER + "\nt\t0x10001000\tf\tu\tshape\treadable\t\t" + note + "\nt\t0x10001010\tg\tu\tshape\tdraft\tdeep\t\n")
+    b = parse_baseline(new)[("t", 0x10001000)]
+    assert b["code"] == "shape" and b["accepted"] == note
+    assert falls(b, {"code": "shape", "readability": "readable"}) == []          # M1 holds it at shape
+    assert falls(b, {"code": "draft", "readability": "readable"}) == ["code shape -> draft"]
+    assert G.at_least({"code": "byte", "readability": "readable"}, "byte+readable")
+    assert not G.at_least({"code": "shape", "readability": "readable"}, "byte+readable")
+    assert not G.at_least({"code": "byte", "readability": "draft"}, "shape+readable")
+
+
 def test_level_ladder(tmp_path):
     assert G.only_missing_statements("missing statements")
     assert G.only_missing_statements("the loop body is unwritten; two calls are missing")
@@ -268,6 +287,48 @@ def test_compile_and_byte_match(tiny):
     assert code == 1 and "src/net/f_10001020.c(4)" in out and "C2065" in out
     code, out = dcp(tiny, "check")
     assert code == 1 and "M.compile" in out
+
+
+@needs_vc6
+def test_promote_raises_only_and_accept(tiny):
+    """promote refuses a fall (nothing written); dcp accept lowers that one entry with its reason and M1 holds the
+    function there; promote keeps the note while it stays below, clears it once the function is back; a fall
+    passes promote with --accept-falls, noted."""
+    with_vc6(tiny)
+    write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n"
+                                 "0x10001030 boundary end tu=net -- f3 is another unit\n")
+    write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\n")
+    good = "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n"
+    bad = good.replace("counter;\n}", "counter + 1;\n}")
+    write(tiny, "src/net/f_10001020.c", good)
+    code, out = dcp(tiny, "promote")
+    assert code == 0 and "functions=1" in out and "accepted=0" in out, out
+    tsv = tiny / "ledger" / "grades.tsv"
+    assert tsv.read_text() == G.HEADER + "\ntiny\t0x10001020\tget\tnet\tbyte\treadable\t\t\n"
+    write(tiny, "src/net/f_10001020.c", bad)
+    before = tsv.read_text()
+    code, out = dcp(tiny, "promote")
+    assert code == 1 and "promote=refused  falls=1" in out and "fell: 0x10001020 get: code byte -> draft" in out, out
+    assert tsv.read_text() == before
+    assert dcp(tiny, "accept", "get", "--to", "shape", "--why", "x")[0] == 1          # it is draft now, below shape
+    assert dcp(tiny, "accept", "get", "--readability", "draft", "--why", "x")[0] == 1  # still draft code
+    code, out = dcp(tiny, "accept", "0x10001020", "--to", "draft", "--why", "a declaration-set tie-break")
+    assert code == 0 and "accepted=0x10001020  name=get" in out and "was=byte+readable  now=draft+readable" in out, out
+    line = tsv.read_text().splitlines()[1]
+    assert line.startswith("tiny\t0x10001020\tget\tnet\tdraft\treadable\t\tbyte+readable -> draft+readable at "), line
+    assert line.endswith(": a declaration-set tie-break"), line
+    code, out = dcp(tiny, "conflicts")
+    assert "M1" not in out, out
+    code, out = dcp(tiny, "promote")                     # no fall against the lowered entry; the note stays
+    assert code == 0 and "accepted=1" in out and tsv.read_text().splitlines()[1] == line, out
+    write(tiny, "src/net/f_10001020.c", good)
+    code, out = dcp(tiny, "promote")                     # back at byte: raised, the note cleared
+    assert code == 0 and "accepted=0" in out and tsv.read_text() == before, out
+    write(tiny, "src/net/f_10001020.c", bad)
+    code, out = dcp(tiny, "promote", "--accept-falls")
+    assert code == 0 and "fell (accepted): 0x10001020 get" in out and "accepted=1" in out, out
+    assert "\tdraft\treadable\t\tbyte+readable -> draft+readable at " in tsv.read_text()
+    assert tsv.read_text().rstrip().endswith(": promote --accept-falls")
 
 
 @needs_vc6

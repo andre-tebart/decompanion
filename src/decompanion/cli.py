@@ -759,7 +759,15 @@ def main(argv=None):
         s.add_argument("why", nargs="?")
         s.add_argument("--clear", action="store_true")
         s.set_defaults(level=lvl)
-    cmd(sub, "promote", CM.cmd_promote, "write the grade baseline ledger/grades.tsv (main checkout only)")
+    s = cmd(sub, "promote", CM.cmd_promote, "raise the grade baseline ledger/grades.tsv to the current grades (main checkout "
+                                            "only; a fall no dcp accept covers is refused)")
+    s.add_argument("--accept-falls", action="store_true", help="write the falls too (each noted in the accepted column)")
+    s = cmd(sub, "accept", CM.cmd_accept, "lower one function's baseline entry to the grade it fell to, with the reason "
+                                          "(main checkout only)")
+    s.add_argument("name", metavar="ADDR|NAME")
+    s.add_argument("--to", choices=("shape", "draft"), help="the code grade the entry falls to")
+    s.add_argument("--readability", choices=("draft",), help="the readability falls to draft too")
+    s.add_argument("--why", required=True, help="the reason (kept in the accepted column)")
     s = cmd(sub, "link", CM.cmd_link, "the full link of a target with the unresolved externals classified")
     s.add_argument("--all-targets", action="store_true")
     s = cmd(sub, "lint", CM.cmd_lint, "clang as the declaration checker (M5 / M6 / M7, readability Q7)")

@@ -155,14 +155,15 @@ def cmd_session_wrap(args):
     base = rec.get("base") or S.git(root, "rev-parse", "HEAD").strip()
     print(record(session="wrap", base=base[:8], started=rec.get("started")))
     ok, targets, states = gate(args)
-    promoted = None
-    if ok and p0.main_build_dir() is None:
+    promoted, refused = None, False
+    if ok and p0.main_build_dir() is None:          # the gate passed M1, so promote finds no fall; it still checks
         import contextlib
         import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            cmd_promote(args)
+            refused = cmd_promote(args) != 0
         promoted = buf.getvalue().strip()
+        ok = ok and not refused
     c = S.changes(root, base)
     out = [f"# session {S.now()[:10]} (base {c.base}, head {c.head}, {c.commits} commits)", ""]
     for name, p, lr in targets:
@@ -224,7 +225,9 @@ def cmd_session_wrap(args):
             f"base queue {fmt_addr(q[0]['addr'])} {q[0]['name']} ({q[0]['unit']}, {q[0]['code']} + {q[0]['readability']}), "
             f"{len(q)} items" if q else "the base queue is empty"))
     if promoted:
-        out.append("baseline: " + promoted.splitlines()[0] + " (commit ledger/grades.tsv with the session)")
+        out.append("baseline: " + promoted.splitlines()[0] + (" (nothing written: dcp accept each fall wanted on purpose, "
+                   "then dcp promote)" if refused else " (commit ledger/grades.tsv with the session)"))
+        out += promoted.splitlines()[1:] if refused else []
     out.append("gate: " + ("ok" if ok else "FAIL"))
     text = "\n".join(out) + "\n"
     rp = root / "build" / "session" / "report.md"

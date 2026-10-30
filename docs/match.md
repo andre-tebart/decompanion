@@ -135,10 +135,21 @@ Shards: rendezvous hashing of the unit start (`sha1("<start>:<k>")`), `--shard k
 
 ## Baseline (`ledger/grades.tsv`) and M1
 
-`dcp promote` (main checkout only) writes `target, address, name, unit, code, readability, level` for every
-function of every target. M1: a function of the baseline whose grade fell (byte → lower, shape → draft,
-readable → draft, or no grade any more) is an error. `dcp check --against REV` compares with the baseline at a
-git revision.
+`dcp promote` (main checkout only) writes `target, address, name, unit, code, readability, level, accepted`
+for every function of every target (a header line, sorted by target in config order, then address). M1: a
+function of the baseline whose grade fell (byte → lower, shape → draft, readable → draft, or no grade any more)
+is an error. `dcp check --against REV` compares with the baseline at a git revision.
+
+`dcp promote` raises entries only: when a function fell against the baseline it lists the falls, writes
+nothing and exits 1 (`--accept-falls` writes them, each noted `.. at <commit>: promote --accept-falls`). The
+narrow way past one fall is `dcp accept ADDR|NAME --to shape|draft [--readability draft] --why TEXT` (main
+checkout only): it lowers that one entry to the grade the function has now and fills its `accepted` column,
+`byte+readable -> shape+readable at <commit>: <why>`; M1 then holds the function at the accepted grade (a
+further fall is an error again). The note stays while the function is below the grade it fell from and is
+cleared by the promote that sees it back. Whether a fall is worth accepting is the worker's judgement
+(dcp-match-base, 2.6): the change brings the code base as a whole closer to the original and the lost match is
+no evidence of the original's source (a VC6 declaration-set tie-break). An older 7-column file reads with
+empty notes; the next promote or accept writes the 8-column form.
 
 ## The full link (`dcp link`)
 
