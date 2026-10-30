@@ -685,7 +685,9 @@ to be narrow:
   reason (and the commit) next to it in the ledger; M1 then holds it at the accepted grade.
 - `dcp promote` raises entries only; a fall it finds that no `dcp accept` covers is refused (listed, nothing
   written) unless `--accept-falls` is given.
-- dcp-match-base skill: the rule "never accept a regression" gets its exception: a byte or shape match that
-  declaration changes unrelated to the function flip (an empty include, an extra typedef or prototype) is a
-  tie-break, not evidence; when keeping it blocks typing, `dcp accept` the fall with that evidence.
-Built after the current gildegold header pass (it promotes once by hand, checking the single fall).
+- dcp-match-base skill (user decision: a judgement call, no narrow rule): the rule "never accept a regression"
+  becomes the worker's judgement: a byte or shape fall is accepted when the change brings the code base as a
+  whole closer to the original (truer types, fewer views / casts / duplicated records, includable headers)
+  and the match it costs is no evidence of the original's source (a declaration-set tie-break is the typical
+  case); a fall from a wrong change is not. Each accepted fall goes through `dcp accept` with its reason.
+Built after the current gildegold header pass (it promotes by hand, checking the falls against the ones it accepted).
