@@ -494,23 +494,9 @@ def header_order(root: Path, headers: list[str]) -> list[str]:
     for h in headers:
         for n in info[h][0]:
             provider.setdefault(n, h)
-    known = {Path(h).name: h for h in headers}
-    includes = {h: {known[Path(m.group(1)).name] for m in INCLUDE_LINE.finditer(texts[h]) if Path(m.group(1)).name in known}
-                for h in headers}
-    within = {}                                    # a header and what it includes, transitively
-
-    def closure(h):
-        if h not in within:
-            within[h] = {h}
-            for b in includes[h]:
-                within[h] |= closure(b)
-        return within[h]
-
-    deps = {}
-    for h in headers:
-        # what a header includes itself comes in at its place; one included by another comes after its includer
-        need = {provider[n] for n in info[h][1] if n in provider} - closure(h)
-        deps[h] = need | {a for a in headers if h in includes[a] and a != h}
+    # a header it includes itself counts too: it may use the name before its own #include (gildegold's ch.h
+    # names D3ANIMSLOT 80 lines before it includes d3_anim.h), and the include guard makes the second a no-op
+    deps = {h: {provider[n] for n in info[h][1] if n in provider} - {h} for h in headers}
     out, seen = [], set()
 
     def visit(h):
@@ -808,10 +794,12 @@ def cross_conflicts(ad: AllDecls, diags: list, lines: "Lines") -> list[str]:
                  if w in ad.macros and not ad.macros[w].startswith(h + ":")]
         if clash:
             e = dict(e, msg=e["msg"] + " (" + "; ".join(clash[:3]) + ")")
+        advice = ("a macro of another header rewrites its text: the two headers cannot be included together; keep "
+                  "one spelling of the name (the macro or the declaration)" if clash else
+                  "it is included after the system headers the sources include and the headers that define the names "
+                  "it uses: include or declare what it uses")
         out.append(f"{e['file']}:{e['line']}: {h} does not compile in the all-declarations unit ({len(es)} errors, "
-                   f"first: {e['msg']}): its declarations are not compared and their conflicts hidden; it is included "
-                   "after the system headers the sources include and the headers that define the names it uses: "
-                   "include or declare what it uses")
+                   f"first: {e['msg']}): its declarations are not compared and their conflicts hidden; {advice}")
     return out
 
 
