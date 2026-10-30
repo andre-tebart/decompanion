@@ -21,7 +21,7 @@ def err(cmd: str, msg: str) -> int:
 
 
 def state(p) -> dict:
-    """The counts a session report compares: fragments, units, grades, errors."""
+    """The counts a session report compares: functions, units, grades, errors."""
     from .ledger import grades as G
     rows = G.function_grades(p.store)
     units = [f for f in p.store.facts(Kind.unit) if "status" in f.value]
@@ -168,7 +168,7 @@ def cmd_session_wrap(args):
     out = [f"# session {S.now()[:10]} (base {c.base}, head {c.head}, {c.commits} commits)", ""]
     for name, p, lr in targets:
         b, a = (rec.get("states") or {}).get(name, {}), states[name]
-        out.append(f"target {name}: errors {b.get('errors', '?')} -> {a['errors']}, fragments {b.get('functions', '?')} -> "
+        out.append(f"target {name}: errors {b.get('errors', '?')} -> {a['errors']}, functions {b.get('functions', '?')} -> "
                    f"{a['functions']}, byte {b.get('byte', '?')} -> {a['byte']}, readable {b.get('readable', '?')} -> {a['readable']}, "
                    f"units {b.get('units', '?')} -> {a['units']} (separated {b.get('separated', '?')} -> {a['separated']}), "
                    f"link {'ok' if lr is None or lr.ok else 'FAILED'}"

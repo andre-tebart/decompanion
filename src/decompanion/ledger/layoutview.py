@@ -139,7 +139,7 @@ def fmt_range(lo, hi):
 
 
 def next_records(v: View, count: int = 1, start: int | None = None):
-    """The first `count` open items of the game code from `start`: a function without a source fragment, a
+    """The first `count` open items of the game code from `start`: a function without a source, a
     declared start in unknown code, or unknown code no start explains. One record per item (a dict), with its
     evidence lines."""
     items = v.items()
@@ -187,7 +187,7 @@ def next_records(v: View, count: int = 1, start: int | None = None):
 
 
 def undrafted(v: View):
-    """L2: function starts inside game units without a source fragment (informational)."""
+    """L2: function starts inside game units without a source (informational)."""
     out = []
     for lo, hi, what, f in v.items():
         if what in ("func", "start") and lo not in v.sources and v.unit_at(lo) is not None:

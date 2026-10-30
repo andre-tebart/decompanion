@@ -18,7 +18,7 @@ Code rules:
              walk's, else L.src.extent's) up to its first switch table (diffclass.compare_function).
   B3 draft   a `code` hunk or a `table` difference B2 does not explain remains, or the function has no compiled
              object to compare.
-Readability rules, on the fragment's text (comments and strings blanked for the code tests):
+Readability rules, on the function's text (comments and strings blanked for the code tests):
   Q1 name         the function's own name is no placeholder (`Unk` + 4 hex digits, or ending in 6 hex digits with
                   a digit among them: FUN_10008d20, Unk10008d20, thread_10008d20).
   Q2 identifiers  no placeholder identifier in the definition: the Q1 forms, `param_N`, `xVarN`, `local_N`,
@@ -99,6 +99,23 @@ def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
     return frozenset(raw), frozenset(described)
 
 
+_sources: dict[tuple, tuple] = {}
+
+
+def source_of(rel: str, path) -> tuple[srcscan.Source, list[str]]:
+    """(the lexed Source, the lines) of a file, once per content (a unit's functions read the same file)."""
+    from pathlib import Path
+    p = Path(path)
+    key = (str(p), fsmemo.sha256(p))
+    hit = _sources.get(key)
+    if hit is None:
+        if len(_sources) > 64:
+            _sources.clear()
+        text = fsmemo.read_text(p)
+        hit = _sources[key] = (srcscan.Source(rel, text), text.split("\n"))
+    return hit
+
+
 def own_calls(lint: dict, fn_value: dict) -> list[str]:
     """The lint's M7 calls (source/lint.py's `calls`) inside one function's span (its address comment to the
     end of its definition; the whole file without an end)."""
@@ -107,13 +124,13 @@ def own_calls(lint: dict, fn_value: dict) -> list[str]:
 
 
 def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=None) -> tuple[str, list[str]]:
-    """(readable | draft, [failing rule with evidence]) of one function fragment (Q1..Q7, module docstring)."""
+    """(readable | draft, [failing rule with evidence]) of one sourced function (Q1..Q7, module docstring)."""
     from pathlib import Path
     rel, name = fn_value["file"], fn_value["symbol"]
     p = Path(root) / rel
     if not p.exists():
-        return "draft", ["the fragment is gone"]
-    S = srcscan.Source(rel, fsmemo.read_text(p))
+        return "draft", ["the source is gone"]
+    S = source_of(rel, p)[0]
     m = srcscan.scan(root, tree).models.get(rel, srcscan.EMPTY)
     defs = [d for d in m["decls"] if d[0] == "f" and d[1] == name and d[6] is not None]
     if not defs:
@@ -181,9 +198,12 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
     if dig is None:
         raw, described = context(str(root), tree)
         dig = _ctx_digest[tree] = sha256(json.dumps(sorted(raw)), json.dumps(sorted(described)))
-    lines = fsmemo.read_text(p).split("\n")
+    lines = source_of(fn_value["file"], p)[1]
     span = "\n".join(lines[fn_value.get("comment", 1) - 1:fn_value.get("end") or len(lines)])
-    key = sha256("readability", READABILITY_VERSION, span, json.dumps(fn_value, sort_keys=True), f"{addr:x}",
+    # the positions are left out (an edit above a function moves it, the verdict stays): what they locate, the
+    # span's text and the calls inside it, is in the key
+    fv = {k: v for k, v in fn_value.items() if k not in ("line", "comment", "end")}
+    key = sha256("readability", READABILITY_VERSION, span, json.dumps(fv, sort_keys=True), f"{addr:x}",
                  dig, json.dumps(list(image_range)), json.dumps(own_calls(lint, fn_value) if lint is not None else None))
     hit = _read_memo.get(key)
     if hit is not None:
@@ -201,17 +221,17 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
 
 
 @rule("G.grade", version="5", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
-      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, context, DC, C,
+      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, source_of, context, DC, C,
                                                          build_compile.plan))
 def grade(ctx: RuleContext):
-    """The grades of every function fragment of the current target and of every unit (the rules B1..B3, Q1..Q8
+    """The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8
     and the unit grades of rules/grade.py's module docstring), as `grade` facts: a function's at its address
     {of: function, name, unit, file, code, readability, level (deep / stuck from the address comment's tag, ''
     for base), failing (the failing rules with evidence), dist (differing instructions, differing bytes, our
     size, the original's code size without its switch tables, the extent and the slot the diff read: a report,
     not a gate; `dcp asmdiff` / `dcp diffclass` read the same extent and slot), hunks}; a unit's over its extent {of: unit, code,
     readability, functions, named_by}. A function's grade fact is proven when its code is byte (M.match), else
-    declared (its address comment is the premise). Q7 is evaluated only for the units whose amalgamation the
+    declared (its address comment is the premise). Q7 is evaluated only for the units whose text the
     last `dcp lint` parsed (the store meta `lint`)."""
     p, img, tc = ctx.project, ctx.image, ctx.project.toolchain
     funcs, missing = compiled_functions(ctx)
@@ -336,7 +356,7 @@ def parse_baseline(text: str) -> dict[tuple[str, int], dict]:
 def falls(base: dict, now: dict | None) -> list[str]:
     """What fell from a baseline row to the current grade (None: the function has no grade any more)."""
     if now is None:
-        return [f"graded {base['code']} + {base['readability']} in the baseline, no grade now (its fragment is gone?)"]
+        return [f"graded {base['code']} + {base['readability']} in the baseline, no grade now (its source is gone?)"]
     out = []
     if base["code"] in CODE_RANK and CODE_RANK[now["code"]] < CODE_RANK[base["code"]]:
         out.append(f"code {base['code']} -> {now['code']}")

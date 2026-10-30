@@ -47,10 +47,10 @@ PER_FN_MAX = 15000                       # about three compiles of every functio
 
 
 def compiled_functions(ctx, sources=None):
-    """[(source fact, unit object, function symbol, FunctionCode, Compared)] for every function fragment of the
-    current target whose unit compiled and whose object defines the fragment's function; plus a list of
-    (source fact, why) for the fragments that have no compiled function. Memoised per process by its inputs
-    (the objects, the starts, the relocation sites, the fragments): the match, check, data and grade rules of
+    """[(source fact, unit object, function symbol, FunctionCode, Compared)] for every sourced function of the
+    current target whose unit compiled and whose object defines the source's function; plus a list of
+    (source fact, why) for the functions that have no compiled function. Memoised per process by its inputs
+    (the objects, the starts, the relocation sites, the sources): the match, check, data and grade rules of
     one refresh share one compare of every function."""
     p, img, tc = ctx.project, ctx.image, ctx.project.toolchain
     tus = ctx.input("objects")
@@ -108,19 +108,20 @@ def compiled_functions(ctx, sources=None):
 
 
 # ------------------------------------------------------------------------------------------------ M.compile
-@rule("M.compile", version="1", ceiling=P, outputs=("build",), inputs=("objects", "src", "decl", "targets", "config", "toolchain"),
-      needs=("S.sections",), helpers=(build_compile.plan, build_compile.flags_for, build_compile.unit_overrides))
+@rule("M.compile", version="2", ceiling=P, outputs=("build",), inputs=("objects", "src", "decl", "targets", "config", "toolchain"),
+      needs=("S.sections",), helpers=(build_compile.plan, build_compile.flags_for, build_compile.compile_flags,
+                                      build_compile.unit_overrides))
 def compile_facts(ctx: RuleContext):
-    """One `build` fact per translation unit of the current target (build/amalg.py: a unit with at least one
-    fragment of the target), at its first fragment's address (the image base when it has none): tu, ok, the
-    object's hash, the flags, its errors (the compiler's diagnostics, file and line in the fragment) and its
+    """One `build` fact per translation unit of the current target (build/tu.py: a unit with at least one
+    function of the target), at its least function address (the image base when it has none): tu, ok, the
+    object's hash, the flags, its errors (the compiler's diagnostics, file and line in the unit's file) and its
     warning count, and `stale` when the unit's text or flags changed since the compile the tu table records.
     Gate errors (check M.compile): a unit that failed to compile (the first errors), a unit never compiled
     (a warning when the toolchain is not installed: nothing can be compiled on this machine); a stale unit is a
     warning (`dcp build` compiles it; `dcp check` builds first). An override table
     ([[toolchain.unit]]) without a reason is an error. M.gen, the object-vs-source cross-check (the first
-    attempt's gen.py): every function the unit's object defines has exactly one fragment of the unit, and every
-    fragment's function is defined by the object; either side alone is an error."""
+    attempt's gen.py): every function the unit's object defines has an address comment of the target (or
+    `unlinked`) in the unit, and every such function is defined by the object; either side alone is an error."""
     p, img = ctx.project, ctx.image
     tus = ctx.input("objects")
     for o in build_compile.unit_overrides(p):
@@ -131,10 +132,10 @@ def compile_facts(ctx: RuleContext):
     for a in build_compile.plan(p):
         at = a.first_addr if a.first_addr is not None and img.in_image(a.first_addr) else img.base
         row = tus.get(a.unit)
-        flags, _ = build_compile.flags_for(p, a.target, a.unit)
+        flags = build_compile.compile_flags(p, a.target, a.unit)
         if row is None:
             yield ctx.fact(at, at + 1, Kind.build, {"tu": a.unit, "ok": False, "stale": True, "errors": ["not compiled"],
-                                                    "warnings": 0, "fragments": len(a.fragments)}, P)
+                                                    "warnings": 0, "functions": len(a.functions)}, P)
             if tc.available():
                 yield ctx.conflict(Severity.error, "M.compile", at, at + 1, f"unit {a.unit} is not compiled (dcp build)")
             else:
@@ -145,7 +146,7 @@ def compile_facts(ctx: RuleContext):
         warnings = sum(1 for d in row["diags"] if d[2] == "warning")
         stale = row["src_hash"] != a.src_hash or row["flags"] != flags
         v = {"tu": a.unit, "ok": row["ok"], "stale": stale, "flags": " ".join(row["flags"]), "warnings": warnings,
-             "fragments": len(a.fragments), "amalg": a.path}
+             "functions": len(a.functions), "file": a.file}
         if row["ok"]:
             v["obj"] = row["obj_hash"][:16]
         if errors:
@@ -164,22 +165,19 @@ def compile_facts(ctx: RuleContext):
         defined = {}
         for s in obj.functions():
             defined.setdefault(tc.undecorate(s.name), s)
-        frag = {}
-        for m in a.fragments:
-            if m.name:
-                frag.setdefault(m.name, []).append(m)
-        for name in sorted(set(defined) - set(frag)):
+        ours = {}
+        for addr, name in a.functions:
+            ours.setdefault(name, addr)
+        for name in sorted(set(defined) - set(ours)):
             yield ctx.conflict(Severity.error, "M.gen", at, at + 1,
-                               f"unit {a.unit}: the object defines {name} ({defined[name].name}), no fragment of the unit does")
-        for name, ms in sorted(frag.items()):
-            where = ms[0].addr if ms[0].addr is not None and img.in_image(ms[0].addr) else at
-            if len(ms) > 1:
-                yield ctx.conflict(Severity.error, "M.gen", where, where + 1,
-                                   f"unit {a.unit}: {name} is defined by {len(ms)} fragments: " + ", ".join(m.file for m in ms))
+                               f"unit {a.unit}: the object defines {name} ({defined[name].name}), no address comment of "
+                               f"the target in {a.file} does")
+        for name, addr in sorted(ours.items()):
+            where = addr if addr is not None and img.in_image(addr) else at
             if name not in defined:
                 yield ctx.conflict(Severity.error, "M.gen", where, where + 1,
-                                   f"{ms[0].file}: the object of unit {a.unit} defines no function {name} (dropped by the "
-                                   f"compiler as an unreferenced static, or not parsed as the fragment's definition)")
+                                   f"{a.file}: the object of unit {a.unit} defines no function {name} (dropped by the "
+                                   f"compiler as an unreferenced static, or not parsed as a definition)")
 
 
 # ------------------------------------------------------------------------------------------------ M.match / M.draft
@@ -189,10 +187,10 @@ _code_end: dict[tuple, int] = {}         # the end of a matched function's last 
 @rule("M.match", version="1", ceiling=P, outputs=("symbol", "source"), needs=("L.src", *WALK), inputs=("objects",),
       helpers=(compiled_functions, starts_of, C))
 def match(ctx: RuleContext):
-    """R1. A function fragment of the current target (an L.src `source` fact: a candidate, its declared level
+    """R1. A sourced function of the current target (an L.src `source` fact: a candidate, its declared level
     does not propagate) whose unit's object defines its function is a byte match when (match/compare.py):
     every byte of the function's section (from its symbol to the next named symbol or the section end) equals
-    the image's byte at the fragment's address, relocated fields masked; the original does not continue after
+    the image's byte at the source's address, relocated fields masked; the original does not continue after
     our last byte (the bytes up to the next known start are toolchain fill, or none); and, when the image
     carries base relocations (a dll: the complete list of its absolute fields), every absolute relocation site
     of ours is a base-relocation site and the extent holds as many base relocations as we have absolute
@@ -232,10 +230,10 @@ def match(ctx: RuleContext):
 @rule("M.draft", version="1", ceiling=D, outputs=("source",), needs=("L.src", *WALK), inputs=("objects",),
       helpers=(compiled_functions, starts_of, C))
 def draft(ctx: RuleContext):
-    """R2. A function fragment of the current target whose compiled function is no byte match (M.match's
+    """R2. A sourced function of the current target whose compiled function is no byte match (M.match's
     criterion fails) owns the bytes the code walk gives its start: a `source` fact (what: draft) over the walk's
     function extent (S.codewalk, derived), with why it is no match (differing bytes, the original continuing,
-    the relocation aid). Its level is the lower of the walk's and the address comment's (declared). A fragment
+    the relocation aid). Its level is the lower of the walk's and the address comment's (declared). A function
     whose start the walk does not know owns nothing."""
     funcs, _ = compiled_functions(ctx)
     walk = {f.lo: f for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "func" and f.run == "S.codewalk"}
@@ -366,7 +364,7 @@ def lint_checks(ctx: RuleContext):
     declaration conflict across units (the all-declarations unit), both errors; M7 a call through a K&R
     declaration or without a declaration, a warning (readability rule Q7 counts it). Reported at the address
     of the function whose span holds the diagnostic's line (the image base when none does). A lint run whose units'
-    texts differ from today's amalgamations is stale: a warning (`dcp lint`; `dcp check` lints first)."""
+    texts differ from today's units is stale: a warning (`dcp lint`; `dcp check` lints first)."""
     res = ctx.input("lint")
     if not res:
         return

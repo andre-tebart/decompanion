@@ -20,7 +20,10 @@ object of its unit (ObjectFormat data_symbols: data / rdata / bss / common).
 from __future__ import annotations
 
 import bisect
+import re
+from pathlib import Path
 
+from .. import fsmemo
 from ..ledger.fact import Kind, Level, Severity, severity_of
 from ..match import compare as C
 from ..objfmt.base import ABSOLUTE
@@ -211,15 +214,35 @@ def data_draft(ctx: RuleContext):
                                             "extent": "draft", "kind": kind or "-"}, DE)
 
 
-@rule("D.data", version="3", ceiling=P, needs=("L.src", "M.data.site", "M.data.content", "M.data.draft", "S.crt.data",
+INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*["<]([^">]+)[">]', re.M)
+
+
+def text_position(root, unit: str):
+    """(file, line) -> a key in the order unit's translation unit defines things: a line of src/<unit>.c, a line
+    of a header at the line of the unit's first #include of it (after everything when the unit does not include
+    it directly)."""
+    p = Path(root) / "src" / f"{unit}.c"
+    text = fsmemo.read_text(p) if p.exists() else ""
+    inc = {}
+    for m in INCLUDE.finditer(text):
+        inc.setdefault(Path(m.group(1)).name.lower(), text.count("\n", 0, m.start()) + 1)
+
+    def at(file: str, line: int) -> tuple:
+        if file == f"src/{unit}.c":
+            return (line, 0)
+        return (inc.get(Path(file).name.lower(), 1 << 30), line)
+    return at
+
+
+@rule("D.data", version="5", ceiling=P, needs=("L.src", "M.data.site", "M.data.content", "M.data.draft", "S.crt.data",
                                               "S.strings", "S.imports", "S.relocs", "S.sections", "kind:name"),
-      inputs=("objects", "src", "decl"), helpers=(data_objects, name_registry, C, build_compile.plan, least_size))
+      inputs=("objects", "src", "decl"), helpers=(data_objects, name_registry, C, build_compile.plan, least_size, text_position))
 def data_checks(ctx: RuleContext):
     """D1: a data definition's extent holds the start of another symbol (a data symbol of the sources, a CRT data
     block, a string, an import slot): an error when even its least size (least_size: the object's size without
     the alignment padding it may include) reaches it, a warning when only the padding may. D4: in one unit, the
     definitions of one section kind (data / rdata / bss) are not in increasing address order in the order the
-    amalgamation defines them (VC6 places a unit's definitions of a section in definition order). D5: a
+    unit's file defines them (VC6 places a unit's definitions of a section in definition order). D5: a
     tentative definition (the object holds it as common: the linker allocates it apart from its unit) whose
     declared address lies in the image's uninitialised data (no file bytes): write it `= 0`. D6: an absolute
     relocation inside a definition of ours (a pointer-table entry) whose symbol has a registered address while
@@ -248,15 +271,15 @@ def data_checks(ctx: RuleContext):
                 yield ctx.conflict(Severity.error, "D5", f.lo, f.lo + 1,
                                    f"{f.value['symbol']} at {f.lo:#x} lies in uninitialised data and is a tentative definition: "
                                    f"write it `= 0` so it is placed with its unit", a=f.by)
-    # D4: per unit and section kind, in amalgamation order (build/amalg.py: head.c, the fragments in address or
-    # declared TU order, the unlinked ones, tail.c)
-    rank = {m.file: i for a in build_compile.plan(ctx.project) for i, m in enumerate(a.members)}
+    # D4: per unit and section kind, in the unit file's text order (a header's definitions where the unit
+    # includes it)
     per = {}
     for f, o, sym, kind, size in objs:
         if kind in ("data", "rdata", "bss"):
             per.setdefault((f.value["unit"], kind), []).append(f)
     for (unit, kind), fs in sorted(per.items()):
-        order = sorted(fs, key=lambda f: (rank.get(f.value["file"], len(rank)), f.value["line"]))
+        at = text_position(ctx.project.root, unit)
+        order = sorted(fs, key=lambda f: at(f.value["file"], f.value["line"]))
         for a, b in zip(order, order[1:]):
             if b.lo < a.lo:
                 yield ctx.conflict(Severity.error, "D4", b.lo, b.lo + 1,

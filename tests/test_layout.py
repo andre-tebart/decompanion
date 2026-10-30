@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from conftest import dcp
+from conftest import dcp, unit
 
 from decompanion.config import Project
 from decompanion.ledger.fact import Kind, Level
@@ -38,14 +38,13 @@ def test_evidence(tiny):
 
 def test_units_from_decl_and_sources(tiny):
     write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=leaked -- c:\\src\\net\\net.c in f3's log string\n")
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n")
-    write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\n")
+    unit(tiny, "net", "int counter = 0x1234;  /* 0x10002000 */\n", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n")
     code, out = dcp(tiny, "check")
     assert code == 0, out
     code, out = dcp(tiny, "layout", "units")
     assert "units=1" in out
     line = next(l for l in out.splitlines() if l.startswith("unit=net"))
-    # the last unit runs to the end of the game code; functions after it lack fragments, so its end is open
+    # the last unit runs to the end of the game code; functions after it lack sources, so its end is open
     assert "range=0x10001020..0x10001060" in line and "status=open" in line and "end=open" in line and "named_by=leaked" in line
     assert "functions=3" in line and "sourced=1" in line and "leaks=c:\\src\\net\\net.c" in line
     names = {f.value["name"]: f.lo for f in facts(tiny, Kind.name) if f.value.get("origin") == "source"}
@@ -69,8 +68,8 @@ def test_l4_l6_l1_l5_l7(tiny):
                                  "0x10001024 boundary start tu=bad -- inside f2 on purpose\n"
                                  "0x10001028 boundary start tu=fill -- inside the fill after f2\n"
                                  "0x10001030..0x10001034 bytes dead -- the walk reaches these\n"
-                                 "0x10001050 boundary start tu=x -- after its own fragment: L7\n")
-    write(tiny, "src/x/f_10001031.c", "/* 0x10001031, inside f3 */\nvoid f(void)\n{\n    FUN_10001044();\n}\n")
+                                 "0x10001050 boundary start tu=x -- after its own function: L7\n")
+    unit(tiny, "x", "/* 0x10001031, inside f3 */\nvoid f(void)\n{\n    FUN_10001044();\n}\n")
     code, out = dcp(tiny, "check")
     assert code == 1
     checks = {c.check for c in conflicts(tiny)}

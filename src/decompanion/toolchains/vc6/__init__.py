@@ -217,6 +217,9 @@ class VC6(Toolchain):
         """CL.EXE /nologo /Zs <flags> /I<dir>... <src>: the front end only (C2079 and the like), no object."""
         return cl.syntax_check(self.tools, Path(src), list(flags), list(include_dirs), Path(cwd))
 
+    def define_flag(self, macro):
+        return "/D" + macro
+
     def includes(self, src, flags, include_dirs, cwd):
         """CL.EXE /E (the /P listing on stdout): the paths of its `#line` directives."""
         return cl.preprocess_includes(self.tools, Path(src), list(flags), list(include_dirs), Path(cwd))

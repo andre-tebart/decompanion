@@ -50,7 +50,7 @@ def errors(p) -> list:
 # ------------------------------------------------------------------------------------------------ units
 def cmd_unit_new(args):
     """`dcp layout unit propose` (L3 / L4 / L7 / L8 on the proposal, the boundary lines written to decl/text.dcl),
-    then the unit's skeleton files: src/<unit>/head.c, include/<unit>.h, src/<unit>/open.md (the ones missing)."""
+    then the unit's skeleton files: src/<unit>.c, include/<unit>.h, notes/units/<unit>.md (the ones missing)."""
     from .cli import cmd_layout_propose
     from .source import units as U
     ns = argparse.Namespace(**{**vars(args), "dry_run": False})
@@ -72,8 +72,8 @@ def byte_state(p) -> tuple[dict, int]:
 
 
 def cmd_unit_join(args):
-    """Join unit B into unit A (B directly follows A): B's fragments move into src/A/ (git mv), head.c, tail.c, the
-    headers and open.md merge, includes of B's header name A's, B's start boundary goes and its end becomes A's,
+    """Join unit B into unit A (B directly follows A): B's head lines A lacks go into A's head region, B's
+    functions follow A's in src/A.c, the headers and the notes merge, includes of B's header name A's, B's start boundary goes and its end becomes A's,
     the placeholders `B_<addr>` become `A_<addr>` (names.log). Both are built before and after: every function's
     code grade and the error count must stay as they were (a change is evidence to keep the units apart: revert
     with git); exit 1 otherwise."""
@@ -117,7 +117,7 @@ def cmd_unit_join(args):
 
 
 def cmd_unit_rename(args):
-    """Rename a unit: git mv of src/<old>/ (fragments, head.c, open.md) and include/<old>.h (its guard follows),
+    """Rename a unit: git mv of src/<old>.c, notes/units/<old>.md and include/<old>.h (its guard follows),
     every #include of the header, the boundary lines' tu= (and by= on the start line), the placeholders
     `<old>_<addr>` of its functions; names.log records each rename."""
     from .ledger import decl as D
@@ -174,7 +174,7 @@ def show_draft(p, e, args):
 
 
 def cmd_draft(args):
-    """Write the fragment of the function at ADDR (source/draft.py): the address comment, the analyzer's pseudocode
+    """Write the function at ADDR into its unit's file (source/draft.py): the address comment, the analyzer's pseudocode
     with the ledger's names (else a @rough skeleton with the disassembly), the declarations it needs. --next drafts
     the function `dcp layout next` shows. --show prints the analyzer's draft as it stored it and writes nothing."""
     from .cli_read import resolve
@@ -190,7 +190,7 @@ def cmd_draft(args):
     if args.next:
         recs = LV.next_records(v, 1)
         if not recs:
-            print("nothing to draft: every function of the game code has a fragment")
+            print("nothing to draft: every function of the game code has a source")
             return 0
         r = recs[0]
         if r["kind"] == "unknown":
@@ -233,13 +233,12 @@ def rename_fail(args, msg: str, old=None) -> int:
 
 def cmd_rename(args):
     """Rename one identifier: every whole-word occurrence in src/ and include/ (code and comments; string
-    literals and #include lines are left alone), an unlinked fragment's file u_<old>.c, the `name`
-    declarations of decl/*.dcl. OLD is a C identifier or an address (`0xADDR`, `TARGET:0xADDR`): the ledger's
-    name of the address on that target. Refused (an error record, exit 1, nothing written) when OLD names
+    literals and #include lines are left alone), the `name` declarations of decl/*.dcl. OLD is a C identifier
+    or an address (`0xADDR`, `TARGET:0xADDR`): the ledger's name of the address on that target. Refused (an error record, exit 1, nothing written) when OLD names
     nothing renamable: no such address name, OLD occurs nowhere, or only inside string literals / #include
     lines; when NEW is no C identifier or equals OLD; when NEW occurs already and is not OLD's own (the ledger
     names another address NEW, or OLD has no address): NEW written by hand in part for OLD's address is
-    completed. A success prints the rename record (files, replacements, decl lines, moved files) and one line
+    completed. A success prints the rename record (files, replacements, decl lines) and one line
     per changed file with its replacements. names.log records the event, with the address the ledger knows
     for OLD (a name fact, or the address a placeholder spells). The rename done by hand already (OLD nowhere,
     NEW the ledger's name of OLD's address) is only recorded: names.log gets the event, no file changes. The
@@ -316,10 +315,6 @@ def cmd_rename(args):
         print(f"note: {args.new} occurs already ({clash[0][0]}:{clash[0][1]}) and names no other address: the rename "
               f"completes it")
     n = E.rename_words(p.root, {old: args.new}, skip=skip_old)
-    moved = []
-    for f in sorted((p.root / "src").glob(f"*/u_{old}.c")):
-        E.move(p.root, f, f.with_name(f"u_{args.new}.c"))
-        moved.append((f.relative_to(p.root).as_posix(), f"u_{args.new}.c"))
     decl_lines = 0
     for path in decls:
         t = path.read_text()
@@ -328,16 +323,13 @@ def cmd_rename(args):
             E.write(path, new)
             decl_lines += k
             n[path.relative_to(p.root).as_posix()] = k
-    if not n and not moved:
+    if not n:
         return rename_fail(args, f"{old}: nothing was renamed (no whole-word occurrence outside string literals and "
                                  f"#include lines)")
     E.log_names(p.root, [(a, kind, old, args.new)], args.why)
-    print(record(renamed=old, to=args.new, kind=kind, at=a, files=len(n), replacements=sum(n.values()), decl=decl_lines,
-                 moved=len(moved)))
+    print(record(renamed=old, to=args.new, kind=kind, at=a, files=len(n), replacements=sum(n.values()), decl=decl_lines))
     for f, k in sorted(n.items()):
         print("  " + record(file=f, replacements=k))
-    for f, to in moved:
-        print("  " + record(moved=f, to=to))
     views = sorted(w for w in E.words_with_prefix(p.root, old) if w != old and w[len(old)].isupper() and ph
                    and (m := srcscan.PLACEHOLDER_ADDR.fullmatch(w)) and srcscan.placeholder_value(m) == a)
     if views:

@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from conftest import build_lib, dcp
+from conftest import build_lib, dcp, unit
 
 from decompanion.config import ConfigError, Project
 from decompanion.ledger.fact import Kind
@@ -132,9 +132,9 @@ def test_setup_all_targets_and_memo(tiny2, capsys):
 
 # ------------------------------------------------------------------------------------------------ loaders
 def test_src_prefixes(tiny2):
-    write(tiny2, "src/net/f_10001020.c", "/* tiny:0x10001020, other:0x10001030, the helper in both */\nint get(void)\n{\n    return 1;\n}\n")
-    write(tiny2, "src/net/f_10001050.c", "/* 0x10001050, the default target's only */\nint put(void)\n{\n    return 2;\n}\n")
-    write(tiny2, "src/net/head.c", "int both;  /* tiny:0x10002000, other:0x10002004 */\nint mine;  /* 0x10002008 */\n")
+    unit(tiny2, "net", "int both;  /* tiny:0x10002000, other:0x10002004 */\nint mine;  /* 0x10002008 */\n",
+         "/* tiny:0x10001020, other:0x10001030, the helper in both */\nint get(void)\n{\n    return 1;\n}\n",
+         "#ifdef DCP_TARGET_tiny\n/* 0x10001050, the default target's only */\nint put(void)\n{\n    return 2;\n}\n#endif\n")
     assert dcp(tiny2, "check")[0] == 0
     src = lambda t: {(f.lo, f.value["symbol"]) for f in facts(tiny2, Kind.source, t)}  # noqa: E731
     assert src("tiny") == {(0x10001020, "get"), (0x10001050, "put"), (0x10002000, "both"), (0x10002008, "mine")}
@@ -144,21 +144,22 @@ def test_src_prefixes(tiny2):
 
 
 def test_src_errors_reported_once(tiny2):
-    write(tiny2, "src/net/f_10001020.c", "void g(void)\n{\n}\n")                 # no address comment
-    write(tiny2, "src/net/f_10001030.c", "/* nope:0x10001030, unknown target */\nvoid h(void)\n{\n}\n")
+    unit(tiny2, "net", "void g(void)\n{\n}\n",                                    # no address comment
+         "/* nope:0x10001030, unknown target */\nvoid h(void)\n{\n}\n")
     code, out = dcp(tiny2, "check")
     assert code == 1
     assert len(conflicts(tiny2, "tiny", "L.src")) == 2 and not conflicts(tiny2, "other", "L.src")
+    assert not conflicts(tiny2, "tiny", "L16")                      # an unknown prefix is the one error
 
 
 def test_placeholders_per_target(tiny2):
-    write(tiny2, "src/net/f_10001020.c", "/* other:0x10001020, other's only */\nint g(void)\n{\n    return FUN_10001044();\n}\n")
-    write(tiny2, "src/net/head.c", "int x;\nint y(void);\n#define Z FUN_20001000\n")
+    unit(tiny2, "net", "int x;\nint y(void);\n#define Z FUN_20001000\n",
+         "#ifdef DCP_TARGET_other\n/* other:0x10001020, other's only */\nint g(void)\n{\n    return FUN_10001044();\n}\n#endif\n")
     code, out = dcp(tiny2, "check")
     assert code == 1
     l5 = lambda t: sorted(c.message for c in conflicts(tiny2, t, "L5"))  # noqa: E731
-    assert [m for m in l5("other") if "FUN_10001044" in m]          # a fragment of other: checked in other
-    assert not [m for m in l5("tiny") if "FUN_10001044" in m]       # not a file of tiny
+    assert [m for m in l5("other") if "FUN_10001044" in m]          # a function of other: checked in other
+    assert not [m for m in l5("tiny") if "FUN_10001044" in m]       # not a line of tiny
     assert [m for m in l5("tiny") if "FUN_20001000" in m and "tiny, other" in m]
     assert not [m for m in l5("other") if "FUN_20001000" in m]      # reported once, by the default target
 

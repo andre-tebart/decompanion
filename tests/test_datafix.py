@@ -13,36 +13,36 @@ def write(root: Path, rel: str, text: str):
 
 
 def test_statement_block_and_declarators(tmp_path):
-    write(tmp_path, "src/u/tail.c",
+    write(tmp_path, "src/u.c",
           "int a;  /* 0x600000, a comment that runs on\n"
           "           over a second line */\n"
           "/* 0x600010, the table */\n"
           "void (*handlers[4])(unsigned char *);\n"
           "int b = 5, c;  /* 0x600020, 0x600024 */\n")
     f = DF.Files(tmp_path)
-    st = DF.statement_at(f, "src/u/tail.c", 1)
-    text = f.text("src/u/tail.c")
+    st = DF.statement_at(f, "src/u.c", 1)
+    text = f.text("src/u.c")
     assert text[st.start:st.end] == "int a;  /* 0x600000, a comment that runs on\n           over a second line */\n"
-    st2 = DF.statement_at(f, "src/u/tail.c", 4)
+    st2 = DF.statement_at(f, "src/u.c", 4)
     assert text[st2.start:st2.end].startswith("/* 0x600010, the table */\nvoid (*handlers")    # the comment above moves too
     dc = DF.declarator(f, st2, "handlers")
     assert dc.dims == ["4"] and not dc.has_init and text[st2.s0:dc.end] == "void (*handlers[4])(unsigned char *)"
-    st3 = DF.statement_at(f, "src/u/tail.c", 5)
+    st3 = DF.statement_at(f, "src/u.c", 5)
     b, c = DF.declarator(f, st3, "b"), DF.declarator(f, st3, "c")
     assert b.has_init and not c.has_init and b.count == 2
 
 
 def test_d5_initialisers(tmp_path):
-    write(tmp_path, "src/u/tail.c", "int a;\nAIOBJ *p;\nAIOBJ o;\nchar s[8];\nvoid (*fp)(void);\n")
+    write(tmp_path, "src/u.c", "int a;\nAIOBJ *p;\nAIOBJ o;\nchar s[8];\nvoid (*fp)(void);\n")
     f = DF.Files(tmp_path)
     model = []
     for line, name in enumerate(["a", "p", "o", "s", "fp"], 1):
-        d = DF.DataDef("u", name, "src/u/tail.c", line, "def", 0x600000 + line, False)
+        d = DF.DataDef("u", name, "src/u.c", line, "def", 0x600000 + line, False)
         d.conflicts.append(("D5", "tentative"))
         model.append(d)
     edits, manual = DF.d5_edits(f, model)
     assert not manual
-    new = DF.apply(f, edits)["src/u/tail.c"]
+    new = DF.apply(f, edits)["src/u.c"]
     assert new == "int a = 0;\nAIOBJ *p = 0;\nAIOBJ o = {0};\nchar s[8] = {0};\nvoid (*fp)(void) = 0;\n"
 
 
@@ -54,23 +54,23 @@ def test_insertions_at_one_place_keep_their_order(tmp_path):
 
 
 def test_d4_does_not_move_a_definition_above_its_type(tmp_path):
-    """The init_PlayerProfile case: the definition sorts between two in head.c, but its typedef lives in its
-    own fragment, between the two places: a manual case, no edit (the move would not compile)."""
-    write(tmp_path, "src/u/head.c", "int a = 0;  /* 0x600000 */\nint b = 0;  /* 0x600020 */\nint e = 0;  /* 0x600028 */\n")
-    write(tmp_path, "src/u/f_401000.c", "/* 0x401000, f */\ntypedef struct { int a; } INIT_PLAYER;\n"
-                                        "INIT_PLAYER prof = {0};  /* 0x600010 */\nvoid f(void)\n{\n}\n")
-    write(tmp_path, "src/u/f_401100.c", "/* 0x401100, g */\nint c = 0;  /* 0x600030 */\nint d = 0;  /* 0x600008 */\n"
-                                        "void g(void)\n{\n}\n")
+    """The init_PlayerProfile case: the definition sorts between two in the head, but its typedef stands further
+    down, between the two places: a manual case, no edit (the move would not compile)."""
+    write(tmp_path, "src/u.c", "int a = 0;  /* 0x600000 */\nint b = 0;  /* 0x600020 */\nint e = 0;  /* 0x600028 */\n"
+                               "typedef struct { int a; } INIT_PLAYER;\nINIT_PLAYER prof = {0};  /* 0x600010 */\n"
+                               "/* 0x401000, f */\nvoid f(void)\n{\n}\n"
+                               "int c = 0;  /* 0x600030 */\nint d = 0;  /* 0x600008 */\n"
+                               "/* 0x401100, g */\nvoid g(void)\n{\n}\n")
     f = DF.Files(tmp_path)
 
     def dd(name, rel, line, addr):
         x = DF.DataDef("u", name, rel, line, "def", addr, False, section="bss")
         x.conflicts.append(("D4", "order"))
         return x
-    model = [dd("a", "src/u/head.c", 1, 0x600000), dd("b", "src/u/head.c", 2, 0x600020), dd("e", "src/u/head.c", 3, 0x600028),
-             dd("prof", "src/u/f_401000.c", 3, 0x600010), dd("c", "src/u/f_401100.c", 2, 0x600030),
-             dd("d", "src/u/f_401100.c", 3, 0x600008)]                  # the run a, b, e, c stays: prof and d move up
-    order = {"u": ["src/u/head.c", "src/u/f_401000.c", "src/u/f_401100.c"]}
+    model = [dd("a", "src/u.c", 1, 0x600000), dd("b", "src/u.c", 2, 0x600020), dd("e", "src/u.c", 3, 0x600028),
+             dd("prof", "src/u.c", 5, 0x600010), dd("c", "src/u.c", 10, 0x600030),
+             dd("d", "src/u.c", 11, 0x600008)]                          # the run a, b, e, c stays: prof and d move up
+    order = {"u": ["src/u.c"]}
     edits, manual = DF.d4_edits(f, model, order)
     assert any(" prof " in m and "INIT_PLAYER" in m for m in manual), manual
     moved = {e.group for e in edits}

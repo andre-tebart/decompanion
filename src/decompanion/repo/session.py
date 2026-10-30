@@ -8,7 +8,7 @@ start   gate: the working tree is clean (git status, build/ and .dcp/ ignored), 
         functions and data are open work, build/link.py); then the overview: per target the unit table summary,
         the first open function (`dcp layout next`), the toolchain declaration and how much of it is probed.
 wrap    build, link, check every target; promote the grade baseline (main checkout only); the report: units
-        declared, joined and renamed (decl/*.dcl and names.log since the base), the fragments drafted (with their
+        declared, joined and renamed (decl/*.dcl and names.log since the base), the functions drafted (with their
         grades), renames, the boundary levels and status of every unit the session touched, the check before ->
         after, the next item.
 """
@@ -21,7 +21,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-FRAGMENT = re.compile(r"^src/([^/]+)/f_([0-9a-fA-F]+)\.c$")
+OWN_ADDR = r"^/\*[[:space:]]*([A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]"      # an own-line address comment (git grep -E)
 
 
 def git(root: Path, *args) -> str:
@@ -31,8 +31,8 @@ def git(root: Path, *args) -> str:
 
 def grade_changes(root: Path, base: str, target: str, rows: list[dict]) -> list[tuple]:
     """The functions of one target whose grade differs from the baseline ledger/grades.tsv at the base commit:
-    [(addr, unit, name, before 'code+readability[ level]' or None for a new fragment, after)], in address order.
-    A fragment gone since the base is listed with after None."""
+    [(addr, unit, name, before 'code+readability[ level]' or None for a new function, after)], in address order.
+    A function gone since the base is listed with after None."""
     def fmt(code, rd, level):
         return f"{code}+{rd}" + (f" {level}" if level else "")
     before = {}
@@ -86,7 +86,7 @@ class Changes:
     head: str
     commits: int = 0
     drafted: list = field(default_factory=list)       # (unit, addr, file)
-    removed: list = field(default_factory=list)       # fragments gone (a join moves them: not drafted, not removed)
+    removed: list = field(default_factory=list)       # functions gone (a join moves them: not drafted, not removed)
     units_new: list = field(default_factory=list)
     units_gone: list = field(default_factory=list)
     decl_added: list = field(default_factory=list)
@@ -101,18 +101,18 @@ def changes(root: Path, base: str) -> Changes:
     c.commits = len(git(root, "rev-list", f"{base}..HEAD").split())
     status = git(root, "diff", "--name-status", "-M", base).splitlines()
     status += [f"A\t{p}" for p in git(root, "ls-files", "--others", "--exclude-standard").split()]
-    for line in status:
-        parts = line.split("\t")
-        kind, paths = parts[0], parts[1:]
-        if kind.startswith("R") and len(paths) == 2:
-            continue                                          # moved (a join or a unit rename): not drafted anew
-        m = FRAGMENT.match(paths[-1]) if paths else None
-        if m and kind == "A":
-            c.drafted.append((m.group(1), int(m.group(2), 16), paths[-1]))
-        elif m and kind == "D":
-            c.removed.append(paths[-1])
-    before = set(git(root, "ls-tree", "--name-only", f"{base}:src").split())
-    now = {p.name for p in (Path(root) / "src").iterdir() if p.is_dir()} if (Path(root) / "src").exists() else set()
+    # drafted: a function whose address comment the base has nowhere (a join or a unit rename moves comments,
+    # it drafts nothing); removed: an address comment of the base the tree has nowhere
+    then = comment_addrs(git(root, "grep", "-h", "-E", OWN_ADDR, base, "--", "src").splitlines())
+    now_lines = [l for p in sorted((Path(root) / "src").glob("*.c")) for l in p.read_text(errors="replace").splitlines()
+                 if l.startswith("/*")] if (Path(root) / "src").exists() else []
+    from ..ledger import srcscan
+    for f in srcscan.scan(Path(root)).functions:
+        if f.addrs and f.addrs[0] not in then:
+            c.drafted.append((f.unit, f.addrs[0][1], f.file))
+    c.removed = [f"{t + ':' if t else ''}{a:#x}" for t, a in sorted(then - comment_addrs(now_lines), key=lambda x: (x[0] or "", x[1]))]
+    before = {Path(n).stem for n in git(root, "ls-tree", "--name-only", f"{base}:src").split() if n.endswith(".c")}
+    now = {p.stem for p in (Path(root) / "src").glob("*.c")} if (Path(root) / "src").exists() else set()
     c.units_new, c.units_gone = sorted(now - before), sorted(before - now)
     old_decl = git(root, "show", f"{base}:decl/text.dcl").splitlines()
     new_decl = (Path(root) / "decl" / "text.dcl").read_text().splitlines() if (Path(root) / "decl" / "text.dcl").exists() else []
@@ -122,6 +122,18 @@ def changes(root: Path, base: str) -> Changes:
     new_names = (Path(root) / "names.log").read_text().splitlines() if (Path(root) / "names.log").exists() else []
     c.names = new_names[len(old_names):] if new_names[:len(old_names)] == old_names else [l for l in new_names if l not in old_names]
     return c
+
+
+def comment_addrs(lines: list[str]) -> set[tuple]:
+    """The first (target or None, address) of every own-line address comment among the lines."""
+    from ..ledger import srcscan
+    out = set()
+    for l in lines:
+        if l.startswith("/*"):
+            got = srcscan.lead_addrs(l[2:])
+            if got:
+                out.add(got[0])
+    return out
 
 
 def now() -> str:

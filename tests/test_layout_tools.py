@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import dcp, make_project
+from conftest import dcp, make_project, unit
 
 from decompanion.config import Project
 from decompanion.ledger import query
@@ -104,34 +104,43 @@ def test_unit_new_draft_rename(tiny, tmp_path):
                             (0x10001020, "FUN_10001020", F2, [(0x10001020, 0x10001026)])])
     code, out = dcp(tiny, "unit", "new", "net", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code")
     assert code == 0, out
-    for f in ("src/net/head.c", "include/net.h", "src/net/open.md"):
+    for f in ("src/net.c", "include/net.h", "notes/units/net.md"):
         assert (tiny / f).exists(), f
-    assert (tiny / "src/net/open.md").read_text().startswith("# net\n\n## Open work\n")
+    assert (tiny / "notes/units/net.md").read_text().startswith("# net\n\n## Open work\n")
+    assert "notes in notes/units/net.md */" in (tiny / "src/net.c").read_text()
     assert "NET_H" in (tiny / "include/net.h").read_text()
     n_err = len(errors(tiny))
+
+    def unit_text():
+        text = (tiny / "src/net.c").read_text()
+        return text, text[:text.index("\n/* 0x1000")]               # the file and its head region
     # f1 from the analyzer (Ghidra's dialect): the callees spelled as placeholders of their unit, the data label kept, declarations added
     code, out = dcp(tiny, "draft", "--next")
-    assert code == 0 and "drafted=0x10001000" in out and "body=rea" in out, out
-    f1 = (tiny / "src/net/f_10001000.c").read_text()
+    assert code == 0 and "drafted=0x10001000" in out and "body=rea" in out and "file=src/net.c" in out, out
+    text, head = unit_text()
+    f1 = text[text.index("/* 0x10001000"):]
     assert f1.startswith("/* 0x10001000, net_10001000 */\nvoid net_10001000(void)\n{")
     assert "net_10001020();" in f1 and "net_10001030();" in f1 and "DAT_10002000 = 0;" in f1
-    head = (tiny / "src/net/head.c").read_text()
     assert head.index('#include "dcp_ghidra.h"') < head.index('#include "net.h"')
     assert "undefined4 net_10001020();" in head and "int net_10001030();" in head and "extern undefined4 DAT_10002000;" in head
     assert "void net_10001000(void);" in (tiny / "include/net.h").read_text()
     assert (tiny / "include/dcp_ghidra.h").exists()
-    # f2: its K&R line leaves head.c, its prototype (one line) goes into the header
+    # f2: its K&R line leaves the head, its prototype (one line) goes into the header, its text after f1's
     code, out = dcp(tiny, "draft", "--next")
     assert "drafted=0x10001020" in out, out
-    assert (tiny / "src/net/f_10001020.c").read_text().startswith("/* 0x10001020, net_10001020 */\nundefined4 net_10001020(void)\n")
-    assert "net_10001020" not in (tiny / "src/net/head.c").read_text()
+    text, head = unit_text()
+    assert "\n/* 0x10001020, net_10001020 */\nundefined4 net_10001020(void)\n" in text
+    assert text.index("/* 0x10001000") < text.index("/* 0x10001020")
+    assert "net_10001020" not in head
     assert "undefined4 net_10001020(void);" in (tiny / "include/net.h").read_text()
     # f3 without a draft: the @rough skeleton with the disassembly
     code, out = dcp(tiny, "draft", "--next")
     assert "drafted=0x10001030" in out and "body=skeleton" in out, out
-    f3 = (tiny / "src/net/f_10001030.c").read_text()
+    text, head = unit_text()
+    f3 = text[text.index("/* 0x10001030"):]
     assert f3.startswith("/* 0x10001030, net_10001030 @rough */\nvoid __cdecl net_10001030(void)") and "push 0x10002010" in f3
-    assert "int net_10001030();" not in (tiny / "src/net/head.c").read_text()
+    assert "int net_10001030();" not in head
+    assert text.index("/* 0x10001020") < text.index("/* 0x10001030")
     code, out = dcp(tiny, "draft", "0x10001030")
     assert code == 1                                          # drafted already
     assert len(errors(tiny)) == n_err, [c.line() for c in errors(tiny)]
@@ -139,20 +148,21 @@ def test_unit_new_draft_rename(tiny, tmp_path):
     # rename: whole words, names.log, collision refused, the check count unchanged
     code, out = dcp(tiny, "rename", "net_10001020", "GetCounter", "--why", "returns the counter")
     assert code == 0, out
-    assert "GetCounter();" in (tiny / "src/net/f_10001000.c").read_text()
+    assert "GetCounter();" in (tiny / "src/net.c").read_text()
     log = (tiny / "names.log").read_text().splitlines()
     assert log[-1].split(" ", 1)[1].startswith("0x10001020 func net_10001020 -> GetCounter by:main why:returns the counter")
     code, out = dcp(tiny, "rename", "net_10001030", "GetCounter", "--why", "x")
     assert code == 1
     assert len(errors(tiny)) == n_err
-    # unit rename: directory, header, guard, includes, boundary lines, placeholders
+    # unit rename: its file and notes, header, guard, includes, boundary lines, placeholders
     code, out = dcp(tiny, "unit", "rename", "net", "netcode", "--by", "tag", "--why", "the tag string 'net:'")
     assert code == 0, out
-    assert not (tiny / "src/net").exists() and (tiny / "src/netcode/f_10001000.c").exists() and (tiny / "src/netcode/open.md").exists()
+    assert not (tiny / "src/net.c").exists() and (tiny / "src/netcode.c").exists() and (tiny / "notes/units/netcode.md").exists()
     hdr = (tiny / "include/netcode.h").read_text()
     assert "NETCODE_H" in hdr and "NET_H" not in hdr and not (tiny / "include/net.h").exists()
-    assert '#include "netcode.h"' in (tiny / "src/netcode/head.c").read_text()
-    assert "netcode_10001000" in (tiny / "src/netcode/f_10001000.c").read_text()
+    text = (tiny / "src/netcode.c").read_text()
+    assert text.startswith("/* netcode:") and "notes in notes/units/netcode.md */" in text
+    assert '#include "netcode.h"' in text and "netcode_10001000" in text
     text = (tiny / "decl/text.dcl").read_text()
     assert "boundary start by=tag tu=netcode" in text and "tu=net " not in text
     log = (tiny / "names.log").read_text()
@@ -167,19 +177,21 @@ def test_unit_join(tiny):
     assert dcp(tiny, "unit", "new", "b", "--range", "0x10001030..0x10001060", "--by", "guess", "--why", "second half")[0] == 0
     for _ in range(4):
         assert dcp(tiny, "draft", "--next")[0] == 0
-    assert (tiny / "src/b/f_10001050.c").exists()
+    assert "/* 0x10001050, b_10001050" in (tiny / "src/b.c").read_text()
     before = len(errors(tiny))
     code, out = dcp(tiny, "unit", "join", "b", "a", "--why", "x")
     assert code == 1                                          # the earlier unit first
     code, out = dcp(tiny, "unit", "join", "a", "b", "--why", "one literal block")
     assert code == 0, out
-    assert not (tiny / "src/b").exists() and not (tiny / "include/b.h").exists()
-    assert sorted(p.name for p in (tiny / "src/a").glob("f_*.c")) == ["f_10001000.c", "f_10001020.c", "f_10001030.c", "f_10001050.c"]
-    assert "a_10001030" in (tiny / "src/a/f_10001030.c").read_text() and "a_10001050(void);" in (tiny / "include/a.h").read_text()
+    assert not (tiny / "src/b.c").exists() and not (tiny / "include/b.h").exists() and not (tiny / "notes/units/b.md").exists()
+    text = (tiny / "src/a.c").read_text()
+    at = [text.index(f"/* {a:#010x}") for a in (0x10001000, 0x10001020, 0x10001030, 0x10001050)]
+    assert at == sorted(at) and text.count('#include "a.h"') == 1 and "/* b:" not in text, text
+    assert "a_10001030" in text and "a_10001050(void);" in (tiny / "include/a.h").read_text()
     decl = [l for l in (tiny / "decl/text.dcl").read_text().splitlines() if "boundary" in l]
     # b ran to the end of the game code without an end line: a's end at b's start goes, a runs on
     assert len(decl) == 1 and decl[0].startswith("0x10001000 boundary start by=guess tu=a")
-    assert "joined from b" in (tiny / "src/a/open.md").read_text()
+    assert "joined from b" in (tiny / "notes/units/a.md").read_text()
     assert "- unit b -> a by:main why:join: one literal block" in (tiny / "names.log").read_text()
     assert len(errors(tiny)) == before and "grades_changed=0" in out
     code, out = dcp(tiny, "layout", "units")
@@ -221,7 +233,7 @@ def test_bytes_dead_owned_by_the_unit(tmp_path):
     assert dcp(root, "decl", "add", "0x10001057..0x10001060 bytes dead -- unreachable return after f4")[0] == 0
     code, out = dcp(root, "layout", "units", "-v")
     line = next(l for l in out.splitlines() if l.startswith("unit=tail"))
-    # explained now; the unit stays open only because f4, the last function of the game code, has no fragment
+    # explained now; the unit stays open only because f4, the last function of the game code, has no source
     assert "open_bytes=0" in line and "dead_bytes=9" in out and "end=open" in line
     p = Project(root)
     query.ensure_bytemap(p.store)
@@ -249,8 +261,9 @@ def test_source_only_start_owns_its_code(tmp_path):
     code up to the next stop by the contiguity convention (L.src.extent), its trailing fill too; no L10."""
     root = patched(tmp_path)
     assert dcp(root, "unit", "new", "tail", "--range", "0x10001050..0x10001060", "--by", "guess", "--why", "f4")[0] == 0
-    (root / "src" / "tail" / "f_10001058.c").write_text("/* 0x10001058, only the source names this start */\n"
-                                                        "int f5(void)\n{\n    return 0;\n}\n", newline="\n")
+    f = root / "src" / "tail.c"
+    f.write_text(f.read_text() + "\n/* 0x10001058, only the source names this start */\nint f5(void)\n{\n    return 0;\n}\n",
+                 newline="\n")
     code, out = dcp(root, "layout", "units", "-v")
     p = Project(root)
     own = [f for f in p.store.facts(Kind.symbol) if f.run == "L.src.extent"]
@@ -278,9 +291,9 @@ def test_unlinked_helper_builds_without_a_grade(tiny):
     cfg = tiny / "decompanion.toml"
     cfg.write_text(cfg.read_text().replace('root = "C:/nowhere/vc6"\n', f'root = "{VC6.as_posix()}"\n', 1), newline="\n")
     write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start by=guess tu=net -- test\n0x10001030 boundary end tu=net -- test\n")
-    write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\nint twice(int x);\n")
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n")
-    write(tiny, "src/net/u_twice.c", "/* unlinked, inlined everywhere by /Ob1 */\nint twice(int x)\n{\n    return x + x;\n}\n")
+    unit(tiny, "net", "int counter = 0x1234;  /* 0x10002000 */\nint twice(int x);\n",
+         "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n",
+         "/* unlinked, inlined everywhere by /Ob1 */\nint twice(int x)\n{\n    return x + x;\n}\n")
     code, out = dcp(tiny, "build")
     assert code == 0 and "failed=0" in out and "ok=yes" not in out, out   # only failed units get a row
     code, out = dcp(tiny, "build", "--units")
@@ -290,7 +303,7 @@ def test_unlinked_helper_builds_without_a_grade(tiny):
     assert [r["name"] for r in rows] == ["get"] and rows[0]["code"] == "byte"
     assert not [c for c in Project(tiny).store.conflicts() if c.check in ("M.gen", "M.compile")]
     code, out = dcp(tiny, "layout", "units", "-v")
-    assert "unlinked=twice  file=src/net/u_twice.c" in out
+    assert "unlinked=twice  file=src/net.c" in out
     code, out = dcp(tiny, "disasm", "--ours", "get")
     assert code == 0 and "ours=get" in out and "relocations=1" in out and "; reloc counter" in out, out
 
@@ -356,8 +369,8 @@ def test_no_analyzer_drafts_rough_skeletons(tiny, capsys):
     assert dcp(tiny, "unit", "new", "net", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code")[0] == 0
     code, out = dcp(tiny, "draft", "--next")
     assert code == 0 and "drafted=0x10001000" in out and "body=skeleton" in out, out
-    f1 = (tiny / "src/net/f_10001000.c").read_text()
-    assert f1.startswith("/* 0x10001000, net_10001000 @rough */\nvoid __cdecl net_10001000(void)\n{\n    /* disassembly")
+    text = (tiny / "src/net.c").read_text()
+    assert "\n/* 0x10001000, net_10001000 @rough */\nvoid __cdecl net_10001000(void)\n{\n    /* disassembly" in text
     assert not (tiny / "include/dcp_ghidra.h").exists()
 
 
@@ -396,18 +409,18 @@ def test_rename_is_symbol_exact(tiny):
     """A symbol with an address is renamed where it is used, not where a parameter, a local or a struct field of
     the same name stands (comments still follow by word); a new name that is only a local elsewhere is no
     collision."""
-    write(tiny, "src/a/head.c", "struct S { int a_10001000; };\nint count;\n")
-    write(tiny, "src/a/f_10001000.c", "/* 0x10001000, a_10001000 */\nint a_10001000(int count)\n{\n"
-                                      "    struct S s;\n    s.a_10001000 = count;\n    return s.a_10001000;\n}\n")
-    write(tiny, "src/a/f_10001020.c", "/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n"
-                                      "    int a_10001000 = 1;\n    int checksum = 2;\n    return a_10001000 + checksum + a_10001000;\n}\n")
+    unit(tiny, "a", "struct S { int a_10001000; };\nint count;\n",
+         "/* 0x10001000, a_10001000 */\nint a_10001000(int count)\n{\n"
+         "    struct S s;\n    s.a_10001000 = count;\n    return s.a_10001000;\n}\n",
+         "/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n"
+         "    int a_10001000 = 1;\n    int checksum = 2;\n    return a_10001000 + checksum + a_10001000;\n}\n")
     code, out = dcp(tiny, "rename", "a_10001000", "checksum", "--why", "what it computes")
     assert code == 0, out
-    f1 = (tiny / "src/a/f_10001000.c").read_text()
-    assert "/* 0x10001000, checksum */\nint checksum(int count)" in f1
-    assert "s.a_10001000 = count;" in f1 and "return s.a_10001000;" in f1
-    assert "int a_10001000 = 1;" in (tiny / "src/a/f_10001020.c").read_text()
-    assert "struct S { int a_10001000; };" in (tiny / "src/a/head.c").read_text()
+    text = (tiny / "src/a.c").read_text()
+    assert "/* 0x10001000, checksum */\nint checksum(int count)" in text
+    assert "s.a_10001000 = count;" in text and "return s.a_10001000;" in text
+    assert "int a_10001000 = 1;" in text and "return a_10001000 + checksum + a_10001000;" in text
+    assert "struct S { int a_10001000; };" in text
 
 
 def test_draft_keeps_analyzer_comments_off_the_signature():
@@ -418,25 +431,26 @@ def test_draft_keeps_analyzer_comments_off_the_signature():
 
 
 def test_rename_collides_only_with_code(tiny):
-    write(tiny, "src/a/head.c", '/* adler32: the checksum */\n#include "adler32.h"\n')
-    write(tiny, "src/a/f_10001000.c", "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return 0;\n}\n")
+    head = '/* adler32: the checksum */\n#include "adler32.h"\n'
+    unit(tiny, "a", head, "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return 0;\n}\n")
     code, out = dcp(tiny, "rename", "a_10001000", "adler32", "--why", "zlib's name")
     assert code == 0, out
-    assert "int adler32(void)" in (tiny / "src/a/f_10001000.c").read_text()
+    assert "int adler32(void)" in (tiny / "src/a.c").read_text()
     # renamed by hand already (the placeholder is gone, adler32 is the ledger's name of 0x10001000): recorded only
     code, out = dcp(tiny, "rename", "a_10001000", "adler32", "--why", "written by hand")
     assert code == 0 and "recorded=a_10001000" in out, out
     assert (tiny / "names.log").read_text().splitlines()[-1].split(" ", 1)[1].startswith(
         "0x10001000 func a_10001000 -> adler32 by:main why:written by hand")
     assert dcp(tiny, "rename", "a_10001040", "crc32", "--why", "x")[0] == 1      # nowhere, and not the ledger's name
-    write(tiny, "src/a/f_10001020.c", "/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return 1;\n}\n")
+    f = tiny / "src/a.c"
+    f.write_text(f.read_text() + "\n/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return 1;\n}\n", newline="\n")
     assert dcp(tiny, "rename", "a_10001020", "adler32", "--why", "x")[0] == 1
     # the new name written by hand in part (a header prototype of the same address) while the placeholder is still
     # in the code: the rename completes it and records it
     write(tiny, "include/a.h", "int crc32(void);  /* 0x10001020 */\n")
     code, out = dcp(tiny, "rename", "a_10001020", "crc32", "--why", "the crc table")
     assert code == 0 and "completes it" in out, out
-    assert "int crc32(void)" in (tiny / "src/a/f_10001020.c").read_text()
+    assert "int crc32(void)" in (tiny / "src/a.c").read_text()
     assert (tiny / "names.log").read_text().splitlines()[-1].split(" ", 1)[1].startswith("0x10001020 func a_10001020 -> crc32")
 
 
@@ -444,12 +458,12 @@ def test_rename_reports_every_outcome(tiny, capsys):
     """Every refused rename prints an error record (stdout) and exits 1 without writing; every rename prints what
     it changed: the record, then one line per file with its replacements (a rename that silently did nothing
     was a match-base report: a name only inside a string literal counted as found)."""
-    write(tiny, "src/a/head.c", '#include "a.h"\n')
     write(tiny, "include/a.h", "int a_HdrOnly(void);  /* 0x10001050 */\nextern int a_Unk10002000;  /* 0x10002000 */\n"
                                "#define a_Unk10002000B (*(short *)&a_Unk10002000)  /* 0x10002000 */\n")
-    write(tiny, "src/a/f_10001000.c", "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return a_Unk10002000 + a_Unk10002000B;\n}\n")
-    write(tiny, "src/a/f_10001020.c", '/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return (int)"a_InString";\n}\n')
-    write(tiny, "src/a/d_10002000.c", "int a_Unk10002000 = 0x1234;  /* 0x10002000 */\n")
+    unit(tiny, "a", '#include "a.h"\n',
+         "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return a_Unk10002000 + a_Unk10002000B;\n}\n",
+         '/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return (int)"a_InString";\n}\n')
+    unit(tiny, "d", "int a_Unk10002000 = 0x1234;  /* 0x10002000 */\n")
     log = tiny / "names.log"
     kept = (".c", ".h", ".dcl", ".log")
 
@@ -466,7 +480,7 @@ def test_rename_reports_every_outcome(tiny, capsys):
     # a data name: every file listed; its view keeps its own name, a note says so
     code, out = dcp(tiny, "rename", "a_Unk10002000", "a_Counter", "--why", "the counter")
     assert code == 0 and "kind=data  at=0x10002000  files=3  replacements=4" in out, out
-    assert "file=src/a/d_10002000.c  replacements=1" in out and "file=include/a.h  replacements=2" in out
+    assert "file=src/d.c  replacements=1" in out and "file=include/a.h  replacements=2" in out
     assert "the views of a_Unk10002000 keep their names: a_Unk10002000B" in out
     # the view by its own name
     code, out = dcp(tiny, "rename", "a_Unk10002000B", "a_CounterLo", "--why", "the low half")

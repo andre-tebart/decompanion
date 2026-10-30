@@ -1,7 +1,11 @@
-"""`dcp draft ADDR`: the first source fragment of a function, written from what the ledger knows.
+"""`dcp draft ADDR`: the first source of a function, written from what the ledger knows, into its unit's file
+src/<unit>.c (created with its head when the unit has none) in address order: before the address comment of the
+unit's next function of the target, else at the end of the file.
 
-The fragment src/<unit>/f_<addr>.c:
-  line 1   the address comment `/* 0x10001234, <name> */` (`@rough` added when the body is a skeleton)
+The function:
+  comment  the address comment `/* 0x10001234, <name> */` directly above it (`@rough` added when the body is a
+           skeleton; a target other than the default: `<target>:0x...` and the definition under
+           `#if defined(DCP_TARGET_<target>)`)
   body     the analyzer's pseudocode of the function when it has a draft (ledger/drafts.py, `dcp setup` runs
            the export), its signature on one line, every name rewritten by the rules below; else an empty
            definition whose body is a comment holding the disassembly (the skeleton, `@rough`)
@@ -27,16 +31,16 @@ has one name in the sources.
 Declarations (appended, never duplicated; source/edit.py), for every name the body uses that has an address:
   include/<unit>.h        the drafted function's prototype (the prototype lives in the defining unit's header);
                           `#include "<types header>"` when the prototype is the analyzer's (its type names)
-  src/<unit>/head.c       `#include "<types header>"` (before the unit's header) for an analyzer's body, written
+  the unit's head region  `#include "<types header>"` (before the unit's header) for an analyzer's body, written
                           to include/ from the installation when missing; then per name:
     an import (a thunk or an import slot)   the system header that declares it (Toolchain.import_header)
     a C library function                    the system header that declares it (Toolchain.declaring_header)
     a name another unit's header declares   `#include "<that unit>.h"`
-    any other function                      in head.c's dcp block: a K&R declaration with the analyzer's return
+    any other function                      in the head's dcp block: a K&R declaration with the analyzer's return
                                             type, its whole prototype for a convention whose decorated name
                                             needs the parameters (Toolchain.sized_conventions: VC6 __stdcall /
                                             __fastcall), `int name();` without a draft
-    a datum                                 in head.c's dcp block: `extern <type> <name>;`, the type from the
+    a datum                                 in the head's dcp block: `extern <type> <name>;`, the type from the
                                             spelling of the analyzer's label (Analyzer.data_labels; Ghidra: PTR_
                                             `undefined *`, s_ / u_ `char <name>[]`, ...), else its
                                             unknown_data_type
@@ -73,7 +77,7 @@ class Draft:
     file: str
     source: str                                       # the analyzer's key | skeleton
     renamed: dict = field(default_factory=dict)       # old placeholder -> name (project-wide)
-    declared: list = field(default_factory=list)      # what was added to head.c / the header
+    declared: list = field(default_factory=list)      # what was added to the unit's head / the header
     uses: dict = field(default_factory=dict)          # name -> (address, function?)
 
 
@@ -82,7 +86,7 @@ def placeholder(unit: str, a: int) -> str:
 
 
 def function_name(names, unit: str, a: int) -> str:
-    """The name a new fragment defines (module docstring)."""
+    """The name a new draft defines (module docstring)."""
     n, origin = names.at.get(a, (None, None))
     if n and origin in CANONICAL:
         return n
@@ -116,7 +120,7 @@ def split(text: str) -> tuple[str, str]:
 
 def lead_comments(text: str) -> list[str]:
     """The analyzer's comments before the signature (Ghidra's `/* WARNING: ... */`), each for a line of its own:
-    a comment on the signature's line hides the definition from the fragment scan."""
+    a comment on the signature's line hides the definition from the scan."""
     return [" ".join(c.split()) for c in COMMENT.findall(text.partition("{")[0])]
 
 
@@ -181,10 +185,10 @@ def types_headers() -> set[str]:
     return {cls.types_header.name for cls in analyzers.ANALYZERS.values() if cls.types_header is not None}
 
 
-def ensure_types_header(root: Path, head: Path, unit: str, shipped: Path, d: "Draft") -> str:
+def ensure_types_header(root: Path, head: Path, unit: str, shipped: Path, d: "Draft", end: int | None = None) -> str:
     """include/<the analyzer's types header> (copied from the installation, again when the installation's copy
-    differs: the file is dcp's, not the project's) and its #include in head.c before the unit's own header;
-    returns the #include line."""
+    differs: the file is dcp's, not the project's) and its #include in the unit's head (its first `end` lines)
+    before the unit's own header; returns the #include line."""
     line = f'#include "{shipped.name}"'
     dh = root / "include" / shipped.name
     if not shipped.exists():
@@ -197,9 +201,9 @@ def ensure_types_header(root: Path, head: Path, unit: str, shipped: Path, d: "Dr
     if line not in text:
         own = f'#include "{unit}.h"'
         lines = text.splitlines()
-        at = next((i for i, l in enumerate(lines) if l.strip() == own), None)
+        at = next((i for i, l in enumerate(lines[:end]) if l.strip() == own), None)
         if at is None:
-            E.ensure_include(head, line)
+            E.ensure_include(head, line, end)
         else:
             lines.insert(at, line)
             E.write(head, "\n".join(lines) + "\n")
@@ -208,7 +212,8 @@ def ensure_types_header(root: Path, head: Path, unit: str, shipped: Path, d: "Dr
 
 
 def draft(p, view, names, a: int, unit: str | None = None) -> Draft:
-    """Write the fragment of the function at a (module docstring). DraftError when there is nothing to draft."""
+    """Write the function at a into its unit's file (module docstring). DraftError when there is nothing to
+    draft."""
     from ..ledger import drafts as G
     root = p.root
     u = view.unit_at(a)
@@ -222,50 +227,61 @@ def draft(p, view, names, a: int, unit: str | None = None) -> Draft:
     if not (a in view.starts or any(lo == a for lo, _, _ in view.funcs)):
         raise DraftError(f"no function starts at {a:#x} (dcp layout starts; declare one with `ADDR start -- why`)")
     name = function_name(names, tu, a)
-    rel = f"src/{tu}/f_{a:08x}.c"
-    path = root / rel
-    if path.exists():
-        why = [f"{e.file}:{e.line}: {e.check} {e.message}" for e in srcscan.scan(root).errors if e.file == rel]
-        raise DraftError(f"{rel} exists but does not parse as a fragment: " + ("; ".join(why) or "dcp conflicts"))
+    rel = f"src/{tu}.c"
+    head = root / rel
     d = Draft(a, tu, name, rel, "skeleton")
     entry = G.draft(p.store, p.image.sha256, a)
     all_entries = G.entries(p.store)
     labels = {e.name: e.start for e in all_entries if e.name}
-    head = root / "src" / tu / "head.c"
     header = root / "include" / f"{tu}.h"
     if not head.exists():
-        E.write(head, f"/* {tu}: the unit's includes, local types and declarations */\n#include \"{tu}.h\"\n")
+        E.write(head, f"/* {tu}: the unit's includes, local types and declarations, then its functions */\n"
+                      f"#include \"{tu}.h\"\n")
     if not header.exists():
         E.write(header, E.header_text(tu, ""))
-    E.ensure_include(head, f'#include "{tu}.h"')
     # one address, one name: earlier placeholders of this address follow
     olds = sorted({ph.ident for ph in srcscan.scan(root).placeholders if ph.value == a and ph.ident != name})
     if olds:
         d.renamed = {o: name for o in olds}
         E.rename_words(root, d.renamed)
-    for f in (root / "src").glob("*/head.c"):
+    for f in sorted((root / "src").glob("*.c")):
         if E.drop_declarations(f, name):
             d.declared.append(f"dropped the declaration of {name} from {f.relative_to(root).as_posix()}'s dcp block")
+    default = p.default_target
+    tag = f"{a:#010x}" if p.target_name == default else f"{p.target_name}:{a:#010x}"
     if entry is not None and entry.body.strip():
         d.source = entry.analyzer
         text, uses = rewrite_body(p, entry, name, names, view, labels)
         sig, body = split(text)
         d.uses = uses
-        shipped = analyzers.dialect(entry.analyzer).types_header
-        include = ensure_types_header(root, head, tu, shipped, d) if shipped is not None else None
         lead = "".join(c + "\n" for c in lead_comments(text))
-        E.write(path, f"/* {a:#010x}, {name} */\n{lead}{sig}\n{body.strip(chr(10))}\n")
-        if E.add_to_header(header, tu, sig + ";", name):
-            d.declared.append(f"include/{tu}.h: {sig};")
-        if include is not None and E.ensure_after_guard(header, tu, include):
-            d.declared.append(f"include/{tu}.h: {include}")
-        declare_uses(p, names, view, head, tu, uses, {e.start: e for e in all_entries}, labels, d)
+        block = f"/* {tag}, {name} */\n{lead}{sig}\n{body.strip(chr(10))}\n"
     else:
         sig = skeleton_signature(p.toolchain, name)
-        E.write(path, f"/* {a:#010x}, {name} @rough */\n" + skeleton(p, names, a, name))
-        if E.add_to_header(header, tu, sig + ";", name):
-            d.declared.append(f"include/{tu}.h: {sig};")
+        uses = None
+        block = f"/* {tag}, {name} @rough */\n" + skeleton(p, names, a, name)
+    if p.target_name != default:
+        block = f"#if defined({srcscan.target_macro(p.target_name)})\n{block}#endif\n"
+    E.insert_function(head, block, next_function_line(root, rel, a, p.target_name, default))
+    end = E.head_end(root, rel)
+    E.ensure_include(head, f'#include "{tu}.h"', end)
+    if E.add_to_header(header, tu, sig + ";", name):
+        d.declared.append(f"include/{tu}.h: {sig};")
+    if uses is not None:
+        shipped = analyzers.dialect(entry.analyzer).types_header
+        include = ensure_types_header(root, head, tu, shipped, d, end) if shipped is not None else None
+        if include is not None and E.ensure_after_guard(header, tu, include):
+            d.declared.append(f"include/{tu}.h: {include}")
+        declare_uses(p, names, view, head, tu, uses, {e.start: e for e in all_entries}, labels, d, end)
     return d
+
+
+def next_function_line(root: Path, rel: str, a: int, target: str, default: str) -> int | None:
+    """The line of the address comment of the unit file's function of the target that follows address a (the
+    least address above it), None when none does: where a draft of a goes."""
+    after = [(x, f.comment_line) for f in srcscan.scan(root).functions if f.file == rel
+             and (x := srcscan.address_for(f.addrs, target, default)) is not None and x > a]
+    return min(after)[1] if after else None
 
 
 def header_declaring(root: Path, name: str, unit: str) -> str | None:
@@ -281,14 +297,16 @@ def header_declaring(root: Path, name: str, unit: str) -> str | None:
     return None
 
 
-def declare_uses(p, names, view, head: Path, unit: str, uses: dict, entries: dict, labels: dict, d: Draft):
-    """The includes and declarations the names of a draft need (module docstring)."""
+def declare_uses(p, names, view, head: Path, unit: str, uses: dict, entries: dict, labels: dict, d: Draft,
+                 end: int | None = None):
+    """The includes and declarations the names of a draft need (module docstring), in the unit's head (its
+    first `end` lines)."""
     root, tc = p.root, p.toolchain
     rel = head.relative_to(root).as_posix()
     sized = conventions(tc)
 
     def include(line):
-        if E.ensure_include(head, line):
+        if E.ensure_include(head, line, end):
             d.declared.append(f"{rel}: {line}")
 
     for n, (a, func, dtype) in sorted(uses.items()):
@@ -316,5 +334,5 @@ def declare_uses(p, names, view, head: Path, unit: str, uses: dict, entries: dic
                 decl = f"int {n}();"
         else:
             decl = f"extern char {n}[];" if dtype == "char []" else f"extern {dtype} {n};"
-        if E.add_declaration(head, decl, n):
+        if E.add_declaration(head, decl, n, end):
             d.declared.append(f"{rel}: {decl}")

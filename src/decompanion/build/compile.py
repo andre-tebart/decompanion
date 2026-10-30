@@ -2,8 +2,9 @@
 in a thread pool, the objects content-addressed under build/obj/<sha256>.obj, the outcome in the store's `tu`
 table.
 
-A unit is stale iff one of three hashes differs from its tu row: the source hash (the amalgamation's text),
-the flags hash (the target's cflags plus the unit's override), or the include hash (the contents of every
+A unit is stale iff one of three hashes differs from its tu row: the source hash (the text of src/<unit>.c),
+the flags hash (the target's cflags plus the unit's override and the target's DCP_TARGET_<name> define), or the
+include hash (the contents of every
 file in the unit's actual include set). The include set comes from the preprocessor (Toolchain.includes) and
 is cached in the store by (source hash, flags hash, listing hash of every include search directory): it can
 only change when the unit's text, its flags, a file in the set, or a directory listing changes, and a changed
@@ -31,7 +32,7 @@ from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..ledger.fact import canonical
 from ..ledger.store import sha256
-from . import amalg as A
+from . import tu as T
 
 
 @dataclass
@@ -66,10 +67,16 @@ def flags_for(project, target: str, unit: str) -> tuple[list[str], dict | None]:
     return flags, None
 
 
+def compile_flags(project, target: str, unit: str) -> list[str]:
+    """The flags a unit compiles with: flags_for's and the target's define (srcscan.target_macro: a function of
+    some targets only stands under `#if` on their macros)."""
+    return flags_for(project, target, unit)[0] + [project.toolchain.define_flag(srcscan.target_macro(target))]
+
+
 def include_dirs(unit: str) -> list[Path]:
-    """The include directories of a unit, relative to the project root: its own directory (a quoted include
-    in head.c resolves there although the compiler reads the amalgamation) and include/."""
-    return [Path("src") / unit, Path("include")]
+    """The include directories of a unit, relative to the project root (a quoted include also resolves beside
+    the unit's file, in src/)."""
+    return [Path("include")]
 
 
 _listing: dict[str, str] = {}
@@ -119,9 +126,9 @@ class Hasher:
 _plans: dict[tuple, list] = {}
 
 
-def plan(project, scan=None) -> list[A.Amalg]:
-    """The amalgamations of the project's current target, memoised per process by the root, the target and the
-    hashes of everything they are made of (the sources, the declarations, the target list)."""
+def plan(project, scan=None) -> list[T.TU]:
+    """The translation units of the project's current target (build/tu.py), memoised per process by the root,
+    the target and the hashes of what they depend on (the sources, the declarations, the target list)."""
     key = None
     if scan is None:
         key = (str(project.root), project.target_name, project.default_target, project.input_hash("src"),
@@ -133,7 +140,7 @@ def plan(project, scan=None) -> list[A.Amalg]:
     targets = [t["name"] for t in project.input("targets")]
     decls, _ = decl_mod.load(project.input("decl"), project.root, targets)
     names = decl_mod.unit_files(decls, project.target_name, project.default_target)
-    out = A.units(project.root, scan, project.target_name, project.default_target, names)
+    out = T.units(project.root, scan, project.target_name, project.default_target, names)
     if key is not None:
         if len(_plans) > 2:
             _plans.clear()
@@ -142,16 +149,14 @@ def plan(project, scan=None) -> list[A.Amalg]:
 
 
 def located(a, diagnostics: list) -> list:
-    """The compiler's diagnostics with a declared file name mapped back to the part files (Amalg.locate)."""
-    if not a.file_name:
-        return diagnostics
+    """The compiler's diagnostics in the unit's file at its physical lines (TU.locate: the name and line its
+    `#line` directives give mapped back)."""
     out = []
     for d in diagnostics:
-        hits = a.locate(d.line) if d.file.lower() == a.file_name.lower() else []
+        hits = a.locate(d.file, d.line) if d.file else []
         if hits:
-            f, line = hits[0]
-            also = "; or " + ", ".join(f"{g}({k})" for g, k in hits[1:]) if len(hits) > 1 else ""
-            out.append(replace(d, file=f, line=line, message=d.message + also))
+            also = "; or " + ", ".join(f"{a.file}({k})" for k in hits[1:]) if len(hits) > 1 else ""
+            out.append(replace(d, file=a.file, line=hits[0], message=d.message + also))
         else:
             out.append(d)
     return out
@@ -175,29 +180,29 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
     if force:
         fsmemo.forget_all()
     with timing.phase("ensure.plan"):
-        amalgs = plan(project)
-    rep.units = len(amalgs)
-    if amalgs and not tc.available():
+        units_ = plan(project)
+    rep.units = len(units_)
+    if units_ and not tc.available():
         rep.unavailable = True
         if log:
-            log(f"build: the toolchain is not available (root {tc.root}): {len(amalgs)} units not compiled")
+            log(f"build: the toolchain is not available (root {tc.root}): {len(units_)} units not compiled")
         return rep
     rows = st.tus()
     hasher = Hasher()
     todo_pre, work = [], {}
     t_keys = time.perf_counter()
-    for a in amalgs:
-        flags, _ = flags_for(project, a.target, a.unit)
+    for a in units_:
+        flags = compile_flags(project, a.target, a.unit)
         dirs = include_dirs(a.unit)
         search = [Path(root, d) if not Path(d).is_absolute() else Path(d) for d in tc.include_search_dirs(dirs)]
         key = sha256(a.src_hash, sha256(canonical(flags)), listing_hash(search))
         work[a.unit] = (a, flags, dirs, key)
         if st.include_set(key) is None:
-            A.write(root, a)                                  # the preprocessor reads it
             todo_pre.append(a.unit)
+
     def ours(a) -> set[str]:
-        """The unit's own part files (and declared file name), resolved: not part of its include set."""
-        return ({str((Path(root) / m.file).resolve()).lower() for m in a.members}
+        """The unit's own file (and declared file name), resolved: not part of its include set."""
+        return ({str((Path(root) / a.file).resolve()).lower()}
                 | ({str(Path(a.file_name).resolve()).lower()} if a.file_name else set()))
 
     def preprocess(unit):
@@ -232,9 +237,6 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
                  and (not row["ok"] or obj_path(root, row["obj_hash"]).exists()))
         if not fresh:
             stale.append(unit)
-            A.write(root, a)
-        elif not (root / a.path).exists():
-            A.write(root, a)                                  # the amalgamation on disk is `dcp unit cat`'s and lint's
     timing.add("ensure.inc", (time.perf_counter() - t_inc) * 1000)
 
     def compile_one(unit):
@@ -259,7 +261,7 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
 
     if stale:
         if log:
-            log(f"build: compiling {len(stale)} of {len(amalgs)} units (target {project.target_name})")
+            log(f"build: compiling {len(stale)} of {len(units_)} units (target {project.target_name})")
         with timing.phase("ensure.cl"), ThreadPoolExecutor(n) as pool:
             results = list(pool.map(compile_one, stale))
         for unit, res, files, obj_hash in results:

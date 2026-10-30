@@ -2,7 +2,7 @@
 refs, draft): one C name per address, chosen by a fixed order of origins, never guessed.
 
 Order (the first origin that names an address wins):
-  source   the definition in our sources (L.src: a fragment's function, a data definition or extern)
+  source   the definition in our sources (L.src: a sourced function, a data definition or extern)
   decl     `ADDR name NAME` in decl/*.dcl
   export   the export table (proven)
   entry    the user entry the start-up code calls (S.entry.user: DllMain, WinMain, main)

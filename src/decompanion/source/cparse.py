@@ -7,12 +7,14 @@ libclang: `[lint] libclang = "<path>"` in decompanion.toml, else the libclang.dl
 LLVM default install path (library). load(path) loads it once per process; version() names it in every cache key
 of a result derived from a parse (another clang may report otherwise).
 
-diagnostics(src, root, sysdirs, incdirs, keep=None) -> [{file, line, kind, msg, flag, name}], the lint-style list
-the clang subprocess gave before, in clang's order (a diagnostic followed by its notes):
-  file   relative to root when it is inside it; in the parsed file itself the name its `#line` directives give
-         (as written, resolved against root), else the header's own path
-  line   the line there: in the parsed file through its `#line` directives (line_map: read from the text, not
-         from clang, whose precompiled preamble drops a `#line` it holds), else the header's own line
+diagnostics(src, root, sysdirs, incdirs, defines=(), presumed=False, keep=None) -> [{file, line, kind, msg, flag,
+name}], the lint-style list the clang subprocess gave before, in clang's order (a diagnostic followed by its notes):
+  file   relative to root when it is inside it, else as clang names it; with `presumed`, in the parsed file the
+         name its `#line` directives give (a generated text: the all-declarations unit's pseudo files)
+  line   the physical line there: a `#line` directive of a unit (its original `__FILE__` name, its `__LINE__`
+         pins) is the compiler's business; with `presumed`, in the parsed file the line its `#line` directives
+         give (line_map: read from the text, not from clang, whose precompiled preamble drops a `#line` it
+         holds)
   kind   error / warning / note; `flag` the warning option (`-Wdeprecated-non-prototype`) or ""
   name   the symbol the diagnostic is about: the identifier clang quotes in it (libclang hands a diagnostic's
          arguments over only in its text; a call written through a macro names the callee there, where the
@@ -61,7 +63,7 @@ QUOTED = re.compile(r"'(?:(?:struct|union|enum) )?([A-Za-z_]\w*)'")
 C_WORDS = {"struct", "union", "enum", "int", "char", "short", "long", "void", "unsigned", "signed", "float", "double"}
 DEFAULT_LIBCLANG = "C:/Program Files/LLVM/bin/libclang.dll"
 LIVE = 4                             # live units kept for a reparse (each holds its whole AST)
-VERSION = "3"                        # with lint.VERSION and version() in every cached result derived from a parse
+VERSION = "4"                        # with lint.VERSION and version() in every cached result derived from a parse
 
 
 def library(cfg: dict | None) -> Path | None:
@@ -94,8 +96,9 @@ def version() -> str:
     return ci._CXString.from_result(f())
 
 
-def args(sysdirs: list[Path], incdirs: list[Path]) -> list[str]:
-    return [*ARGS, *(x for d in sysdirs for x in ("-isystem", str(d))), *(f"-I{d}" for d in incdirs)]
+def args(sysdirs: list[Path], incdirs: list[Path], defines=()) -> list[str]:
+    return [*ARGS, *(x for d in sysdirs for x in ("-isystem", str(d))), *(f"-I{d}" for d in incdirs),
+            *(f"-D{d}" for d in defines)]
 
 
 def line_map(text: str, name: str) -> tuple[list[int], list[tuple[str, int]]]:
@@ -124,11 +127,12 @@ _lock = threading.Lock()
 
 
 def parse(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str | None = None,
-          keep: str | None = None) -> ci.TranslationUnit:
-    """One translation unit; src relative to root or absolute, its text read when not given."""
+          keep: str | None = None, defines=()) -> ci.TranslationUnit:
+    """One translation unit; src relative to root or absolute, its text read when not given; defines: the
+    macros the command line defines (a target's `DCP_TARGET_<name>`)."""
     src = src if src.is_absolute() else Path(root) / src
     text = src.read_text(errors="replace") if text is None else text
-    a = args(sysdirs, incdirs)
+    a = args(sysdirs, incdirs, defines)
     unsaved = [(str(src), text)]
     if keep is None:
         return ci.Index.create().parse(str(src), args=a, unsaved_files=unsaved, options=OPTIONS)
@@ -178,12 +182,13 @@ def name_at(tu: ci.TranslationUnit, loc: ci.SourceLocation) -> str | None:
     return None
 
 
-def diagnostics(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], keep: str | None = None) -> list[dict]:
+def diagnostics(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], defines=(), presumed: bool = False,
+                keep: str | None = None) -> list[dict]:
     root = Path(root)
     path = src if src.is_absolute() else root / src
     text = path.read_text(errors="replace")
-    tu = parse(path, root, sysdirs, incdirs, text, keep)
-    lmap = line_map(text, str(path))
+    tu = parse(path, root, sysdirs, incdirs, text, keep, defines)
+    lmap = line_map(text, str(path)) if presumed else None
     main = path.resolve()
     files: dict[str, tuple[bool, str]] = {}          # clang's file name -> (the parsed file?, relative path)
     out = []
@@ -196,7 +201,7 @@ def diagnostics(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path],
         if f not in files:
             files[f] = (Path(f).resolve() == main, rel(root, f))
         is_main, fr = files[f]
-        if is_main:
+        if is_main and lmap is not None:
             mf, line = locate(lmap, line)
             fr = rel(root, mf)
         out.append({"file": fr, "line": line, "kind": kind, "msg": d.spelling, "flag": d.option or "",
@@ -302,11 +307,9 @@ def _casts(tu: ci.TranslationUnit, f: ci.File, data: bytes):
 
 
 def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str | None = None,
-          parts: list[tuple[int, str]] | None = None, keep: str | None = None) -> dict:
-    """What the scan reads of one translation unit, per project file it holds (the parsed file's parts by its
-    `#line` names, or by `parts`, the [(physical line of its `#line 1 "<path>"`, path)] the caller composed the
-    text of: a `#line` pin inside a part (a declared original file name) is no part; every header below root it
-    includes):
+          defines=(), keep: str | None = None) -> dict:
+    """What the scan reads of one translation unit, per project file it holds (the parsed file, every header
+    below root it includes), at the files' physical positions (a `#line` directive maps nothing):
       defs  [(line, col, name, static)] of every function definition that is no inline helper
       decls [("f", name, static, start, name position, end, body start or None, K&R parameters or None) of every
             function declaration and definition (no inline helper); ("v", name, static, start, name position,
@@ -317,8 +320,6 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
       types [(line, name)] of every typedef, every struct / union / enum with a body and every enum constant
             defined there
       dead  [(first line, last line)] of every range the preprocessor skipped (a dead `#if` branch)
-      spills [(line, name, file, line)] of every function definition whose body ends in another file (its end
-            in decls is None)
       macros [(line, name, function-like)] of every macro the preprocessor defined there (a live `#define`)
       casts [(line, col, end line, end col, literal)] of every integer literal cast to a pointer type in code
             (_casts): from the cast's `(` to the literal's end
@@ -331,12 +332,11 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
     root = Path(root)
     path = src if src.is_absolute() else root / src
     text = path.read_text(errors="replace") if text is None else text
-    tu = parse(path, root, sysdirs, incdirs, text, keep)
-    lmap = (line_map(text, str(path)) if parts is None else
-            ([0] + [d for d, _ in parts], [(str(path), 1)] + [(r, 1) for _, r in parts]))
+    tu = parse(path, root, sysdirs, incdirs, text, keep, defines)
     main = path.resolve()
     main_lines = text.split("\n")
     rootr = root.resolve()
+    main_rel = main.relative_to(rootr).as_posix() if main.is_relative_to(rootr) else None
     files: dict[str, tuple] = {}         # clang's file name -> (parsed file?, the file below root or None)
     raw: dict[str, list[bytes]] = {}
 
@@ -351,12 +351,10 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
         is_main, rel_ = files[f]
         line, col = loc.line, loc.column
         if is_main:
-            bline = main_lines[line - 1].encode() if 0 < line <= len(main_lines) else b""
-            mf, line = locate(lmap, line)
-            p = Path(mf) if Path(mf).is_absolute() else root / mf
-            if not p.resolve().is_relative_to(rootr):
+            if main_rel is None:
                 return None
-            rel_ = p.resolve().relative_to(rootr).as_posix()
+            bline = main_lines[line - 1].encode() if 0 < line <= len(main_lines) else b""
+            rel_ = main_rel
         elif rel_ is None:
             return None
         else:
@@ -370,7 +368,7 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
 
     def entry(rel_: str) -> dict:
         return out.setdefault(rel_, {"defs": [], "vars": [], "macros": [], "casts": [], "decls": [], "types": [],
-                                     "dead": [], "spills": []})
+                                     "dead": []})
 
     def dead(fname: str):
         """The lines of a file the preprocessor skipped, as where() maps them."""
@@ -397,10 +395,7 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             if w is None or n is None or w[0] != n[0]:
                 continue
             if e is not None and e[0] != w[0]:
-                # a body that runs on into the next file (a fragment holds part of the next one's function):
-                # the definition stays its head's file's, its end unknown there, the spill reported
-                entry(w[0])["spills"].append((w[1], c.spelling, e[0], e[1]))
-                e = None
+                e = None                                   # a body that ends in an included file: no end here
             static = c.storage_class == ci.StorageClass.STATIC
             body = next((x for x in c.get_children() if x.kind == ci.CursorKind.COMPOUND_STMT), None)
             b = where(body.extent.start) if body is not None else None
@@ -450,13 +445,7 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
                 line = bisect.bisect_left(nl, off) + 1
                 bol = nl[line - 2] + 1 if line > 1 else 0
                 col = len(data[bol:off].decode("utf-8", errors="replace")) + 1
-                if rel_ is None:                              # the parsed file: its parts
-                    mf, line = locate(lmap, line)
-                    p = Path(mf) if Path(mf).is_absolute() else root / mf
-                    ws.append((p.resolve().relative_to(rootr).as_posix() if p.resolve().is_relative_to(rootr) else None,
-                               line, col))
-                else:
-                    ws.append((rel_, line, col))
+                ws.append((rel_, line, col))
             (w, wl, wc), (e, el, ec) = ws
             if w is not None and w == e:
                 entry(w)["casts"].append((wl, wc, el, ec, lit))
@@ -468,9 +457,9 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             entry(r)
             casts(d, Path(d).read_bytes(), r)
             dead(d)
-    for _, r in parts or []:
-        entry(r)
-    casts(str(path), text.encode(), None)
+    if main_rel is not None:
+        entry(main_rel)
+    casts(str(path), text.encode(), main_rel)
     dead(str(path))
     # an include clang did not find: the file may appear later without the text changing, no result to keep
     missing = any(d.severity == ci.Diagnostic.Fatal and "not found" in d.spelling for d in tu.diagnostics)
@@ -480,21 +469,21 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
 LOCAL = {ci.CursorKind.PARM_DECL, ci.CursorKind.FIELD_DECL, ci.CursorKind.LABEL_STMT}
 
 
-def refs(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str, parts: list, names: list[str],
+def refs(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str, defines, names: list[str],
          keep: str | None = None) -> dict[str, list[tuple[int, int]]]:
     """rel -> [(line, col)] of every whole-word occurrence of one of `names` in the project files of a translation
-    unit (its parts, the headers below root it reads) that refers to a declaration not at file scope: a local
+    unit (the file, the headers below root it reads) that refers to a declaration not at file scope: a local
     variable, a parameter, a struct / union field, a label (clang's cursor at the occurrence, the declaration it
     refers to or is). What a rename of a file-scope symbol leaves alone; an occurrence in a comment, a string,
     a dead branch or a macro body refers to nothing and is not listed."""
     root = Path(root)
     path = src if src.is_absolute() else root / src
-    tu = parse(path, root, sysdirs, incdirs, text, keep)
+    tu = parse(path, root, sysdirs, incdirs, text, keep, defines)
     rootr = root.resolve()
-    lmap = ([0] + [d for d, _ in parts], [(str(path), 1)] + [(r, 1) for _, r in parts])
+    main = path.resolve()
     pat = re.compile(rb"\b(?:" + b"|".join(re.escape(n.encode()) for n in names) + rb")\b")
     out: dict[str, list] = {}
-    files = [(str(path), text.encode(), None)]
+    files = [(str(path), text.encode(), main.relative_to(rootr).as_posix() if main.is_relative_to(rootr) else None)]
     for i in tu.get_includes():
         p = Path(i.include.name).resolve()
         if p.is_relative_to(rootr) and all(p != Path(f).resolve() for f, _, _ in files):
@@ -515,13 +504,8 @@ def refs(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: 
             line = bisect.bisect_left(nl, m.start()) + 1
             bol = nl[line - 2] + 1 if line > 1 else 0
             col = len(data[bol:m.start()].decode("utf-8", errors="replace")) + 1
-            r = rel_
-            if r is None:
-                mf, line = locate(lmap, line)
-                if mf == str(path):
-                    continue
-                r = mf
-            out.setdefault(r, []).append((line, col))
+            if rel_ is not None:
+                out.setdefault(rel_, []).append((line, col))
     return out
 
 
@@ -561,8 +545,9 @@ def _work(job):
 
 
 def many(jobs: list[tuple], fn: str = "diagnostics") -> list:
-    """WORK[fn](*job) for each job, in order (diagnostics: (src, root, sysdirs, incdirs, keep); model: (src, root,
-    sysdirs, incdirs, text, parts, keep)), keep last: a single job, and the single one to keep among several (the
+    """WORK[fn](*job) for each job, in order (diagnostics: (src, root, sysdirs, incdirs, defines, presumed, keep); model:
+    (src, root, sysdirs, incdirs, text, defines, keep); refs: (src, root, sysdirs, incdirs, text, defines, names,
+    keep)), keep last: a single job, and the single one to keep among several (the
     unit an edit relints next to the all-declarations unit), in process, where it stays live; the others in the
     worker processes meanwhile, without their keep."""
     global _pool

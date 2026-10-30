@@ -54,14 +54,14 @@ def test_dead_bytes_over_walked_code_fail(server):
     assert code == 1 and "L6" in out
 
 
-def test_walk_crossing_a_fragment_fails(server):
+def test_walk_crossing_a_source_fails(server):
     set_decl(server, "")
-    src = server / "src" / "dllmain" / "f_10008cc5.c"
+    src = server / "src" / "inside.c"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("/* 0x10008cc5, a start inside Init */\nvoid f(void)\n{\n}\n", newline="\n")
     try:
         code, out = dcp(server, "check")
-        assert code == 1 and "L1" in out
+        assert code == 1 and "L1" in out and "src/inside.c:1: f starts at 0x10008cc5" in out, out
     finally:
         src.unlink()
     assert dcp(server, "check")[0] == 0

@@ -69,13 +69,13 @@ def probe(project, log=None) -> dict:
     all_combos = combos(grid)
     from ..ledger import grades as G
     rows = [r for r in G.function_grades(st) if r["code"] == "byte"]
-    amalgs = {a.unit: a for a in B.plan(project)}
+    units_ = {a.unit: a for a in B.plan(project)}
     jobs = []           # (job id, kind, unit, source path rel, base flags, include dirs, anchors [(id, name, addr)])
     for unit in sorted({r["unit"] for r in rows}):
-        a = amalgs.get(unit)
+        a = units_.get(unit)
         if a is None:
             continue
-        flags, _ = B.flags_for(project, a.target, unit)
+        flags = B.compile_flags(project, a.target, unit)
         anchors = [(f"{r['addr']:#010x}", r["name"], r["addr"]) for r in rows if r["unit"] == unit]
         jobs.append((unit, "user", unit, Path(a.path), strip_grid(flags, grid), B.include_dirs(unit), anchors, a.text))
     lib_names = {}

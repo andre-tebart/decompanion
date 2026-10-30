@@ -177,11 +177,9 @@ def statement_at(files: Files, rel: str, line: int) -> Stmt | None:
     if code[after:end].strip():                   # code after the `;` on its line: the block ends at the `;`
         end = s1
     start = starts[line - 1]
-    name = Path(rel).name
-    fragment = bool(srcscan.FRAGMENT.match(name) or srcscan.UNLINKED_FRAGMENT.match(name))
     k = S.end_before(start)
     ci = S.own_line_comment_ends().get(k)
-    if ci is not None and not (fragment and ci == 0) and text.count("\n", k, start) <= 1:
+    if ci is not None and text.count("\n", k, start) <= 1:
         start = text.rfind("\n", 0, S.comments[ci][0]) + 1
     return Stmt(rel, start, end, s0, s1)
 
@@ -362,7 +360,7 @@ def defined_in(code: str, idents: set[str]) -> str | None:
 
 def defined_between(files: Files, order: list[str], a: tuple[str, int], b: tuple[str, int], idents: set[str]) -> str | None:
     """The first of `idents` (by name) the unit defines or declares from position a (file, offset) up to position
-    b, in amalgamation order: a macro, typedef, tag, enum constant or declaration of the files' models starting
+    b, in the unit's order: a macro, typedef, tag, enum constant or declaration of the files' models starting
     on a line in between; the text (defined_in over `between`) when a file has no model."""
     rank = {f: i for i, f in enumerate(order)}
     (fa, oa), (fb, ob) = a, b
@@ -382,8 +380,8 @@ def defined_between(files: Files, order: list[str], a: tuple[str, int], b: tuple
 
 
 def between(files: Files, order: list[str], a: tuple[str, int], b: tuple[str, int]) -> str:
-    """The comment-blanked code of the unit from position a (file, offset) up to position b, in amalgamation
-    order (a before b)."""
+    """The comment-blanked code of the unit from position a (file, offset) up to position b, in the order of
+    the unit's files (a before b)."""
     rank = {f: i for i, f in enumerate(order)}
     (fa, oa), (fb, ob) = a, b
     if fa == fb:
@@ -395,7 +393,7 @@ def between(files: Files, order: list[str], a: tuple[str, int], b: tuple[str, in
 
 
 def d4_edits(files: Files, model, unit_order: dict[str, list[str]]) -> tuple[list[Edit], list[str]]:
-    """unit_order: unit -> its part files in amalgamation order."""
+    """unit_order: unit -> its files in TU order (one: src/<unit>.c)."""
     edits, manual = [], []
     groups: dict[tuple, list] = {}
     for d in model:
@@ -475,8 +473,8 @@ def failed_units(p) -> set[str]:
 # ------------------------------------------------------------------------------------------------ trial compiles
 class Trial:
     """Compiles a unit with edits that are not written yet and compares its functions with the image: the
-    amalgamation composed from the edited texts (amalg.compose's reader), one compiler run into
-    build/obj/trial/, every fragment of the unit compared as M.match compares it (match/compare.py). A
+    unit's edited text written to build/trial/, one compiler run into build/obj/trial/, every function of the
+    unit compared as M.match compares it (match/compare.py). A
     unit's edits are accepted together when the unit compiles and keeps every byte match; else each group
     is tried alone (in parallel) and the groups that pass on their own are tried together, then added one at
     a time while the unit stays whole. Nothing touches the sources or the store."""
@@ -486,7 +484,7 @@ class Trial:
         from ..match import compare as C
         self.p, self.B, self.C = p, B, C
         self.img, self.tc = p.image, p.toolchain
-        self.amalgs = {a.unit: a for a in B.plan(p)}
+        self.units = {a.unit: a for a in B.plan(p)}
         st = p.store
         self.relocs = sorted(f.lo for f in st.facts(Kind.ref) if f.value["rkind"] == "reloc") or None
         if not self.img.relocations():
@@ -508,15 +506,16 @@ class Trial:
         """(the addresses of the unit that byte-match with these texts, '') or (None, the compiler's first error)."""
         import itertools
         from pathlib import Path as P
-        a = self.amalgs[unit]
-        text, _ = self.B.A.compose(self.p.root, a.members, a.file_name, read=texts.get)
+        a = self.units[unit]
+        text = texts.get(a.file)
+        text = a.text if text is None else text
         k = next(_counter)
-        src = P("build") / "amalg" / "trial" / f"{unit}-{k}.c"
+        src = P("build") / "trial" / f"{unit}-{k}.c"
         obj = P("build") / "obj" / "trial" / f"{unit}-{k}.obj"
         (self.p.root / src).parent.mkdir(parents=True, exist_ok=True)
         (self.p.root / obj).parent.mkdir(parents=True, exist_ok=True)
         (self.p.root / src).write_text(text, newline="\n")
-        flags, _ = self.B.flags_for(self.p, a.target, unit)
+        flags = self.B.compile_flags(self.p, a.target, unit)
         res = self.tc.compile(src, obj, flags, self.B.include_dirs(unit), self.p.root)
         try:
             if not res.ok:

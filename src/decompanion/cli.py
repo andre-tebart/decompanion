@@ -287,7 +287,7 @@ def cmd_check(args):
     """The gate, per target (every target unless --target): the stale units compile (dcp build), every rule
     ran (the loaders included), no bug / error conflicts (M.compile, M.gen, M1, M8.. among them), no open
     toolchain or libs obligation (obligations.py), and, once
-    the target has a fragment, the full link resolves every external. --against REV: no function grade fell
+    the target has a source, the full link resolves every external. --against REV: no function grade fell
     against ledger/grades.tsv at that git revision. Each target ends with its verdict line (`gate=ok` or
     `gate=FAIL` and the failing parts), the same verdict `dcp session wrap` prints. Exit 1 otherwise."""
     from .build import link as L
@@ -413,7 +413,7 @@ def cmd_build(args):
                      fresh=rep.units - len(rep.compiled), removed=len(rep.removed), ms=rep.ms))
         for f in builds if getattr(args, "units", False) else bad:
             v = f.value
-            print("  " + record(tu=v["tu"], at=f.lo, ok=v["ok"], obj=v.get("obj"), fragments=v.get("fragments"),
+            print("  " + record(tu=v["tu"], at=f.lo, ok=v["ok"], obj=v.get("obj"), functions=v.get("functions"),
                                 warnings=v.get("warnings", 0), errors=len(v.get("errors") or []), flags=v.get("flags")))
             for x in (v.get("errors") or [])[:10]:
                 print("    " + x)
@@ -431,15 +431,59 @@ def cmd_build(args):
     return 1 if failed else 0
 
 
-def cmd_unit_cat(args):
-    """Print the amalgamation of a unit (head, fragments in address order, tail) as the compiler sees it."""
-    from .build import compile as B
+def cmd_unit_fold(args):
+    """Convert units of the fragment layout into one file each (source/fold.py): a record per unit (its parts,
+    the address comments moved down to their definitions, the declared file name's directive), written with
+    --write."""
+    from .ledger import decl as decl_mod
+    from .source import fold as F
     p, e = open_project(args)
-    a = next((a for a in B.plan(p) if a.unit == args.unit), None)
-    if a is None:
-        print(f"dcp unit cat: no unit {args.unit!r} with a fragment of target {p.target_name}", file=sys.stderr)
+    src = p.root / "src"
+    units = args.units or sorted(d.name for d in src.iterdir() if d.is_dir()) if src.exists() else []
+    targets = [t["name"] for t in p.input("targets")]
+    decls, _ = decl_mod.load(p.input("decl"), p.root, targets)
+    names = decl_mod.unit_files(decls, p.default_target, p.default_target)
+    failed = 0
+    for u in units:
+        if not (src / u).is_dir():
+            print(record(unit=u, error="no unit directory src/" + u))
+            failed += 1
+            continue
+        f = F.fold(p.root, u, names.get(u))
+        print(record(unit=u, parts=len(f.parts), moved=len(f.moved), lines=f.text.count("\n"), file=f.file_line,
+                     errors=len(f.errors)))
+        for x in f.errors:
+            print("  error " + x)
+        if f.errors:
+            failed += 1
+            continue
+        if args.write:
+            F.write(p.root, f)
+    return 1 if failed else 0
+
+
+def cmd_fn(args):
+    """Print one function of the sources: a record with its file and lines (its address comment to the end of
+    its definition), then that text. KEY is a function name or an address of the target."""
+    from .ledger import srcscan
+    p, e = open_project(args)
+    sc = srcscan.scan(p.root, p.input_hash("src"))
+    try:
+        a = parse_addr(args.key) if args.key.lower().startswith("0x") else None
+    except ValueError:
+        a = None
+    hits = [f for f in sc.functions if f.name == args.key
+            or a is not None and srcscan.address_for(f.addrs, p.target_name, p.default_target) == a]
+    if not hits:
+        print(f"dcp fn: no function {args.key} in the sources (target {p.target_name})", file=sys.stderr)
         return 1
-    sys.stdout.write(a.text)
+    for f in hits:
+        lines = (p.root / f.file).read_text(errors="replace").split("\n")
+        last = f.end_line or len(lines)
+        print(record(fn=srcscan.address_for(f.addrs, p.target_name, p.default_target), name=f.name, unit=f.unit,
+                     at=f"{f.file}:{f.comment_line}-{last}"))
+        sys.stdout.write("\n".join(lines[f.comment_line - 1:last]) + "\n")
+    return 0
 
 
 def cmd_init(args):
@@ -546,7 +590,7 @@ def cmd_layout_next(args):
         print(record(**c) + ("  (session over: finish or revert the function in progress, then wrap up)" if c["over"] else ""))
     print(record(target=p.target_name, game=v.game[:2], units=len(v.units), undrafted_in_units=len(und), shown=len(recs)))
     if not recs:
-        print("nothing open: every function of the game code has a source fragment")
+        print("nothing open: every function of the game code has a source")
         return
     for r in recs:
         print(record(next=r["addr"], kind=r["kind"], size=r["size"], next_start=r["next_start"], unit=r["unit"],
@@ -818,8 +862,12 @@ def main(argv=None):
     s.add_argument("--force", action="store_true", help="compile every unit")
     s.add_argument("--units", action="store_true", help="list every unit's build row, not only the failed ones")
     un = sub.add_parser("unit", help="units").add_subparsers(dest="sub", required=True)
-    s = cmd(un, "cat", cmd_unit_cat, "print a unit's amalgamation")
-    s.add_argument("unit")
+    s = cmd(un, "fold", cmd_unit_fold, "convert units of the fragment layout (src/<unit>/) into src/<unit>.c "
+            "(dry run without --write)")
+    s.add_argument("units", nargs="*", help="the units (default: every unit directory)")
+    s.add_argument("--write", action="store_true", help="write src/<unit>.c, move open.md, remove the fragments")
+    s = cmd(sub, "fn", cmd_fn, "print one function of the sources (its address comment to the end of its definition)")
+    s.add_argument("key", help="a function name or an address")
     from . import cli_layout as CLU
     CLU.register_unit(un, cmd)
 

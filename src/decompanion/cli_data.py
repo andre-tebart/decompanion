@@ -73,11 +73,11 @@ def cmd_data_fix(args):
         elif check == "D1":
             edits, manual = DF.d1_edits(files, model)
         else:
-            order = {a.unit: [m.file for m in a.members] for a in B.plan(p)}
+            order = {a.unit: [a.file] for a in B.plan(p)}
             edits, manual = DF.d4_edits(files, model, order)
         if args.unit:
             edits = [x for x in edits if x.unit == args.unit]
-            manual = [m for m in manual if f" src/{args.unit}/" in m]
+            manual = [m for m in manual if f" src/{args.unit}.c:" in m]
         print(record(check=check, edits=len(edits), units=len({x.unit for x in edits}), manual=len(manual),
                      write=bool(args.write)))
         for x in edits[:args.limit] if not args.verbose else edits:

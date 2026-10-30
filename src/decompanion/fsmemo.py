@@ -1,4 +1,4 @@
-"""File contents and content hashes, read once: the input hashes, the source scan, the amalgamation and the grades
+"""File contents and content hashes, read once: the input hashes, the source scan, the units and the grades
 all read the same few thousand source files in one refresh, and every command (every request of `dcp serve`)
 hashes the whole tree again.
 

@@ -12,11 +12,11 @@ Computed:
 Checks: L1 (a source start inside other code), L3 (literal order contradicts the unit order), L4 (a boundary
 not at a start / inside fill), L5 (a placeholder name that spells no start), L6 (a declaration the facts now
 contradict), L7 (extents overlap, a source outside its unit), L8 (two leaked paths in one unit), L9 (an
-analyzer's function body spans one of our starts, warning), L10 (walked code inside a unit that no fragment, declaration
-or other function explains, warning), L11 (address comment vs file name, in L.src), L13 (a data declaration at
-a function's code), L14 (a fragment outside its unit's declared extent, in the library code), A1 (an image
-address literal cast to a pointer in the sources). L2 (a function of a unit
-without a source fragment, "undrafted") is informational: `dcp layout next` / `dcp layout units` report it, it
+analyzer's function body spans one of our starts, warning), L10 (walked code inside a unit that no source,
+declaration or other function explains, warning), L13 (a data declaration at a function's code), L14 (a source
+outside its unit's declared extent, in the library code), L16 (a function's `#if` and its address comment
+disagree on its targets, in L.src), A1 (an image address literal cast to a pointer in the sources). L2 (a
+function of a unit without a source, "undrafted") is informational: `dcp layout next` / `dcp layout units` report it, it
 is no conflict.
 
 The pure functions below (game_range, compute_units, lit_issues, boundary_issues, leak_issues) are shared by the
@@ -29,6 +29,8 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 
+from .. import fsmemo
+from ..build import tu as build_tu
 from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..source import cparse
@@ -123,14 +125,14 @@ class SrcFn:
 
 def compute_units(game: tuple[int, int, Level], bounds: list[Bound], srcs: list[SrcFn], func_starts: list[int]):
     """The units of the game code and the L7 issues. Criterion (R7 adapted):
-    - a unit starts at its declared `boundary start`, else at its first function with a source fragment;
+    - a unit starts at its declared `boundary start`, else at its first function with a source;
     - it ends at its declared `boundary end`, else at the next unit's start, else (the last unit) at the end of
       the game code. That last end is derived when every function start from the unit's start to the end of
-      the game code has a fragment of this unit (nothing undrafted is left after it: LINK places library code
+      the game code has a source of this unit (nothing undrafted is left after it: LINK places library code
       after every object), else open (the unit may end anywhere before);
-    - a boundary level is the level of what places it: declared for boundaries and fragments.
+    - a boundary level is the level of what places it: declared for boundaries and sources.
     L7: two start or end boundaries of one unit, two units starting at one address, an end beyond the next
-    unit's start, a unit outside the game code, an empty extent, a fragment outside its unit's extent."""
+    unit's start, a unit outside the game code, an empty extent, a source outside its unit's extent."""
     glo, ghi, glevel = game
     issues: list[Issue] = []
     starts: dict[str, tuple] = {}
@@ -151,7 +153,7 @@ def compute_units(game: tuple[int, int, Level], bounds: list[Bound], srcs: list[
             starts[u] = (s.addr, DE, s.by, None)
     for tu, e in ends.items():
         if tu not in starts:
-            issues.append(Issue("L7", e[0], e[0] + 1, f"end boundary of unit {tu}, which has no start boundary and no fragment", a=e[2]))
+            issues.append(Issue("L7", e[0], e[0] + 1, f"end boundary of unit {tu}, which has no start boundary and no source", a=e[2]))
     order = sorted(starts.items(), key=lambda kv: (kv[1][0], kv[0]))
     srcs_by_unit = defaultdict(set)
     for s in srcs:
@@ -194,9 +196,9 @@ def compute_units(game: tuple[int, int, Level], bounds: list[Bound], srcs: list[
         i = bisect.bisect_right(los, s.addr) - 1
         u = units[i] if i >= 0 and s.addr < units[i].hi else None
         if u is None:
-            issues.append(Issue("L7", s.addr, s.addr + 1, f"fragment of unit {s.unit} ({s.name}) lies outside every unit extent", a=s.by))
+            issues.append(Issue("L7", s.addr, s.addr + 1, f"function of unit {s.unit} ({s.name}) lies outside every unit extent", a=s.by))
         elif u.tu != s.unit:
-            issues.append(Issue("L7", s.addr, s.addr + 1, f"fragment of unit {s.unit} ({s.name}) lies in unit {u.tu} {u.lo:#x}..{u.hi:#x}",
+            issues.append(Issue("L7", s.addr, s.addr + 1, f"function of unit {s.unit} ({s.name}) lies in unit {u.tu} {u.lo:#x}..{u.hi:#x}",
                                 a=s.by, b=u.start_by))
     return units, issues
 
@@ -309,14 +311,15 @@ def leak_issues(units: list[UnitX], leaks: list[Leak]) -> list[Issue]:
 
 
 # ------------------------------------------------------------------------------------------------ loaders
-@rule("L.decl", version="3", ceiling=DE, outputs=("boundary", "symbol", "name"), inputs=("decl", "targets"),
-      loader=True, helpers=(decl_mod,))
+@rule("L.decl", version="4", ceiling=DE, outputs=("boundary", "symbol", "name"), inputs=("decl", "targets", "src"),
+      loader=True, helpers=(decl_mod, build_tu))
 def load_decl(ctx: RuleContext):
     """Every line of decl/*.dcl that belongs to the current target becomes one declared fact, producer
     decl:<file>:<line>, reason = the text after `--` (grammar: ledger/decl.py). boundary -> boundary fact
     {side, tu, named_by}; bytes dead -> symbol dead; jumptable / idxtable fn= -> symbol of that kind; foreign
     kind= -> symbol foreign; fptr -> symbol fptr; name N -> name (origin decl); start: L.decl.start; file tu= path=
-    -> checked only: the image holds the path, NUL-terminated, at the address, and one unit has one file name.
+    -> checked only: the image holds the path, NUL-terminated, at the address, one unit has one file name, and
+    the unit's file src/<tu>.c names it in a `#line` directive (its `__FILE__`).
     Errors (check L.decl, severity error): a malformed line, an unknown kind or key, a missing reason, an
     unknown target prefix, an unsorted file, a duplicate key, an address outside the image or a range across
     sections, a text.dcl line outside a code section or a data.dcl line inside one. An error is reported in
@@ -371,6 +374,14 @@ def load_decl(ctx: RuleContext):
                 yield ctx.conflict(Severity.error, "L.decl", d.lo, d.lo + 1,
                                    f"{d.file}:{d.line}: unit {tu} already has the file name {file_of[tu]}", a=d.by)
             file_of.setdefault(tu, d.keys["path"])
+            src = p.root / "src" / f"{tu}.c"
+            named = [m.group(2).replace("\\\\", "\\") for m in build_tu.LINE.finditer(fsmemo.read_text(src))
+                     if m.group(2) is not None] if src.exists() else None
+            if named is not None and d.keys["path"] not in named:
+                esc = d.keys["path"].replace("\\", "\\\\")
+                yield ctx.conflict(Severity.error, "L.decl", d.lo, d.lo + 1,
+                                   f"{d.file}:{d.line}: src/{tu}.c names no file {d.keys['path']} in a `#line` directive "
+                                   f"(its __FILE__ is the file's own name): add `#line 1 \"{esc}\"` at its top", a=d.by)
 
 
 @rule("L.decl.start", version="1", ceiling=DE, outputs=("start",), inputs=("decl", "targets"), loader=True, helpers=(decl_mod,))
@@ -392,18 +403,19 @@ def load_decl_starts(ctx: RuleContext):
       loader=True, helpers=(srcscan, cparse))         # the front end decides what the scan sees
 def load_src(ctx: RuleContext):
     """The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function
-    fragment with an address gives a `source` fact {file, line, comment (the address comment's line), end (the
+    with an address gives a `source` fact {file, line, comment (the address comment's line), end (the
     definition's last line), unit, symbol, what: func, deep / stuck / rough tags}, a `name` fact (origin source)
     and a `start` fact (how source); every data definition with an address a `source` fact (what: data) and a
-    `name`; every extern with an address a `name`. Producer
-    src:<file>:<line>, reason = the comment's description. Errors: a parse error of the scan (L.src: a fragment
-    without its address comment on line 1, a function outside a fragment, two definitions in a fragment, a
-    stray file), L11 (the file name's address differs from the comment's first address), an unknown target
-    prefix, an address outside the image, a function address outside a code section, two definitions at one
-    address (L.src), one name at two addresses (N2; a `static` name is compared within its unit only, two
-    units may each keep their own), L15 (a view's address is not its container's plus its offset, or its
-    container has no data declaration with an address; a view gives a `name` fact {view: container}). Errors of the text itself (the scan's, an unknown target
-    prefix) are reported in the default target's store; errors about an address in the store of its target.
+    `name`; every extern with an address a `name`. Producer src:<file>:<line>, reason = the comment's
+    description. Errors: a parse error of the scan (L.src: a function without its address comment directly
+    above its definition, a function outside a unit file, a stray file), L16 (a function compiled into a target
+    its comment does not list, or listed for one whose compile does not hold it), an unknown target prefix, an
+    address outside the image, a function address outside a code section, two definitions at one address
+    (L.src), one name at two addresses (N2; a `static` name is compared within its unit only, two units may each
+    keep their own), L15 (a view's address is not its container's plus its offset, or its container has no data
+    declaration with an address; a view gives a `name` fact {view: container}). Errors of the text itself (the
+    scan's, an unknown target prefix) are reported in the default target's store; errors about an address in the
+    store of its target.
     A function or datum whose comment lists another target's address only is no fact of this target."""
     p, img = ctx.project, ctx.image
     targets = [t["name"] for t in ctx.input("targets")]
@@ -650,15 +662,15 @@ def lib_units_of(ctx) -> dict:
       inputs=("decl", "targets"), helpers=(compute_units, game_range, lib_starts_of, unit_status, lib_units_of))
 def unit_extent(ctx: RuleContext):
     """The units of the game code (compute_units in rules/layout.py: a unit runs from its declared start
-    boundary or first fragment to its declared end, the next unit's start or the end of the game code; the
+    boundary or first source to its declared end, the next unit's start or the end of the game code; the
     first library byte ends the game code). Each unit is a `unit` fact over its extent with its boundary
-    levels and producers, the count of function starts inside, how many have a fragment, its open bytes
+    levels and producers, the count of function starts inside, how many have a source, its open bytes
     (unknown code: no rule claims them), its declared dead / foreign bytes (`bytes dead`, `foreign`: explained,
     not open) and the C.walk conflicts inside it (a walk that runs into another function's bytes: one of the
     two starts is wrong). Status: separated when both boundaries are at least declared, no open byte and no
     C.walk conflict lies inside, else open. Level: the lower of the two boundary levels (at most declared).
     Issues of the computation are L7 conflicts. A unit declared `libunit` (a library member compiled from source)
-    is no game unit: its fragments are left out (L14 checks them against the member's range)."""
+    is no game unit: its functions are left out (L14 checks them against the member's range)."""
     img = ctx.image
     syms = ctx.facts(Kind.symbol)
     game = game_range(img, lib_starts_of(syms))
@@ -710,10 +722,10 @@ def leaks_of(facts) -> list[Leak]:
 
 @rule("L1.src.start", version="1", ceiling=P, needs=("L.src", "S.codewalk", "S.crt.code", "S.thunk", "S.fill", "S.sections"))
 def src_start(ctx: RuleContext):
-    """L1: the address of a function fragment is the start of a function: the start of a walked or placed
+    """L1: the address of a sourced function is the start of a function: the start of a walked or placed
     function, or a byte of unknown code (an undrafted start the walk did not find). Strictly inside a function
     (not one of its inner labels), inside fill, an import thunk or a table it is an error: the walk crosses
-    the fragment's start, one of the two is wrong."""
+    the source's start, one of the two is wrong."""
     syms = [f for f in ctx.facts(Kind.symbol) if f.level > O]
     los = sorted((f.lo, f.hi, f) for f in syms)
     keys = [x[0] for x in los]
@@ -734,7 +746,7 @@ def src_start(ctx: RuleContext):
         if sk == "func" and a in hit.value.get("inner", ()):
             continue
         yield ctx.conflict(Severity.error, "L1", a, a + 1,
-                           f"fragment {s.value['file']} starts {s.value['symbol']} at {a:#x}, inside the {sk} {hit.lo:#x}..{hit.hi:#x}",
+                           f"{s.value['file']}:{s.value.get('comment', s.value['line'])}: {s.value['symbol']} starts at {a:#x}, inside the {sk} {hit.lo:#x}..{hit.hi:#x}",
                            a=s.by, b=hit.by)
 
 
@@ -761,26 +773,24 @@ def boundary_at_start(ctx: RuleContext):
     yield from _emit(ctx, boundary_issues(bounds_of(ctx.facts(Kind.boundary)), starts, funcs, fills, game))
 
 
-def file_targets(sc, targets: list[str]) -> dict[str, set[str]]:
-    """The targets each fragment belongs to: the targets its address comment lists (a bare address: the default
-    target); a fragment without an address (unlinked) or a file that is no fragment (head.c, headers) belongs
-    to every target."""
-    out = {}
-    for f in sc.functions:
-        if f.addrs:
-            out[f.file] = {t or targets[0] for t, _ in f.addrs}
-    return out
+def line_targets(sc, targets: list[str]) -> srcscan.Spans:
+    """(file, line) -> the targets a line belongs to: inside a function's span the targets its address comment
+    lists (a bare address: the default target); a line of no function with an address (an unlinked one, the
+    head region, the data between functions, a header) belongs to every target (`at` gives None)."""
+    return srcscan.Spans((f.file, f.comment_line, f.end_line, {t or targets[0] for t, _ in f.addrs})
+                         for f in sc.functions if f.addrs)
 
 
 @rule("L5.placeholder", version="3", ceiling=P, inputs=("src", "targets"), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
-      helpers=(srcscan, file_targets))
+      helpers=(srcscan, line_targets))
 def placeholder(ctx: RuleContext):
     """L5: an identifier that spells an address (`Unk<hex>`, `FUN_<hex>`, `DAT_<hex>`, `<name>_<6-8 hex with a
-    digit>`, in any .c / .h of src/ and include/) names a real address: in a file of the current target (a
-    fragment of a function the target holds, or any file that is no fragment) a number inside a section of the
+    digit>`, in any .c / .h of src/ and include/) names a real address: on a line of the current target (inside
+    a function the target holds, or outside every function with an address) a number inside a section of the
     target's image must, inside a code section, be a function start (a `start` fact of any producer, or an inner
     label). A number inside no section of any target the file belongs to is a dropped or extra digit, reported
-    in the default target's store only (at the line that spells it)."""
+    in the default target's store only (at the line that spells it). A function's span ends with its definition
+    (line_targets)."""
     p, img = ctx.project, ctx.image
     names = [t["name"] for t in ctx.input("targets")]
     sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
@@ -791,11 +801,11 @@ def placeholder(ctx: RuleContext):
     code = code_ranges(img)
     cur = p.target_name
     default = cur == names[0]
-    owners = file_targets(sc, names)
+    owners = line_targets(sc, names)
     for ph in sc.placeholders:
         v = ph.value
         by = f"src:{ph.file}:{ph.line}"
-        mine = owners.get(ph.file, set(names))
+        mine = owners.at(ph.file, ph.line) or set(names)
         if cur in mine and img.section_of(v) is not None:
             if in_ranges(v, code) and v not in starts:
                 yield ctx.conflict(Severity.error, "L5", v, v + 1, f"{ph.file}:{ph.line}: {ph.ident}: no function starts at {v:#x}", a=by)
@@ -830,13 +840,13 @@ def what_is_at(a: int, names: dict, syms: list) -> str:
 
 
 @rule("A1.addr.cast", version="1", ceiling=P, inputs=("src", "targets"), needs=("kind:name", "kind:symbol"),
-      helpers=(srcscan, file_targets, what_is_at))
+      helpers=(srcscan, line_targets, what_is_at))
 def addr_cast(ctx: RuleContext):
     """A1: an integer literal cast to a pointer type in the sources (srcscan.PTR_CAST: `(void (*)(void))0x5de470`,
     `(char *)0x6f242c`, `(T *)(unsigned)0x...`; the cast's type spells its `*`, a typedef'd pointer name is not
     recognised; comments, strings and `#if 0` / `#else` text do not count, `#define` bodies do) whose value lies in
-    the current target's image [base, end), in a file of the current target (file_targets: a fragment of a
-    function the target holds, or any file that is no fragment). Such a pointer is the original's address
+    the current target's image [base, end), on a line of the current target (line_targets: inside a function
+    the target holds, or outside every function with an address). Such a pointer is the original's address
     frozen into the code: the relinked image places that object elsewhere, so the pointer goes wrong. An error;
     the message names what the facts know at the address (its name, else the symbol containing it, else nothing
     known) and asks for the symbol by name. The address of a symbol (`(unsigned)&x`, `(char *)&x`) is no literal
@@ -846,13 +856,13 @@ def addr_cast(ctx: RuleContext):
     sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
     if not sc.ptrcasts:
         return
-    owners = file_targets(sc, names_t)
+    owners = line_targets(sc, names_t)
     names = defaultdict(list)
     for f in ctx.facts(Kind.name):
         names[f.lo].append(f)
     syms = sorted(((f.lo, f.hi, f) for f in ctx.facts(Kind.symbol) if f.level > O), key=lambda t: (t[0], t[1]))
     for c in sc.ptrcasts:
-        if p.target_name not in owners.get(c.file, set(names_t)) or not (img.base <= c.value < img.end):
+        if p.target_name not in (owners.at(c.file, c.line) or set(names_t)) or not (img.base <= c.value < img.end):
             continue
         what = what_is_at(c.value, names, syms)
         hint = (f"reference {what[len('the name '):].split(' / ')[0]} by name" if what.startswith("the name ")
@@ -911,12 +921,12 @@ def data_at_code(ctx: RuleContext):
 
 def outside_unit_issues(units: list[UnitX], srcs: list[SrcFn], declared: set[str], game: tuple,
                         libs: dict | None = None) -> list[Issue]:
-    """L14: a function fragment of a unit whose extent rests on a declared boundary (`declared`: the units with a
+    """L14: a sourced function of a unit whose extent rests on a declared boundary (`declared`: the units with a
     `boundary start` or `boundary end` line) lies outside that unit's extent. compute_units' L7 already reports
-    the fragments inside the game code that lie outside their unit; L14 adds the ones outside the game code (in
+    the functions inside the game code that lie outside their unit; L14 adds the ones outside the game code (in
     the library code after it), which L7 does not look at. A unit without a declared boundary, or without an
     extent, is not checked. A library unit (`libs`: unit -> its `libunit` declaration) is checked against its
-    member range instead: every fragment lies inside it, and the range lies outside the game code (a library
+    member range instead: every function lies inside it, and the range lies outside the game code (a library
     member is no game code)."""
     ext = {u.tu: u for u in units}
     libs = libs or {}
@@ -930,27 +940,27 @@ def outside_unit_issues(units: list[UnitX], srcs: list[SrcFn], declared: set[str
         if d is not None:
             if not d.lo <= s.addr < d.hi:
                 out.append(Issue("L14", s.addr, s.addr + 1,
-                                 f"fragment of library unit {s.unit} ({s.name}) at {s.addr:#x} lies outside its declared member "
+                                 f"function of library unit {s.unit} ({s.name}) at {s.addr:#x} lies outside its declared member "
                                  f"range {d.lo:#x}..{d.hi:#x}", a=s.by, b=d.by))
             continue
         u = ext.get(s.unit)
         if u is None or s.unit not in declared or u.lo <= s.addr < u.hi or game[0] <= s.addr < game[1]:
             continue
         out.append(Issue("L14", s.addr, s.addr + 1,
-                         f"fragment of unit {s.unit} ({s.name}) at {s.addr:#x} lies outside the unit's declared extent "
+                         f"function of unit {s.unit} ({s.name}) at {s.addr:#x} lies outside the unit's declared extent "
                          f"{u.lo:#x}..{u.hi:#x}", a=s.by, b=u.start_by))
     return out
 
 
 @rule("L14.unit.outside", version="2", ceiling=DE, needs=("L.unit.extent", "L.src", "L.decl", "S.crt.code", "S.thunk"),
       inputs=("decl", "targets"), helpers=(outside_unit_issues, game_range, lib_starts_of, lib_units_of))
-def fragment_outside_unit(ctx: RuleContext):
-    """L14 (outside_unit_issues in rules/layout.py): a function fragment outside the game code (in the library
+def source_outside_unit(ctx: RuleContext):
+    """L14 (outside_unit_issues in rules/layout.py): a sourced function outside the game code (in the library
     code after it) whose unit has a declared boundary (`boundary start|end tu=UNIT` in decl/text.dcl) and an
-    extent: every fragment of such a unit lies inside the extent. Inside the game code L7 checks the same.
-    An error: no game unit owns library code, and a unit's amalgamation compiled with that fragment is not the
+    extent: every function of such a unit lies inside the extent. Inside the game code L7 checks the same.
+    An error: no game unit owns library code, and a unit compiled with that function is not the
     unit's translation unit. Library code with a source belongs to a library unit (`libunit` in decl/text.dcl):
-    its fragments lie inside the declared member range, which lies outside the game code."""
+    its functions lie inside the declared member range, which lies outside the game code."""
     syms = ctx.facts(Kind.symbol)
     game = game_range(ctx.image, lib_starts_of(syms))
     declared = {f.value["tu"] for f in ctx.facts(Kind.boundary)}
@@ -1046,7 +1056,7 @@ def analyzer_span(ctx: RuleContext):
     """L9 (warning): an analyzer's function of the game code (its entry before the first library byte) whose
     body (its address ranges, when the analyzer reports them: Ghidra's export does) holds one of our function
     starts other than its own entry: a start fact of any producer but L.analyzer (export, entry, library, walk,
-    declaration, fragment) or the start of a placed or walked function; inner labels of a walked function do
+    declaration, source) or the start of a placed or walked function; inner labels of a walked function do
     not count. The analyzer merged two functions (typically across a call that does not return): its
     pseudocode holds both, and a draft from it must stop at our start. A warning, not an error: the body is an
     external tool's analysis (a declaration), our starts rest on the bytes and stated conventions. Library code
@@ -1078,7 +1088,7 @@ def analyzer_span(ctx: RuleContext):
              "S.exports", "S.entry"),
       helpers=(C.is_fill,))
 def src_extent(ctx: RuleContext):
-    """A function fragment whose start no other function covers (the walk did not reach it: an image without base
+    """A sourced function whose start no other function covers (the walk did not reach it: an image without base
     relocations hides most call-only and pointer-only functions; it does not byte-match) owns its code by the
     contiguity convention W1 of rules/walk.py: from its start up to the next stop (any known start, the start of
     any claimed symbol or region, a declared unit boundary, the end of the code section), less the alignment fill
@@ -1154,19 +1164,19 @@ def src_extent(ctx: RuleContext):
 
 @rule("L10.unexplained", version="2", ceiling=DE, needs=("L.unit.extent", "L.src", "M.match", "S.codewalk", "L.decl", "L.src.extent"))
 def unexplained(ctx: RuleContext):
-    """L10 (warning): code inside a game unit's extent that no fragment, no declaration and no other function
-    explains, though a fragment claims it. Two cases:
-    (a) a fragment whose start the walk does not know (a declared start in unknown code) and that does not
+    """L10 (warning): code inside a game unit's extent that no source, no declaration and no other function
+    explains, though a source claims it. Two cases:
+    (a) a source whose start the walk does not know (a declared start in unknown code) and that does not
     byte-match owns no bytes (M.draft takes the walk's extent, there is none; M.match proves an extent only for
     a match) and L.src.extent did not give it the bytes up to the next stop either (a claimed byte right at its
     start, or only fill): its code stays open (`open_bytes`) until it matches or a convention reaches its start;
-    (b) a fragment that byte-matches (M.match: its compiled section, padding included, ends at m) while the walk
+    (b) a source that byte-matches (M.match: its compiled section, padding included, ends at m) while the walk
     gives its start a function extent [a, w) with w > m: the bytes [m, w), minus declared dead / foreign bytes,
     are code the walk reached that our function does not contain (a missed start, dead code to declare `bytes
     dead -- why`, or a table read as code). (R1's tail check makes (b) rare: a match already proves that only fill
     follows its end up to the next start.)
     A non-matching draft with a walked start owns the walk's extent (M.draft), and a walked function without a
-    fragment is L2 (informational, `dcp layout next`): neither is L10."""
+    function is L2 (informational, `dcp layout next`): neither is L10."""
     units = game_units(ctx.facts(Kind.unit))
     at = unit_index(units)
     walk = {f.lo: f for f in ctx.facts(Kind.symbol) if f.run == "S.codewalk" and f.value.get("skind") == "func"}
@@ -1191,7 +1201,7 @@ def unexplained(ctx: RuleContext):
         if left > 0:
             yield ctx.conflict(Severity.warn, "L10", m.hi, w.hi,
                                f"unit {units[i].tu}: the walk of {s.lo:#x} ({s.value['symbol']}) runs to {w.hi:#x}, its byte-matched "
-                               f"compile ends at {m.hi:#x}: {left} bytes of walked code no fragment explains (a missed start, or "
+                               f"compile ends at {m.hi:#x}: {left} bytes of walked code no source explains (a missed start, or "
                                f"dead code to declare `bytes dead`)", a=w.by, b=m.by)
 
 

@@ -479,7 +479,7 @@ def cmd_layout_starts(args):
     """Every function start in a range (default: the game code) with its evidence: every `how` of its start
     facts (export, entry, crt, libref, call, tail, immediate, fptr, decl, source, the analyzer's key), the number of code
     sites that reach it (call, tail, immediate, relocation, operand), the size to the next start, the walk's
-    extent, what precedes it (B-FILL), its unit, whether a fragment drafts it and whether the analyzer has a draft."""
+    extent, what precedes it (B-FILL), its unit, whether a source drafts it and whether the analyzer has a draft."""
     from .ledger import drafts as G
     from .ledger import layoutview as LV
     from .ledger.names import Names

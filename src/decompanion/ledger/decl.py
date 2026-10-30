@@ -64,7 +64,7 @@ KINDS: dict[str, Spec] = {
                         "library contributions as the original"),
     "file": Spec(required={"tu": "unit", "path": "path"},
                  doc="the original file name of a unit (its __FILE__), declared at the address of the string in the image "
-                     "(data.dcl); the amalgamation compiles the unit under that name"),
+                     "(data.dcl); the unit's file names it in a #line directive"),
 }
 
 

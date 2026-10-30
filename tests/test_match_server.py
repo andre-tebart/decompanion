@@ -22,15 +22,14 @@ int g_stopServer = 0;                   /* 0x10031270 */
 unsigned long g_hServerThread = 0;      /* 0x11760c74 */
 """
 FILES = {
-    "src/dllmain/head.c": HEAD,
-    "src/dllmain/f_10008cb0.c": "/* 0x10008cb0, the dll's entry point */\nBOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)\n"
-                                "{\n    return TRUE;\n}\n",
-    "src/dllmain/f_10008cc0.c": "/* 0x10008cc0, starts the server thread */\nint __cdecl Init(void *arg)\n{\n"
-                                "    g_hServerThread = _beginthread(ServerThread, 0, arg);\n    return g_hServerThread != (unsigned long)-1;\n}\n",
-    "src/dllmain/f_10008cf0.c": "/* 0x10008cf0, stops the server thread */\nvoid __cdecl Exit(void)\n{\n    if (g_hServerThread) {\n"
-                                "        g_stopServer = 1;\n        do {\n            Sleep(10);\n        } while (g_stopServer);\n    }\n}\n",
-    "src/server/f_10008d20.c": "/* 0x10008d20, the server thread @rough */\nextern int g_stopServer;\n\n"
-                               "void __cdecl ServerThread(void *arg)\n{\n    g_stopServer = 0;\n}\n",
+    "src/dllmain.c": HEAD + "\n/* 0x10008cb0, the dll's entry point */\n"
+                     "BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)\n{\n    return TRUE;\n}\n"
+                     "\n/* 0x10008cc0, starts the server thread */\nint __cdecl Init(void *arg)\n{\n"
+                     "    g_hServerThread = _beginthread(ServerThread, 0, arg);\n    return g_hServerThread != (unsigned long)-1;\n}\n"
+                     "\n/* 0x10008cf0, stops the server thread */\nvoid __cdecl Exit(void)\n{\n    if (g_hServerThread) {\n"
+                     "        g_stopServer = 1;\n        do {\n            Sleep(10);\n        } while (g_stopServer);\n    }\n}\n",
+    "src/server.c": "extern int g_stopServer;\n\n/* 0x10008d20, the server thread @rough */\n"
+                    "void __cdecl ServerThread(void *arg)\n{\n    g_stopServer = 0;\n}\n",
 }
 DECL = ("0x10008cb0 boundary start by=guess tu=dllmain -- DllMain, Init and Exit\n"
         "0x10008d20 boundary end tu=dllmain -- the thread procedure begins the next unit\n"
@@ -81,7 +80,7 @@ def test_link_and_check(server):
 def test_promote_and_m1(server):
     code, out = dcp(server, "promote")
     assert code == 0 and "functions=4" in out
-    p = server / "src" / "dllmain" / "f_10008cc0.c"
+    p = server / "src" / "dllmain.c"
     good = p.read_text()
     p.write_text(good.replace("!= (unsigned long)-1", "== 0"), newline="\n")
     try:

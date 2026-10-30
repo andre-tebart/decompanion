@@ -14,7 +14,7 @@ The obligations, in order (the ids are stable; Project.waiting names the ones a 
   libs.archives        the static libraries linked in                 dcp libs declare ARCHIVE...   (due once the root is declared;
                        open again while the last link has unresolved names an undeclared archive defines: link class `library`)
   analyzer             the third-party analyzer for the drafts        dcp analyzer declare ghidra|rea|none
-  layout               functions without a fragment, open units       dcp session start, dcp layout next
+  layout               functions without a source, open units       dcp session start, dcp layout next
   match                the grade queue                                dcp next
 An obligation is open while its value is missing or declared without a reason. The toolchain and libs
 obligations are the gate of `dcp session start` and `dcp check` (`gate`); the analyzer is due before the first
@@ -222,7 +222,7 @@ def work_obligations(p, view=None) -> list[Obligation]:
             ev = (f"next={nxt['addr']:#010x} kind={nxt['kind']} size={nxt['size']} unit={nxt['unit'] or '-'} start={nxt['how']} "
                   f"analyzed={'yes' if nxt['analyzed'] else 'no'} (dcp layout next: the evidence)")
         out.append(Obligation("layout", p.target_name,
-                              f"{without} of {len(funcs)} functions of the game code without a fragment; units open={c.get('open', 0)} "
+                              f"{without} of {len(funcs)} functions of the game code without a source; units open={c.get('open', 0)} "
                               f"separated={c.get('separated', 0)}", ev, "dcp session start; dcp layout next; dcp draft --next"))
     grades = G.function_grades(p.store)
     if grades:
@@ -230,7 +230,7 @@ def work_obligations(p, view=None) -> list[Obligation]:
         below = sum(1 for r in grades if r["code"] != "byte" or r["readability"] != "readable")
         if below:
             ev = f"next={q[0]['addr']:#010x} {q[0]['name']} {q[0]['code']}+{q[0]['readability']}" if q else "base queue empty: dcp next --deep"
-            out.append(Obligation("match", p.target_name, f"{below} of {len(grades)} fragments below byte + readable", ev, "dcp next"))
+            out.append(Obligation("match", p.target_name, f"{below} of {len(grades)} functions below byte + readable", ev, "dcp next"))
     return out
 
 

@@ -175,6 +175,15 @@ def tiny2(tmp_path):
     return make_project(tmp_path / "proj2", two=True)
 
 
+def unit(root: Path, name: str, *parts: str) -> Path:
+    """Write src/<name>.c from its parts (the head region, then the functions, each with its address comment
+    directly above its definition), a blank line between two parts; an empty part is left out."""
+    p = Path(root) / "src" / f"{name}.c"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n".join(x if x.endswith("\n") else x + "\n" for x in parts if x), newline="\n")
+    return p
+
+
 def dcp(root: Path, *args) -> tuple[int, str]:
     """Run the CLI in-process; (exit code, stdout)."""
     import contextlib

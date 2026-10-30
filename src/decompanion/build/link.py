@@ -2,13 +2,13 @@
 target through the toolchain's linker, the unresolved externals classified.
 
 What goes in (Toolchain.link, LinkJob):
-  objects      every compiled unit of the target, in the order of their first fragment's address (LINK lays
+  objects      every compiled unit of the target, in the order of their least function address (LINK lays
                the objects out in command-line order), plus a generated entry object when the start-up code
                calls an entry the sources name otherwise (Toolchain.entry_object), plus the alias object
   /INCLUDE     every external function symbol the objects define (so /OPT:REF keeps it and its references are
                checked)
   a dll        /DLL /BASE:<image base> and a module definition file from the image's exports with their
-               ordinals (Toolchain.module_definition); an export whose address has no fragment yet is left out
+               ordinals (Toolchain.module_definition); an export whose address has no source yet is left out
                of it and listed as undrafted (open layout work: LINK cannot build an export nothing defines)
   libraries    the target's archives (the static CRT), the import library of every DLL the image imports
                (Toolchain.import_library_name, found in the toolchain's library directories or the project's
@@ -27,11 +27,11 @@ What goes in (Toolchain.link, LinkJob):
 Output under build/link/<target>/: the image, the map, the response file, link.log and the unresolved
 externals in one file per class (unresolved-<class>.txt), classified as in the first attempt plus `library`:
   data      a data name of the sources (a definition or an `extern` with an address) nothing defines: define it
-  renames   a stale name: it spells (placeholder) or is registered at the address of a function whose fragment
+  renames   a stale name: it spells (placeholder) or is registered at the address of a function whose source
             defines another name
   aliases   a name declared at the address of a data object defined under another name
   undrafted a placeholder (or a name the ledger registers) whose address has no definition in the sources yet: a
-            function start without a fragment, or a data address no definition names; open layout work, not a link
+            function start without a source, or a data address no definition names; open layout work, not a link
             error (the link is ok when nothing else is unresolved)
   library   a name no class above takes that the symbol table of an archive the target does not declare defines
             (an archive directly in the project's libs/ or the toolchain's library directories, [toolchain] lib_dirs
@@ -265,7 +265,7 @@ def full_link(project, log=None) -> LinkReport:
     if img.is_dll:
         def_file = out_dir / f"{project.target_name}.def"
         exports = [e for e in img.exports() if not e.forwarder]
-        open_exports = [f"{e.name or '#' + str(e.ordinal)}  (export, no fragment at {e.va:#010x} yet)" for e in exports if e.va not in src_names]
+        open_exports = [f"{e.name or '#' + str(e.ordinal)}  (export, no source at {e.va:#010x} yet)" for e in exports if e.va not in src_names]
         text = tc.module_definition(project.image_path.stem, [e for e in exports if e.va in src_names])
         if not def_file.exists() or def_file.read_text() != text:
             def_file.write_text(text, newline="\n")
@@ -414,7 +414,7 @@ def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
         open_at = sorted(a for a in addrs if a not in func_at and a not in data_at and img.section_of(a) is not None
                          and (a in starts or not img.section_of(a).holds_code))
         if open_at:                     # a placeholder or a registered name whose address the sources do not define yet
-            what = "no fragment" if open_at[0] in starts else "no definition"
+            what = "no source" if open_at[0] in starts else "no definition"
             out["undrafted"].append(f"{u}  ({what} at {open_at[0]:#010x} yet)")
             continue
         if cn in data_names:
@@ -428,5 +428,5 @@ def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
             out["library"].append(f"{u}  ->  " + ", ".join(p.as_posix() for p in libs[:3]) + (f" (+{len(libs) - 3})" if len(libs) > 3 else "")
                                   + f"  (undeclared: dcp libs declare <the declared archives> {libs[0].as_posix()} --why \"...\")")
             continue
-        out["other"].append(u + (f"  (no fragment at {where[0]:#010x})" if where else ""))
+        out["other"].append(u + (f"  (no source at {where[0]:#010x})" if where else ""))
     return out

@@ -1,7 +1,7 @@
-"""dcp headers: the include checks of a unit's head.c (source/headers.py). Same output contract as cli.py: one
+"""dcp headers: the include checks of a unit's head region (source/headers.py). Same output contract as cli.py: one
 record per line, key=value tokens, addresses 0x%08x, counts before lists.
 
-  dcp headers conflicts UNIT HEADER..   what including the headers into the unit's head.c collides with, by a
+  dcp headers conflicts UNIT HEADER..   what including the headers into the unit's head region collides with, by a
                                         trial parse (clang, as dcp lint, and VC6's front end, CL /Zs): clash /
                                         header / supersedes / call / vc6 / other / prototyped / duplicate, the
                                         warnings (the declaration set changes; a dropped duplicate carries the
@@ -9,7 +9,7 @@ record per line, key=value tokens, addresses 0x%08x, counts before lists.
                                         --write inserts the includes and drops the duplicates (every name of a
                                         multi-name `extern a, b, c;`: the line goes, or keeps its other names),
                                         only when nothing else is left and the trial without them has no new
-                                        error. The includes go after head.c's last include, or before the first
+                                        error. The includes go after the unit's last include, or before the first
                                         statement that uses a name the headers declare when that comes first;
                                         --at LINE chooses the line.
 """
@@ -80,10 +80,10 @@ def cmd_headers_conflicts(args):
         # VC6 /O2: the declaration set of a unit alone moves code generation (gildegold: removing uncalled
         # prototypes flipped byte matches to shape)
         fns = []
-        for m in a.members:
-            if m.role == "fragment" and m.name:
-                r = find_function(p, m.name)
-                fns.append((m.addr, m.name, r["code"] if r else None))
+        for addr, name in a.functions:
+            if addr is not None:
+                r = find_function(p, name)
+                fns.append((addr, name, r["code"] if r else None))
         fns.sort(key=lambda x: ({"byte": 0, "shape": 1}.get(x[2], 2), x[0] or 0))
         print(record(warning="declaration-set", added=added, **{"dropped" if args.write else "duplicates": dropped},
                      functions=len(fns), byte=sum(1 for f in fns if f[2] == "byte"),
@@ -113,7 +113,7 @@ def cmd_headers_conflicts(args):
     vleft = H.vc6_new(vc6)
     if left or vleft:
         print(record(write="refused", why=f"without the duplicates the trial has {len(left) + len(vleft)} new errors",
-                     at=pos + 1) + "  (the includes went before head.c's line `at`; --at LINE puts them elsewhere)")
+                     at=pos + 1) + "  (the includes went before the file's line `at`; --at LINE puts them elsewhere)")
         for g in left[:10]:
             print("  " + L.fmt_group(g))
         for d in vleft[:10]:
@@ -126,13 +126,13 @@ def cmd_headers_conflicts(args):
 
 
 def register(sub, cmd):
-    h = sub.add_parser("headers", help="the include checks of a unit's head.c").add_subparsers(dest="sub", required=True)
+    h = sub.add_parser("headers", help="the include checks of a unit's head region").add_subparsers(dest="sub", required=True)
     s = cmd(h, "conflicts", cmd_headers_conflicts,
-            "what including headers into a unit's head.c collides with (a trial parse; nothing is written without --write)")
+            "what including headers into a unit's head region collides with (a trial parse; nothing is written without --write)")
     s.add_argument("unit")
     s.add_argument("headers", nargs="+", metavar="HEADER")
     s.add_argument("--write", action="store_true",
-                   help="insert the includes and drop head.c's duplicates when no other conflict is left")
+                   help="insert the includes and drop the head's duplicates when no other conflict is left")
     s.add_argument("--at", type=int, metavar="LINE",
-                   help="insert the includes before head.c's line LINE (default: after its last include, or before "
+                   help="insert the includes before the unit file's line LINE (default: after its last include, or before "
                         "the first statement using a name the headers declare when that comes first)")

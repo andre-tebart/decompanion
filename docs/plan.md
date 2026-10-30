@@ -894,3 +894,27 @@ Q7 and M7 count the calls inside the span (lint's `calls` carry their lines: a s
 none), M5 / M6 go to the function at the line, the readability memo keys on the span's text, set_level writes
 the comment on the grade's `comment` line, headers' `fn=` comes from the spans. gildegold: lint and conflicts
 equal to the commit before.
+
+Done, stages 2 and 3 (2026-10-30; one commit: the editors cannot stay on fragments once the scan leaves them):
+- build/amalg.py is gone; build/tu.py: a translation unit is src/<unit>.c as it stands (TU.functions from the
+  scan, first_addr the least address, src_hash the file's, locate maps the compiler's `#line` positions back to
+  the file's lines). compile.compile_flags adds the target's define (Toolchain.define_flag, VC6 `/D`).
+- srcscan: one translation unit per unit file, parsed once per target with its DCP_TARGET_<name> (the default
+  target's view gives everything, another target's adds the definitions only it holds); a function's address
+  comment is the own-line comment directly above its definition; L11, L12, the order files, the fragment checks
+  and the spills are gone; L16 (guard against comment). cparse reads physical positions (`#line` is the
+  compiler's business; diagnostics take `presumed` for the generated all-declarations unit).
+- D4 ranks by the unit file's lines, a header's definitions at the line that includes it (zlib's trees.h).
+- The editors: draft inserts in address order (before the next function of the target, a target other than the
+  default under its `#if`), the declaration block and the includes stay in the head region (edit.head_end), unit
+  new / join / rename on src/<unit>.c and notes/units/<unit>.md, data fix and headers on the file's text, the
+  session's change list from the address comments; `dcp fn KEY` prints one function; `dcp unit cat` is gone;
+  `dcp unit fold` converts the old layout (to be removed after the migration).
+- The readability memo keys on the span's text without the positions (an edit above a function moves it), and
+  a file is lexed once per content: a one-function edit of gildegold's cm (15k lines) 18.3 s -> 11.6 s, the
+  rest the compile and the lint of the unit (both whole-unit before as well).
+- gildegold folded in a scratch clone: every unit compiles, every grade but one equal, the object code of 86
+  units equal (compiler-local label numbers aside), 7 units with register / stack-slot swaps in functions that
+  are no byte match (VC6 /O2 reacts to the token stream; the per-part `#line` directives are gone); the one fall
+  is d3if_Prerender's readability: its undeclared call (d3fl_Prerender, M7) was reported under the original's
+  file name before and reached no function, it is attributed now (M7 lines under a `#line` name: 3 -> 0).

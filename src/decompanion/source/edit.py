@@ -1,6 +1,7 @@
 """Edits of the typed state the layout commands make (dcp unit new / join / rename, dcp draft, dcp rename): the
-whole-word rename over src/ and include/, the append-only names.log, include lines and declaration blocks in
-head.c and the unit headers, `git mv`. Every edit writes UTF-8 with LF.
+whole-word rename over src/ and include/, the append-only names.log, include lines and declaration blocks in a
+unit's head region (the lines before its first function: head_end) and the unit headers, a function inserted
+into its unit's file, `git mv`. Every edit writes UTF-8 with LF.
 
 names.log (plan section 4): one line per rename event, appended, never rewritten (merge=union):
 
@@ -21,7 +22,8 @@ from .. import fsmemo
 
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
-DCP_BLOCK = "/* dcp draft: declarations of functions and data the fragments use that no included header declares */"
+DCP_BLOCK = "/* dcp draft: declarations of functions and data the unit uses that no included header declares */"
+OLD_BLOCK = "/* dcp draft: declarations of functions and data the fragments use that no included header declares */"
 
 
 class EditError(RuntimeError):
@@ -211,7 +213,39 @@ def remove(root: Path, path: Path):
     fsmemo.wrote(path)
 
 
-# ------------------------------------------------------------------------------------------------ head.c / headers
+# ------------------------------------------------------------------------------------------------ head region / headers
+def head_end(root: Path, rel: str) -> int:
+    """The 0-based line index where a unit file's head region ends: its first function's address comment (else
+    its first definition; the file's end without one), from the scan. An insertion into the head only moves the
+    end down, so an end computed before a series of head edits stays inside the head."""
+    from ..ledger import srcscan
+    sc = srcscan.scan(Path(root))
+    m = sc.models.get(rel, srcscan.EMPTY)
+    lines = [f.comment_line for f in sc.functions if f.file == rel] + [d[0] for d in m["defs"]]
+    p = Path(root) / rel
+    n = fsmemo.read_text(p).count("\n") + 1 if p.exists() else 0
+    return min(lines, default=n + 1) - 1
+
+
+def insert_function(path: Path, block: str, before: int | None):
+    """Insert a function's text (its address comment first) into a unit's file before the line `before`
+    (1-based: the next function's address comment), else at the end, a blank line between it and its
+    neighbours."""
+    text = path.read_text() if path.exists() else ""
+    lines = text.rstrip("\n").split("\n") if text.strip() else []
+    new = block.rstrip("\n").split("\n")
+    if before is None or before > len(lines):
+        lines += [""] + new
+    else:
+        lines[before - 1:before - 1] = new + [""]
+    write(path, "\n".join(lines) + "\n")
+
+
+def block_line(lines: list[str]) -> int | None:
+    """The index of the dcp declaration block's heading line."""
+    return next((i for i, l in enumerate(lines) if l in (DCP_BLOCK, OLD_BLOCK)), None)
+
+
 def guard(unit: str) -> str:
     return re.sub(r"\W", "_", unit).upper() + "_H"
 
@@ -221,14 +255,14 @@ def c_name(unit: str) -> str:
     return re.sub(r"\W", "_", unit)
 
 
-def ensure_include(path: Path, line: str) -> bool:
-    """Add an #include line after the file's last #include (else after its leading comment); False when the file
-    has it already."""
+def ensure_include(path: Path, line: str, end: int | None = None) -> bool:
+    """Add an #include line after the last #include of the file's first `end` lines (a unit's head region:
+    head_end; the whole file without), else after its leading comment; False when the file has it already."""
     text = path.read_text() if path.exists() else ""
     if line.strip() in (l.strip() for l in text.splitlines()):
         return False
     lines = text.splitlines()
-    at = max((i for i, l in enumerate(lines) if l.lstrip().startswith("#include")), default=None)
+    at = max((i for i, l in enumerate(lines[:end]) if l.lstrip().startswith("#include")), default=None)
     if at is None:                                    # after the leading comment, else at the top
         at = -1
         if lines and lines[0].lstrip().startswith("/*"):
@@ -245,16 +279,20 @@ def declared_in(text: str, name: str) -> bool:
     return bool(re.search(rf"\b{re.escape(name)}\s*\(", code) or re.search(rf"\bextern\b[^;]*\b{re.escape(name)}\b", code))
 
 
-def add_declaration(path: Path, decl: str, name: str) -> bool:
-    """Append a declaration line to the dcp draft block of a head.c (created at the end of the file); False when
-    the file declares the name already."""
+def add_declaration(path: Path, decl: str, name: str, end: int | None = None) -> bool:
+    """Append a declaration line to the dcp draft block of a unit's file (created at the end of its head region,
+    the first `end` lines: head_end; at the end of the file without); False when the head declares the name
+    already."""
     text = path.read_text() if path.exists() else ""
-    if declared_in(text, name):
-        return False
-    if DCP_BLOCK not in text:
-        text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + DCP_BLOCK + "\n"
     lines = text.splitlines()
-    i = lines.index(DCP_BLOCK) + 1
+    if declared_in("\n".join(lines[:end]), name):
+        return False
+    if block_line(lines) is None:
+        at = len(lines) if end is None else min(end, len(lines))
+        while at > 0 and not lines[at - 1].strip():
+            at -= 1
+        lines[at:at] = ([""] if at else []) + [DCP_BLOCK, ""]
+    i = block_line(lines) + 1
     while i < len(lines) and lines[i].strip() and not lines[i].startswith("/*"):
         i += 1
     lines.insert(i, decl)
@@ -268,9 +306,9 @@ def drop_declarations(path: Path, name: str) -> bool:
     if not path.exists():
         return False
     lines = path.read_text().splitlines()
-    if DCP_BLOCK not in lines:
+    if block_line(lines) is None:
         return False
-    i = lines.index(DCP_BLOCK) + 1
+    i = block_line(lines) + 1
     out = lines[:i]
     changed = False
     pat = re.compile(rf"\b{re.escape(name)}\s*\(|\b{re.escape(name)}\s*;")

@@ -2,7 +2,7 @@
 baseline, the level ladder.
 
 Queues (ported from the first attempt's ledger/grade.py work_items; units are the separated game units of
-L.unit.extent, a unit's functions the grade facts of its fragments):
+L.unit.extent, a unit's functions the grade facts of its functions):
   base   every function below shape + readable without a level tag. Every code draft comes before any
          readability-only work: first the draft functions, units with the fewest drafts first, then the
          functions at shape / byte that are not readable, units with the fewest such functions first; address
@@ -170,9 +170,9 @@ def set_level(root: Path, rel: str, level: str | None, reason: str | None, line:
     p = Path(root) / rel
     text = p.read_text()
     S = srcscan.Source(rel, text)
-    c = next((c for c in S.comments if S.line_of(c[0]) == line), None)
+    c = next((c for c in S.comments if S.line_of(c[0]) == line and not text[text.rfind("\n", 0, c[0]) + 1:c[0]].strip()), None)
     if c is None or not (srcscan.lead_addrs(c[2]) or srcscan.UNLINKED.match(c[2])):
-        raise ValueError(f"{rel}:{line}: no address comment there")
+        raise ValueError(f"{rel}:{line}: no function's address comment there")
     cs, ce, body = c
     raw = text[cs:ce]
     old = "@deep" if DEEP.search(body) else "@stuck" if STUCK.search(body) else None

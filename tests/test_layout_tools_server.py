@@ -58,8 +58,9 @@ def test_ghidra_export_and_draft(srv):
     for a in ("0x10008cb0", "0x10008cc0", "0x10008cf0"):          # --next is the game code's first open function
         code, out = dcp(srv, "draft", a)
         assert code == 0 and "body=ghidra" in out, out
-    init = (srv / "src/dllmain/f_10008cc0.c").read_text()
+    text = (srv / "src/dllmain.c").read_text()
+    init = text[text.index("/* 0x10008cc0"):text.index("/* 0x10008cf0")]
     # the export's name, the library member's name, the placeholder of a function in no unit yet
     assert init.startswith("/* 0x10008cc0, Init */") and "_beginthread(unk_10008d20,0,param_1)" in init
-    head = (srv / "src/dllmain/head.c").read_text()
+    head = text[:text.index("/* 0x10008cb0")]
     assert "#include <process.h>" in head                   # _beginthread: the CRT header that declares it

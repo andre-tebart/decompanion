@@ -1,6 +1,6 @@
 """The C compiler of today as the declaration checker of the sources (lifted from the first attempt's
-decomp/decl/lint.py). clang parses every translation unit the way VC6 sees it (the amalgamation with its
-`#line` directives, MS compatibility, C89 so that `T f();` is a K&R declaration, the toolchain's own headers as
+decomp/decl/lint.py). clang parses every translation unit the way VC6 sees it (src/<unit>.c with the target's
+DCP_TARGET_<name> defined, MS compatibility, C89 so that `T f();` is a K&R declaration, the toolchain's own headers as
 system headers) and reports what VC6 does not. Nothing here changes a byte: clang only reads.
 
   M6  errors inside one unit: two declarations of one function that disagree, a call with the wrong number of
@@ -23,17 +23,17 @@ system headers) and reports what VC6 does not. Nothing here changes a byte: clan
       have), and a pair whose two sides read the same, or one side of which has an error of its own, is
       clang's error recovery, not a disagreement. An `@original` / `@vc6` exemption applies to a declaration
       in src/ only: a header is included into many units and repeats the definition's spelling; a unit's own
-      view goes into that unit (a cast macro in its head.c). A header marked `@private UNIT[,..]` in its first
+      view goes into that unit (a cast macro in its head region). A header marked `@private UNIT[,..]` in its first
       20 lines (the original only included it into those units) is left out of the unit, and a file outside
       those units that includes it is an M5 error
   M7  a call through a K&R declaration (-Wdeprecated-non-prototype: every float argument widened, the count
       unchecked) or without any declaration (-Wimplicit-function-declaration); the readability rule Q7 reads
-      the same list per fragment
+      the calls inside each function's span
 Exemptions, one per line, in the line clang points at or the line of a note it attaches: `@original why` (the
 original binary has this mismatch) and `@vc6 why` (VC6 accepts what clang does not). Nothing else silences a
 diagnostic.
 
-Cache: per unit in the store's blob table, keyed by the amalgamation's text, the clang arguments and the unit's
+Cache: per unit in the store's blob table, keyed by the unit's text, the clang arguments and the unit's
 include hash (the compile's: every file of its include set by content), so a unit is parsed again exactly when
 it would be compiled again; the all-declarations unit by its text and the contents of include/. The result of a
 run is the store meta `lint` (the input `lint` of M.lint and G.grade).
@@ -62,7 +62,7 @@ DECL = re.compile(r"^\s*((?:[A-Za-z_]\w*[\s\*]+)+?)\b([A-Za-z_]\w*)\s*\(")
 CROSS = re.compile(r"(?:conflicting types for|redeclaration of|redefinition of|typedef redefinition with different "
                    r"types) ('(\w+)'|\()")
 KEYWORDS = {"return", "else", "goto", "case", "sizeof", "if", "while", "for", "switch", "do", "typedef", "default"}
-VERSION = "6"
+VERSION = "7"
 
 
 NOT_FOUND = ("libclang not found ([lint] libclang = ... in decompanion.toml, or an LLVM installation: clang on PATH "
@@ -448,7 +448,7 @@ def private_violations(root: Path, private: dict[str, set[str]]) -> list[str]:
             if units is None:
                 continue
             if rel.startswith("src/"):
-                ok = rel.split("/")[1] in units
+                ok = Path(rel).stem in units
             else:
                 ok = Path(rel).name == h or private.get(Path(rel).name, {None}) <= units
             if not ok:
@@ -580,21 +580,13 @@ def alldecls(root: Path) -> AllDecls:
     for d in hdecls:
         if id(d) in compared:
             copy(d)
-    by_unit_macros = {}
-    for rel, ds, macros in sources:
-        if rel.endswith("/head.c"):
-            by_unit_macros[rel.split("/")[1]] = (rel, macros)
     knr_done = set()
     for definitions in (False, True):
         for rel, ds, macros in sources:
             mine = [d for d in ds if d.definition == definitions]
             if not mine:
                 continue
-            unit = rel.split("/")[1]
-            avail = {}
-            for mrel, ms in ([by_unit_macros[unit]] if unit in by_unit_macros and by_unit_macros[unit][0] != rel else []) + [(rel, macros)]:
-                for name, line, text in ms:
-                    avail[name] = (mrel, line, text)
+            avail = {name: (rel, line, text) for name, line, text in macros}
             used, todo = {}, {w for d in mine for w in IDENTS.findall(d.stmt)}
             while todo:
                 w = todo.pop()
@@ -720,7 +712,7 @@ def cross_conflicts(ad: AllDecls, diags: list, lines: "Lines") -> list[str]:
         dis = [d for d in v["disagree"] if d not in exempt]
         if not dis:
             continue
-        unit = ref.file.split("/")[1] if ref.file.startswith("src/") else "?"
+        unit = Path(ref.file).stem if ref.file.startswith("src/") else "?"
         s = (f"{dis[0].where}: {name} declared unlike its definition {ref.where} (unit {unit}) `{ref.spelling}`"
              + (f" (as a prototype `{ref.proto[:-1]}`)" if ref.proto else "") + ": "
              f"disagree={len(dis)} {_by_spelling(dis)}; agree={len(agree)}" + (f" {_locs(agree)}" if agree else "")
@@ -733,7 +725,7 @@ def cross_conflicts(ad: AllDecls, diags: list, lines: "Lines") -> list[str]:
         if marked:
             view = _cast_view(marked[0])
             s += (f" / the @original spelling is in a header ({marked[0].where}): a header repeats the definition's "
-                  f"spelling `{ref.proto or ref.spelling + ';'}` (unit {unit}); a unit's own view goes in its head.c as a cast macro"
+                  f"spelling `{ref.proto or ref.spelling + ';'}` (unit {unit}); a unit's own view goes in its head region as a cast macro"
                   + (f": `{view} /* @original why */`" if view else ""))
         out.append(s)
     # clang's pairs: symbols without a definition (or one with a type of its unit), tags and typedefs
@@ -773,7 +765,7 @@ def cross_conflicts(ad: AllDecls, diags: list, lines: "Lines") -> list[str]:
             hint = (" / the @original spelling is in a header: two headers that cannot be included together; "
                     + (f"a header repeats the definition's spelling `{ref.proto or ref.spelling + ';'}` (unit {ref.file.split('/')[1]}), "
                        if ref is not None else "")
-                    + "a unit's own view goes in its head.c as a cast macro (`#define name_X ((T (*)(..))name) /* @original why */`)")
+                    + "a unit's own view goes in its head region as a cast macro (`#define name_X ((T (*)(..))name) /* @original why */`)")
         pairs.setdefault(name or "?", []).append((g, hint))
     for name, ps in sorted(pairs.items()):
         xs = [at.get((g[0]["file"], g[0]["line"], name)) for g, _ in ps]
@@ -824,23 +816,23 @@ def stale(project) -> list[str] | None:
 
 def lint(project, log=None) -> dict:
     """Lint every unit of the current target and the all-declarations unit; store and return the result
-    {units: {unit: amalg hash}, errors: [M6 lines], cross: [M5 lines], calls: {file: [[line, callee (kind)]]}}."""
+    {units: {unit: text hash}, errors: [M6 lines], cross: [M5 lines], calls: {file: [[line, callee (kind)]]}}."""
     from . import cparse
     root, st = project.root, project.store
     setup(project)
     sysdirs = sysdirs_of(project)
     clang = (cparse.VERSION, cparse.version(), canonical(cparse.ARGS), canonical([str(d) for d in sysdirs]))
-    amalgs = B.plan(project)
+    units_ = B.plan(project)
+    defines = [srcscan.target_macro(project.target_name)]
     tus = st.tus()
     jobs, keys, results = [], [], {}
-    for a in amalgs:
+    for a in units_:
         inc = (tus.get(a.unit) or {}).get("include_hash", "")
-        key = sha256("lint", VERSION, *clang, a.src_hash, inc)
+        key = sha256("lint", VERSION, *clang, a.src_hash, inc, *defines)
         hit = st.blob_json(key)
         if hit is None:
-            B.A.write(root, a)                            # clang reads it
             # kept live (the include hash): the next lint of the unit alone (an edit of it) is a reparse
-            jobs.append((Path(a.path), root, sysdirs, [Path(root) / d for d in B.include_dirs(a.unit)], inc))
+            jobs.append((Path(a.path), root, sysdirs, [Path(root) / d for d in B.include_dirs(a.unit)], defines, False, inc))
             keys.append((a.unit, key))
         else:
             results[a.unit] = hit
@@ -853,7 +845,7 @@ def lint(project, log=None) -> dict:
         out = Path(root) / "build" / "lint" / project.target_name / "alldecls.c"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text, newline="\n")
-        jobs.append((out.relative_to(root), root, sysdirs, [Path(root) / "include"], None))
+        jobs.append((out.relative_to(root), root, sysdirs, [Path(root) / "include"], [], True, None))
         keys.append((None, akey))
     for (unit, key), diags in zip(keys, cparse.many(jobs) if jobs else []):
         st.put_blob_json(key, "lint", diags)
@@ -864,7 +856,7 @@ def lint(project, log=None) -> dict:
     jobs = [k for k in keys if k[0] is not None]
     lines = Lines(root)
     errors, calls = [], {}
-    for a in amalgs:
+    for a in units_:
         for g in grouped(results.get(a.unit, [])):
             d = g[0]
             if any(lines.exempt(x["file"], x["line"]) for x in g):
@@ -877,9 +869,9 @@ def lint(project, log=None) -> dict:
                                                                      f"{callee} (undeclared) at line {d['line']}"))
     conflicts = cross_conflicts(ad, cross, lines)
     conflicts += private_violations(root, private_headers(root))
-    res = {"units": {a.unit: a.src_hash for a in amalgs},
-           "includes": {a.unit: (tus.get(a.unit) or {}).get("include_hash", "") for a in amalgs}, "errors": sorted(set(errors)), "cross": sorted(set(conflicts)),
+    res = {"units": {a.unit: a.src_hash for a in units_},
+           "includes": {a.unit: (tus.get(a.unit) or {}).get("include_hash", "") for a in units_}, "errors": sorted(set(errors)), "cross": sorted(set(conflicts)),
            "calls": {k: [list(c) for c in sorted(set(v))] for k, v in sorted(calls.items())}}
     st.set_meta("lint", canonical(res))
     project.forget_input("lint")
-    return dict(res, parsed=len(jobs), cached=len(amalgs) - len(jobs))
+    return dict(res, parsed=len(jobs), cached=len(units_) - len(jobs))

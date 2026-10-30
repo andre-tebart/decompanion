@@ -1,4 +1,4 @@
-"""The match phase on the synthetic dll: the amalgamation, the compare, the hunk classes and the grade verdict
+"""The match phase on the synthetic dll: the translation units, the compare, the hunk classes and the grade verdict
 on hand-made instruction lists, the queues, the baseline (M1), the level ladder; with VC6 installed: compile
 and byte match on the synthetic image, the include-set cache."""
 import struct
@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import dcp
+from conftest import dcp, unit
 
 from decompanion import isa as isa_plugins
-from decompanion.build import amalg as A
+from decompanion.build import tu as T
 from decompanion.config import Project
 from decompanion.isa.base import Line
 from decompanion.ledger import grades as G
@@ -38,36 +38,51 @@ def with_vc6(root: Path):
     cfg.write_text(cfg.read_text().replace('root = "C:/nowhere/vc6"\n', f'root = "{VC6.as_posix()}"\n', 1), newline="\n")
 
 
-# ------------------------------------------------------------------------------------------------ amalgamation
-def test_amalgamation_order_and_lines(tiny):
-    write(tiny, "src/net/head.c", "int counter = 1;  /* 0x10002000 */\n")
-    write(tiny, "src/net/f_10001030.c", "/* 0x10001030, logs */\nvoid log3(void)\n{\n}\n")
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n")
-    write(tiny, "src/net/u_spare.c", "/* unlinked, dropped by /OPT:REF */\nvoid spare(void)\n{\n}\n")
-    write(tiny, "src/net/tail.c", "int last = 2;\n")
-    p = Project(tiny)
+# ------------------------------------------------------------------------------------------------ translation units
+def test_unit_file_order_and_fn(tiny):
+    unit(tiny, "net", "int counter = 1;  /* 0x10002000 */\n",
+         "/* 0x10001030, logs */\nvoid log3(void)\n{\n}\n",
+         "/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n",
+         "/* unlinked, dropped by /OPT:REF */\nvoid spare(void)\n{\n}\n", "int last = 2;\n")
     sc = srcscan.scan(tiny)
-    (a,) = A.units(tiny, sc, "tiny", "tiny")
-    assert [m.file.rsplit("/", 1)[1] for m in a.members] == ["head.c", "f_10001020.c", "f_10001030.c", "u_spare.c", "tail.c"]
-    assert [m.role for m in a.members] == ["head", "fragment", "fragment", "unlinked", "tail"]
-    assert a.text.startswith('#line 1 "src/net/head.c"\nint counter = 1;')
-    assert '#line 1 "src/net/f_10001020.c"\n/* 0x10001020, reads */' in a.text
-    assert a.text.index("f_10001020.c") < a.text.index("f_10001030.c") < a.text.index("u_spare.c") < a.text.index("tail.c")
-    assert a.first_addr == 0x10001020 and a.path == "build/amalg/tiny/net.c"
-    assert dcp(tiny, "unit", "cat", "net")[1] == a.text
-    assert not [e for e in sc.errors if "tail.c" in e.file]          # tail.c is a unit file
+    assert not sc.errors, sc.errors
+    (a,) = T.units(tiny, sc, "tiny", "tiny")
+    assert a.functions == [(0x10001030, "log3"), (0x10001020, "get"), (None, "spare")]      # the text's order
+    assert a.first_addr == 0x10001020 and a.path == a.file == "src/net.c"
+    get = next(f for f in sc.functions if f.name == "get")
+    assert (get.comment_line, get.line, get.end_line) == (8, 9, 12)
+    code, out = dcp(tiny, "fn", "0x10001020")
+    assert code == 0 and "at=src/net.c:8-12" in out and out.endswith("/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n"), out
+    # a definition without its address comment directly above it
+    unit(tiny, "net", "/* 0x10001020, reads */\nint x;\nint get(void)\n{\n    return 1;\n}\n")
+    errs = [e for e in srcscan.scan(tiny).errors if e.check == "L.src"]
+    assert len(errs) == 1 and "get: no address comment" in errs[0].message and errs[0].line == 3, errs
+    unit(tiny, "net", "/* 0x10001020, reads */\nint get(void)\n{\n    return 1;\n}\n")
+    (tiny / "src" / "old").mkdir()
+    (tiny / "src" / "old" / "f_10001020.c").write_text("int y;\n")
+    errs = [e for e in srcscan.scan(tiny).errors if e.check == "L.src"]
+    assert len(errs) == 1 and "unexpected source file src/old/f_10001020.c" in errs[0].message, errs
 
 
-def test_amalgamation_targets(tiny2):
-    write(tiny2, "src/net/f_10001020.c", "/* 0x10001020, other:0x10001020, both */\nint get(void)\n{\n    return 1;\n}\n")
-    write(tiny2, "src/net/f_10001030.c", "/* other:0x10001030, only the second target */\nvoid only(void)\n{\n}\n")
-    write(tiny2, "src/net/f_10001050.c", "/* 0x10001050, only the default target */\nvoid first(void)\n{\n}\n")
-    write(tiny2, "src/lone/f_10001040.c", "/* other:0x10001040, a unit of the second target only */\nvoid lone(void)\n{\n}\n")
+def test_unit_targets(tiny2):
+    unit(tiny2, "net", "/* 0x10001020, other:0x10001020, both */\nint get(void)\n{\n    return 1;\n}\n",
+         "#if defined(DCP_TARGET_other)\n/* other:0x10001030, only the second target */\nvoid only(void)\n{\n}\n#endif\n",
+         "#ifdef DCP_TARGET_tiny\n/* 0x10001050, only the default target */\nvoid first(void)\n{\n}\n#endif\n")
+    unit(tiny2, "lone", "#ifdef DCP_TARGET_other\n/* other:0x10001040, a unit of the second target only */\n"
+                        "void lone(void)\n{\n}\n#endif\n")
     sc = srcscan.scan(tiny2)
-    t = {a.unit: [m.name for m in a.fragments] for a in A.units(tiny2, sc, "tiny", "tiny")}
-    o = {a.unit: [m.name for m in a.fragments] for a in A.units(tiny2, sc, "other", "tiny")}
+    assert not sc.errors, sc.errors
+    t = {a.unit: [n for _, n in a.functions] for a in T.units(tiny2, sc, "tiny", "tiny")}
+    o = {a.unit: [n for _, n in a.functions] for a in T.units(tiny2, sc, "other", "tiny")}
     assert t == {"net": ["get", "first"]}
     assert o == {"lone": ["lone"], "net": ["get", "only"]}
+    # L16: a function the guard and the comment disagree on
+    unit(tiny2, "lone", "/* other:0x10001040, unguarded */\nvoid lone(void)\n{\n}\n")
+    errs = [e for e in srcscan.scan(tiny2).errors if e.check == "L16"]
+    assert len(errs) == 1 and "lone is compiled into tiny" in errs[0].message and "DCP_TARGET_other" in errs[0].message, errs
+    unit(tiny2, "lone", "#ifdef DCP_TARGET_tiny\n/* other:0x10001040, the wrong guard */\nvoid lone(void)\n{\n}\n#endif\n")
+    msgs = sorted(e.message for e in srcscan.scan(tiny2).errors if e.check == "L16")
+    assert len(msgs) == 2 and "lists other, whose compile does not hold it" in msgs[1], msgs
 
 
 # ------------------------------------------------------------------------------------------------ compare
@@ -255,7 +270,7 @@ def grade_store(tmp_path, units, funcs):
     st = Store(tmp_path / "s.sqlite")
     uf = [Fact(lo, hi, Kind.unit, {"tu": tu, "status": status, "start_level": "declared", "end_level": "declared",
                                    "start_by": "x", "end_by": "y"}, Level.declared, "rule:L.unit.extent@1") for tu, lo, hi, status in units]
-    gf = [Fact(a, a + 1, Kind.grade, {"of": "function", "name": n, "unit": u, "file": f"src/{u}/f_{a:x}.c", "code": code,
+    gf = [Fact(a, a + 1, Kind.grade, {"of": "function", "name": n, "unit": u, "file": f"src/{u}.c", "code": code,
                                       "readability": q, "level": lvl, "failing": [], "dist": {"ins": d, "bytes": d, "size": 1, "orig": 1}},
                Level.declared, "rule:G.grade@1") for a, n, u, code, q, lvl, d in funcs]
     st.record_run("L.unit.extent", "1", "c", "i1", uf, [], 0)
@@ -322,14 +337,16 @@ def test_level_ladder(tmp_path):
     assert G.only_missing_statements("missing statements")
     assert G.only_missing_statements("the loop body is unwritten; two calls are missing")
     assert not G.only_missing_statements("register choice ebx/esi after the spell pass; missing statements")
-    write(tmp_path, "src/u/f_10001000.c", "/* 0x10001000, does it */\nvoid f(void)\n{\n}\n")
-    assert G.set_level(tmp_path, "src/u/f_10001000.c", "deep", "slot order after vargen") == "@deep added"
-    assert (tmp_path / "src/u/f_10001000.c").read_text().startswith("/* 0x10001000, does it @deep slot order after vargen */\n")
-    assert G.set_level(tmp_path, "src/u/f_10001000.c", "stuck", "every lead tried") == "@deep -> @stuck"
+    unit(tmp_path, "u", "int x;  /* 0x10002000 */\n", "/* 0x10001000, does it */\nvoid f(void)\n{\n}\n")
+    with pytest.raises(ValueError):
+        G.set_level(tmp_path, "src/u.c", "deep", "the data comment", 1)
+    assert G.set_level(tmp_path, "src/u.c", "deep", "slot order after vargen", 3) == "@deep added"
+    assert "\n/* 0x10001000, does it @deep slot order after vargen */\n" in (tmp_path / "src/u.c").read_text()
+    assert G.set_level(tmp_path, "src/u.c", "stuck", "every lead tried", 3) == "@deep -> @stuck"
     fn = srcscan.scan(tmp_path).functions[0]
-    assert fn.stuck == "every lead tried" and fn.deep is None and fn.what == "does it"
-    assert G.set_level(tmp_path, "src/u/f_10001000.c", None, None) == "@stuck removed"
-    assert (tmp_path / "src/u/f_10001000.c").read_text().startswith("/* 0x10001000, does it */\n")
+    assert fn.stuck == "every lead tried" and fn.deep is None and fn.what == "does it" and fn.comment_line == 3
+    assert G.set_level(tmp_path, "src/u.c", None, None, 3) == "@stuck removed"
+    assert (tmp_path / "src/u.c").read_text() == "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n"
 
 
 # ------------------------------------------------------------------------------------------------ with VC6
@@ -339,8 +356,8 @@ def test_compile_and_byte_match(tiny):
     with_vc6(tiny)
     write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n"
                                  "0x10001030 boundary end tu=net -- f3 is another unit\n")
-    write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\n")
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n")
+    head = "int counter = 0x1234;  /* 0x10002000 */\n"
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n")
     code, out = dcp(tiny, "build")
     assert code == 0, out
     assert "compiled=1" in out and "grades: byte+readable=1" in out
@@ -351,15 +368,15 @@ def test_compile_and_byte_match(tiny):
     code, out = dcp(tiny, "grade", "get")
     assert "code=byte" in out and "readability=readable" in out
     # a draft: another constant
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter + 1;\n}\n")
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter + 1;\n}\n")
     code, out = dcp(tiny, "grade", "get")
     assert "code=draft" in out and "B3 draft" in out
     code, out = dcp(tiny, "diffclass", "get")
     assert "code" in out
-    # a compile error names the fragment and fails the gate
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return nothing;\n}\n")
+    # a compile error names the unit's file and line and fails the gate
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return nothing;\n}\n")
     code, out = dcp(tiny, "build")
-    assert code == 1 and "src/net/f_10001020.c(4)" in out and "C2065" in out
+    assert code == 1 and "src/net.c(6)" in out and "C2065" in out, out
     code, out = dcp(tiny, "check")
     assert code == 1 and "M.compile" in out
 
@@ -372,15 +389,15 @@ def test_promote_raises_only_and_accept(tiny):
     with_vc6(tiny)
     write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n"
                                  "0x10001030 boundary end tu=net -- f3 is another unit\n")
-    write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\n")
-    good = "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n"
+    head = "int counter = 0x1234;  /* 0x10002000 */\n"
+    good = head + "\n/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n"
     bad = good.replace("counter;\n}", "counter + 1;\n}")
-    write(tiny, "src/net/f_10001020.c", good)
+    unit(tiny, "net", good)
     code, out = dcp(tiny, "promote")
     assert code == 0 and "functions=1" in out and "accepted=0" in out, out
     tsv = tiny / "ledger" / "grades.tsv"
     assert tsv.read_text() == G.HEADER + "\ntiny\t0x10001020\tget\tnet\tbyte\treadable\t\t\n"
-    write(tiny, "src/net/f_10001020.c", bad)
+    unit(tiny, "net", bad)
     before = tsv.read_text()
     code, out = dcp(tiny, "promote")
     assert code == 1 and "promote=refused  falls=1" in out and "fell: 0x10001020 get: code byte -> draft" in out, out
@@ -396,10 +413,10 @@ def test_promote_raises_only_and_accept(tiny):
     assert "M1" not in out, out
     code, out = dcp(tiny, "promote")                     # no fall against the lowered entry; the note stays
     assert code == 0 and "accepted=1" in out and tsv.read_text().splitlines()[1] == line, out
-    write(tiny, "src/net/f_10001020.c", good)
+    unit(tiny, "net", good)
     code, out = dcp(tiny, "promote")                     # back at byte: raised, the note cleared
     assert code == 0 and "accepted=0" in out and tsv.read_text() == before, out
-    write(tiny, "src/net/f_10001020.c", bad)
+    unit(tiny, "net", bad)
     code, out = dcp(tiny, "promote", "--accept-falls")
     assert code == 0 and "fell (accepted): 0x10001020 get" in out and "accepted=1" in out, out
     assert "\tdraft\treadable\t\tbyte+readable -> draft+readable at " in tsv.read_text()
@@ -410,15 +427,15 @@ def test_promote_raises_only_and_accept(tiny):
 def test_header_edit_recompiles_only_includers(tiny):
     with_vc6(tiny)
     write(tiny, "include/net.h", "extern int counter;\n")
-    write(tiny, "src/net/head.c", '#include "net.h"\nint counter = 0x1234;  /* 0x10002000 */\n')
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n")
-    write(tiny, "src/log/f_10001030.c", "/* 0x10001030, logs */\nvoid log3(void)\n{\n}\n")
+    get = "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n"
+    unit(tiny, "net", '#include "net.h"\nint counter = 0x1234;  /* 0x10002000 */\n', get)
+    unit(tiny, "log", "/* 0x10001030, logs */\nvoid log3(void)\n{\n}\n")
     code, out = dcp(tiny, "build")
     assert "compiled=2" in out, out
     write(tiny, "include/net.h", "extern int counter;  /* edited */\n")
     code, out = dcp(tiny, "build")
     assert "compiled=1" in out and "ok   net" in out and "ok   log" not in out, out
-    write(tiny, "src/net/head.c", '#include "net.h"\n/* a comment */\nint counter = 0x1234;  /* 0x10002000 */\n')
+    unit(tiny, "net", '#include "net.h"\n/* a comment */\nint counter = 0x1234;  /* 0x10002000 */\n', get)
     code, out = dcp(tiny, "build")
     assert "compiled=1" in out and "ok   net" in out, out
     assert "compiled=0" in dcp(tiny, "build")[1]
@@ -431,18 +448,18 @@ LIBCLANG = cparse.library(None)
 @pytest.mark.skipif(LIBCLANG is None, reason="libclang not installed")
 def test_lint_q7_and_exemption(tiny):
     with_vc6(tiny)
-    write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\nint helper();\n")
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter + helper(1.5f);\n}\n")
+    head = "int counter = 0x1234;  /* 0x10002000 */\nint helper();\n"
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter + helper(1.5f);\n}\n")
     code, out = dcp(tiny, "lint")
-    assert code == 0 and "m7=1" in out and "helper() at line 4" in out, out
+    assert code == 0 and "m7=1" in out and "helper() at line 7" in out, out
     code, out = dcp(tiny, "grade", "get")
-    assert "Q7 prototypes: helper() at line 4" in out and "readability=draft" in out
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n"
-                                        "    return counter + helper(1.5f);  /* @original the original passes a double */\n}\n")
+    assert "Q7 prototypes: helper() at line 7" in out and "readability=draft" in out
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n"
+                            "    return counter + helper(1.5f);  /* @original the original passes a double */\n}\n")
     code, out = dcp(tiny, "lint")
     assert "m7=0" in out, out
     # a conflict across units: two prototypes of one function
-    write(tiny, "src/log/f_10001030.c", "/* 0x10001030, logs */\nlong helper(int x);\nvoid log3(void)\n{\n}\n")
+    unit(tiny, "log", "long helper(int x);\n", "/* 0x10001030, logs */\nvoid log3(void)\n{\n}\n")
     code, out = dcp(tiny, "lint")
     assert code == 1 and "m5=1" in out and "M5" in out, out
 
@@ -464,12 +481,12 @@ def test_lint_m5_between_headers(tiny):
     # a header private to one unit may define a tag another header defines too; another unit may not include it
     write(tiny, "include/a.h", "/* @private net */\ntypedef struct BITS { int x; } BITS;\n")
     write(tiny, "include/b.h", "typedef struct BITS { short x; } BITS;\n")
-    write(tiny, "src/net/head.c", '#include "a.h"\nint counter = 0x1234;  /* 0x10002000 */\nint helper();\n')
+    unit(tiny, "net", '#include "a.h"\nint counter = 0x1234;  /* 0x10002000 */\nint helper();\n')
     code, out = dcp(tiny, "lint")
     assert "m5=0" in out, out
-    write(tiny, "src/log/head.c", '#include "a.h"\n')
+    unit(tiny, "log", '#include "a.h"\n')
     code, out = dcp(tiny, "lint")
-    assert "m5=1" in out and "src/log/head.c:1: includes a.h, private to net" in out, out
+    assert "m5=1" in out and "src/log.c:1: includes a.h, private to net" in out, out
 
 
 @needs_vc6
@@ -479,11 +496,10 @@ def test_lint_m5_per_symbol(tiny):
     definition (clang alone would blame b.h); data from the sources too (a unit's GAPDATA view); a K&R
     definition does not swallow what follows it; a header that does not compile is its own M5."""
     with_vc6(tiny)
-    write(tiny, "src/net/head.c", "int counter = 0x1234;  /* 0x10002000 */\n")
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n")
-    write(tiny, "src/log/f_10001030.c", "/* 0x10001030, logs */\nint log3(a)\nint a;\n{\n    return a;\n}\n")
-    write(tiny, "src/log/head.c", "#define GAPDATA __declspec(align(1)) unsigned char\nextern GAPDATA counter[];\n"
-                                  "int get();\nint log3(int a);\n")
+    unit(tiny, "net", "int counter = 0x1234;  /* 0x10002000 */\n", "/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n")
+    log3 = "/* 0x10001030, logs */\nint log3(a)\nint a;\n{\n    return a;\n}\n"
+    unit(tiny, "log", "#define GAPDATA __declspec(align(1)) unsigned char\nextern GAPDATA counter[];\n"
+                      "int get();\nint log3(int a);\n", log3)
     write(tiny, "include/a.h", "long get(void);\n")
     write(tiny, "include/b.h", "int get(void);\nextern int counter;\n")
     code, out = dcp(tiny, "lint")
@@ -491,28 +507,28 @@ def test_lint_m5_per_symbol(tiny):
     m5 = [l for l in out.splitlines() if l.startswith("  M5 ")]
     assert len(m5) == 2, out
     get = next(l for l in m5 if " get declared unlike its definition" in l)
-    assert get.startswith("  M5 include/a.h:1: get declared unlike its definition src/net/f_10001020.c:2 (unit net) `int get(void)`"), get
-    assert "disagree=1 `long get(void)` at include/a.h:1; agree=2 include/b.h:1, src/log/head.c:3" in get, get
+    assert get.startswith("  M5 include/a.h:1: get declared unlike its definition src/net.c:4 (unit net) `int get(void)`"), get
+    assert "disagree=1 `long get(void)` at include/a.h:1; agree=2 include/b.h:1, src/log.c:3" in get, get
     cnt = next(l for l in m5 if "counter" in l)
-    assert "disagree=1 `GAPDATA counter[]` at src/log/head.c:2; agree=1 include/b.h:2" in cnt, cnt
+    assert "disagree=1 `GAPDATA counter[]` at src/log.c:2; agree=1 include/b.h:2" in cnt, cnt
     # the header spelling marked @original: the hint names the definition and the cast macro of a unit's view
     write(tiny, "include/a.h", "long get(void);  /* @original why */\n")
     code, out = dcp(tiny, "lint")
     assert "the @original spelling is in a header (include/a.h:1): a header repeats the definition's spelling " \
-           "`int get(void);` (unit net); a unit's own view goes in its head.c as a cast macro: " \
+           "`int get(void);` (unit net); a unit's own view goes in its head region as a cast macro: " \
            "`#define get_X ((long (*)(void))get) /* @original why */`" in out, out
     # in a unit's own declaration the exemption holds
     write(tiny, "include/a.h", "int get(void);\n")
-    write(tiny, "src/log/head.c", "extern int counter;\nlong get(void);  /* @original why */\nint log3(int a);\n")
+    unit(tiny, "log", "extern int counter;\nlong get(void);  /* @original why */\nint log3(int a);\n", log3)
     code, out = dcp(tiny, "lint")
     assert "m5=0" in out, out
     # a K&R definition and the prototype after it: a disagreeing one is seen
-    write(tiny, "src/log/head.c", "extern int counter;\nint log3(char *a);\n")
+    unit(tiny, "log", "extern int counter;\nint log3(char *a);\n", log3)
     code, out = dcp(tiny, "lint")
-    assert "m5=1" in out and "log3 declared unlike its definition src/log/f_10001030.c:2" in out \
+    assert "m5=1" in out and "log3 declared unlike its definition src/log.c:5" in out \
            and "`int log3(a) int a;` (as a prototype `int log3(int a)`)" in out, out
     # a header that does not compile in the all-declarations unit
-    write(tiny, "src/log/head.c", "extern int counter;\n")
+    unit(tiny, "log", "extern int counter;\n", log3)
     write(tiny, "include/c.h", "NOSUCHTYPE *mk(void);\n")
     code, out = dcp(tiny, "lint")
     assert "m5=1" in out and "include/c.h:1: include/c.h does not compile in the all-declarations unit (1 errors, " \
@@ -542,13 +558,12 @@ def test_q4_view_forms(tiny):
     """Q4: `(*(T *)datum)` reads through the datum's value (raw), `(*(T *)&datum)` with its address comment is a
     view; the message states the accepted form."""
     with_vc6(tiny)
-    write(tiny, "src/net/head.c", "char *counter = 0;  /* 0x10002000 */\n"
-                                  "#define COUNT_RAW (*(int *)counter)\n#define COUNT (*(int *)&counter)  /* 0x10002000 */\n")
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT_RAW;\n}\n")
+    head = "char *counter = 0;  /* 0x10002000 */\n#define COUNT_RAW (*(int *)counter)\n#define COUNT (*(int *)&counter)  /* 0x10002000 */\n"
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT_RAW;\n}\n")
     code, out = dcp(tiny, "grade", "get")
     assert "Q4 raw access: macro COUNT_RAW (" in out and "`#define NAME (*(T *)&datum)  /* 0xADDR */`" in out \
            and "`(*(T *)datum)` reads through the datum's value and stays raw" in out, out
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT;\n}\n")
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT;\n}\n")
     code, out = dcp(tiny, "grade", "get")
     assert "Q4" not in out, out
 
@@ -556,12 +571,11 @@ def test_q4_view_forms(tiny):
 @needs_vc6
 def test_auto_clear_and_data_order(tiny):
     with_vc6(tiny)
-    write(tiny, "src/net/head.c", "int pad = 7;  /* 0x10002004 */\nint counter = 0x1234;  /* 0x10002000 */\n")
-    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter @deep register choice after the spell pass */\n"
-                                        "int get(void)\n{\n    return counter;\n}\n")
+    unit(tiny, "net", "int pad = 7;  /* 0x10002004 */\nint counter = 0x1234;  /* 0x10002000 */\n",
+         "/* 0x10001020, reads the counter @deep register choice after the spell pass */\nint get(void)\n{\n    return counter;\n}\n")
     code, out = dcp(tiny, "build")
-    assert "auto-clear src/net/f_10001020.c: get is byte + readable, @deep removed" in out, out
-    assert (tiny / "src/net/f_10001020.c").read_text().startswith("/* 0x10001020, reads the counter */\n")
+    assert "auto-clear src/net.c: get is byte + readable, @deep removed" in out, out
+    assert "\n/* 0x10001020, reads the counter */\nint get(void)\n" in (tiny / "src/net.c").read_text()
     code, out = dcp(tiny, "conflicts")
     assert "D4" in out and "counter (0x10002000) is defined after pad (0x10002004)" in out, out
     syms = {f.lo: f.value["extent"] for f in Project(tiny).store.facts(Kind.symbol) if f.run.startswith("M.data")}

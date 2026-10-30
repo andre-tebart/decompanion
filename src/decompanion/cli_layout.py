@@ -102,7 +102,7 @@ def register(sub, cmd):
     s = cmd(sub, "refs", R.cmd_refs, "definition, facts, references to and from, and source lines of a name or address")
     s.add_argument("what", metavar="NAME|ADDR")
     from . import cli_draft as DR
-    s = cmd(sub, "draft", DR.cmd_draft, "write the first fragment of a function (the analyzer's pseudocode, else a @rough skeleton)")
+    s = cmd(sub, "draft", DR.cmd_draft, "write a function into its unit's file (the analyzer's pseudocode, else a @rough skeleton)")
     s.add_argument("addr", nargs="?", metavar="ADDR|NAME")
     s.add_argument("--next", action="store_true", help="the function `dcp layout next` shows")
     s.add_argument("--show", action="store_true", help="print the analyzer's draft of ADDR, write nothing")

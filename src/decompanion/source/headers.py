@@ -1,15 +1,16 @@
-"""`dcp headers conflicts UNIT HEADER..`: what including headers into a unit's head.c would collide with, before
-the include is made. A trial amalgamation of the unit (head.c with `#include "<header>"` after its last
-include, or before the first file-scope statement that uses a name the headers declare when that comes
-first, or before the line --at names; written to build/lint/<target>/trial/) is parsed by clang the way `dcp lint` parses it (lint.py: the
-same flags, system and include directories), and so is the unit as it is; the diagnostics only the trial has
-are what the include causes:
+"""`dcp headers conflicts UNIT HEADER..`: what including headers into a unit's head region would collide with,
+before the include is made. A trial copy of the unit's file (`#include "<header>"` after its last include, or
+before the first file-scope statement that uses a name the headers declare when that comes first, or before
+the line --at names; written to build/lint/<target>/trial/) is parsed by clang the way `dcp lint` parses it
+(lint.py: the same flags, system and include directories), and so is the unit as it is; the diagnostics only
+the trial has are what the include causes:
 
-  supersedes  a declaration of the unit (head.c or a fragment) the header declares differently (`conflicting
-              types`, `redefinition .. with a different type`, a struct defined twice): the local one goes, and
-              its users follow the header's type
-  duplicate   a declaration of head.c the header repeats with the same type: safe to drop (no diagnostic, by name;
-              each name of a multi-name `extern int a, b, c;` line)
+  supersedes  a declaration of the unit the header declares differently (`conflicting types`, `redefinition ..
+              with a different type`, a struct defined twice): the local one goes, and its users follow the
+              header's type
+  duplicate   a declaration of the head region (the lines before the unit's first function) the header repeats
+              with the same type: safe to drop (no diagnostic, by name; each name of a multi-name
+              `extern int a, b, c;` line)
   clash       two headers disagree (both sides in include/): no head edit settles it; one header is wrong
   call        a call of the unit the header's prototype rejects (too few / too many arguments), with the
               original's evidence at the matching call site of the same function: the pushes since the previous
@@ -27,16 +28,16 @@ are what the include causes:
               type is incomplete in the unit (C2079) the known case; at a line no clang item names
   other       any other new error
 
-Then the functions to re-grade (a `call` / `vc6` / `supersedes` / `other` line in their fragment, a `prototyped`
+Then the functions to re-grade (a `call` / `vc6` / `supersedes` / `other` line in their span, a `prototyped`
 call that is not safe) and two warnings:
-  declaration-set  the includes add declarations to the unit, or --write drops head.c duplicates: under VC6 /O2
+  declaration-set  the includes add declarations to the unit, or --write drops head duplicates: under VC6 /O2
                    the declaration set of a unit alone moves code generation (gildegold: removing uncalled
                    prototypes flipped byte matches to shape), so every function of the unit is re-graded, byte
                    ones first (listed: byte, then shape)
   q6               a duplicate's comment is the only text describing a function's address (rule Q6 reads it):
                    dropping the line drops the function to draft; move the words to its address comment first
                    (a function's address only: Q6 grades functions; a line that keeps a declarator keeps it)
-The tool reads only; `--write` inserts the includes and drops the `duplicate` declarations of head.c (a line
+The tool reads only; `--write` inserts the includes and drops the `duplicate` declarations of the head (a line
 whose names are all duplicates goes, comment and all; a multi-name extern line keeps its other declarators),
 and only when the trial without them has no new error at all (clang's or VC6's).
 """
@@ -48,8 +49,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import fsmemo
-from ..build import amalg as A
 from ..build import compile as B
+from ..build import tu as T
 from ..ledger import srcscan
 from . import cparse
 from . import lint as L
@@ -70,7 +71,7 @@ class Item:
     msg: str = ""
     ours: str = ""            # the declaration text on the unit's side
     theirs: str = ""          # on the header's side
-    fn: int | None = None     # the fragment's function address
+    fn: int | None = None     # the address of the function whose span holds the unit's side
     evidence: list = field(default_factory=list)
     fns: list = field(default_factory=list)     # several functions (prototyped)
     sites: list = field(default_factory=list)
@@ -93,7 +94,7 @@ def resolve_header(root: Path, unit: str, h: str) -> str | None:
 
 
 def after_includes(text: str) -> int:
-    """The line index (0-based) after head.c's last include (0 without one)."""
+    """The line index (0-based) after the file's last include (0 without one)."""
     return max((i for i, l in enumerate(text.split("\n")) if INCLUDE.match(l)), default=-1) + 1
 
 
@@ -110,7 +111,7 @@ IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
 
 
 def include_pos(rel: str, text: str, names, root: Path | None = None) -> int:
-    """Where the includes go in head.c (a line index, 0-based; the includes are inserted before it): after its
+    """Where the includes go in a unit's file (a line index, 0-based; the includes are inserted before it): after its
     last include, or earlier, at the start of the file-scope statement holding the first use of a name the
     headers declare (`names`) when that use comes first, so a head that uses a duplicate above its last
     include still compiles once the duplicate is dropped. A use is an occurrence outside a declaration line
@@ -151,7 +152,7 @@ DECLARATOR = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$")
 
 
 def drop_names(rel: str, line: str, names) -> str | None:
-    """One head.c line without the declarators of `names` in its `extern T a, b, c;` statements: None when no
+    """One head line without the declarators of `names` in its `extern T a, b, c;` statements: None when no
     code is left (the line goes, its comment with it), else the line with the other declarators (and its
     comment) kept."""
     names = set(names)
@@ -182,7 +183,7 @@ def drop_names(rel: str, line: str, names) -> str | None:
 
 
 def drop_line(rel: str, line: str, names, line_names) -> str | None:
-    """A head.c line with its duplicates `names` dropped (drop_names); a line whose declarations
+    """A head line with its duplicates `names` dropped (drop_names); a line whose declarations
     (`line_names`) are all duplicates but are no extern data statement (a prototype) goes whole: None."""
     new = drop_names(rel, line, names)
     if new is None or new == line and set(line_names) <= set(names):
@@ -242,7 +243,7 @@ def _vc6(project, a, rel: Path) -> list[dict] | None:
     if not tc.available():
         return None
     root = Path(project.root)
-    flags, _ = B.flags_for(project, a.target, a.unit)
+    flags = B.compile_flags(project, a.target, a.unit)
     res = tc.syntax_check(rel, flags, B.include_dirs(a.unit), root)
     if res is None:
         return None
@@ -257,24 +258,23 @@ def _vc6(project, a, rel: Path) -> list[dict] | None:
     return out
 
 
-def _reader(a, head_text):
-    head = next((m.file for m in a.members if m.role == "head"), None)
-    return lambda rel: head_text if rel == head else None
-
-
-def _map(a, segs, diags):
-    """Diagnostics of a unit compiled under its declared __FILE__ name mapped back to the part files."""
-    if not a.file_name:
-        return diags
-    fname = a.file_name.lower().replace("\\", "/")
+def _map(a, text: str, rel: Path, diags):
+    """Diagnostics of a trial copy (at `rel`, its text `text`) as the unit's file's: the copy's own lines, or
+    the name and line its `#line` directives give (VC6's) mapped back (T.locate)."""
     out = []
     for d in diags:
-        if d["file"].lower().replace("\\", "/") == fname:
-            hit = [(f, first + d["line"] - lo) for lo, n, f, first in segs if lo <= d["line"] < lo + n]
-            if hit:
-                d = dict(d, file=hit[0][0], line=hit[0][1])
+        if d["file"] and T.same_file(d["file"], rel.as_posix()):
+            d = dict(d, file=a.file)
+        elif d["file"] and (hit := T.locate(text, rel.as_posix(), d["file"], d["line"])):
+            d = dict(d, file=a.file, line=hit[0])
         out.append(d)
     return out
+
+
+def head_end(project, rel: str) -> int:
+    """The first line past a unit file's head region (its first function's address comment)."""
+    sc = srcscan.scan(project.root, project.input_hash("src"))
+    return min((f.comment_line for f in sc.functions if f.file == rel), default=1 << 30)
 
 
 def _key(g):
@@ -291,17 +291,15 @@ def head_names(root: Path, unit: str, headers: list[str]) -> dict[str, str]:
 
 
 def trial(project, unit: str, headers: list[str], drop: dict | None = None, at: int | None = None):
-    """(amalgamation, head.c, baseline groups, trial groups, head.c's trial text, (VC6 baseline, VC6 trial) or
-    None, the include position) of the unit with `headers` included and head.c's duplicates `drop` removed
-    ({line (1-based): the names to drop there}: the line goes when they are all its names, else only their
-    declarators). The includes go before head.c's line `at` (1-based) when given, else where include_pos puts
-    them; the position returned is a line index (0-based) of head.c on disk."""
+    """(translation unit, its file, baseline groups, trial groups, the file's trial text, (VC6 baseline, VC6
+    trial) or None, the include position) of the unit with `headers` included and the head's duplicates `drop`
+    removed ({line (1-based): the names to drop there}: the line goes when they are all its names, else only
+    their declarators). The includes go before the file's line `at` (1-based) when given, else where
+    include_pos puts them; the position returned is a line index (0-based) of the file on disk."""
     a = next((x for x in B.plan(project) if x.unit == unit), None)
     if a is None:
         raise LookupError(f"no unit {unit} in target {project.target_name}")
-    head = next((m.file for m in a.members if m.role == "head"), None)
-    if head is None:
-        raise LookupError(f"unit {unit} has no head.c")
+    head = a.file
     old = fsmemo.read_text(Path(project.root) / head)
     lines = old.split("\n")
     pos = at - 1 if at else include_pos(head, old, head_names(project.root, unit, headers), root=project.root)
@@ -319,23 +317,22 @@ def trial(project, unit: str, headers: list[str], drop: dict | None = None, at: 
             l = new_l
         kept.append(l)
     new = insert_includes("\n".join(kept), headers, kpos)
-    base_text, base_segs = A.compose(a.root, a.members, a.file_name)
-    new_text, new_segs = A.compose(a.root, a.members, a.file_name, read=_reader(a, new))
-    rb, rn = _write(project, a, base_text, "base"), _write(project, a, new_text, "trial")
+    rb, rn = _write(project, a, old, "base"), _write(project, a, new, "trial")
     L.setup(project)
     root = Path(project.root)
-    clang = (root, L.sysdirs_of(project), [root / d for d in B.include_dirs(a.unit)], None)
+    clang = (root, L.sysdirs_of(project), [root / d for d in B.include_dirs(a.unit)],
+             [srcscan.target_macro(project.target_name)], False, None)
     with ThreadPoolExecutor(2) as pool:                     # VC6's two runs while clang parses both
         vb, vn = pool.submit(_vc6, project, a, rb), pool.submit(_vc6, project, a, rn)
         db, dn = cparse.many([(rb, *clang), (rn, *clang)])
-        base, tri = _map(a, base_segs, db), _map(a, new_segs, dn)
+        base, tri = _map(a, old, rb, db), _map(a, new, rn, dn)
         vbase, vtri = vb.result(), vn.result()
-    vc6 = None if vbase is None or vtri is None else (_map(a, base_segs, vbase), _map(a, new_segs, vtri))
+    vc6 = None if vbase is None or vtri is None else (_map(a, old, rb, vbase), _map(a, new, rn, vtri))
     return a, head, L.grouped(base), L.grouped(tri), new, vc6, pos
 
 
 def vc6_new(vc6) -> list[dict]:
-    """The VC6 errors only the trial has (by file and message: the trial's head.c lines are shifted)."""
+    """The VC6 errors only the trial has (by file and message: the trial's lines are shifted)."""
     if vc6 is None:
         return []
     vbase, vtri = vc6
@@ -348,7 +345,7 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
     root = Path(project.root)
     a, head, base, tri, new_head, vc6, pos = trial(project, unit, headers, at=at)
     old_lines = fsmemo.read_text(root / head).split("\n")
-    last_inc = pos - 1                               # the trial includes follow head.c's line index pos - 1
+    last_inc = pos - 1                               # the trial includes follow the file's line index pos - 1
     n_added = len(headers)
     seen = {_key(g) for g in base}
     base_calls = {}
@@ -357,7 +354,7 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
         if (c := L.call_of(d)) and c[0] != "?":
             base_calls.setdefault((d["file"], c[0]), []).append(d["line"])
 
-    def fix(d):                                      # trial head.c lines -> head.c on disk
+    def fix(d):                                      # the trial's lines -> the file's on disk
         if d["file"] == head:
             line = d["line"]
             if last_inc + 1 < line <= last_inc + 1 + n_added:
@@ -366,12 +363,16 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
         return f"{d['file']}:{d['line']}"
 
     def is_unit(f):
-        return f.startswith(f"src/{unit}/")
+        return f == head
 
     spans = srcscan.function_spans(srcscan.scan(root, project.input_hash("src")), project.target_name, project.default_target)
 
     def fn_at(d):
-        return spans.at(d["file"], d["line"]) if d.get("file") else None
+        """The function whose span holds a diagnostic (at its line on disk)."""
+        if not d.get("file"):
+            return None
+        f, _, n = fix(d).partition(" ")[0].rpartition(":")
+        return spans.at(f, int(n)) if n.isdigit() else None
 
     items, conflicting = [], set()
     rd = Reader(root)
@@ -449,9 +450,10 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
                   fns=fns)
         it.sites = [f"{f}:{ln} ({c[1]})" for f, ln, c in classes]
         items.append(it)
-    # duplicates: head.c names the headers declare too, without a diagnostic
+    # duplicates: names of the head region the headers declare too, without a diagnostic
+    end = head_end(project, head)
     for n, ln in sorted(declared_names(head, "\n".join(old_lines), root=root).items(), key=lambda kv: kv[1]):
-        if n in hdr_names and n not in conflicting:
+        if n in hdr_names and n not in conflicting and ln < end:
             items.append(Item("duplicate", n, f"{head}:{ln}", hdr_names[n], "the header declares it the same way",
                               rd.line(f"{head}:{ln}"), rd.line(hdr_names[n])))
     info = {"vc6": vc6 is not None, "declset": declaration_set(root, a, head, headers, hdr_names),
@@ -460,21 +462,20 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
 
 
 def call_sites(root: Path, a, callee: str) -> list[tuple[str, int]]:
-    """(file, line) of every call of `callee` inside a function body of the unit's files."""
+    """(file, line) of every call of `callee` inside a function body of the unit's file."""
     pat = re.compile(r"\b" + re.escape(callee) + r"\s*\(")
     out = []
-    for m in a.members:
-        text = fsmemo.read_text(Path(root) / m.file)
-        S = srcscan.Source(m.file, text)
-        model = srcscan.model_of(root, m.file, text)
-        code = srcscan.live_code(S, model or srcscan.EMPTY)
-        depth, pos = 0, 0
-        for hit in pat.finditer(code):
-            for c in code[pos:hit.start()]:
-                depth += (c == "{") - (c == "}")
-            pos = hit.start()
-            if depth > 0:
-                out.append((m.file, S.line_of(hit.start())))
+    text = fsmemo.read_text(Path(root) / a.file)
+    S = srcscan.Source(a.file, text)
+    model = srcscan.model_of(root, a.file, text)
+    code = srcscan.live_code(S, model or srcscan.EMPTY)
+    depth, pos = 0, 0
+    for hit in pat.finditer(code):
+        for c in code[pos:hit.start()]:
+            depth += (c == "{") - (c == "}")
+        pos = hit.start()
+        if depth > 0:
+            out.append((a.file, S.line_of(hit.start())))
     return out
 
 
@@ -497,10 +498,8 @@ def header_closure(root: Path, unit: str, headers: list[str]) -> list[str]:
 
 def declaration_set(root: Path, a, head: str, headers: list[str], hdr_names: dict) -> dict:
     """What the includes do to the unit's declaration set: the names the headers add (declared nowhere in the
-    unit or its current headers) and the head.c declarations --write drops as duplicates."""
-    have = set()
-    for m in a.members:
-        have |= set(declared_names(m.file, fsmemo.read_text(Path(root) / m.file), root=root))
+    unit or its current headers) and the head declarations --write drops as duplicates."""
+    have = set(declared_names(a.file, fsmemo.read_text(Path(root) / a.file), root=root))
     current = [m.group(1) for m in L.INCLUDE_LINE.finditer(fsmemo.read_text(Path(root) / head))]
     for rel in header_closure(root, a.unit, current):
         have |= set(declared_names(rel, fsmemo.read_text(Path(root) / rel), root=root))
@@ -508,10 +507,10 @@ def declaration_set(root: Path, a, head: str, headers: list[str], hdr_names: dic
 
 
 def only_descriptions(project, head: str, old_lines: list[str], dups: list) -> list[tuple]:
-    """(duplicate, address) for each head.c duplicate whose comment is the only text describing a function's
+    """(duplicate, address) for each head duplicate whose comment is the only text describing a function's
     address in the tree (readability rule Q6 reads it): dropping the line drops the description. Only a line
     --write drops whole counts (every name it declares is a duplicate; a line that keeps a declarator keeps
-    its comment), each once, and only a function's address (a fragment's; Q6 grades functions, not data)."""
+    its comment), each once, and only a function's address (Q6 grades functions, not data)."""
     from collections import Counter
     if not dups:
         return []

@@ -254,6 +254,10 @@ class Toolchain:
         """Compile one translation unit `src` into `obj` (one process; paths relative to cwd or absolute)."""
         raise NotImplementedError
 
+    def define_flag(self, macro: str) -> str:
+        """The compiler flag that defines a macro (a target's DCP_TARGET_<name>)."""
+        raise NotImplementedError
+
     def includes(self, src: Path, flags: list[str], include_dirs: list[Path], cwd: Path) -> tuple[list[Path], str]:
         """(every file the preprocessor read for `src` other than src itself, the log): the unit's include set,
         absolute paths. An empty list and the log when the preprocessor fails."""
