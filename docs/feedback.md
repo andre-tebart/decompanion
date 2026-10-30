@@ -27,11 +27,13 @@ a lost daemon; asmdiff prints its legend; disasm inside an instruction starts at
     remove a line, and since one file per unit that moves every function below it) reruns 23 (~2 s: L.src's facts
     carry line numbers, so the L.* chain, L9.analyzer.span, L5, L13 and the byte map run again). Proposed: per-unit partitions of the M / G / D rules, and a position-free run key of L.src for the rules that
     read no line (their facts must not carry a source line then: `by=src:file:line`).
-12. **A header edit parses the changed units twice with clang (~1 s plan + ~1 s lint).** The source scan's model
-    (cparse.model, ~0.4 s for a 4000-line unit, the Python walk of the cursors) and the lint's diagnostics parse
-    (~0.1 s) are separate parses, and the all-declarations unit (1.6 MB, ~0.76 s) is parsed again on every header
-    edit. Proposed: start the lint's parses beside the compile (they need only the plan), and one parse per unit
-    for model and diagnostics.
+12. **A header edit parses the changed units twice with clang, and compiles units whose code did not change.**
+    The model walk is native since 2026-10-31 (~0.15 s per unit, docs/plan.md); the source scan's model and the
+    lint's diagnostics are still separate parses, and the all-declarations unit (1.6 MB, ~0.76 s) is parsed again
+    on every header edit. The d3.h worst case (43 units) is 9.5 s: CL 5.0 s, lint 1.65 s, rules 1.5 s, plan 1.2 s.
+    Proposed: skip the compile of a unit whose preprocessed text (without its line markers) is unchanged (a
+    comment or a blank line in a header compiles nothing); start the lint's parses beside the compile; one parse
+    per unit for model and diagnostics.
 13. **No "meaning matches" verdict.** For 3 of 8 functions the worker diffed the calls and constants of both sides
     by hand to show the rest was register allocation; diffclass reports pure scheduling as `code` (62 hunks for
     one function). Proposed: a diffclass line `calls and immediates: identical | differ (...)` (the multiset of

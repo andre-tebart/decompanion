@@ -610,6 +610,15 @@ only line numbers move), and S6 / S7 rename three names in three calls / in one.
   2.0 .. 2.8 s, after a line move 4.0 .. 6.0 s -> 2.9 .. 3.7 s, after a header edit 4.5 .. 5.8 s -> 3.1 .. 3.9 s;
   rename 7.5 .. 9.5 s -> 5.1 s; three names 3 x 7 .. 12 s -> one call 7.2 s. `--verify` ok after every scenario.
   What is left is in docs/feedback.md (the rules that rerun whole after a compile or a line move).
+- The source scan's model walk is native (2026-10-31, user decisions: "go ahead with native helper", "no
+  fallbacks"): clang parses a 10000-line unit in ~0.1 s, but the walk of its ~50000 top-level cursors (most of them
+  macro expansions) through the Python bindings took ~0.35 s more. data/native/dcp_clang.c walks them on the
+  bindings' translation unit and returns one text record per cursor the model reads, with raw positions;
+  cparse.model maps them as before (casts, skipped ranges, includes and diagnostics stay on the bindings: a few
+  calls). Built on first use with gcc and the LLVM headers; no Python walk remains. Checked before the switch: the
+  model of all 202 files of gildegold (units and lone headers) equal to the Python walk's. Model per unit 0.45 ..
+  0.65 s -> 0.15 .. 0.22 s; the worst case measured, a comment line in gildegold's d3.h (43 units compile), 12.5 ..
+  12.9 s -> 9.5 s (plan 3.5 s -> 1.2 s; left: CL 5.0 s, lint 1.65 s, rules 1.5 s).
 
 ## 14. Gap data (M9, planned 2026-10-30, user decision): what the framework takes over from the projects
 

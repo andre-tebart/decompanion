@@ -109,6 +109,11 @@ terminal; output in build/daemon.log), so the `dcp` script never stays running: 
 running .venv/Scripts/dcp.exe when it reinstalls decompanion. `dcp serve --status` / `--stop`; a changed
 decompanion restarts it by itself (the waiting command is sent to the new one).
 
+The source scan's walk of clang's syntax tree is native (src/decompanion/data/native/dcp_clang.c, called on the
+translation unit the Python bindings parsed): it needs `gcc` on PATH (MinGW-w64, 64-bit like libclang.dll) and the
+LLVM installation's headers (`<llvm>/include/clang-c`); the DLL is built on first use, named by the source's hash.
+Without them a command that scans the sources fails and says what is missing.
+
 What makes the loop fast, in the daemon and outside it: content hashes of the source files persisted per project
 (build/cache/stamps.pickle, trusted only for an unchanged, non-racy stamp; fsmemo.py), one plan per source state,
 the compare of each function memoised by its object, address and next start (an edit compares one unit's

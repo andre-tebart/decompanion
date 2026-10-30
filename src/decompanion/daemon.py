@@ -57,7 +57,8 @@ def info_path(root: Path) -> Path:
 
 
 def code_stamp() -> str:
-    """The stamps (path, size, modification time) of every .py of the package: changed code changes it."""
+    """The stamps (path, size, modification time) of every .py and .c (the native walk) of the package: changed
+    code changes it."""
     h = hashlib.sha256()
 
     def rec(d):
@@ -65,7 +66,7 @@ def code_stamp() -> str:
             for e in sorted(it, key=lambda e: e.name):
                 if e.is_dir() and e.name != "__pycache__":
                     rec(e.path)
-                elif e.name.endswith(".py"):
+                elif e.name.endswith((".py", ".c")):
                     st = e.stat()
                     h.update(f"{e.path}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
     rec(PKG)

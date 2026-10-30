@@ -96,6 +96,68 @@ def version() -> str:
     return ci._CXString.from_result(f())
 
 
+NATIVE_SRC = Path(__file__).resolve().parent.parent / "data" / "native" / "dcp_clang.c"
+_native = None
+_native_lock = threading.Lock()
+
+
+def native():
+    """The native walk of model (data/native/dcp_clang.c) bound to the loaded libclang, once per process. Built on
+    first use into data/native/dcp_clang-<source hash>.dll with the gcc on PATH (MinGW-w64, the bitness of
+    libclang) and the headers of the libclang's LLVM installation (<llvm>/include/clang-c); a missing compiler
+    or a failed build is an error, there is no other walk."""
+    global _native
+    if _native is not None:
+        return _native
+    import hashlib
+    import subprocess
+    with _native_lock:
+        if _native is not None:
+            return _native
+        if _loaded is None:
+            raise RuntimeError("libclang is not loaded (cparse.load) before the native walk")
+        src = NATIVE_SRC
+        out = src.with_name(f"dcp_clang-{hashlib.sha256(src.read_bytes()).hexdigest()[:12]}.dll")
+        if not out.exists():
+            inc = _loaded.parent.parent / "include"
+            gcc = shutil.which("gcc")
+            if gcc is None or not (inc / "clang-c" / "Index.h").exists():
+                raise RuntimeError(f"the native walk {out.name} is not built and cannot be: it needs gcc on PATH (MinGW-w64, "
+                                   f"64-bit like {_loaded.name}; " + ("found" if gcc else "missing") + f") and the libclang "
+                                   f"headers {inc / 'clang-c' / 'Index.h'} (" + ("found" if (inc / "clang-c").exists() else "missing") + ")")
+            tmp = out.with_name(f"{out.stem}.{os.getpid()}.tmp")
+            r = subprocess.run([gcc, "-O2", "-shared", "-Wall", "-I", str(inc), str(src), "-o", str(tmp)],
+                               capture_output=True, text=True)
+            if r.returncode != 0 or not tmp.exists():
+                raise RuntimeError(f"building the native walk {out.name} failed:\n{r.stdout}{r.stderr}")
+            try:
+                os.replace(tmp, out)
+            except OSError:                         # another process built and loaded it meanwhile
+                tmp.unlink(missing_ok=True)
+        lib = ctypes.CDLL(str(out))
+        lib.dcp_init.argtypes, lib.dcp_init.restype = [ctypes.c_void_p], ctypes.c_int
+        lib.dcp_model_walk.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+        lib.dcp_model_walk.restype = ctypes.c_void_p
+        lib.dcp_free.argtypes, lib.dcp_free.restype = [ctypes.c_void_p], None
+        if not lib.dcp_init(ci.conf.lib._handle):
+            raise RuntimeError(f"the native walk {out.name}: {_loaded} lacks a function it calls")
+        _native = lib
+    return _native
+
+
+def native_walk(tu: ci.TranslationUnit) -> list[str]:
+    """The records of a translation unit's top-level cursors (data/native/dcp_clang.c: one per cursor the model
+    reads, raw positions); the call runs without the interpreter lock."""
+    lib = native()
+    n = ctypes.c_size_t()
+    p = lib.dcp_model_walk(tu.obj, ctypes.byref(n))
+    try:
+        text = ctypes.string_at(p, n.value).decode("utf-8", errors="replace")
+    finally:
+        lib.dcp_free(p)
+    return text.split("\n")[:-1]
+
+
 def args(sysdirs: list[Path], incdirs: list[Path], defines=()) -> list[str]:
     return [*ARGS, *(x for d in sysdirs for x in ("-isystem", str(d))), *(f"-I{d}" for d in incdirs),
             *(f"-D{d}" for d in defines)]
@@ -220,22 +282,6 @@ def diagnostics(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path],
 _flags: dict[str, object] = {}
 
 
-def _flag(fn: str, c: ci.Cursor) -> bool:
-    """A cursor predicate of libclang the bindings do not register (clang_Cursor_isFunctionInlined, ..)."""
-    f = _flags.get(fn)
-    if f is None:
-        f = _flags[fn] = getattr(ci.conf.lib, fn)
-        f.argtypes, f.restype = [ci.Cursor], ctypes.c_uint
-    return bool(f(c))
-
-
-def inlined(c: ci.Cursor) -> bool:
-    return _flag("clang_Cursor_isFunctionInlined", c)
-
-
-def function_like(c: ci.Cursor) -> bool:
-    return _flag("clang_Cursor_isMacroFunctionLike", c)
-
 
 class _RangeList(ctypes.Structure):
     _fields_ = [("count", ctypes.c_uint), ("ranges", ctypes.POINTER(ci.SourceRange))]
@@ -261,12 +307,6 @@ def skipped(tu: ci.TranslationUnit, f: ci.File) -> list[tuple[ci.SourceLocation,
         if p:
             free(p)
 
-
-AGGREGATE = {ci.TypeKind.CONSTANTARRAY, ci.TypeKind.INCOMPLETEARRAY, ci.TypeKind.VARIABLEARRAY, ci.TypeKind.RECORD}
-
-# a K&R parameter's default promotion (C89 6.5.4.3: what the caller pushes, what a prototype has to say)
-PROMOTED = {ci.TypeKind.CHAR_S: "int", ci.TypeKind.CHAR_U: "int", ci.TypeKind.SCHAR: "int", ci.TypeKind.UCHAR: "int",
-            ci.TypeKind.SHORT: "int", ci.TypeKind.USHORT: "int", ci.TypeKind.FLOAT: "double"}
 
 # an integer literal right after `(` or `)`: where a cast to a pointer type of a literal ends (casts in code)
 CAST_END = re.compile(rb"[()][ \t\r\n]*((?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*)(?![\w.])")
@@ -341,15 +381,16 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
     raw: dict[str, list[bytes]] = {}
 
     def where(loc: ci.SourceLocation):
-        if loc.file is None:
-            return None
-        f = loc.file.name
+        return where_at(loc.file.name, loc.line, loc.column) if loc.file is not None else None
+
+    def where_at(f: str, line: int, col: int):
+        """(file below root, line, column in characters) of clang's file name, line and byte column; None
+        outside root."""
         if f not in files:
             p = Path(f).resolve()
             inside = p.is_relative_to(rootr)
             files[f] = (p == main, p.relative_to(rootr).as_posix() if inside else None)
         is_main, rel_ = files[f]
-        line, col = loc.line, loc.column
         if is_main:
             if main_rel is None:
                 return None
@@ -377,7 +418,6 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             if w is not None and e is not None and w[0] == e[0]:
                 entry(w[0])["dead"].append((w[1], e[1]))
 
-    tags = (ci.CursorKind.STRUCT_DECL, ci.CursorKind.UNION_DECL, ci.CursorKind.ENUM_DECL)
     err: list = []
 
     def errors() -> set:
@@ -386,52 +426,49 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             err.append({w[:2] for d in tu.diagnostics if d.severity >= ci.Diagnostic.Error
                         and (w := where(d.location)) is not None})
         return err[0]
-    for c in tu.cursor.get_children():
-        k = c.kind
-        if k == ci.CursorKind.FUNCTION_DECL:
-            if inlined(c):
-                continue
-            w, n, e = where(c.extent.start), where(c.location), where(c.extent.end)
+
+    def at(r: list, i: int):
+        """The position of a record's fields i .. i+2 (file, line, column), as where() maps it."""
+        return where_at(r[i], int(r[i + 1]), int(r[i + 2])) if r[i] and r[i] != "-" else None
+
+    enum_at = None                                         # the position of the last enum (its constants follow)
+    for line in native_walk(tu):                           # the top-level cursors (data/native/dcp_clang.c)
+        r = line.split("\t")
+        k = r[0]
+        if k == "F":
+            w, n, e = at(r, 4), at(r, 7), at(r, 10)
             if w is None or n is None or w[0] != n[0]:
                 continue
             if e is not None and e[0] != w[0]:
                 e = None                                   # a body that ends in an included file: no end here
-            static = c.storage_class == ci.StorageClass.STATIC
-            body = next((x for x in c.get_children() if x.kind == ci.CursorKind.COMPOUND_STMT), None)
-            b = where(body.extent.start) if body is not None else None
+            b = at(r, 13)
             # a definition's parameters (K&R is the syntax, parameter declarations before the body: a prototype
             # in scope gives a K&R definition a prototyped type)
-            knr = None
-            if body is not None:
-                knr = [(a.spelling, PROMOTED.get(a.type.get_canonical().kind)) for a in c.get_arguments()]
-            entry(w[0])["decls"].append(("f", c.spelling, static, w[1:], n[1:], e[1:] if e else None, b[1:] if b else None,
+            knr = None if r[16] == "-" else [(a, p or None) for a, p in (x.split("\x1f") for x in r[16].split("\x1e") if x)]
+            entry(w[0])["decls"].append(("f", r[1], r[2] == "1", w[1:], n[1:], e[1:] if e else None, b[1:] if b else None,
                                          knr))
-            if c.is_definition():
-                entry(w[0])["defs"].append((w[1], w[2], c.spelling, static))
-        elif k == ci.CursorKind.VAR_DECL:
-            w, n, e = where(c.extent.start), where(c.location), where(c.extent.end)
+            if r[3] == "1":
+                entry(w[0])["defs"].append((w[1], w[2], r[1], r[2] == "1"))
+        elif k == "V":
+            w, n, e = at(r, 4), at(r, 7), at(r, 10)
             if w is not None and n is not None and e is not None and w[0] == n[0] == e[0]:
-                static = c.storage_class == ci.StorageClass.STATIC
-                # a tentative definition is no definition
-                kind = "def" if c.is_definition() or c.storage_class != ci.StorageClass.EXTERN else "extern"
-                entry(w[0])["vars"].append((w[1], w[2], e[1], e[2], c.spelling, kind, static))
-                init = any(x.kind.is_expression() for x in c.get_children())
+                static = r[2] == "1"
+                entry(w[0])["vars"].append((w[1], w[2], e[1], e[2], r[1], r[3], static))
                 # None: a type clang does not know (its recovery makes an unknown type name int)
-                agg = (None if any((w[0], ln) in errors() for ln in range(w[1], e[1] + 1))
-                       else c.type.get_canonical().kind in AGGREGATE)
-                entry(w[0])["decls"].append(("v", c.spelling, static, w[1:], n[1:], e[1:], kind, init, agg))
-        elif k == ci.CursorKind.TYPEDEF_DECL or k in tags and c.is_definition() and c.spelling:
-            n = where(c.location)
-            if n is not None and not c.spelling.startswith(("struct (", "union (", "enum (")):
-                entry(n[0])["types"].append((n[1], c.spelling))
-            if k == ci.CursorKind.ENUM_DECL and n is not None:
-                for x in c.get_children():
-                    if x.kind == ci.CursorKind.ENUM_CONSTANT_DECL and (xn := where(x.location)) is not None:
-                        entry(xn[0])["types"].append((xn[1], x.spelling))
-        elif k == ci.CursorKind.MACRO_DEFINITION:
-            w = where(c.location)
+                agg = None if any((w[0], ln) in errors() for ln in range(w[1], e[1] + 1)) else r[14] == "1"
+                entry(w[0])["decls"].append(("v", r[1], static, w[1:], n[1:], e[1:], r[3], r[13] == "1", agg))
+        elif k == "T":
+            n = at(r, 3)
+            if n is not None and not r[1].startswith(("struct (", "union (", "enum (")):
+                entry(n[0])["types"].append((n[1], r[1]))
+            enum_at = n if r[2] == "1" else None
+        elif k == "E":
+            if enum_at is not None and (xn := at(r, 2)) is not None:
+                entry(xn[0])["types"].append((xn[1], r[1]))
+        elif k == "M":
+            w = at(r, 2)
             if w is not None:
-                entry(w[0])["macros"].append((w[1], c.spelling, function_like(c)))
+                entry(w[0])["macros"].append((w[1], r[1], r[5] == "1"))
     deps = sorted({str(Path(i.include.name).resolve()) for i in tu.get_includes()})
 
     def casts(fname: str, data: bytes, rel_: str | None):
