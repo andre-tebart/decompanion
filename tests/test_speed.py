@@ -151,3 +151,29 @@ def test_daemon_answers_like_the_process(tiny):
     finally:
         if d.poll() is None:
             d.kill()
+
+
+def test_serve_detaches_and_returns(tiny):
+    """`dcp serve` returns once its daemon answers: the dcp script must not stay running (uv on Windows cannot
+    replace a running .venv/Scripts/dcp.exe)."""
+    assert dcp(tiny, "setup", "--no-analyzer")[0] == 0
+    env = dict(os.environ)
+    env.pop("DCP_NO_DAEMON", None)
+
+    def serve(*args):
+        return subprocess.run([sys.executable, "-m", "decompanion.client", "serve", "--root", str(tiny), *args],
+                              env=env, capture_output=True, text=True, timeout=60)
+    info = tiny / "build" / "daemon.json"
+    try:
+        start = serve()
+        assert start.returncode == 0 and "started" in start.stdout, start.stderr
+        assert info.exists()
+        assert "pid=" in serve("--status").stdout
+        assert serve().returncode == 1                       # one daemon per root
+    finally:
+        assert serve("--stop").returncode == 0
+    for _ in range(200):
+        if not info.exists():
+            break
+        time.sleep(0.05)
+    assert not info.exists()

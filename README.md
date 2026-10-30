@@ -104,7 +104,10 @@ status` names when it is due, with the evidence it has and the command that reso
 project then runs in it (client.py forwards the command line, the cwd and the environment, and streams the output
 back), so a command pays neither the interpreter start and imports nor the first read of the image, the sources,
 the store and the objects. Without a daemon (or with DCP_NO_DAEMON=1) the command runs in its own process: the
-same code, the same output. `dcp serve --status` / `--stop`; a changed decompanion restarts it by itself.
+same code, the same output. `dcp serve` starts the daemon detached and returns (`--foreground` keeps it in the
+terminal; output in build/daemon.log), so the `dcp` script never stays running: on Windows uv could not replace a
+running .venv/Scripts/dcp.exe when it reinstalls decompanion. `dcp serve --status` / `--stop`; a changed
+decompanion restarts it by itself.
 
 What makes the loop fast, in the daemon and outside it: content hashes of the source files persisted per project
 (build/cache/stamps.pickle, trusted only for an unchanged, non-racy stamp; fsmemo.py), one plan per source state,

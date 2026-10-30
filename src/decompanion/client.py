@@ -102,6 +102,8 @@ def serve(argv: list[str]) -> int:
     ap.add_argument("--root", help="the project (default: the decompanion.toml above the cwd)")
     ap.add_argument("--stop", action="store_true", help="stop the running daemon")
     ap.add_argument("--status", action="store_true", help="print the running daemon's state")
+    ap.add_argument("--foreground", action="store_true",
+                    help="run the supervisor in this process (Ctrl-C stops it) instead of starting it detached")
     a = ap.parse_args(argv)
     root = os.path.abspath(a.root) if a.root else project_root([])
     if root is None:
@@ -114,8 +116,41 @@ def serve(argv: list[str]) -> int:
         conn.close()
         print(f"dcp serve: a daemon runs already for {root} (dcp serve --status)", file=sys.stderr)
         return 1
-    from .daemon import supervise
-    return supervise(root)
+    if a.foreground:
+        from .daemon import supervise
+        return supervise(root)
+    return start_detached(root)
+
+
+def start_detached(root: str) -> int:
+    """Start the supervisor as `python -m decompanion.daemon --supervise ROOT`, detached, and return once its
+    daemon answers. The `dcp` script itself must not stay running: on Windows uv cannot replace a running
+    .venv/Scripts/dcp.exe, so every `uv run` that reinstalls decompanion (a changed pyproject.toml) would fail."""
+    import subprocess
+    import time
+    log = os.path.join(root, "build", "daemon.log")
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    kw: dict = {}
+    if os.name == "nt":
+        kw["creationflags"] = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                               | subprocess.CREATE_NO_WINDOW)
+    else:
+        kw["start_new_session"] = True
+    with open(log, "ab") as fh:
+        p = subprocess.Popen([sys.executable, "-m", "decompanion.daemon", "--supervise", root],
+                             stdin=subprocess.DEVNULL, stdout=fh, stderr=fh, close_fds=True, **kw)
+    for _ in range(100):                 # the first start imports and opens the store: a few seconds at most
+        conn = connect(root)
+        if conn is not None:
+            conn.close()
+            print(f"dcp serve: started for {root} (supervisor pid {p.pid}, log build/daemon.log)")
+            return 0
+        if p.poll() is not None:
+            print(f"dcp serve: the daemon exited with {p.returncode} (see {log})", file=sys.stderr)
+            return 1
+        time.sleep(0.1)
+    print(f"dcp serve: started, but it does not answer yet (supervisor pid {p.pid}, see {log})", file=sys.stderr)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

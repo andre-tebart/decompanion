@@ -13,9 +13,12 @@ deep queue, `dcp next --deep`), not this session's.
 
 Hard rules
 - Every tool is `uv run dcp ...` from the project root (`--target NAME` for a target other than the first).
-  First check `uv run dcp serve --status`; when no daemon runs, start `uv run dcp serve` as a background process
-  and leave it running: every `uv run dcp` of the project then runs in it (about 0.2 s a call instead of 1 .. 3 s,
-  same output). Without it every command still works, only slower. A worktree needs its own (`dcp serve` there).
+  First check `uv run dcp serve --status`; when no daemon runs, start one with `uv run dcp serve` (it
+  detaches and returns) and leave it running: every `uv run dcp` of the project then runs in it (about 0.2 s a
+  call instead of 1 .. 3 s, same output). Without it every command still works, only slower. A worktree needs
+  its own (`dcp serve` there).
+  If `uv run` fails with "failed to remove file ...dcp.exe" (access denied), an old daemon holds the exe: run
+  `uv run --no-sync dcp serve --stop`, then retry.
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
   state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` write it). Shell heredocs,
@@ -95,6 +98,12 @@ work, however long.
 - Q6: the address comment says what the function does (`/* 0x4a3000, sends the login reply */`).
 - Q7: every call has a prototype (`dcp lint` evaluates it): the callee's prototype lives in its defining unit's
   header `include/<unit>.h`; include that header, never write a second prototype (`dcp refs NAME` shows them).
+  When that include does not compile because the unit's `head.c` declares the header's data untyped (`extern
+  GAPDATA ...`, its own partial struct of a type the header defines: redefinition errors C2371 and the like),
+  the head needs a typing pass, which is not base work. Do not copy prototypes or write local struct views to get
+  around it: leave Q7 open for those calls, add `head: include/<x>.h conflicts with N untyped declarations` under
+  **Open work** in the unit's open.md, and commit the function at the grade it reached as
+  `<unit>: <name> shape, Q7 blocked by head (match-base)`. It counts as one of the session's 8.
 - `@original why` / `@vc6 why` on a declaration line only with evidence (a byte-matched caller that needs it).
 
 ### 2.4 Commit

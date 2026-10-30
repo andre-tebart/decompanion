@@ -1,7 +1,8 @@
 """`dcp serve`: one resident process per project that runs the dcp commands, so a command pays neither the
 interpreter start and imports nor the first read of the image, the sources, the store and the objects.
 
-    dcp serve            run the daemon of the project above the cwd in the foreground (Ctrl-C stops it)
+    dcp serve            start the daemon of the project above the cwd, detached, and return once it answers
+    dcp serve --foreground   run it in this process instead (Ctrl-C stops it)
     dcp serve --status   is it running: pid, uptime, requests served, memory
     dcp serve --stop     stop it
 
@@ -18,7 +19,9 @@ sees every change made since the last one, by dcp or by anyone else.
 - Requests run one at a time, in the order they connect (the store has one writer; a command changes the cwd and
   the environment of the process): two agents' commands are serialised, not interleaved. A request carries the
   argv, the cwd and the environment of the client; stdout and stderr are streamed back as they are written.
-- `dcp serve` is a small supervisor around the daemon process. When the code of decompanion changed (any .py of
+- `dcp serve` starts a small supervisor around the daemon process (`python -m decompanion.daemon --supervise`,
+  output in build/daemon.log) and returns: the `dcp` script never stays running, since on Windows uv cannot
+  replace a running .venv/Scripts/dcp.exe when it reinstalls decompanion. When the code of decompanion changed (any .py of
   the package), the daemon answers the next request with `restart` (the client runs that command itself) and
   exits; the supervisor starts a new one.
 - A worktree is a project root of its own: it gets its own daemon (`dcp serve` there), or runs in-process.
@@ -237,4 +240,6 @@ def supervise(root: Path) -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--supervise"]:
+        sys.exit(supervise(Path(sys.argv[2])))
     sys.exit(Daemon(Path(sys.argv[1])).run())
