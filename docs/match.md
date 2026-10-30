@@ -179,7 +179,7 @@ all-declarations unit (build/lint/<target>/alldecls.c): the system headers the s
 `include/*.h` (a header after the headers that define the names it uses, and after its includer), the
 sources' file-scope prototypes and extern data declarations behind `#line` (with the macros of their unit they
 use, `GAPDATA`), then the sources' non-static definitions (a function's head as a prototype, a K&R definition
-with its parameters, a data definition as an extern declaration). One M5 line per symbol:
+compared as its default-promoted prototype (`f(x) short x;` as `f(int x)`), a data definition as an extern declaration). One M5 line per symbol:
 
 - **against the definition**: every other spelling is renamed and compared with the definition by
   `__builtin_types_compatible_p` on their addresses, so the line lists the definition (file:line, unit,
