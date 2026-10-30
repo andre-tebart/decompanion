@@ -1,5 +1,6 @@
 """The source scan through the front end (libclang, ledger/srcscan.py's models) against the regex scan it replaces,
-file by file: the functions, the data declarations and the scan errors each one finds. Kept while the regex scan
+file by file: the functions, the data declarations, the scan errors, the function-like macros, the views, the raw
+object macros and the pointer casts each one finds. Kept while the regex scan
 is (docs/plan.md section 18).
 
     uv run python tools/scandiff.py --root ../gildegold [--show 20] [--file SUBSTRING]
@@ -36,6 +37,10 @@ def keys(sc: srcscan.Scan):
         "functions": Counter((f.file, f.line, f.name, f.addrs, f.unlinked, f.static) for f in sc.functions),
         "data": Counter((d.file, d.line, d.name, d.kind, d.addrs, d.unlinked, d.static) for d in sc.data),
         "errors": Counter((e.file, e.line, e.check, e.message) for e in sc.errors),
+        "macros": Counter(sc.macros),
+        "views": Counter((v.file, v.line, v.name, v.container, v.offset, v.addrs, v.alias) for v in sc.views),
+        "rawobj": Counter(sc.rawobj),
+        "ptrcasts": Counter((c.file, c.line, c.text, c.value) for c in sc.ptrcasts),
     }
 
 

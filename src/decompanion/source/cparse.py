@@ -212,15 +212,62 @@ def diagnostics(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path],
     return out
 
 
-_inlined = None
+_flags: dict[str, object] = {}
+
+
+def _flag(fn: str, c: ci.Cursor) -> bool:
+    """A cursor predicate of libclang the bindings do not register (clang_Cursor_isFunctionInlined, ..)."""
+    f = _flags.get(fn)
+    if f is None:
+        f = _flags[fn] = getattr(ci.conf.lib, fn)
+        f.argtypes, f.restype = [ci.Cursor], ctypes.c_uint
+    return bool(f(c))
 
 
 def inlined(c: ci.Cursor) -> bool:
-    global _inlined
-    if _inlined is None:
-        _inlined = ci.conf.lib.clang_Cursor_isFunctionInlined     # not among the functions the bindings register
-        _inlined.argtypes, _inlined.restype = [ci.Cursor], ctypes.c_uint
-    return bool(_inlined(c))
+    return _flag("clang_Cursor_isFunctionInlined", c)
+
+
+def function_like(c: ci.Cursor) -> bool:
+    return _flag("clang_Cursor_isMacroFunctionLike", c)
+
+
+# an integer literal right after `(` or `)`: where a cast to a pointer type of a literal ends (casts in code)
+CAST_END = re.compile(rb"[()][ \t\r\n]*((?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*)(?![\w.])")
+
+
+def _casts(tu: ci.TranslationUnit, f: ci.File, data: bytes):
+    """(start, literal end, literal), byte offsets in data (a location clang gives for an offset inside a macro
+    argument reads back as the macro call's), of every integer literal of a file cast to a pointer type in code, the
+    cast and the literal spelled in the file: for each literal after a parenthesis, the cursor at the `)` before
+    it is the cast (clang's), stepping over parentheses and casts to a type without a pointer
+    (`(char *)(unsigned)0x5de470`); a typedef'd pointer type counts (`(LPVOID)0x5de470`). Comments, strings
+    and dead branches have no cursor there."""
+    for m in CAST_END.finditer(data):
+        j = m.start()
+        while j >= 0:
+            ch = data[j:j + 1]
+            if ch.isspace() or ch == b"(":
+                j -= 1
+                continue
+            if ch != b")":
+                break
+            c = ci.Cursor.from_location(tu, ci.SourceLocation.from_offset(tu, f, j))
+            if c is None or c.kind != ci.CursorKind.CSTYLE_CAST_EXPR:
+                break
+            # the cast's `(` in the file (its extent is the macro call's when it stands in a macro argument)
+            k, depth = j, 0
+            while k >= 0:
+                depth += (data[k:k + 1] == b")") - (data[k:k + 1] == b"(")
+                if depth == 0:
+                    break
+                k -= 1
+            if k < 0:
+                break
+            if c.type.get_canonical().kind == ci.TypeKind.POINTER:
+                yield k, m.end(), m.group(1).decode()
+                break
+            j = k - 1
 
 
 def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str | None = None,
@@ -230,6 +277,9 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
     text of: a `#line` pin inside a part (a declared original file name) is no part; every header below root it
     includes):
       defs  [(line, col, name, static)] of every function definition that is no inline helper
+      macros [(line, name, function-like)] of every macro the preprocessor defined there (a live `#define`)
+      casts [(line, col, end line, end col, literal)] of every integer literal cast to a pointer type in code
+            (_casts): from the cast's `(` to the literal's end
       vars  [(line, col, end line, end col, name, kind, static)] of every file-scope data declarator: (line, col)
             the start of its declaration (one per statement: several declarators share it), (end line, end col)
             the end of the declarator (its initialiser included); kind extern (declared `extern` without an
@@ -275,6 +325,10 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
         return rel_, line, len(bline[:col - 1].decode("utf-8", errors="replace")) + 1
 
     out: dict[str, dict] = {}
+
+    def entry(rel_: str) -> dict:
+        return out.setdefault(rel_, {"defs": [], "vars": [], "macros": [], "casts": []})
+
     for c in tu.cursor.get_children():
         k = c.kind
         if k == ci.CursorKind.FUNCTION_DECL:
@@ -282,22 +336,51 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
                 continue
             w = where(c.extent.start)
             if w is not None:
-                out.setdefault(w[0], {"defs": [], "vars": []})["defs"].append(
-                    (w[1], w[2], c.spelling, c.storage_class == ci.StorageClass.STATIC))
+                entry(w[0])["defs"].append((w[1], w[2], c.spelling, c.storage_class == ci.StorageClass.STATIC))
         elif k == ci.CursorKind.VAR_DECL:
             w, e = where(c.extent.start), where(c.extent.end)
             if w is not None and e is not None and e[0] == w[0]:
-                out.setdefault(w[0], {"defs": [], "vars": []})["vars"].append(
+                entry(w[0])["vars"].append(
                     (w[1], w[2], e[1], e[2], c.spelling,            # a tentative definition is no definition
                      "def" if c.is_definition() or c.storage_class != ci.StorageClass.EXTERN else "extern",
                      c.storage_class == ci.StorageClass.STATIC))
+        elif k == ci.CursorKind.MACRO_DEFINITION:
+            w = where(c.location)
+            if w is not None:
+                entry(w[0])["macros"].append((w[1], c.spelling, function_like(c)))
     deps = sorted({str(Path(i.include.name).resolve()) for i in tu.get_includes()})
-    # every project file the parse read holds its entry, an empty one too: the unit holds it
+
+    def casts(fname: str, data: bytes, rel_: str | None):
+        """The casts of one file, mapped as where() maps a location (by the file's own lines: a location clang
+        gives inside a macro argument reads back as the macro call's)."""
+        found = list(_casts(tu, ci.File.from_name(tu, fname), data))
+        nl = [m.start() for m in re.finditer(rb"\n", data)] if found else []
+        for s_, e_, lit in found:
+            ws = []
+            for off in (s_, e_):
+                line = bisect.bisect_left(nl, off) + 1
+                bol = nl[line - 2] + 1 if line > 1 else 0
+                col = len(data[bol:off].decode("utf-8", errors="replace")) + 1
+                if rel_ is None:                              # the parsed file: its parts
+                    mf, line = locate(lmap, line)
+                    p = Path(mf) if Path(mf).is_absolute() else root / mf
+                    ws.append((p.resolve().relative_to(rootr).as_posix() if p.resolve().is_relative_to(rootr) else None,
+                               line, col))
+                else:
+                    ws.append((rel_, line, col))
+            (w, wl, wc), (e, el, ec) = ws
+            if w is not None and w == e:
+                entry(w)["casts"].append((wl, wc, el, ec, lit))
+
+    # every project file the parse read holds its entry, an empty one too: the unit holds it; its casts
     for d in deps:
         if Path(d).is_relative_to(rootr):
-            out.setdefault(Path(d).relative_to(rootr).as_posix(), {"defs": [], "vars": []})
+            r = Path(d).relative_to(rootr).as_posix()
+            entry(r)
+            casts(d, Path(d).read_bytes(), r)
     for _, r in parts or []:
-        out.setdefault(r, {"defs": [], "vars": []})
+        entry(r)
+    casts(str(path), text.encode(), None)
     # an include clang did not find: the file may appear later without the text changing, no result to keep
     missing = any(d.severity == ci.Diagnostic.Fatal and "not found" in d.spelling for d in tu.diagnostics)
     return {"files": out, "deps": deps, "missing": missing}

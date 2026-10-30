@@ -765,3 +765,17 @@ unit that includes it sees it):
   test compared a stripped line with an indented prefix); the regex scan read past the stray text, clang does not.
 - Speed (gildegold): a scan after a one-fragment edit 0.11 -> 0.20 s (the unit reparsed live), a warm scan in a
   new process 0.08 -> 0.32 s, cold 2.4 -> 5.9 s (once).
+
+Done, stage 2b (2026-10-30; user decision: a `#define` body has no syntax tree, so the view and cast patterns
+stay checks over the body text, read for the macros the preprocessor defined):
+- cparse.model also lists per file the live macros (MACRO_DEFINITION, function-like or not) and the integer
+  literals cast to a pointer type in code: a literal after a parenthesis is a candidate, the cursor at the `)`
+  before it decides (a C-style cast to a pointer type, a typedef'd one too; casts without a pointer stepped
+  over); no walk of the whole tree (1 s for gildegold's he alone). Offsets are mapped by the file's own lines:
+  a location clang gives for an offset inside a macro argument reads back as the macro call's.
+- srcscan: scan.macros, the views and raw object macros (L15, Q4) and the casts in `#define` bodies (A1) from
+  the live `#define`s only; the code casts from the model.
+- gildegold (scandiff): views and raw object macros equal; 24 macros of dead branches gone (zlib's debug
+  macros); casts: one inside zlib's non-debug `Assert` (expands to nothing) gone, 9 through a typedef'd pointer
+  type new (`(voidpf)0`, `(LPCSTR)0x65`: none inside the image, A1 unchanged). `dcp check` / `conflicts` equal
+  to 2a's.

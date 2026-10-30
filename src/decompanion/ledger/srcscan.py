@@ -507,9 +507,11 @@ def literal_value(s: str) -> int | None:
         return None
 
 
-def ptr_casts(S: Source, out: Scan):
-    """Every integer literal cast to a pointer type (PTR_CAST) in the code (comments and strings blanked), in the
-    compiled branches (blank_alternatives: not in `#if 0` / `#else` / `#elif` text) and in `#define` bodies."""
+def ptr_casts(S: Source, out: Scan, model: dict | None = None):
+    """Every integer literal cast to a pointer type in the code and in `#define` bodies (PTR_CAST over a body: a
+    macro is not parsed until it is used). With the front end's model: the casts clang found in code (any
+    pointer type, a typedef'd one too), and the bodies of the live macros; without it, PTR_CAST over the code
+    (comments and strings blanked, `#if 0` / `#else` / `#elif` text too: blank_alternatives) and every body."""
     def add(code, base=0):
         for m in PTR_CAST.finditer(code):
             v = literal_value(m.group(2))
@@ -517,16 +519,37 @@ def ptr_casts(S: Source, out: Scan):
                 text = " ".join(m.group(0).split())
                 text += ")" * (text.count("(") - text.count(")"))       # close what the match left open
                 out.ptrcasts.append(PtrCast(S.rel, S.line_of(base + m.start()), text, v))
-    add(blank_alternatives(S.code))
-    for m in DEFINE_LINE.finditer(S.code):
+    if model is None:
+        add(blank_alternatives(S.code))
+        for m in DEFINE_LINE.finditer(S.code):
+            add(m.group(0), m.start())
+        return
+    for line, col, eline, ecol, lit in model["casts"]:
+        v = literal_value(lit.rstrip("uUlL"))
+        if v is not None:
+            text = " ".join(S.text[S.offset(line, col):S.offset(eline, ecol)].split())
+            out.ptrcasts.append(PtrCast(S.rel, line, text + ")" * (text.count("(") - text.count(")")), v))
+    for m in live_defines(S, model, DEFINE_LINE):
         add(m.group(0), m.start())
 
 
-def view_macros(S: Source, unit: str, out: Scan):
+def live_defines(S: Source, model: dict, pattern: re.Pattern, text: str | None = None, like: bool | None = None):
+    """The matches of a `#define` pattern at the lines of the macros the preprocessor defined (model["macros"]),
+    of the function-like ones or the object-like ones only when `like` says so."""
+    text = S.code if text is None else text
+    for line, name, flike in model["macros"]:
+        if like is None or flike == like:
+            m = pattern.match(text, S.offset(line, 1))
+            if m is not None:
+                yield m
+
+
+def view_macros(S: Source, unit: str, out: Scan, model: dict | None = None):
     """The object-like one-line macros: a view (VIEW_BYTE / VIEW_WHOLE / VIEW_ALIAS with an address comment on
     its line) goes to out.views; one whose body dereferences a cast (DEREF_OBJ) and is no view to out.rawobj,
-    and to out.errors (L15) when it has an address comment all the same."""
-    for m in OBJ_DEFINE.finditer(S.code):
+    and to out.errors (L15) when it has an address comment all the same. With the front end's model the live
+    object-like macros only."""
+    for m in OBJ_DEFINE.finditer(S.code) if model is None else live_defines(S, model, OBJ_DEFINE, like=False):
         name, body = m.group(1), m.group(2).strip()
         if not body or body.endswith("\\"):
             continue
@@ -556,7 +579,7 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
     """One file's part of the scan; its function definitions and data declarations from the front end's model
     of the file (cparse.model's entry: defs, vars), from the regex scan when model is None."""
     S = Source(rel, text)
-    for m in DEFINE.finditer(S.text):
+    for m in DEFINE.finditer(S.text) if model is None else live_defines(S, model, DEFINE, S.text, like=True):
         out.macros.append((m.group(1), m.group(3)))
     for s, e, body in S.comments:
         m = DESCRIBED.match(body)
@@ -619,8 +642,8 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
              S.model_data(model["vars"], skip))
     for off, dname, kind, addrs, unlinked, static in decls:
         out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked, static))
-    ptr_casts(S, out)
-    view_macros(S, unit, out)
+    ptr_casts(S, out, model)
+    view_macros(S, unit, out, model)
     seen = set()
     for m in PLACEHOLDER_ADDR.finditer(S.code):
         ident = m.group(0)
@@ -632,11 +655,11 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
 
 _cache: dict[tuple[str, str], Scan] = {}
 _files: dict[tuple[str, str, str], Scan] = {}     # (path, sha256 of the text, model digest) -> that file's own scan
-CACHE_VERSION = 5                                 # bump when scan_file's results change
-MODEL_VERSION = "5"                               # bump when the scan's translation units change
+CACHE_VERSION = 6                                 # bump when scan_file's results change
+MODEL_VERSION = "8"                               # bump when the scan's translation units change
 _models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
 _last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read
-EMPTY = {"defs": [], "vars": []}
+EMPTY = {"defs": [], "vars": [], "macros": [], "casts": []}
 
 
 def front_end(root: Path) -> list[Path]:
