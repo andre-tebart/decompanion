@@ -189,6 +189,7 @@ class Scan:
     ptrcasts: list[PtrCast] = field(default_factory=list)       # integer literals cast to a pointer type (A1)
     views: list[View] = field(default_factory=list)             # view macros (L15)
     rawobj: list[str] = field(default_factory=list)             # object-like macros dereferencing a cast, no view (Q4)
+    models: dict = field(default_factory=dict)                  # file -> its front end model (cparse.model's entry)
 
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
@@ -844,7 +845,7 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
     path, disk = None, None                  # the on-disk memo, read on the first file this process has not scanned
     used, changed = {}, False
     files = project_files(root)
-    ms = models(root, files)
+    ms = out.models = models(root, files)
     for rel, p in files:
         m = ms.get(rel, EMPTY)
         key = (rel, fsmemo.sha256(p), hashlib.sha256(repr(m).encode()).hexdigest())

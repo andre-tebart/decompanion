@@ -68,26 +68,13 @@ IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
 LITERAL = re.compile(r"(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)[uUlL]*(?![\w.])")
 DEREF_CAST = re.compile(r"\*\s*\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*"
                         r"(?:\s+[A-Za-z_]\w*)*\s*\*+\s*(?:const\s*)?\)")
-READABILITY_VERSION = "3"                          # bump when readability() changes its verdicts or texts
+READABILITY_VERSION = "4"                          # bump when readability() changes its verdicts or texts
 Q4_VIEW = ("a typed field, struct or symbol instead; a datum read as another type is a view: "
            "`#define NAME (*(T *)&datum)  /* 0xADDR */` or `(*(T *)((char *)&datum + OFF))` with the address comment "
            "on its line; `(*(T *)datum)` reads through the datum's value and stays raw")
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
 MARKER = re.compile(r"\b(ROUGH|SKELETON|TODO|FIXME|XXX)\b")
 DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
-
-
-def brace_end(code: str, k: int) -> int:
-    """The index after the brace that closes the one at k."""
-    depth = 0
-    for i in range(k, len(code)):
-        if code[i] == "{":
-            depth += 1
-        elif code[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-    return len(code)
 
 
 @functools.lru_cache(maxsize=2)
@@ -120,12 +107,11 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
     if not p.exists():
         return "draft", ["the fragment is gone"]
     S = srcscan.Source(rel, fsmemo.read_text(p))
-    defs = [d for d in S.definitions() if d[1] == name]
+    m = srcscan.scan(root, tree).models.get(rel, srcscan.EMPTY)
+    defs = [d for d in m["decls"] if d[0] == "f" and d[1] == name and d[6] is not None]
     if not defs:
         return "draft", ["definition not found by the parser"]
-    off = defs[-1][0]
-    k = S.code.find("{", off)
-    end = brace_end(S.code, k) if k >= 0 else len(S.code)
+    off, end = S.offset(*defs[-1][3]), S.offset(*defs[-1][5])          # the front end's extent of the definition
     code = S.code[off:end]
     raw, described = context(str(root), tree)
     fails = []
@@ -203,7 +189,7 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
 
 
 @rule("G.grade", version="4", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
-      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, context, brace_end, DC, C,
+      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, context, DC, C,
                                                          build_compile.plan))
 def grade(ctx: RuleContext):
     """The grades of every function fragment of the current target and of every unit (the rules B1..B3, Q1..Q8

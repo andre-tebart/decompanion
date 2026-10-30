@@ -795,3 +795,7 @@ Done, stage 2c lint (2026-10-30): the all-declarations unit's declarations from 
   function pointers and one K&R definition now seen). M5 finds one new conflict the regex never saw:
   src/hmt/head.c:24 declares GetModuleFileNameA with `void *hModule` against the SDK's HMODULE (the unit leaves
   windows.h out on purpose: an `@vc6 why` there, or the SDK's spelling). Lint warm 4.5 -> 2.9 s.
+
+Done, stage 2c readability (2026-10-30): Q1..Q7 read the function's text within the front end's extent of its
+definition (Scan.models: the model behind the scan) instead of the regex definitions and a brace counter
+(brace_end gone). gildegold: every function's readability and failing Q rules equal (4759).
