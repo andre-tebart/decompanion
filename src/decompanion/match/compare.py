@@ -78,6 +78,7 @@ class Compared:
     diffs: list = field(default_factory=list)       # offsets of differing unmasked bytes
     tail_ok: bool = True
     tail: tuple = (0, 0)                             # [our end, next start) of the original
+    next_start: int | None = None                    # the next function start after addr (the end of its slot)
     abs_ours: int = 0                                # our absolute relocation sites
     abs_image: int | None = None                     # base relocations of the image inside the extent (None: no list)
     sites_ok: bool = True                            # every absolute site of ours is a base relocation site
@@ -122,6 +123,7 @@ def compare(img, code, addr: int, reloc_sites: list[int] | None, next_start: int
     n = code.size
     orig = img.read(addr, n)
     c = Compared(addr, n, code.data, code.mask, orig)
+    c.next_start = next_start
     c.diffs = [k for k in range(n) if not code.mask[k] and code.data[k] != orig[k]]
     end = addr + n
     if next_start > end:

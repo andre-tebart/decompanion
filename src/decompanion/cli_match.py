@@ -28,7 +28,8 @@ def find_function(p, key: str) -> dict | None:
 
 
 def compiled_code(p, row):
-    """(FunctionCode, original code size) of a graded function, or (None, why)."""
+    """(FunctionCode, (extent, slot)) of a graded function, or (None, why): the extent and slot the grade
+    compared (its dist), else the walk's or the source extent's function symbol and the next known start."""
     from .match import compare as C
     tus = p.store.tus()
     t = tus.get(row["unit"])
@@ -39,11 +40,20 @@ def compiled_code(p, row):
     if sym is None:
         return None, f"the object of unit {row['unit']} defines no {row['name']}"
     code = obj.function_code(sym)
-    walk = next((f for f in p.store.facts(Kind.symbol, row["addr"], row["addr"] + 1)
-                 if f.run == "S.codewalk" and f.lo == row["addr"] and f.value.get("skind") == "func"), None)
+    d = row.get("dist") or {}
+    if d.get("extent") is not None and d.get("slot") is not None:
+        return code, (d["extent"], d["slot"])
+    a = row["addr"]
+    walk = next((f for f in p.store.facts(Kind.symbol, a, a + 1)
+                 if f.run in ("S.codewalk", "L.src.extent") and f.lo == a and f.value.get("skind") == "func"), None)
     from .match import diffclass as DC
-    size = (walk.hi - walk.lo) if walk else DC.code_size(p.isa, p.image, code.code_data, code.code_mask, row["addr"], p.toolchain.fill_forms)
-    return code, size
+    extent = (walk.hi - walk.lo) if walk else DC.code_size(p.isa, p.image, code.code_data, code.code_mask, a, p.toolchain.fill_forms)
+    from .cli_read import all_starts
+    import bisect
+    st = all_starts(p)
+    i = bisect.bisect_right(st, a)
+    nxt = st[i] if i < len(st) else p.image.end
+    return code, (extent, max(extent, nxt - a))
 
 
 def dist_text(d) -> str:
@@ -134,11 +144,15 @@ def cmd_next(args):
 
 # ------------------------------------------------------------------------------------------------ asmdiff / diffclass
 def listings_for(p, r):
+    """(ours, the original's listings, the switch tables compare) of a graded function: the reading the grade
+    takes (diffclass.compare_function)."""
     from .match import diffclass as DC
-    code, size = compiled_code(p, r)
+    code, ext = compiled_code(p, r)
     if code is None:
-        raise ConfigError(f"{r['name']}: {size}")
-    return DC.listings(p.isa, p.image, code.code_data, code.code_mask, r["addr"], size, p.toolchain.fill_forms)
+        raise ConfigError(f"{r['name']}: {ext}")
+    tc = p.toolchain
+    A, B, _, tables = DC.compare_function(p.isa, p.image, code, r["addr"], ext[0], ext[1], tc.fill_forms, tc.function_alignment)
+    return A, B, tables
 
 
 def cmd_asmdiff(args):
@@ -149,13 +163,15 @@ def cmd_asmdiff(args):
     if r is None:
         print(f"dcp asmdiff: no graded function {args.name}", file=sys.stderr)
         return 1
-    A, B = listings_for(p, r)
+    A, B, tables = listings_for(p, r)
     a, b = [x.text for x in A], [x.text for x in B]
     if args.regs:
         a = p.isa.rename_registers(a, dict(x.split("=") for x in args.regs.split(",")))
     ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
     n = sum(i2 - i1 + j2 - j1 for tag, i1, i2, j1, j2 in ops if tag != "equal")
-    print(record(fn=r["addr"], name=r["name"], code=r["code"], ours=len(a), original=len(b), differing=n))
+    print(record(fn=r["addr"], name=r["name"], code=r["code"], ours=len(a), original=len(b), differing=n)
+          + ("" if tables is None else "  " + record(tables="differ" if tables["diffs"] else "equal", entries=tables["entries"],
+                                                     index_bytes=tables["bytes"])))
     for tag, i1, i2, j1, j2 in ops:
         if tag == "equal":
             if i2 - i1 > 6 and not args.all:
@@ -179,11 +195,17 @@ def cmd_diffclass(args):
     if r is None:
         print(f"dcp diffclass: no graded function {args.name}", file=sys.stderr)
         return 1
-    A, B = listings_for(p, r)
-    hs = DC.classify_hunks(A, B, p.isa)
-    v = DC.verdict(A, B, p.isa)
+    A, B, tables = listings_for(p, r)
+    hs, v = DC.analyse(A, B, p.isa, tables)
     print(record(fn=r["addr"], name=r["name"], ours=len(A), original=len(B), hunks=len(hs), differing=v.distance,
                  verdict="shape" if v.shape else "draft"))
+    if v.frame:
+        print(f"  frame: ours {v.frame[0]:#x}, the original's {v.frame[1]:#x}: the hunks of the frame-aligned diff "
+              f"(stack offsets masked for the alignment)")
+    if tables is not None:
+        print("  " + record(tables="differ" if tables["diffs"] else "equal", entries=tables["entries"], index_bytes=tables["bytes"]))
+        for x in tables["diffs"]:
+            print(f"      {x}")
     for i1, i2, j1, j2, cls, info in hs:
         at = A[i1].addr if i1 < len(A) else B[j1].addr
         print(f"  {at:#010x}  {cls:<6} {i2 - i1 + j2 - j1:>4}  {info}")

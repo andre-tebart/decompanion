@@ -103,6 +103,22 @@ class Isa:
         (the same multiset) are decided before this is asked."""
         return None
 
+    def frame_delta(self, a: list[str], b: list[str]) -> tuple[int, int] | None:
+        """(our frame size, the original's) when both listings (texts, ours a) allocate a stack frame of a
+        constant size in their prologue and the sizes differ; None otherwise (no frame-aligned diff)."""
+        return None
+
+    def stack_mask(self, lines: list[str], frame: tuple[int, int]) -> list[str]:
+        """The texts with every stack offset and the frame sizes of `frame` masked: the alignment key of the
+        frame-aligned diff (match/diffclass.py)."""
+        return list(lines)
+
+    def frame_explain(self, xa: list[str], xb: list[str], frame: tuple[int, int]) -> str | None:
+        """The note of a `frame` hunk: xa and xb (equal under stack_mask) differ in stack offsets only, each by 0
+        or by the frame delta (our frame size minus the original's), the frame sizes by exactly the delta;
+        None when they do not."""
+        return None
+
     # ------------------------------------------------------------------ reading (milestone 4)
     def disasm(self, code: bytes, va: int, fill_forms=()) -> list["Line"]:
         """The instructions of `code` placed at `va` in the disassembler's own text (nothing normalised), for

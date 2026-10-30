@@ -86,9 +86,30 @@ Two grades per (function, target), computed by `G.grade` (rules/grade.py) into `
 - B2 shape: every differing hunk of the instruction diff is `fill`, `order` (same multiset), or explained by
   the ISA (`regs`, `slots`, `order` after a register renaming, `sib`, `fpu`; x86: `[esp + N]` is compared as it
   was at the hunk's start, so a store moved across a `push` / `pop` is `order`, or `slots` when its slot changed
-  too); or the leftover `code` hunks are
-  the same multiset on both sides; or one bijective register / slot renaming explains the whole function.
+  too), or `frame`; or the leftover `code` hunks are
+  the same multiset on both sides; or one bijective register / slot renaming explains the whole function; and
+  the switch tables, when both sides have them, are equal.
 - B3 draft: otherwise, or no compiled object.
+
+What the diff compares (match/diffclass.py `compare_function`, the one reading `G.grade`, `dcp asmdiff` and
+`dcp diffclass` share): our instructions up to the first compiler label after the code (CL's switch tables),
+and the original over the function's extent (the code walk's, else the source extent `L.src.extent`) cut at
+its first switch table. A walk of the function's slot (up to the next known start) finds the jump tables its
+indirect jumps read and their byte index tables; a function the walk did not reach owns its tables by
+contiguity, and they are no code. The tables of both sides are compared as data: each relocated entry of ours
+by the instruction it points to (the same instruction, the same aligned hunk, or the same block up to its `ret`
+/ `jmp`: a case moved with its code), every other byte (index tables, fill) by value. Equal tables are
+reported (`switch tables equal (4 entries, 19 index bytes)`, never a hunk); differing ones are a `table`
+difference that keeps the function from shape. `dist` gives the original's code size without the tables.
+
+The `frame` class: when the two prologues allocate frames of another size (`sub esp, 0xcc` against `sub esp,
+0xc8`), one slot more or less shifts every stack offset above it and the plain diff is one long `code` hunk.
+Then the instructions are aligned again with the stack offsets and the frame size masked; the lines that differ
+only in their stack offsets, each by 0 or by the frame delta (the frame sizes by exactly the delta), are `frame`
+hunks of their own, everything else is classified as usual. The frame-aligned verdict is taken when the plain
+one is no shape; `dcp diffclass` says `frame: ours 0xcc, the original's 0xc8` above its hunks. A frame that
+differs only by the constant shift is shape (B2 tolerates stack layout); a variable kept in a register on one
+side and in a slot on the other still leaves `code` hunks next to the `frame` ones.
 
 **readability** `draft → readable`: Q1 the name is no placeholder, Q2 no placeholder identifier in the
 definition, Q3 no image address literal, Q4 no `*(T *)` cast or macro hiding one (a view macro with its address comment is no raw access: `(*(T *)&datum)` or `(*(T *)((char *)&datum + OFF))`; `(*(T *)datum)` is; the message states the view form), Q5 no ROUGH / SKELETON /

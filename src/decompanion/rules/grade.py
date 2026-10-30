@@ -9,11 +9,15 @@ Code rules:
   B1 byte    M.match holds for the function (masked bytes equal, the original ends where we end, the DLL aid).
   B2 shape   the bytes differ, but every differing hunk of the instruction diff (match/diffclass.py) is `fill`,
              `order`, or explained by the ISA (`regs`, `slots`, `order` after a register renaming, `sib`,
-             `fpu`); or the instructions left in the `code` hunks are the same multiset on both sides; or the
-             whole function is equal under one bijective renaming of registers and stack slots. Identical
-             instruction text (a byte difference in a relocated field only) is shape too. Not a proof of equal
-             behaviour: what the instruction diff can see.
-  B3 draft   a `code` hunk B2 does not explain remains, or the function has no compiled object to compare.
+             `fpu`) or `frame` (stack offsets shifted by a frame of another size); or the instructions left in
+             the `code` hunks are the same multiset on both sides; or the whole function is equal under one
+             bijective renaming of registers and stack slots; and the switch tables, when both sides have them,
+             are equal as data. Identical instruction text (a byte difference in a relocated field only, or
+             in a branch displacement the listing reads as X) is shape too. Not a proof of equal behaviour:
+             what the instruction diff can see. The original is read over the function's extent (the code
+             walk's, else L.src.extent's) up to its first switch table (diffclass.compare_function).
+  B3 draft   a `code` hunk or a `table` difference B2 does not explain remains, or the function has no compiled
+             object to compare.
 Readability rules, on the fragment's text (comments and strings blanked for the code tests):
   Q1 name         the function's own name is no placeholder (`Unk` + 4 hex digits, or ending in 6 hex digits with
                   a digit among them: FUN_10008d20, Unk10008d20, thread_10008d20).
@@ -198,7 +202,7 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
     return q, qf
 
 
-@rule("G.grade", version="3", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
+@rule("G.grade", version="4", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
       inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, context, brace_end, DC, C,
                                                          build_compile.plan))
 def grade(ctx: RuleContext):
@@ -206,7 +210,8 @@ def grade(ctx: RuleContext):
     and the unit grades of rules/grade.py's module docstring), as `grade` facts: a function's at its address
     {of: function, name, unit, file, code, readability, level (deep / stuck from the address comment's tag, ''
     for base), failing (the failing rules with evidence), dist (differing instructions, differing bytes, our
-    size, the original's code size: a report, not a gate), hunks}; a unit's over its extent {of: unit, code,
+    size, the original's code size without its switch tables, the extent and the slot the diff read: a report,
+    not a gate; `dcp asmdiff` / `dcp diffclass` read the same extent and slot), hunks}; a unit's over its extent {of: unit, code,
     readability, functions, named_by}. A function's grade fact is proven when its code is byte (M.match), else
     declared (its address comment is the premise). Q7 is evaluated only for the units whose amalgamation the
     last `dcp lint` parsed (the store meta `lint`)."""
@@ -237,17 +242,29 @@ def grade(ctx: RuleContext):
         if size is None:
             size = DC.code_size(p.isa, img, code.code_data, code.code_mask, s.lo, tc.fill_forms)
             ctx.store.put_blob_json(skey, "codesize", size)
-        orig_size = (w.hi - s.lo) if w is not None else size
+        extent = (w.hi - s.lo) if w is not None else size
+        slot = max(extent, (c.next_start or s.lo) - s.lo)
+        okey = sha256("original", DC.VERSION, plug, f"{s.lo:x}", f"{extent:x}", f"{tc.function_alignment}",
+                      img.read(s.lo, slot).hex())
+        cached = ctx.store.blob_json(okey)
+        if cached is None:
+            o = DC.original(p.isa, img, s.lo, extent, slot, tc.fill_forms, tc.function_alignment)
+            ctx.store.put_blob_json(okey, "original", o.to_json())
+        else:
+            o = DC.Original.from_json(cached)
+        orig_size = o.code
         n = min(size, orig_size)
         nbytes = sum(1 for k in c.diffs if k < n) + abs(size - orig_size)
         if s.lo in matched:
             g, why, hunks, dist_ins = "byte", [], {}, 0
         else:
-            key = sha256("diffclass", DC.VERSION, plug, code.code_data.hex(), code.code_mask.hex(), f"{s.lo:x}", img.read(s.lo, orig_size).hex())
+            tbl = [(off, s2.value if s2 is not None else None) for off, r, s2 in code.relocs if off >= len(code.code_data)]
+            key = sha256("diffclass", DC.VERSION, plug, code.data.hex(), code.mask.hex(), str(code.code_len), str(code.start),
+                         json.dumps(tbl), f"{s.lo:x}", okey)
             cached = ctx.store.blob_json(key)
             if cached is None:
-                A, B = DC.listings(p.isa, img, code.code_data, code.code_mask, s.lo, orig_size, tc.fill_forms)
-                v = DC.verdict(A, B, p.isa)
+                A, B, _, tables = DC.compare_function(p.isa, img, code, s.lo, extent, slot, tc.fill_forms, orig=o)
+                v = DC.verdict(A, B, p.isa, tables)
                 ctx.store.put_blob_json(key, "diffclass", v.to_json())
             else:
                 v = DC.Verdict.from_json(cached)
@@ -255,10 +272,11 @@ def grade(ctx: RuleContext):
             hunks, dist_ins = v.hunks, v.distance
             why = [f"B1 byte: {c.why()}"] if c.why() else []
             if g == "draft":
-                why.append("B3 draft: unexplained code hunks: " + v.summary())
+                why.append(("B3 draft: unexplained code hunks: " if v.code else "B3 draft: ") + v.summary())
             else:
                 why.append("B2 shape: " + v.summary())
-        rows.append((s, g, why, hunks, {"ins": dist_ins, "bytes": nbytes, "size": size, "orig": orig_size}))
+        rows.append((s, g, why, hunks, {"ins": dist_ins, "bytes": nbytes, "size": size, "orig": orig_size,
+                                        "extent": extent, "slot": slot}))
         if mk[0] is not None:
             _code_memo[mk] = rows[-1][1:]
     for s, reason in missing:

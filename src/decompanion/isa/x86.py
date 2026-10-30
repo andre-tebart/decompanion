@@ -215,6 +215,21 @@ ESP_RE = re.compile(r"\[esp((?: [+-] " + NUM + r")?)\]")
 ESP_ADJ = re.compile(r"^(sub|add) esp, (" + NUM + r")$")
 
 
+def frame_size(lines) -> int | None:
+    """The frame a prologue allocates: the first `sub esp, N` among the first 8 instructions."""
+    for t in lines[:8]:
+        m = ESP_ADJ.match(t)
+        if m and m[1] == "sub":
+            return int(m[2], 0)
+    return None
+
+
+def slot_value(m) -> int:
+    """The signed offset of a SLOT_RE match (`[esp + 0x10]` 16, `[ebp - 8]` -8, `[esp]` 0)."""
+    s = m[2].replace(" ", "")
+    return int(s, 0) if s else 0
+
+
 def esp_normalised(lines):
     """The lines with every `[esp + N]` rewritten to the offset it had at the first line (the bytes pushed by
     `push` / `sub esp, N` before it are subtracted, `pop` / `add esp, N` added back): the same stack slot reads
@@ -376,6 +391,42 @@ class X86(Isa):
                 return "fpu", "same FPU instructions, other stack order"
             return "fpu", "FPU instructions differ"
         return None
+
+    def frame_delta(self, a, b):
+        fa, fb = frame_size(a), frame_size(b)
+        return (fa, fb) if fa is not None and fb is not None and fa != fb else None
+
+    def stack_mask(self, lines, frame):
+        """Every `[esp ...]` / `[ebp ...]` operand reads `[esp S]` / `[ebp S]`, `sub|add esp, N` of a frame
+        size reads `sub|add esp, F`."""
+        sizes = set(frame)
+        out = []
+        for t in lines:
+            m = ESP_ADJ.match(t)
+            if m and int(m[2], 0) in sizes:
+                out.append(f"{m[1]} esp, F")
+            else:
+                out.append(SLOT_RE.sub(lambda mm: f"[{mm[1]} S]", t))
+        return out
+
+    def frame_explain(self, xa, xb, frame):
+        if len(xa) != len(xb) or self.stack_mask(xa, frame) != self.stack_mask(xb, frame):
+            return None
+        d = frame[0] - frame[1]
+        for x, y in zip(xa, xb):
+            if x == y:
+                continue
+            ma, mb = ESP_ADJ.match(x), ESP_ADJ.match(y)
+            if ma and mb:
+                if int(ma[2], 0) - int(mb[2], 0) != d:
+                    return None
+                continue
+            oa = [slot_value(m) for m in SLOT_RE.finditer(x)]
+            ob = [slot_value(m) for m in SLOT_RE.finditer(y)]
+            if len(oa) != len(ob) or any(abs(p - q) not in (0, abs(d)) for p, q in zip(oa, ob)):
+                return None
+        sign = "-" if d < 0 else ""
+        return f"stack offsets shifted by {sign}{abs(d):#x} (frame {frame[0]:#x} vs {frame[1]:#x})"
 
     def rename_registers(self, lines, mapping):
         return rename_regs(lines, {full_reg(k): full_reg(v) for k, v in mapping.items()})
