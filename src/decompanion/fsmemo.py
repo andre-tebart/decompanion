@@ -37,9 +37,14 @@ _disk_path: Path | None = None
 _dirty = False
 
 
+epoch = 0                                         # counts new_epoch(): what is memoised per epoch keys on it
+
+
 def new_epoch():
     """Forget every stamp taken so far: the next look at a file stats it (or lists its directory) again."""
+    global epoch
     _seen.clear()
+    epoch += 1
 
 
 def wrote(path=None):

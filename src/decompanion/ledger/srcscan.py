@@ -534,6 +534,38 @@ def ptr_casts(S: Source, out: Scan, model: dict | None = None):
         add(m.group(0), m.start())
 
 
+def live_code(S: Source, model: dict) -> str:
+    """The file's code (comments and strings blanked) with its preprocessor lines and the ranges the preprocessor
+    skipped (model["dead"]) blanked too; offsets unchanged."""
+    lines = S.code.split("\n")
+    dead = {n for a, b in model["dead"] for n in range(a, b + 1)}
+    cont = False
+    for n, ln in enumerate(lines, 1):
+        directive = cont or ln.lstrip().startswith("#")
+        cont = directive and ln.rstrip().endswith("\\")
+        if directive or n in dead:
+            lines[n - 1] = " " * len(ln)
+    return "\n".join(lines)
+
+
+def model_of(root: Path, rel: str, text: str) -> dict | None:
+    """The front end's model of a file when text is the file as it is on disk (the scan's), else None."""
+    import hashlib
+    p = Path(root) / rel
+    if not p.exists() or fsmemo.read_text(p) != text:
+        return None
+    key = (str(root), fsmemo.epoch)                # the tree's digest once per file epoch (a write starts a new one)
+    tree = _trees.get(key)
+    if tree is None:
+        tree = hashlib.sha256("\0".join(f"{r}={fsmemo.sha256(q)}" for r, q in project_files(Path(root))).encode()).hexdigest()
+        _trees.clear()
+        _trees[key] = tree
+    return scan(Path(root), tree).models.get(rel, EMPTY)
+
+
+_trees: dict[tuple, str] = {}
+
+
 def live_defines(S: Source, model: dict, pattern: re.Pattern, text: str | None = None, like: bool | None = None):
     """The matches of a `#define` pattern at the lines of the macros the preprocessor defined (model["macros"]),
     of the function-like ones or the object-like ones only when `like` says so."""

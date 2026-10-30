@@ -799,3 +799,12 @@ Done, stage 2c lint (2026-10-30): the all-declarations unit's declarations from 
 Done, stage 2c readability (2026-10-30): Q1..Q7 read the function's text within the front end's extent of its
 definition (Scan.models: the model behind the scan) instead of the regex definitions and a brace counter
 (brace_end gone). gildegold: every function's readability and failing Q rules equal (4759).
+
+Done, stage 2c headers (2026-10-30): `dcp headers conflicts` reads the declared names (lint.file_scope_decls with
+the file's model; the extra extern-line regex that caught the old parser's misses is gone), the first use of a
+header's name (include_pos) and the call sites over the live code (srcscan.live_code: directives and the
+preprocessor's skipped ranges blanked) of the files as they are on disk (srcscan.model_of: the scan's model,
+its tree digest once per file epoch, fsmemo.epoch); a text not written yet (a trial) is read by the regex scan
+until stage 3. The argument classes of a call (an integer / float / string constant) stay lexical. gildegold:
+output equal on ls / he but the declaration-set counts (769 -> 771, 507 -> 564: the declarations the regex
+missed); 8.8 -> 8.5 s.

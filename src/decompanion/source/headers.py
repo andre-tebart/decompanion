@@ -111,7 +111,7 @@ def insert_includes(text: str, headers: list[str], pos: int | None = None) -> st
 IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
 
 
-def include_pos(rel: str, text: str, names) -> int:
+def include_pos(rel: str, text: str, names, root: Path | None = None) -> int:
     """Where the includes go in head.c (a line index, 0-based; the includes are inserted before it): after its
     last include, or earlier, at the start of the file-scope statement holding the first use of a name the
     headers declare (`names`) when that use comes first, so a head that uses a duplicate above its last
@@ -122,8 +122,9 @@ def include_pos(rel: str, text: str, names) -> int:
     if not names:
         return after
     S = srcscan.Source(rel, text)
-    code = srcscan.blank_alternatives(S.code)
-    decl_lines = declared_names(rel, text, every=True)
+    m = srcscan.model_of(root, rel, text) if root is not None else None
+    code = srcscan.live_code(S, m) if m is not None else srcscan.blank_alternatives(S.code)
+    decl_lines = declared_names(rel, text, every=True, root=root)
     first = None
     for m in IDENT.finditer(code):
         n = m.group(0)
@@ -191,14 +192,20 @@ def drop_line(rel: str, line: str, names, line_names) -> str | None:
     return new
 
 
-def declared_names(rel: str, text: str, every: bool = False) -> dict:
+def declared_names(rel: str, text: str, every: bool = False, root: Path | None = None) -> dict:
     """name -> line of every file-scope prototype and extern data declaration of a file (each name of a
-    multi-name `extern int a, b, c;`); every=True: name -> the set of its declaration lines."""
+    multi-name `extern int a, b, c;`); every=True: name -> the set of its declaration lines. With root and the
+    file as on disk: the front end's declarations (lint.file_scope_decls with its model); else (a text not
+    written yet) the regex scan."""
     out = {}
-    if every:
-        for d in L.file_scope_decls(rel, text):
+    m = srcscan.model_of(root, rel, text) if root is not None else None
+    if every or m is not None:
+        for d in L.file_scope_decls(rel, text, m):
             if d.kind in ("proto", "extern"):
-                out.setdefault(d.name, set()).add(d.line)
+                if every:
+                    out.setdefault(d.name, set()).add(d.line)
+                else:
+                    out.setdefault(d.name, d.line)
         return out
     for line, stmt in L.file_scope_prototypes(rel, text):
         m = L.DECL.match(stmt.removeprefix("extern "))
@@ -298,7 +305,7 @@ def head_names(root: Path, unit: str, headers: list[str]) -> dict[str, str]:
     """name -> header file:line of every prototype and extern the headers (and what they include) declare."""
     out = {}
     for rel in header_closure(root, unit, headers):
-        for n, ln in declared_names(rel, fsmemo.read_text(Path(root) / rel)).items():
+        for n, ln in declared_names(rel, fsmemo.read_text(Path(root) / rel), root=root).items():
             out.setdefault(n, f"{rel}:{ln}")
     return out
 
@@ -317,10 +324,10 @@ def trial(project, unit: str, headers: list[str], drop: dict | None = None, at: 
         raise LookupError(f"unit {unit} has no head.c")
     old = fsmemo.read_text(Path(project.root) / head)
     lines = old.split("\n")
-    pos = at - 1 if at else include_pos(head, old, head_names(project.root, unit, headers))
+    pos = at - 1 if at else include_pos(head, old, head_names(project.root, unit, headers), root=project.root)
     drop = drop or {}
     per_line = {}
-    for n, ln in declared_names(head, old).items():
+    for n, ln in declared_names(head, old, root=project.root).items():
         per_line.setdefault(ln, set()).add(n)
     kept, kpos = [], pos
     for i, l in enumerate(lines, 1):
@@ -445,9 +452,9 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
     hdr_names, hdr_decls = {}, {}
     for rel in header_closure(root, unit, headers):
         text = fsmemo.read_text(root / rel)
-        for n, ln in declared_names(rel, text).items():
+        for n, ln in declared_names(rel, text, root=root).items():
             hdr_names.setdefault(n, f"{rel}:{ln}")
-        for d in L.file_scope_decls(rel, text):
+        for d in L.file_scope_decls(rel, text, srcscan.model_of(root, rel, text)):
             hdr_decls.setdefault(d.name, d)
     for callee, sites in sorted(per_callee.items()):
         sites = call_sites(root, a, callee) or sites        # clang warns at the first implicit call only
@@ -462,7 +469,7 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
         it.sites = [f"{f}:{ln} ({c[1]})" for f, ln, c in classes]
         items.append(it)
     # duplicates: head.c names the headers declare too, without a diagnostic
-    for n, ln in sorted(declared_names(head, "\n".join(old_lines)).items(), key=lambda kv: kv[1]):
+    for n, ln in sorted(declared_names(head, "\n".join(old_lines), root=root).items(), key=lambda kv: kv[1]):
         if n in hdr_names and n not in conflicting:
             items.append(Item("duplicate", n, f"{head}:{ln}", hdr_names[n], "the header declares it the same way",
                               rd.line(f"{head}:{ln}"), rd.line(hdr_names[n])))
@@ -476,8 +483,10 @@ def call_sites(root: Path, a, callee: str) -> list[tuple[str, int]]:
     pat = re.compile(r"\b" + re.escape(callee) + r"\s*\(")
     out = []
     for m in a.members:
-        S = srcscan.Source(m.file, fsmemo.read_text(Path(root) / m.file))
-        code = srcscan.blank_alternatives(S.code)
+        text = fsmemo.read_text(Path(root) / m.file)
+        S = srcscan.Source(m.file, text)
+        model = srcscan.model_of(root, m.file, text)
+        code = srcscan.live_code(S, model) if model is not None else srcscan.blank_alternatives(S.code)
         depth, pos = 0, 0
         for hit in pat.finditer(code):
             for c in code[pos:hit.start()]:
@@ -510,10 +519,10 @@ def declaration_set(root: Path, a, head: str, headers: list[str], hdr_names: dic
     unit or its current headers) and the head.c declarations --write drops as duplicates."""
     have = set()
     for m in a.members:
-        have |= set(declared_names(m.file, fsmemo.read_text(Path(root) / m.file)))
+        have |= set(declared_names(m.file, fsmemo.read_text(Path(root) / m.file), root=root))
     current = [m.group(1) for m in L.INCLUDE_LINE.finditer(fsmemo.read_text(Path(root) / head))]
     for rel in header_closure(root, a.unit, current):
-        have |= set(declared_names(rel, fsmemo.read_text(Path(root) / rel)))
+        have |= set(declared_names(rel, fsmemo.read_text(Path(root) / rel), root=root))
     return {"added": len(set(hdr_names) - have)}
 
 
@@ -529,7 +538,7 @@ def only_descriptions(project, head: str, old_lines: list[str], dups: list) -> l
     total = Counter(sc.described)
     functions = {a for f in sc.functions for _, a in f.addrs}
     per_line = {}
-    for n, ln in declared_names(head, "\n".join(old_lines)).items():
+    for n, ln in declared_names(head, "\n".join(old_lines), root=project.root).items():
         per_line.setdefault(ln, set()).add(n)
     dup_names = {it.name for it in dups}
     out, done = [], set()

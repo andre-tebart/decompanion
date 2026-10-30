@@ -624,15 +624,8 @@ def _provides(rel: str, text: str, m: dict | None = None) -> tuple[set, set]:
     S = srcscan.Source(rel, text)
     if m is not None:
         defined = set(m["types"]) | {name for _, name, _ in m["macros"]}
-        lines = S.code.split("\n")
-        dead = {n for a, b in m["dead"] for n in range(a, b + 1)}
-        cont = False
-        for n, ln in enumerate(lines, 1):             # the directives and the skipped branches use nothing
-            directive = cont or ln.lstrip().startswith("#")
-            cont = directive and ln.rstrip().endswith("\\")
-            if directive or n in dead:
-                lines[n - 1] = ""
-        code = re.sub(r"\b(?:struct|union|enum)\s+[A-Za-z_]\w*", " ", "\n".join(lines))
+        # the directives and the skipped branches use nothing
+        code = re.sub(r"\b(?:struct|union|enum)\s+[A-Za-z_]\w*", " ", srcscan.live_code(S, m))
         return defined, set(IDENTS.findall(code)) - defined
     code = srcscan.blank_alternatives(S.code)
     defined = {m.group(1) for m in MACRO_LINE.finditer(S.code)} | {m.group(1) for m in TAG_BODY.finditer(code)}
