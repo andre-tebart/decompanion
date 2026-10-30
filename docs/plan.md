@@ -779,3 +779,19 @@ stay checks over the body text, read for the macros the preprocessor defined):
   macros); casts: one inside zlib's non-debug `Assert` (expands to nothing) gone, 9 through a typedef'd pointer
   type new (`(voidpf)0`, `(LPCSTR)0x65`: none inside the image, A1 unchanged). `dcp check` / `conflicts` equal
   to 2a's.
+
+Done, stage 2c lint (2026-10-30): the all-declarations unit's declarations from the front end.
+- cparse.model also lists per file every file-scope function declaration / definition and data declarator
+  (start, name position, end, body start, kind, initialised, a definition's parameters with their default
+  promotion from the canonical type), the typedefs and defined tags, and the skipped ranges
+  (clang_getSkippedRanges). lint.file_scope_decls cuts each declaration's text from the file by those
+  positions; the statement end and the declarator commas are read from the text (an extent ending in a macro
+  call, `int f OF((int a));`, reads back as the call's start); K&R is the syntax (parameter declarations before
+  the body: a prototype in scope gives the definition a prototyped type); a declaration whose spelled name is not
+  the declared one (a rename macro) is left out, as _unrenamed did. _provides: the typedefs, tags and live macros
+  of the model; the words of the live, non-directive lines.
+- gildegold: the declarations differ only where the regex was wrong (zlib's `local` statics left out, declarations
+  of dead branches gone, `return Z_OK;` no longer an extern, `__declspec(dllimport)` prototypes, arrays of
+  function pointers and one K&R definition now seen). M5 finds one new conflict the regex never saw:
+  src/hmt/head.c:24 declares GetModuleFileNameA with `void *hModule` against the SDK's HMODULE (the unit leaves
+  windows.h out on purpose: an `@vc6 why` there, or the SDK's spelling). Lint warm 4.5 -> 2.9 s.

@@ -232,6 +232,35 @@ def function_like(c: ci.Cursor) -> bool:
     return _flag("clang_Cursor_isMacroFunctionLike", c)
 
 
+class _RangeList(ctypes.Structure):
+    _fields_ = [("count", ctypes.c_uint), ("ranges", ctypes.POINTER(ci.SourceRange))]
+
+
+_skipped = None
+
+
+def skipped(tu: ci.TranslationUnit, f: ci.File) -> list[tuple[ci.SourceLocation, ci.SourceLocation]]:
+    """(start, end) of every range of a file the preprocessor skipped (dead `#if` branches):
+    clang_getSkippedRanges, which the bindings do not register; read out before the list is freed."""
+    global _skipped
+    if _skipped is None:
+        get, free = ci.conf.lib.clang_getSkippedRanges, ci.conf.lib.clang_disposeSourceRangeList
+        get.argtypes, get.restype = [ci.TranslationUnit, ci.File], ctypes.POINTER(_RangeList)
+        free.argtypes, free.restype = [ctypes.POINTER(_RangeList)], None
+        _skipped = (get, free)
+    get, free = _skipped
+    p = get(tu, f)
+    try:
+        return [(p.contents.ranges[i].start, p.contents.ranges[i].end) for i in range(p.contents.count)] if p else []
+    finally:
+        if p:
+            free(p)
+
+
+# a K&R parameter's default promotion (C89 6.5.4.3: what the caller pushes, what a prototype has to say)
+PROMOTED = {ci.TypeKind.CHAR_S: "int", ci.TypeKind.CHAR_U: "int", ci.TypeKind.SCHAR: "int", ci.TypeKind.UCHAR: "int",
+            ci.TypeKind.SHORT: "int", ci.TypeKind.USHORT: "int", ci.TypeKind.FLOAT: "double"}
+
 # an integer literal right after `(` or `)`: where a cast to a pointer type of a literal ends (casts in code)
 CAST_END = re.compile(rb"[()][ \t\r\n]*((?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*)(?![\w.])")
 
@@ -277,6 +306,13 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
     text of: a `#line` pin inside a part (a declared original file name) is no part; every header below root it
     includes):
       defs  [(line, col, name, static)] of every function definition that is no inline helper
+      decls [("f", name, static, start, name position, end, body start or None, K&R parameters or None) of every
+            function declaration and definition (no inline helper); ("v", name, static, start, name position,
+            end, kind, initialised) of every data declarator]: (line, col) positions; the name position is where
+            the name is spelled (a rename macro's name: the declared name differs); a definition's parameters
+            [(name, `int` / `double` when its type is promoted, else None)] (what a K&R one's prototype says)
+      types [name] of every typedef and every struct / union / enum with a body defined there
+      dead  [(first line, last line)] of every range the preprocessor skipped (a dead `#if` branch)
       macros [(line, name, function-like)] of every macro the preprocessor defined there (a live `#define`)
       casts [(line, col, end line, end col, literal)] of every integer literal cast to a pointer type in code
             (_casts): from the cast's `(` to the literal's end
@@ -327,23 +363,49 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
     out: dict[str, dict] = {}
 
     def entry(rel_: str) -> dict:
-        return out.setdefault(rel_, {"defs": [], "vars": [], "macros": [], "casts": []})
+        return out.setdefault(rel_, {"defs": [], "vars": [], "macros": [], "casts": [], "decls": [], "types": [],
+                                     "dead": []})
 
+    def dead(fname: str):
+        """The lines of a file the preprocessor skipped, as where() maps them."""
+        for s_, e_ in skipped(tu, ci.File.from_name(tu, fname)):
+            w, e = where(s_), where(e_)
+            if w is not None and e is not None and w[0] == e[0]:
+                entry(w[0])["dead"].append((w[1], e[1]))
+
+    tags = (ci.CursorKind.STRUCT_DECL, ci.CursorKind.UNION_DECL, ci.CursorKind.ENUM_DECL)
     for c in tu.cursor.get_children():
         k = c.kind
         if k == ci.CursorKind.FUNCTION_DECL:
-            if not c.is_definition() or inlined(c):
+            if inlined(c):
                 continue
-            w = where(c.extent.start)
-            if w is not None:
-                entry(w[0])["defs"].append((w[1], w[2], c.spelling, c.storage_class == ci.StorageClass.STATIC))
+            w, n, e = where(c.extent.start), where(c.location), where(c.extent.end)
+            if w is None or n is None or e is None or not w[0] == n[0] == e[0]:
+                continue
+            static = c.storage_class == ci.StorageClass.STATIC
+            body = next((x for x in c.get_children() if x.kind == ci.CursorKind.COMPOUND_STMT), None)
+            b = where(body.extent.start) if body is not None else None
+            # a definition's parameters (K&R is the syntax, parameter declarations before the body: a prototype
+            # in scope gives a K&R definition a prototyped type)
+            knr = None
+            if body is not None:
+                knr = [(a.spelling, PROMOTED.get(a.type.get_canonical().kind)) for a in c.get_arguments()]
+            entry(w[0])["decls"].append(("f", c.spelling, static, w[1:], n[1:], e[1:], b[1:] if b else None, knr))
+            if c.is_definition():
+                entry(w[0])["defs"].append((w[1], w[2], c.spelling, static))
         elif k == ci.CursorKind.VAR_DECL:
-            w, e = where(c.extent.start), where(c.extent.end)
-            if w is not None and e is not None and e[0] == w[0]:
-                entry(w[0])["vars"].append(
-                    (w[1], w[2], e[1], e[2], c.spelling,            # a tentative definition is no definition
-                     "def" if c.is_definition() or c.storage_class != ci.StorageClass.EXTERN else "extern",
-                     c.storage_class == ci.StorageClass.STATIC))
+            w, n, e = where(c.extent.start), where(c.location), where(c.extent.end)
+            if w is not None and n is not None and e is not None and w[0] == n[0] == e[0]:
+                static = c.storage_class == ci.StorageClass.STATIC
+                # a tentative definition is no definition
+                kind = "def" if c.is_definition() or c.storage_class != ci.StorageClass.EXTERN else "extern"
+                entry(w[0])["vars"].append((w[1], w[2], e[1], e[2], c.spelling, kind, static))
+                init = any(x.kind.is_expression() for x in c.get_children())
+                entry(w[0])["decls"].append(("v", c.spelling, static, w[1:], n[1:], e[1:], kind, init))
+        elif k == ci.CursorKind.TYPEDEF_DECL or k in tags and c.is_definition() and c.spelling:
+            n = where(c.location)
+            if n is not None and not c.spelling.startswith(("struct (", "union (", "enum (")):
+                entry(n[0])["types"].append(c.spelling)
         elif k == ci.CursorKind.MACRO_DEFINITION:
             w = where(c.location)
             if w is not None:
@@ -378,9 +440,11 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             r = Path(d).relative_to(rootr).as_posix()
             entry(r)
             casts(d, Path(d).read_bytes(), r)
+            dead(d)
     for _, r in parts or []:
         entry(r)
     casts(str(path), text.encode(), None)
+    dead(str(path))
     # an include clang did not find: the file may appear later without the text changing, no result to keep
     missing = any(d.severity == ci.Diagnostic.Fatal and "not found" in d.spelling for d in tu.diagnostics)
     return {"files": out, "deps": deps, "missing": missing}

@@ -656,10 +656,10 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
 _cache: dict[tuple[str, str], Scan] = {}
 _files: dict[tuple[str, str, str], Scan] = {}     # (path, sha256 of the text, model digest) -> that file's own scan
 CACHE_VERSION = 6                                 # bump when scan_file's results change
-MODEL_VERSION = "8"                               # bump when the scan's translation units change
+MODEL_VERSION = "11"                               # bump when the scan's translation units change
 _models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
 _last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read
-EMPTY = {"defs": [], "vars": [], "macros": [], "casts": []}
+EMPTY = {"defs": [], "vars": [], "macros": [], "casts": [], "decls": [], "types": [], "dead": []}
 
 
 def front_end(root: Path) -> list[Path]:
@@ -807,6 +807,16 @@ def models(root: Path, files: list[tuple[str, str]]) -> dict[str, dict]:
     return out
 
 
+def project_files(root: Path) -> list[tuple[str, str]]:
+    """(path relative to root, full path) of src/**/*.c, src/**/*.h and include/**/*.h, in the scan's order."""
+    files = []
+    for d, pats in (("src", ("*.c", "*.h")), ("include", ("*.h",))):
+        base = root / d
+        if base.exists():
+            files += sorted({(d + "/" + r, p) for r, p in fsmemo.walk(base, pats)}, key=lambda t: t[0].lower())
+    return files
+
+
 def _file_cache(root: Path) -> tuple[Path | None, dict]:
     """The on-disk memo of per-file scans (build/cache/srcscan.pickle), {} when absent or of another version."""
     import pickle
@@ -833,11 +843,7 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
     out = Scan()
     path, disk = None, None                  # the on-disk memo, read on the first file this process has not scanned
     used, changed = {}, False
-    files = []
-    for d, pats in (("src", ("*.c", "*.h")), ("include", ("*.h",))):
-        base = root / d
-        if base.exists():
-            files += sorted({(d + "/" + r, p) for r, p in fsmemo.walk(base, pats)}, key=lambda t: t[0].lower())
+    files = project_files(root)
     ms = models(root, files)
     for rel, p in files:
         m = ms.get(rel, EMPTY)
