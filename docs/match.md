@@ -176,7 +176,12 @@ the library's flags and prove nothing about the user's units.
 clang (`[lint] clang = ...`, else on PATH, else `C:/Program Files/LLVM/bin/clang.exe`) parses each
 amalgamation as C89 with MS compatibility against the toolchain's headers, plus an all-declarations unit that
 includes every `include/*.h` and repeats every file-scope prototype of the sources: M6 / M5 / M7 and Q7. Only
-`@original why` / `@vc6 why` on the line exempt a diagnostic. Per-unit results are cached by the unit's text,
+`@original why` / `@vc6 why` on the line exempt a diagnostic, and not an M5 between two headers: two headers
+that disagree (a prototype, a data type, a struct or typedef both define) can never be included into one unit,
+so a unit's own spelling belongs in that unit (a cast macro in its head.c), not in a shared header. A header the
+original only included into some units (zlib's deflate.h / infutil.h each define `struct internal_state`)
+says so with `@private UNIT[,UNIT..]` in its first 20 lines: it is left out of the all-declarations unit, and a
+file outside those units that includes it is an M5 error. Per-unit results are cached by the unit's text,
 the flags and its include hash. `dcp check` lints when clang is installed.
 
 `dcp headers conflicts UNIT HEADER..` (source/headers.py) answers "what would including these headers into

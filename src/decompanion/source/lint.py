@@ -7,7 +7,12 @@ system headers) and reports what VC6 does not. Nothing here changes a byte: clan
       arguments, a type VC6 silently accepted
   M5  across units: a generated all-declarations unit (build/lint/<target>/alldecls.c) includes every header of
       include/ and repeats every fragment's and head.c's file-scope prototypes behind `#line`; clang's
-      `conflicting types` / `redeclaration` there is one symbol declared differently in two files
+      `conflicting types` / `redeclaration` there is one symbol declared differently in two files, and
+      `redefinition` / `typedef redefinition` a struct, union, enum or typedef two headers both define. An
+      `@original` / `@vc6` exemption does not apply between two headers: those two can never be included
+      into one unit, so the unit-specific spelling belongs in the unit. A header marked `@private UNIT[,..]` in
+      its first 20 lines (the original only included it into those units) is left out of the unit, and a file
+      outside those units that includes it is an M5 error
   M7  a call through a K&R declaration (-Wdeprecated-non-prototype: every float argument widened, the count
       unchecked) or without any declaration (-Wimplicit-function-declaration); the readability rule Q7 reads
       the same list per fragment
@@ -45,9 +50,13 @@ DIAG = re.compile(r"^(.+?):(\d+):(\d+): (error|warning|note): (.*?)(?: \[(-W[\w-
 EXEMPT = re.compile(r"@(original|vc6)\b")
 CALLEE = re.compile(r"'(\w+)'")
 DECL = re.compile(r"^\s*((?:[A-Za-z_]\w*[\s\*]+)+?)\b([A-Za-z_]\w*)\s*\(")
+# M5: a symbol declared differently in two files of the all-declarations unit; a struct / union / enum or
+# typedef defined twice counts too (two headers that define one tag cannot be included together)
+CROSS = re.compile(r"(?:conflicting types for|redeclaration of|redefinition of|typedef redefinition with different "
+                   r"types) ('(\w+)'|\()")
 KEYWORDS = {"return", "else", "goto", "case", "sizeof", "if", "while", "for", "switch", "do", "typedef", "default"}
 DEFAULT_CLANG = "C:/Program Files/LLVM/bin/clang.exe"
-VERSION = "2"
+VERSION = "3"
 
 
 def clang_path(project) -> Path | None:
@@ -134,12 +143,57 @@ def file_scope_prototypes(rel: str, text: str) -> list[tuple[int, str]]:
 _protos: dict[tuple[str, str], list] = {}     # (file, sha256 of its text) -> its file-scope prototypes
 
 
+PRIVATE = re.compile(r"@private[ \t]+([A-Za-z_][\w]*(?:[ \t]*,[ \t]*[A-Za-z_]\w*)*)")
+INCLUDE_LINE = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"([^"]+)"', re.M)
+
+
+def private_headers(root: Path) -> dict[str, set[str]]:
+    """header name -> the units it is private to (`@private UNIT[,UNIT..]` in its first 20 lines): a header
+    the original only ever included into those units (zlib's deflate.h, infutil.h define one struct tag
+    each), left out of the all-declarations unit."""
+    out = {}
+    inc = Path(root) / "include"
+    for h in sorted(inc.glob("*.h")) if inc.exists() else []:
+        m = PRIVATE.search("\n".join(fsmemo.read_text(h).split("\n")[:20]))
+        if m:
+            out[h.name] = {u.strip() for u in m.group(1).split(",")}
+    return out
+
+
+def private_violations(root: Path, private: dict[str, set[str]]) -> list[str]:
+    """M5 lines: a file outside a private header's units that includes it (a header including it counts only
+    when it is private to a subset of those units)."""
+    out = []
+    if not private:
+        return out
+    root = Path(root)
+    files = [("src/" + rel, p) for rel, p in fsmemo.walk(root / "src", ("*.c",))] if (root / "src").exists() else []
+    files += [(f"include/{h.name}", h) for h in sorted((root / "include").glob("*.h"))] if (root / "include").exists() else []
+    for rel, p in files:
+        text = fsmemo.read_text(p)
+        for m in INCLUDE_LINE.finditer(text):
+            h = Path(m.group(1)).name
+            units = private.get(h)
+            if units is None:
+                continue
+            if rel.startswith("src/"):
+                ok = rel.split("/")[1] in units
+            else:
+                ok = Path(rel).name == h or private.get(Path(rel).name, {None}) <= units
+            if not ok:
+                line = text.count("\n", 0, m.start()) + 1
+                out.append(f"{rel}:{line}: includes {h}, private to {','.join(sorted(units))} (@private in the header)")
+    return out
+
+
 def alldecls_text(root: Path) -> str:
     lines = ["#include <windows.h>"]
     inc = Path(root) / "include"
+    private = private_headers(root)
     if inc.exists():
         for h in sorted(inc.glob("*.h")):
-            lines.append(f'#include "{h.name}"')
+            if h.name not in private:
+                lines.append(f'#include "{h.name}"')
     src = Path(root) / "src"
     if src.exists():
         for rel, p in fsmemo.walk(src, ("*.c",)):
@@ -228,10 +282,20 @@ def lint(project, log=None) -> dict:
         d = g[0]
         if d["kind"] != "error":
             continue
-        m = re.match(r"(?:conflicting types for|redeclaration of) '(\w+)'", d["msg"])
-        if not m or any(lines.exempt(x["file"], x["line"]) for x in g):
+        m = CROSS.match(d["msg"])
+        if not m:
+            continue
+        in_headers = all(x["file"].startswith("include/") for x in g)
+        if any(lines.exempt(x["file"], x["line"]) for x in g):
+            if not in_headers:
+                continue
+            # two headers disagree on purpose: no unit can include both, so the unit's own spelling belongs
+            # in that unit (its head.c or fragment), not in a shared header
+            conflicts.append(fmt_group(g) + " / the @original spelling is in a header: two headers that cannot "
+                             "be included together; move it into the unit that needs it")
             continue
         conflicts.append(fmt_group(g))
+    conflicts += private_violations(root, private_headers(root))
     res = {"units": {a.unit: a.src_hash for a in amalgs},
            "includes": {a.unit: (tus.get(a.unit) or {}).get("include_hash", "") for a in amalgs}, "errors": sorted(set(errors)), "cross": sorted(set(conflicts)),
            "calls": {k: sorted(set(v)) for k, v in sorted(calls.items())}}

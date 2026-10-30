@@ -109,8 +109,11 @@ work, however long.
   that on its own, before the function: `<unit>: head includes <x>.h (typing)`; it does not count toward the 8,
   and `uv run dcp check` must show no M1. A byte-matched function is evidence of what the original declared:
   when a correction changes its bytes, the correction is wrong, not the match. Find which side is: fix the
-  header when its signature or type is the guess, or keep the original's declaration with `@original why`
-  (the matched caller as evidence) when the original really called it that way. Never accept the regression,
+  header when its signature or type is the guess, or keep the original's spelling with `@original why` (the
+  matched caller as evidence) when the original really called it that way. That spelling stays in the unit
+  that needs it, never in a shared header (two headers that disagree can never be included together: M5): a
+  cast macro in head.c next to the include (`#define d2_MoveObjS ((void (*)(short, short, int))d2_MoveObj)
+  /* @original main passes shorts */`), used at those calls. Never accept the regression,
   and never get around a conflict with a copied prototype or a local struct view. A conflict you cannot settle
   in the session: leave it, note `head: include/<x>.h, <symbol> unsettled (<why>)` under **Open work** in the
   unit's open.md, and leave Q7 open for the calls it blocks.

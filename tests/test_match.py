@@ -312,6 +312,31 @@ def test_lint_q7_and_exemption(tiny):
 
 
 @needs_vc6
+@pytest.mark.skipif(not CLANG.exists(), reason="clang not installed")
+def test_lint_m5_between_headers(tiny):
+    with_vc6(tiny)
+    write(tiny, "include/a.h", "typedef struct BITS { int x; } BITS;\nint f(char *p);  /* @original a.c's spelling */\n")
+    write(tiny, "include/b.h", "typedef struct BITS { short x; } BITS;\nint f(void *p);\n")
+    code, out = dcp(tiny, "lint")
+    assert code == 1, out
+    m5 = [l for l in out.splitlines() if "M5" in l or "include/" in l]
+    assert any("redefinition of 'BITS'" in l for l in m5), out                       # a tag two headers define
+    assert any("conflicting types for 'f'" in l and "cannot be included together" in l for l in m5), out
+    write(tiny, "include/b.h", "int g(void);\n")                                     # one definition, one spelling
+    code, out = dcp(tiny, "lint")
+    assert "m5=0" in out, out
+    # a header private to one unit may define a tag another header defines too; another unit may not include it
+    write(tiny, "include/a.h", "/* @private net */\ntypedef struct BITS { int x; } BITS;\n")
+    write(tiny, "include/b.h", "typedef struct BITS { short x; } BITS;\n")
+    write(tiny, "src/net/head.c", '#include "a.h"\nint counter = 0x1234;  /* 0x10002000 */\nint helper();\n')
+    code, out = dcp(tiny, "lint")
+    assert "m5=0" in out, out
+    write(tiny, "src/log/head.c", '#include "a.h"\n')
+    code, out = dcp(tiny, "lint")
+    assert "m5=1" in out and "src/log/head.c:1: includes a.h, private to net" in out, out
+
+
+@needs_vc6
 def test_auto_clear_and_data_order(tiny):
     with_vc6(tiny)
     write(tiny, "src/net/head.c", "int pad = 7;  /* 0x10002004 */\nint counter = 0x1234;  /* 0x10002000 */\n")

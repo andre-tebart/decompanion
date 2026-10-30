@@ -641,9 +641,12 @@ pushes and `add esp` / prototyped / other; a clash whose side carries `@original
 re-grade, and `--write` for the include when only duplicates are in the way. About 1 s a unit.
 
 Open:
-- M5 misses header-vs-header struct and typedef redefinitions: the all-declarations unit's filter counts only
-  `conflicting types` / `redeclaration`, so `D3OBJBITS` (ch.h vs d3_engine.h) passes the gate. Widening it
-  fails gildegold's gate on the existing clashes; decide together with the header consistency pass.
+- Done (user decision: "fix the checks even if gildegold then fails"): M5 counts struct / union / enum and
+  typedef redefinitions between headers, an `@original` / `@vc6` exemption no longer applies between two
+  headers, and `@private UNIT[,..]` marks a header the original only included into some units (left out of the
+  all-declarations unit; another unit including it is M5). gildegold's gate: ok -> FAIL, 86 M5 (78
+  `@original` spellings in shared headers, 8 tag / typedef redefinitions, 2 of them zlib's `internal_state`
+  that `@private` answers).
 - The header consistency pass (project work in gildegold): ch.h vs d3_engine.h (D3OBJBITS), d3_anim.h /
   ch.h vs d3_engine.h / d3.h (d3anim_* with `@original` spellings: two headers that cannot be included
   together, so the unit-specific spelling belongs in the unit that needs it, not in a shared header), mem.h
