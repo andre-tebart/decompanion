@@ -174,7 +174,8 @@ A helper the original inlined everywhere (so no address) stands in its unit's fi
   boundary lines, placeholders `OLD_<addr>`, names.log). Commit `<old> -> <new> (layout, <by>)`.
 - **Function and data names**: `uv run dcp rename OLD NEW --why "..."` (whole words in src/ and include/,
   refuses a collision with an `error=` record and exit 1, lists every changed file, names.log). Rename a placeholder as soon as the meaning is clear; `uv run dcp refs NAME`
-  first shows every use.
+  first shows every use. Several names: `uv run dcp rename OLD1 NEW1 OLD2 NEW2 ... --why "..."` (or `--from FILE`)
+  rebuilds once for all of them.
 
 ## Headers
 

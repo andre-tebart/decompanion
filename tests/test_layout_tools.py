@@ -506,3 +506,56 @@ def test_rename_reports_every_outcome(tiny, capsys):
     code, out = dcp(tiny, "rename", "a_Table", "a_Handlers", "--why", "x")
     assert code == 0 and "decl=1" in out and "file=decl/data.dcl  replacements=1" in out, out
     assert "0x10002040 name a_Handlers -- the pointer table" in (tiny / "decl/data.dcl").read_text()
+
+
+def test_rename_several_pairs(tiny, capsys):
+    """Several OLD NEW pairs (and --from FILE) in one call: all are checked before anything is written (one
+    refused pair refuses the call), then written in one pass, each with its record and its names.log event."""
+    write(tiny, "include/a.h", "int a_10001000(void);  /* 0x10001000 */\nextern int a_Unk10002000;  /* 0x10002000 */\n")
+    unit(tiny, "a", '#include "a.h"\n',
+         "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return a_Unk10002000;\n}\n",
+         "/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return a_10001000() + a_Unk10002000;\n}\n")
+    unit(tiny, "d", "int a_Unk10002000 = 0x1234;  /* 0x10002000 */\n")
+    log = tiny / "names.log"
+    kept = (".c", ".h", ".dcl", ".log")
+
+    def snapshot():
+        return {f: f.read_text() for f in tiny.rglob("*") if f.suffix in kept}
+
+    # one refused pair: every refusal listed, nothing written
+    before = snapshot()
+    code, out = dcp(tiny, "rename", "a_10001000", "a_Main", "a_Nowhere", "a_Other", "--why", "x")
+    assert code == 1 and "rename=a_Nowhere  to=a_Other  error=" in out and "nothing written" in out, out
+    assert snapshot() == before
+    # a chain and an odd word count are refused
+    code, out = dcp(tiny, "rename", "a_10001000", "a_Main", "a_Main", "a_Entry", "--why", "x")
+    assert code == 1 and "a chain" in out and snapshot() == before, out
+    code, out = dcp(tiny, "rename", "a_10001000", "--why", "x")
+    assert code == 1 and "pairs expected" in out, out
+    capsys.readouterr()
+    # two pairs on the command line and one from a file (its own why): one call, one record per pair
+    write(tiny, "pairs.txt", "# the table\n0x10001020 a_Sum the sum of both\n")
+    code, out = dcp(tiny, "rename", "a_10001000", "a_Main", "a_Unk10002000", "a_Counter", "--from", str(tiny / "pairs.txt"),
+                    "--why", "the entry")
+    assert code == 0, out
+    assert "renamed=a_10001000  to=a_Main  kind=func  at=0x10001000  files=2  replacements=4" in out, out
+    assert "renamed=a_Unk10002000  to=a_Counter  kind=data  at=0x10002000  files=3" in out, out
+    assert "renamed=a_10001020  to=a_Sum  kind=func  at=0x10001020  files=1" in out, out
+    a = (tiny / "src/a.c").read_text()
+    assert "return a_Main() + a_Counter;" in a and "int a_Sum(void)" in a and "a_10001000" not in a
+    events = [l.split(" ", 1)[1] for l in log.read_text().splitlines()[-3:]]
+    assert events[0].startswith("0x10001000 func a_10001000 -> a_Main") and "why:the entry" in events[0]
+    assert events[2].startswith("0x10001020 func a_10001020 -> a_Sum") and "why:the sum of both" in events[2]
+
+
+def test_disasm_inside_an_instruction(tiny):
+    """An address inside an instruction of a function lists from the next instruction boundary (decoded from the
+    function's start), with a note, not as undecodable bytes (match-base feedback 2026-10-30)."""
+    code, out = dcp(tiny, "disasm", "0x10001000")
+    rows = [l.split() for l in out.splitlines() if l.startswith("   0x")]
+    at = [int(r[0], 16) for r in rows]
+    first, second = next((x, y) for x, y in zip(at, at[1:]) if y - x > 1)     # an instruction longer than a byte
+    code, out = dcp(tiny, "disasm", hex(first + 1))
+    assert code == 0 and "is inside an instruction" in out and f"disasm=0x{second:08x}.." in out, out
+    assert "do not decode" not in out
+    assert [l.split()[0] for l in out.splitlines() if l.startswith("   0x")][0] == f"0x{second:08x}"

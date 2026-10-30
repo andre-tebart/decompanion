@@ -7,6 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import timing
 from .cli import open_project, parse_addr, parse_range, record, refresh
 from .config import Project
 from .ledger.fact import Kind
@@ -224,58 +225,172 @@ def cmd_draft(args):
 DECL_NAME = r"(?m)(?<= name ){old}(?= |$)"
 
 
-def rename_fail(args, msg: str, old=None) -> int:
+def rename_fail(args, msg: str, old=None, new=None) -> int:
     """A refused or failed rename: the error record on stdout (key=value, like every result), the message on
     stderr; exit 1."""
-    print(record(rename=old or args.old, to=args.new, error=msg))
+    print(record(rename=old or args.old, to=new or args.new, error=msg))
     return err("rename", msg)
 
 
+def rename_pairs(args) -> list[tuple[str, str, str]] | str:
+    """The (OLD, NEW, why) of a rename call: the OLD NEW pairs of the command line with --why, then the lines of
+    --from FILE (`OLD NEW [why]`, a line without a why takes --why; blank lines and `#` lines skipped). A
+    message instead when the call is malformed."""
+    words = list(args.pairs)
+    if len(words) % 2:
+        return f"OLD NEW pairs expected, got {len(words)} word(s): {' '.join(words)}"
+    pairs = [(words[i], words[i + 1], args.why) for i in range(0, len(words), 2)]
+    if args.from_file:
+        try:
+            text = Path(args.from_file).read_text()
+        except OSError as ex:
+            return f"--from {args.from_file}: {ex}"
+        for n, line in enumerate(text.splitlines(), 1):
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            f = line.split(None, 2)
+            if len(f) < 2:
+                return f"--from {args.from_file}:{n}: `OLD NEW [why]` expected"
+            why = f[2].strip() if len(f) > 2 else args.why
+            if not why:
+                return f"--from {args.from_file}:{n}: no why (give one on the line or --why)"
+            pairs.append((f[0], f[1], why))
+    if not pairs:
+        return "nothing to rename: give OLD NEW (or --from FILE)"
+    if any(w is None for _, _, w in pairs):
+        return "--why is required (or a why on each --from line)"
+    return pairs
+
+
+class RenamePlan:
+    """One pair of a rename call, checked and not yet written: what cmd_rename applies."""
+
+    def __init__(self, old_arg, old, new, why, a, kind, exact, decls, recorded=False):
+        self.old_arg, self.old, self.new, self.why, self.a, self.kind = old_arg, old, new, why, a, kind
+        self.exact, self.decls, self.recorded = exact, decls, recorded
+        self.used = []
+
+
 def cmd_rename(args):
-    """Rename one identifier: every whole-word occurrence in src/ and include/ (code and comments; string
-    literals and #include lines are left alone), the `name` declarations of decl/*.dcl. OLD is a C identifier
-    or an address (`0xADDR`, `TARGET:0xADDR`): the ledger's name of the address on that target. Refused (an error record, exit 1, nothing written) when OLD names
-    nothing renamable: no such address name, OLD occurs nowhere, or only inside string literals / #include
-    lines; when NEW is no C identifier or equals OLD; when NEW occurs already and is not OLD's own (the ledger
-    names another address NEW, or OLD has no address): NEW written by hand in part for OLD's address is
-    completed. A success prints the rename record (files, replacements, decl lines) and one line
-    per changed file with its replacements. names.log records the event, with the address the ledger knows
-    for OLD (a name fact, or the address a placeholder spells). The rename done by hand already (OLD nowhere,
-    NEW the ledger's name of OLD's address) is only recorded: names.log gets the event, no file changes. The
-    views of OLD (OLD with an upper-case view suffix, srcscan.PLACEHOLDER_ADDR) keep their names: a note
-    lists them."""
-    import re
+    """Rename identifiers: every whole-word occurrence in src/ and include/ (code and comments; string
+    literals and #include lines are left alone), the `name` declarations of decl/*.dcl. Several OLD NEW pairs
+    (and --from FILE) are renamed in one call: one refresh, one rebuild, one check for all of them, and nothing
+    is written unless every pair passes (a refusal record per failing pair). OLD is a C identifier or an
+    address (`0xADDR`, `TARGET:0xADDR`): the ledger's name of the address on that target (every pair of a call
+    on one target). Refused (an error record, exit 1, nothing written) when OLD names nothing renamable: no such
+    address name, OLD occurs nowhere, or only inside string literals / #include lines; when NEW is no C
+    identifier or equals OLD; when NEW occurs already and is not OLD's own (the ledger names another address
+    NEW, or OLD has no address): NEW written by hand in part for OLD's address is completed; when the pairs of
+    a call chain or repeat (an OLD or a NEW twice, a NEW that is another pair's OLD). A success prints per pair
+    the rename record (files, replacements, decl lines) and one line per changed file with its replacements.
+    names.log records each event, with the address the ledger knows for OLD (a name fact, or the address a
+    placeholder spells). The rename done by hand already (OLD nowhere, NEW the ledger's name of OLD's address)
+    is only recorded: names.log gets the event, no file changes. The views of OLD (OLD with an upper-case view
+    suffix, srcscan.PLACEHOLDER_ADDR) keep their names: a note lists them."""
     from .config import ConfigError
     from .ledger import srcscan
     from .ledger.names import Names
     from .source import edit as E
-    old_arg, given = args.old.strip(), None
-    tgt, _, addr = old_arg.rpartition(":")
-    by_addr = addr.lower().startswith("0x")
+    args.old, args.new = (args.pairs + ["", ""])[:2]
+    pairs = rename_pairs(args)
+    if isinstance(pairs, str):
+        return rename_fail(args, pairs)
+    tgts = {o.strip().rpartition(":")[0] for o, _, _ in pairs if o.strip().rpartition(":")[2].lower().startswith("0x")}
+    if len(tgts) > 1:
+        return rename_fail(args, f"the pairs name several targets ({', '.join(sorted(t or '(default)' for t in tgts))}): one call "
+                                 f"renames on one target")
+    tgt = next(iter(tgts), "")
     try:
-        p, e = open_project(args, tgt or None) if by_addr else open_project(args)
+        p, e = open_project(args, tgt or None) if tgts else open_project(args)
     except ConfigError as ex:
-        return rename_fail(args, f"{old_arg}: {ex}")
+        bad = next(o for o, _, _ in pairs if o.strip().rpartition(":")[2].lower().startswith("0x"))
+        return rename_fail(args, f"{bad.strip()}: {ex}", old=bad.strip(), new=pairs[0][1])
     refresh(p, e)
-    if not E.IDENT.match(args.new):
-        return rename_fail(args, f"NEW {args.new!r} is no C identifier")
     names = Names(p, p.store)
-    if by_addr:
+    before = {(x.check, x.lo, x.message) for x in errors(p)}
+    plans, refusals = [], []
+    words = [o.strip() for o, _, _ in pairs]
+    for old_arg, new, why in pairs:
+        if new in words and new != old_arg.strip():   # the later pair's OLD exists only after the earlier one is written
+            refusals.append((old_arg.strip(), new, f"{new} is another pair's OLD: a chain (rename in two calls)"))
+            continue
+        with timing.phase("rename.plan"):
+            r = plan_rename(p, names, old_arg.strip(), new, why)
+        (refusals if isinstance(r, tuple) else plans).append(r)
+    olds, news = [x.old for x in plans], [x.new for x in plans]
+    for x in plans:
+        if olds.count(x.old) > 1:
+            refusals.append((x.old, x.new, f"{x.old} is renamed by several pairs of the call"))
+        elif news.count(x.new) > 1:
+            refusals.append((x.old, x.new, f"{x.new} is the new name of several pairs of the call"))
+        elif x.new in olds:
+            refusals.append((x.old, x.new, f"{x.new} is another pair's OLD: a chain (rename in two calls)"))
+    if not refusals:
+        with timing.phase("rename.check"):
+            refusals = check_renames(p, names, [x for x in plans if not x.recorded])
+    if refusals:
+        for old, new, msg in refusals:
+            rename_fail(args, msg, old=old, new=new)
+        if len(pairs) > 1:
+            print(f"rename: {len(refusals)} of {len(pairs)} pair(s) refused: nothing written")
+        return 1
+    for x in plans:
+        if x.recorded:
+            E.log_names(p.root, [(x.a, x.kind, x.old, x.new)], x.why)
+            print(record(recorded=x.old, to=x.new, kind=x.kind, at=x.a, files=0) + "  (renamed by hand already: names.log only)")
+    edits = [x for x in plans if not x.recorded]
+    if not edits:
+        return 0
+    with timing.phase("rename.write"):
+        write_renames(p, edits)
+    for x in edits:
+        E.log_names(p.root, [(x.a, x.kind, x.old, x.new)], x.why)
+        print(record(renamed=x.old, to=x.new, kind=x.kind, at=x.a, files=len(x.files), replacements=sum(x.files.values()),
+                     decl=x.decl_lines))
+        for f, k in sorted(x.files.items()):
+            print("  " + record(file=f, replacements=k))
+        ph = srcscan.PLACEHOLDER_ADDR.fullmatch(x.old)
+        views = sorted(w for w in E.words_with_prefix(p.root, x.old) if w != x.old and w[len(x.old)].isupper() and ph
+                       and (m := srcscan.PLACEHOLDER_ADDR.fullmatch(w)) and srcscan.placeholder_value(m) == x.a)
+        if views:
+            print(f"note: the views of {x.old} keep their names: {', '.join(views[:8])} (rename each: dcp rename VIEW NEW)")
+    p, e = rebuilt(args, p, e)
+    bad = errors(p)
+    new = [x for x in bad if (x.check, x.lo, x.message) not in before]
+    if bad:
+        print(f"check: {len(new)} new error(s) after the rename, {len(bad) - len(new)} from before (dcp check lists them)")
+    for x in new[:10]:
+        print(f"  {x.severity.value} {x.check} {x.lo:#010x}: {x.message}")
+    return 1 if new else 0
+
+
+def plan_rename(p, names, old_arg: str, new: str, why: str):
+    """One pair checked against the tree as it stands (nothing written): a RenamePlan, or (old, new, message) when
+    the pair is refused. The collisions of NEW and the symbol-exact occurrences are checked for all pairs at once
+    (check_renames)."""
+    import re
+    from .ledger import srcscan
+    from .source import edit as E
+    tgt, _, addr = old_arg.rpartition(":")
+    given = None
+    if not E.IDENT.match(new):
+        return old_arg, new, f"NEW {new!r} is no C identifier"
+    if addr.lower().startswith("0x"):
         try:
             a = parse_addr(addr)
         except ValueError:
-            return rename_fail(args, f"{old_arg} is no address")
+            return old_arg, new, f"{old_arg} is no address"
         old = names.name(a)
         if old is None:
-            return rename_fail(args, f"the ledger knows no name of {a:#010x} on target {p.target_name}")
+            return old_arg, new, f"the ledger knows no name of {a:#010x} on target {p.target_name}"
         print(f"note: {old_arg} is {old} (the ledger's name on target {p.target_name})")
-        args.old, given = old, a
+        given = a
     elif not E.IDENT.match(old_arg):
-        return rename_fail(args, f"OLD {old_arg!r} is neither a C identifier nor an address (0xADDR, TARGET:0xADDR)")
-    old = args.old
-    if old == args.new:
-        return rename_fail(args, f"OLD and NEW are the same name {old}")
-    before = {(x.check, x.lo, x.message) for x in errors(p)}
+        return old_arg, new, f"OLD {old_arg!r} is neither a C identifier nor an address (0xADDR, TARGET:0xADDR)"
+    else:
+        old = old_arg
+    if old == new:
+        return old, new, f"OLD and NEW are the same name {old}"
     hits = names.by_name.get(old)
     ph = srcscan.PLACEHOLDER_ADDR.fullmatch(old)
     a = given if given is not None else sorted(hits)[0] if hits else (srcscan.placeholder_value(ph) if ph else None)
@@ -290,55 +405,67 @@ def cmd_rename(args):
     used = E.uses(p.root, old)
     # a symbol with an address is renamed where clang finds it, not where a local, a parameter or a field of the
     # same name stands (srcscan.local_refs); a name without one (a type, a field) by its words
-    exact = a is not None
-    skip_old = srcscan.local_refs(p.root, [old]) if exact and used else None
+    x = RenamePlan(old_arg, old, new, why, a, kind, a is not None, decls)
+    x.used = used
     if not used and not decls:
-        if a is not None and a in names.by_name.get(args.new, ()):
-            E.log_names(p.root, [(a, kind, old, args.new)], args.why)
-            print(record(recorded=old, to=args.new, kind=kind, at=a, files=0) + "  (renamed by hand already: names.log only)")
-            return 0
-        return rename_fail(args, f"{old} occurs nowhere in src/, include/ or decl/" + (
-            f" and {args.new} is not the ledger's name of {a:#x}" if a is not None else ""))
-    if used and not E.rename_words(p.root, {old: args.new}, dry=True, skip=skip_old) and not decls:
-        where = ", ".join(f"{f}:{l}" for f, l in used[:4])
-        return rename_fail(args, f"{old} occurs only inside string literals or #include lines ({where}): nothing to "
-                                 f"rename (a header file's name is no identifier; edit a string by hand)")
-    clash = E.code_uses(p.root, args.new)
-    if clash and exact:                             # a local, a parameter or a field of that name is no collision
-        clash = E.code_uses(p.root, args.new, srcscan.local_refs(p.root, [args.new]))
-    elsewhere = sorted(set(names.by_name.get(args.new, ())) - ({a} if a is not None else set()))
-    if clash and (a is None or elsewhere):
-        return rename_fail(args, f"{args.new} exists already ({clash[0][0]}:{clash[0][1]})"
-                                 + (f", the ledger's name at {', '.join(f'{x:#x}' for x in elsewhere)}" if elsewhere else "")
-                                 + ": refused (a collision)")
-    if clash:                                       # NEW is OLD's own address's name, written by hand in part
-        print(f"note: {args.new} occurs already ({clash[0][0]}:{clash[0][1]}) and names no other address: the rename "
-              f"completes it")
-    n = E.rename_words(p.root, {old: args.new}, skip=skip_old)
-    decl_lines = 0
-    for path in decls:
-        t = path.read_text()
-        new, k = decl_pat.subn(args.new, t)
-        if k:
-            E.write(path, new)
-            decl_lines += k
-            n[path.relative_to(p.root).as_posix()] = k
-    if not n:
-        return rename_fail(args, f"{old}: nothing was renamed (no whole-word occurrence outside string literals and "
-                                 f"#include lines)")
-    E.log_names(p.root, [(a, kind, old, args.new)], args.why)
-    print(record(renamed=old, to=args.new, kind=kind, at=a, files=len(n), replacements=sum(n.values()), decl=decl_lines))
-    for f, k in sorted(n.items()):
-        print("  " + record(file=f, replacements=k))
-    views = sorted(w for w in E.words_with_prefix(p.root, old) if w != old and w[len(old)].isupper() and ph
-                   and (m := srcscan.PLACEHOLDER_ADDR.fullmatch(w)) and srcscan.placeholder_value(m) == a)
-    if views:
-        print(f"note: the views of {old} keep their names: {', '.join(views[:8])} (rename each: dcp rename VIEW NEW)")
-    p, e = rebuilt(args, p, e)
-    bad = errors(p)
-    new = [x for x in bad if (x.check, x.lo, x.message) not in before]
-    if bad:
-        print(f"check: {len(new)} new error(s) after the rename, {len(bad) - len(new)} from before (dcp check lists them)")
-    for x in new[:10]:
-        print(f"  {x.severity.value} {x.check} {x.lo:#010x}: {x.message}")
-    return 1 if new else 0
+        if a is not None and a in names.by_name.get(new, ()):
+            x.recorded = True
+            return x
+        return old, new, f"{old} occurs nowhere in src/, include/ or decl/" + (
+            f" and {new} is not the ledger's name of {a:#x}" if a is not None else "")
+    return x
+
+
+def check_renames(p, names, plans: list) -> list[tuple[str, str, str]]:
+    """The checks of the pairs that need the front end, for all pairs at once (one parse per file that holds
+    any of the names, srcscan.local_refs): an OLD found only inside string literals or #include lines, a NEW
+    that collides. Sets each plan's `skip` (the occurrences of OLD that are another symbol) and `files` (the
+    dry run's replacements per file). The refusals, [] when every pair passes."""
+    from .ledger import srcscan
+    from .source import edit as E
+    exact_used = sorted({x.old for x in plans if x.exact and x.used})
+    new_hit = sorted({x.new for x in plans if x.exact and E.code_uses(p.root, x.new)})
+    with timing.phase("rename.refs"):
+        skip = srcscan.local_refs(p.root, exact_used + new_hit) if exact_used or new_hit else {}
+    out = []
+    for x in plans:
+        x.skip = skip if x.exact and x.used else None
+        x.files = E.rename_words(p.root, {x.old: x.new}, dry=True, skip=x.skip) if x.used else {}
+        if x.used and not x.files and not x.decls:
+            where = ", ".join(f"{f}:{l}" for f, l in x.used[:4])
+            out.append((x.old, x.new, f"{x.old} occurs only inside string literals or #include lines ({where}): nothing to "
+                                      f"rename (a header file's name is no identifier; edit a string by hand)"))
+            continue
+        clash = E.code_uses(p.root, x.new, skip if x.exact else None)
+        elsewhere = sorted(set(names.by_name.get(x.new, ())) - ({x.a} if x.a is not None else set()))
+        if clash and (x.a is None or elsewhere):
+            out.append((x.old, x.new, f"{x.new} exists already ({clash[0][0]}:{clash[0][1]})"
+                        + (f", the ledger's name at {', '.join(f'{v:#x}' for v in elsewhere)}" if elsewhere else "")
+                        + ": refused (a collision)"))
+        elif clash:                                 # NEW is OLD's own address's name, written by hand in part
+            print(f"note: {x.new} occurs already ({clash[0][0]}:{clash[0][1]}) and names no other address: the rename "
+                  f"completes it")
+    return out
+
+
+def write_renames(p, plans: list):
+    """Write the checked pairs: one pass over src/ and include/ for all of them (the skip positions were taken
+    on the text before any write; one pass keeps them valid where two names share a line), then each pair's
+    decl/*.dcl lines. Each plan's `files` becomes what was written for it, `decl_lines` its declaration lines."""
+    import re
+    from .source import edit as E
+    skip: dict = {}
+    for x in plans:
+        for f, pos in (x.skip or {}).items():
+            skip.setdefault(f, set()).update(pos)
+    E.rename_words(p.root, {x.old: x.new for x in plans}, skip=skip)
+    for x in plans:
+        x.decl_lines = 0
+        decl_pat = re.compile(DECL_NAME.format(old=re.escape(x.old)))
+        for path in x.decls:
+            t = path.read_text()
+            new, k = decl_pat.subn(x.new, t)
+            if k:
+                E.write(path, new)
+                x.decl_lines += k
+                x.files[path.relative_to(p.root).as_posix()] = k

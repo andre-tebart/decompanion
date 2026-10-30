@@ -244,7 +244,7 @@ uv run dcp unit new adler32 --range 0x10001000..0x10001130 --by guess --why "zli
 uv run dcp draft --next                       # the function `dcp layout next` shows (or: dcp draft 0xADDR)
 uv run dcp unit join A B --why "..."          # B directly after A
 uv run dcp unit rename OLD NEW --by leaked|tag|guess --why "..."
-uv run dcp rename OLD NEW --why "..."         # one identifier (OLD: a name, or [TARGET:]0xADDR for its ledger name)
+uv run dcp rename OLD NEW [OLD NEW ...] --why "..."  # identifiers (OLD: a name, or [TARGET:]0xADDR for its ledger name); --from FILE
 ```
 
 `dcp unit new` = `dcp layout unit propose` (refuses its own L3 / L4 / L7 / L8 errors) + `src/<unit>.c` (its head),

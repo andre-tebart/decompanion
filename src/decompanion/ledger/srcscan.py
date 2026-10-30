@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import bisect
 import functools
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -654,9 +655,12 @@ def models(root: Path, files: list[tuple[str, str]], defines=()) -> dict[str, di
 
 def local_refs(root: Path, names: list[str]) -> dict[str, set[tuple[int, int]]]:
     """rel -> {(line, col)} of the occurrences of `names` the front end finds referring to a declaration not at
-    file scope (cparse.refs: a local, a parameter, a field, a label), over every unit whose file or headers hold
-    one of the names (as the default target's compile sees it): what a rename of a file-scope symbol leaves
-    alone."""
+    file scope (cparse.refs: a local, a parameter, a field, a label), in every project file that holds one of
+    the names (as the default target's compile sees it): what a rename of a file-scope symbol leaves alone.
+    One parse per such file, not per unit that reads it: each unit file that holds a name, and for a header
+    that holds one, the first unit that includes it (an occurrence in a header refers to the same declaration
+    in every unit that includes it, as models() takes a header's model from its first unit); a unit's parse
+    covers the headers it reads."""
     from ..source import cparse
     root = Path(root)
     files = project_files(root)
@@ -665,23 +669,36 @@ def local_refs(root: Path, names: list[str]) -> dict[str, set[tuple[int, int]]]:
     models(root, files, defines)                          # every unit's dependencies (_last_deps)
     pat = re.compile(r"\b(?:" + "|".join(map(re.escape, names)) + r")\b")
     holds = {}
-    rootr = root.resolve()
+    under = os.path.normcase(str(root.resolve())) + os.sep
+
+    def norm(d: str) -> str:
+        return os.path.normcase(os.path.abspath(d))
 
     def held(p) -> bool:
         if p not in holds:
             try:
-                holds[p] = bool(pat.search(fsmemo.read_text(p)))
+                text = fsmemo.read_text(p)
+                holds[p] = any(n in text for n in names) and bool(pat.search(text))
             except OSError:
                 holds[p] = False
         return holds[p]
 
-    jobs = []
+    units = []                                            # (unit file, it holds a name, the headers below root it reads that do)
     for rel, p in files:
-        if not UNIT_FILE.match(rel):
-            continue
-        deps = [d for d in _last_deps.get(str(Path(p)), []) if Path(d).resolve().is_relative_to(rootr)]
-        if held(str(p)) or any(held(d) for d in deps):
-            jobs.append((Path(p), root, sysdirs, incdirs(root), fsmemo.read_text(p), list(defines), list(names), None))
+        if UNIT_FILE.match(rel):
+            deps = {norm(d) for d in _last_deps.get(str(Path(p)), [])}
+            units.append((p, held(str(p)), {d for d in deps if d.startswith(under) and held(d)}))
+    covered, pick = set(), set()
+    for p, own, deps in units:
+        if own:
+            pick.add(p)
+            covered |= deps
+    for p, own, deps in units:
+        if not own and deps - covered:
+            pick.add(p)
+            covered |= deps
+    jobs = [(Path(p), root, sysdirs, incdirs(root), fsmemo.read_text(p), list(defines), list(names), None)
+            for p, _, _ in units if p in pick]
     out: dict[str, set] = {}
     for r in cparse.many(jobs, fn="refs"):
         for rel, xs in r.items():

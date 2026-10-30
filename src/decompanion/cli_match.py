@@ -172,6 +172,8 @@ def cmd_asmdiff(args):
     print(record(fn=r["addr"], name=r["name"], code=r["code"], ours=len(a), original=len(b), differing=n)
           + ("" if tables is None else "  " + record(tables="differ" if tables["diffs"] else "equal", entries=tables["entries"],
                                                      index_bytes=tables["bytes"])))
+    if n:
+        print("  legend: '-' ours (our object), '+' the original (the image)")
     for tag, i1, i2, j1, j2 in ops:
         if tag == "equal":
             if i2 - i1 > 6 and not args.all:

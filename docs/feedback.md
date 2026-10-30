@@ -4,6 +4,43 @@ Findings from running the skills on a target project, to be picked up as framewo
 observed, the cause (verified in the code, or suspected), a proposed change. Remove an item when it is done
 (the commit that does it says so).
 
+## match-base on gildegold, 2026-10-30, second session (191 calls, 612 s of tool time)
+
+| command | calls | median | max | share |
+|---|---|---|---|---|
+| rename | 21 | 9.1 s | 31 s | 47 % |
+| build | 27 | 7.1 s | 31.7 s | 41 % |
+| check | 11 | 1.26 s | 1.6 s | 2 % |
+| refs | 10 | 0.7 s | 5.1 s | 2 % |
+| disasm, dump | 28 | 0.34 .. 0.37 s | | 2 % |
+| grade, asmdiff, diffclass, next, fn, escalate, why | 81 | 0.15 .. 0.23 s | | ~3 % |
+
+The reading tools, `headers conflicts` and `check` were reported fast and trusted. Done since (docs/plan.md, the
+entry of 2026-10-31): rename takes several pairs in one call (one rebuild), rename's own work and the build's
+compile, include scan, lint and G.grade got cheaper; a closed stdout pipe (`dcp refs X | head`) no longer reads as
+a lost daemon; asmdiff prints its legend; disasm inside an instruction starts at the next one. Open:
+
+11. **The rules that rerun whole after a compile or a line move (~1.2 .. 2 s of every build).** What was left of
+    item 1. Measured with tools/bench.py on gildegold (2026-10-31): a body edit reruns 15 of 56 rules (~1.0 s:
+    G.grade ~0.17, D.data ~0.15, M.data.content ~0.13, M8.reloc ~0.1, M.data.site ~0.09, record.L.src ~0.1, each
+    rule calling compiled_functions and loading its facts again, ~0.1 s each); a line move (most real edits add or
+    remove a line, and since one file per unit that moves every function below it) reruns 23 (~2 s: L.src's facts
+    carry line numbers, so the L.* chain, L9.analyzer.span, L5, L13 and the byte map run again). Proposed: per-unit partitions of the M / G / D rules, and a position-free run key of L.src for the rules that
+    read no line (their facts must not carry a source line then: `by=src:file:line`).
+12. **A header edit parses the changed units twice with clang (~1 s plan + ~1 s lint).** The source scan's model
+    (cparse.model, ~0.4 s for a 4000-line unit, the Python walk of the cursors) and the lint's diagnostics parse
+    (~0.1 s) are separate parses, and the all-declarations unit (1.6 MB, ~0.76 s) is parsed again on every header
+    edit. Proposed: start the lint's parses beside the compile (they need only the plan), and one parse per unit
+    for model and diagnostics.
+13. **No "meaning matches" verdict.** For 3 of 8 functions the worker diffed the calls and constants of both sides
+    by hand to show the rest was register allocation; diffclass reports pure scheduling as `code` (62 hunks for
+    one function). Proposed: a diffclass line `calls and immediates: identical | differ (...)` (the multiset of
+    call targets and immediate operands per side, image addresses compared as relocated), which makes the
+    escalation boundary of the skill mechanical; with item 6 below.
+14. **gildegold, not the tool: header conflicts keep main from including cm.h, hmt.h and unk_575860.h** (void
+    results assigned in main, the sb_PlaySample clash), so two of the session's functions had no prototypes (Q7).
+    A project task: fix those callers once.
+
 ## match-base on gildegold, 2026-10-30 (session base ace7863d, unk_5d33b0, 8 functions)
 
 Every `uv run dcp ...` call of one match-base session was timed (a wrapper around `uv run dcp`, wall clock,
@@ -34,17 +71,7 @@ function that does not match at once takes 4 .. 6 tries, so this loop is most of
 
 Items 2 (rename refreshes twice), 3 (grade / next lint), 4 (~1.2 s per call) and 5 (asmdiff / diffclass) are
 done: `dcp serve`, the persisted file hashes, lint in `build`, per-function compare memos (docs/plan.md, the entry
-of 2026-10-30). What is left of item 1:
-
-1. **The refresh after a one-unit compile still costs ~1.1 s (warm daemon), ~2.7 s in-process.** Was ~4.5 s.
-   Measured with tools/bench.py (S1, a one-line edit): build 1.8 .. 2.8 s in the daemon, of which CL ~0.55 s,
-   the lint of the unit ~0.2 s, the refresh ~1.1 s. The rules still rerun whole: G.grade ~0.25 s, M.data.content
-   ~0.13 s, M.lint ~0.12 s, M8.reloc ~0.09 s, M.data.site ~0.08 s, L13 / L5 / A1 (they read the whole `src`
-   input), and a line move (an added line above a definition) still reruns the L.* chain (L.src's facts carry
-   line numbers). In-process the same rules pay their memos cold (compare every function again), and the lint
-   of the build costs ~1.1 s more (the all-declarations text parses every .c file; the daemon keeps them).
-   Proposed: per-unit partitions of the M / G rules (`objects@unit`, `src@unit`), L5 / A1 / L13 reading the
-   loader's facts instead of the tree, and run keys that leave the line numbers out of L.src's output.
+of 2026-10-30). What was left of item 1 is item 11 above.
 
 Not a tool cost, but noted because it showed up as one: `dcp grade 0x5d3810` took 11.4 s because a header had
 been edited without a build; `grade` compiles stale units first (`build_target`), so it was a build plus a grade.

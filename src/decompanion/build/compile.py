@@ -239,15 +239,16 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
             stale.append(unit)
     timing.add("ensure.inc", (time.perf_counter() - t_inc) * 1000)
 
-    def compile_one(unit):
+    def compile_one(unit, pre):
         a, flags, dirs, key = work[unit]
         tmp = Path("build") / "obj" / "tmp" / a.target / f"{a.unit}.obj"
         (root / tmp).parent.mkdir(parents=True, exist_ok=True)
         if (root / tmp).exists():
             (root / tmp).unlink()
-        res = tc.compile(Path(a.path), tmp, flags, dirs, root)
+        with timing.phase("ensure.cl.compile"):
+            res = tc.compile(Path(a.path), tmp, flags, dirs, root)
         res = replace(res, diagnostics=located(a, res.diagnostics))
-        _, files = preprocess(unit)                                   # the set as the unit reads it now
+        _, files = pre.result()
         obj_hash = ""
         if res.ok:
             data = (root / tmp).read_bytes()
@@ -262,8 +263,10 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
     if stale:
         if log:
             log(f"build: compiling {len(stale)} of {len(units_)} units (target {project.target_name})")
-        with timing.phase("ensure.cl"), ThreadPoolExecutor(n) as pool:
-            results = list(pool.map(compile_one, stale))
+        with timing.phase("ensure.cl"), ThreadPoolExecutor(n) as pool, ThreadPoolExecutor(n) as side:
+            # the include set as the unit reads it now, its preprocessor run beside the compile
+            pres = [side.submit(preprocess, unit) for unit in stale]
+            results = list(pool.map(compile_one, stale, pres))
         for unit, res, files, obj_hash in results:
             a, flags, dirs, key = work[unit]
             if files is not None:

@@ -107,10 +107,12 @@ def register(sub, cmd):
     s.add_argument("--next", action="store_true", help="the function `dcp layout next` shows")
     s.add_argument("--show", action="store_true", help="print the analyzer's draft of ADDR, write nothing")
     s.add_argument("--unit", help="the unit (default: the unit whose extent holds the address)")
-    s = cmd(sub, "rename", DR.cmd_rename, "rename one identifier over src/ and include/ (names.log)")
-    s.add_argument("old", metavar="OLD", help="the identifier, or [TARGET:]0xADDR for the ledger's name of the address")
-    s.add_argument("new")
-    s.add_argument("--why", required=True)
+    s = cmd(sub, "rename", DR.cmd_rename, "rename identifiers over src/ and include/ (names.log); several pairs in one call "
+                                          "share one rebuild")
+    s.add_argument("pairs", nargs="*", metavar="OLD NEW",
+                   help="pairs of the identifier (or [TARGET:]0xADDR for the ledger's name of the address) and its new name")
+    s.add_argument("--from", dest="from_file", metavar="FILE", help="more pairs, one `OLD NEW [why]` per line")
+    s.add_argument("--why", help="the evidence (required unless every --from line carries its own)")
     from . import cli_session as SE
     ses = sub.add_parser("session", help="the session protocol").add_subparsers(dest="sub", required=True)
     cmd(ses, "start", SE.cmd_session_start, "the session gate (clean tree, built, checked, linked) and the overview")

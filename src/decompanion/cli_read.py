@@ -94,7 +94,16 @@ def cmd_disasm(args):
         hi = min(ss[i] if i < len(ss) else a + 0x40, a + 0x400)
     sec = img.section_of(a)
     hi = min(hi, sec.end)
-    lines = isa.disasm(img.read(a, hi - a), a, tc.fill_forms)
+    if fn is not None and fn.lo < a:
+        # inside a function: decoded from its start, so the listing begins at the first instruction boundary at or
+        # after ADDR (an address inside an instruction decodes as garbage, or not at all)
+        lines = [ln for ln in isa.disasm(img.read(fn.lo, hi - fn.lo), fn.lo, tc.fill_forms) if ln.addr >= a]
+        if lines and lines[0].addr != a:
+            print(f"note: {fmt_addr(a)} is inside an instruction of {names.name(fn.lo) or fmt_addr(fn.lo)}: the listing "
+                  f"starts at the next instruction, {fmt_addr(lines[0].addr)}")
+            a = lines[0].addr
+    else:
+        lines = isa.disasm(img.read(a, hi - a), a, tc.fill_forms)
     starts = set(all_starts(p))
     print(record(target=p.target_name, disasm=(a, hi), section=sec.name, function=(fn.lo, fn.hi) if fn else None,
                  name=names.name(fn.lo) if fn else None, instructions=len(lines)))

@@ -12,6 +12,7 @@ to the file's physical line.
 """
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,9 +62,11 @@ def same_file(a: str, b: str) -> bool:
     return na == nb or na.endswith("/" + nb) or nb.endswith("/" + na)
 
 
+@functools.lru_cache(maxsize=32)
 def segments(text: str, rel: str) -> list[tuple[str, int, int, int]]:
     """(name, first reported line, n lines, first physical line) of every stretch of the text one `#line`
-    directive numbers (the file's own name and line 1 before the first)."""
+    directive numbers (the file's own name and line 1 before the first); once per text (a compile's
+    diagnostics locate one by one in the same file)."""
     out, name, first, phys = [], rel, 1, 1
     lines = text.split("\n")
     for k, s in enumerate(lines, 1):

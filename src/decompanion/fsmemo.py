@@ -60,6 +60,15 @@ def _stamp(path: str) -> tuple[int, int]:
     return s
 
 
+def exists(path) -> bool:
+    """Whether the file exists, by its stamp of this epoch (a directory listing noted it already)."""
+    try:
+        _stamp(str(path))
+        return True
+    except OSError:
+        return False
+
+
 def walk(base: Path, patterns: tuple[str, ...]) -> list[tuple[str, str]]:
     """The files below base matching any of the name patterns (fnmatch, case-insensitive) as (path relative to
     base in posix spelling, full path), in the order of sorted(base.rglob(pattern)) per pattern, each pattern's

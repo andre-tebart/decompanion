@@ -590,6 +590,27 @@ later). Measured on gildegold with tools/bench.py (one-line edits of a function'
   dump / why / draft --show 1.2 s -> 0.55 s, rename 13 s -> 6.2 s. `tools/bench.py --verify` (a forced
   recompute in a fresh process, DCP_NO_SHORTCUTS=1) agrees with the incremental store after every scenario.
 
+Added next (2026-10-31, after a gildegold match-base session: 191 calls, 612 s of tool time, rename 47 % and build
+41 %): the fold to one file per unit had made the loop slower again, and tools/bench.py still looked for the
+fragments. The bench now edits a function's span in src/<unit>.c (S3: a blank line above the address comment,
+only line numbers move), and S6 / S7 rename three names in three calls / in one. What changed:
+- `dcp rename OLD NEW [OLD NEW ...]` and `--from FILE`: every pair is checked before anything is written (one
+  refusal refuses the call), the pairs are written in one pass, then one rebuild and one check for all of them.
+- srcscan.local_refs parses one unit per file that holds a name (a unit file itself, a header through the first
+  unit that includes it), not every unit that includes such a header; the word scans of rename test the
+  substring before the regex. Rename's own work: ~2.1 s -> ~0.5 s for three names.
+- G.grade: the file memo held 64 files (gildegold has 93 units), so every run lexed all of them again; the lines
+  are memoised apart from the lexed file (a memo hit needs the lines only); the code and readability memos keep
+  the last run's entries when they grow past their limit instead of clearing. ~0.5 s -> ~0.17 s.
+- build: the compiler's include scan (CL /E) runs beside the compile, not after it; tu.segments is memoised per
+  text (each of a unit's diagnostics split the 4000-line file again); the lint's all-declarations unit takes its
+  header models with the target's defines, the source scan's, so a header edit no longer parses each changed
+  unit once more without them.
+- Result (gildegold, warm daemon, median of 2, the first number before): build after a body edit 3.0 .. 3.8 s ->
+  2.0 .. 2.8 s, after a line move 4.0 .. 6.0 s -> 2.9 .. 3.7 s, after a header edit 4.5 .. 5.8 s -> 3.1 .. 3.9 s;
+  rename 7.5 .. 9.5 s -> 5.1 s; three names 3 x 7 .. 12 s -> one call 7.2 s. `--verify` ok after every scenario.
+  What is left is in docs/feedback.md (the rules that rerun whole after a compile or a line move).
+
 ## 14. Gap data (M9, planned 2026-10-30, user decision): what the framework takes over from the projects
 
 The full link must lay out every byte of the data sections, also the bytes no definition covers yet. gildegold

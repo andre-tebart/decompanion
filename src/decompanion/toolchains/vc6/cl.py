@@ -122,6 +122,21 @@ def syntax_check(tools: Tools, src: Path, flags: list[str], include_dirs: list[P
     return CompileResult(r.returncode == 0 and not refused, log, diags, refused)
 
 
+_resolved: dict[tuple[str, str], Path] = {}       # (cwd, a #line path) -> resolved: the same few hundred files every build
+
+
+def resolved(cwd: Path, raw: str) -> Path:
+    """Path(raw) against cwd, resolved; once per process (Path.resolve costs a few system calls on Windows)."""
+    key = (str(cwd), raw)
+    hit = _resolved.get(key)
+    if hit is None:
+        if len(_resolved) > 20000:
+            _resolved.clear()
+        p = Path(raw)
+        hit = _resolved[key] = (p if p.is_absolute() else Path(cwd, p)).resolve()
+    return hit
+
+
 def preprocess_includes(tools: Tools, src: Path, flags: list[str], include_dirs: list[Path], cwd: Path) -> tuple[list[Path], str]:
     """The include set: CL /E (the /P listing on stdout) and every distinct path its `#line` directives name,
     resolved against cwd, without the unit itself."""
@@ -137,9 +152,7 @@ def preprocess_includes(tools: Tools, src: Path, flags: list[str], include_dirs:
         if m.group(1) in done:                    # thousands of #line directives name a few hundred files
             continue
         done.add(m.group(1))
-        raw = re.sub(r"\\(.)", r"\1", m.group(1))
-        p = Path(raw)
-        p = (p if p.is_absolute() else Path(cwd, p)).resolve()
+        p = resolved(cwd, re.sub(r"\\(.)", r"\1", m.group(1)))
         if p != me:
             seen.setdefault(str(p).lower(), p)
     return sorted(seen.values(), key=lambda p: str(p).lower()), ""

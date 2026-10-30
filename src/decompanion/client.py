@@ -70,9 +70,27 @@ def wait_connect(root: str, seconds: float = 10.0):
         time.sleep(0.1)
 
 
+def emit(stream, text: str) -> bool:
+    """Write to stdout / stderr; False when the reader has gone (`dcp refs X | head`: the pipe is closed, Windows
+    says EINVAL, POSIX EPIPE). The stream is pointed at the null device then, so the rest and the exit's flush
+    are dropped quietly: a closed pipe is the reader's choice, not a lost daemon."""
+    try:
+        stream.write(text)
+        stream.flush()
+        return True
+    except OSError:
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), stream.fileno())
+        except (OSError, ValueError):
+            pass
+        return False
+
+
 def via_daemon(root: str, argv: list[str]) -> int:
-    """Run the command in the daemon: its exit code."""
+    """Run the command in the daemon: its exit code. The daemon's output is read to the end even when our
+    stdout is closed (emit), so the request finishes as it would have."""
     conn = connect(root)
+    live = {"out": True, "err": True}
     while True:
         if conn is None:
             print(f"dcp: no daemon runs for {root}: start it with `dcp serve`", file=sys.stderr)
@@ -82,12 +100,9 @@ def via_daemon(root: str, argv: list[str]) -> int:
             while True:
                 msg = conn.recv()
                 kind = msg[0]
-                if kind == "out":
-                    sys.stdout.write(msg[1])
-                    sys.stdout.flush()
-                elif kind == "err":
-                    sys.stderr.write(msg[1])
-                    sys.stderr.flush()
+                if kind in ("out", "err"):
+                    if live[kind]:
+                        live[kind] = emit(sys.stdout if kind == "out" else sys.stderr, msg[1])
                 elif kind == "exit":
                     return msg[1]
                 elif kind == "restart":

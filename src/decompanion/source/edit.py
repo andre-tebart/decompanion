@@ -58,7 +58,7 @@ def uses(root: Path, name: str) -> list[tuple[str, int]]:
     out = []
     for p in sources(root):
         text = fsmemo.read_text(p)
-        if not pat.search(text):
+        if name not in text or not pat.search(text):     # the substring test first: most files lack the name
             continue
         for i, line in enumerate(text.splitlines(), 1):
             if pat.search(line):
@@ -105,10 +105,9 @@ def rename_words(root: Path, mapping: dict[str, str], dry: bool = False, skip: d
     if not mapping:
         return {}
     out = {}
-    any_old = re.compile("|".join(map(re.escape, mapping)))     # a file without any old name is not parsed
     for p in sources(root):
         text = fsmemo.read_text(p)
-        if not any_old.search(text):
+        if not any(old in text for old in mapping):              # a file without any old name is not parsed
             continue
         new, n = replace_words(text, mapping, (skip or {}).get(p.relative_to(root).as_posix()))
         if n:
@@ -141,7 +140,7 @@ def code_uses(root: Path, name: str, skip: dict | None = None) -> list[tuple[str
     out = []
     for p in sources(root):
         text = fsmemo.read_text(p)
-        if not pat.search(text):
+        if name not in text or not pat.search(text):
             continue
         key = (str(p), fsmemo.sha256(p))
         blank = _blank.get(key)

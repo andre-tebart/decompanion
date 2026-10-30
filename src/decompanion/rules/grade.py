@@ -101,21 +101,34 @@ def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
     return frozenset(raw), frozenset(described)
 
 
-_sources: dict[tuple, tuple] = {}
+_sources: dict[tuple, srcscan.Source] = {}
+_lines: dict[tuple, list[str]] = {}
+SOURCES_MAX = 2048                      # files: above every unit and header of a project, a grade run never thrashes
+
+
+def lines_of(path) -> list[str]:
+    """The lines of a file, once per content (a unit's functions read the same file)."""
+    key = (str(path), fsmemo.sha256(path))
+    hit = _lines.get(key)
+    if hit is None:
+        if len(_lines) > SOURCES_MAX:
+            _lines.clear()
+        hit = _lines[key] = fsmemo.read_text(path).split("\n")
+    return hit
 
 
 def source_of(rel: str, path) -> tuple[srcscan.Source, list[str]]:
-    """(the lexed Source, the lines) of a file, once per content (a unit's functions read the same file)."""
+    """(the lexed Source, the lines) of a file, once per content; lexed only when asked (a memo hit of
+    readability_cached needs the lines only)."""
     from pathlib import Path
     p = Path(path)
     key = (str(p), fsmemo.sha256(p))
     hit = _sources.get(key)
     if hit is None:
-        if len(_sources) > 64:
+        if len(_sources) > SOURCES_MAX:
             _sources.clear()
-        text = fsmemo.read_text(p)
-        hit = _sources[key] = (srcscan.Source(rel, text), text.split("\n"))
-    return hit
+        hit = _sources[key] = srcscan.Source(rel, fsmemo.read_text(p))
+    return hit, lines_of(p)
 
 
 def own_calls(lint: dict, fn_value: dict) -> list[str]:
@@ -185,6 +198,8 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
 _ctx_digest: dict[str, str] = {}
 _read_memo: dict[str, tuple] = {}        # readability_cached's key -> (grade, failing), this process
 _code_memo: dict[tuple, tuple] = {}      # (compare key, the original's extent, matched) -> a function's code grade row
+_read_used: dict[str, tuple] = {}        # the entries of each memo the current run used (trim)
+_code_used: dict[tuple, tuple] = {}
 MEMO_MAX = 15000
 
 
@@ -194,13 +209,13 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
     described addresses) and its lint entry."""
     from pathlib import Path
     p = Path(root) / fn_value["file"]
-    if not p.exists():
+    if not fsmemo.exists(p):
         return readability(root, tree, fn_value, addr, image_range, lint)
     dig = _ctx_digest.get(tree)
     if dig is None:
         raw, described = context(str(root), tree)
         dig = _ctx_digest[tree] = sha256(json.dumps(sorted(raw)), json.dumps(sorted(described)))
-    lines = source_of(fn_value["file"], p)[1]
+    lines = lines_of(p)
     span = "\n".join(lines[fn_value.get("comment", 1) - 1:fn_value.get("end") or len(lines)])
     # the positions are left out (an edit above a function moves it, the verdict stays): what they locate, the
     # span's text and the calls inside it, is in the key
@@ -209,21 +224,29 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
                  dig, json.dumps(list(image_range)), json.dumps(own_calls(lint, fn_value) if lint is not None else None))
     hit = _read_memo.get(key)
     if hit is not None:
+        _read_used[key] = hit
         return hit
-    if len(_read_memo) > MEMO_MAX:
-        _read_memo.clear()
     hit = store.blob_json(key)
     if hit is not None:
-        _read_memo[key] = (hit[0], hit[1])
+        _read_memo[key] = _read_used[key] = (hit[0], hit[1])
         return hit[0], hit[1]
     q, qf = readability(root, tree, fn_value, addr, image_range, lint)
     store.put_blob_json(key, "readability", [q, qf])
-    _read_memo[key] = (q, qf)
+    _read_memo[key] = _read_used[key] = (q, qf)
     return q, qf
 
 
+def trim(memo: dict, used: dict):
+    """A memo grown past MEMO_MAX keeps the entries the last run used (each edit adds the keys of the functions it
+    changed; clearing all would make the next run compute every function again)."""
+    if len(memo) > MEMO_MAX:
+        memo.clear()
+        memo.update(used)
+    used.clear()
+
+
 @rule("G.grade", version="5", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
-      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, source_of, context, DC, C,
+      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, source_of, lines_of, trim, context, DC, C,
                                                          build_compile.plan))
 def grade(ctx: RuleContext):
     """The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8
@@ -248,13 +271,14 @@ def grade(ctx: RuleContext):
     plug = p.input_hash("plugins")
     rng = (img.base, img.end)
     rows = []
-    if len(_code_memo) > MEMO_MAX:
-        _code_memo.clear()
+    trim(_code_memo, _code_used)
+    trim(_read_memo, _read_used)
     for s, obj, sym, code, c in funcs:
         w = walk.get(s.lo)
         mk = (getattr(c, "fkey", None), w.hi if w is not None else None, s.lo in matched, DC.VERSION)
         hit = _code_memo.get(mk) if mk[0] is not None else None
         if hit is not None:
+            _code_used[mk] = hit
             rows.append((s, *hit))
             continue
         skey = sha256("codesize", DC.VERSION, plug, code.code_data.hex(), code.code_mask.hex(), f"{s.lo:x}")
@@ -298,7 +322,7 @@ def grade(ctx: RuleContext):
         rows.append((s, g, why, hunks, {"ins": dist_ins, "bytes": nbytes, "size": size, "orig": orig_size,
                                         "extent": extent, "slot": slot}))
         if mk[0] is not None:
-            _code_memo[mk] = rows[-1][1:]
+            _code_memo[mk] = _code_used[mk] = rows[-1][1:]
     for s, reason in missing:
         w = walk.get(s.lo)
         rows.append((s, "draft", [f"B3 draft: {reason}"], {}, {"ins": None, "bytes": None, "size": None,

@@ -5,16 +5,19 @@
 
 Every command runs as its own process (the project's .venv dcp, or `uv run dcp` with --uv), with DCP_TIMING=1, in
 the project's daemon (`dcp serve` must run). Scenarios,
-each applied to the function's fragment file and reverted (the tree is left as it was found; a dirty tree is
-refused):
+each applied inside the function's span of its unit file src/<unit>.c (found with `dcp fn`) and reverted (the
+tree is left as it was found; a dirty tree is refused):
 
   S0  nothing changed (the floor of every command)
-  S1  a body edit that changes the object (--swap OLD::NEW, a text replaced in the fragment)
-  S2  a comment-only edit in the fragment
-  S3  a blank line after the fragment's address comment (only line numbers move)
-  S4  a comment line appended to the unit's first project header (--header, default: the fragment unit's
-      header include/<unit>.h when it exists)
-  S5  `dcp rename` of --rename to a new name and back
+  S1  a body edit that changes the object (--swap OLD::NEW, a text replaced in the function's span)
+  S2  a comment-only edit in the function's address comment
+  S3  a blank line before the function's address comment (only line numbers move: of the function and of every
+      function below it in the unit)
+  S4  a comment line appended to the unit's first project header (--header, default: the unit's header
+      include/<unit>.h when it exists)
+  S5  `dcp rename` of the first --rename name to a new name and back
+  S6  `dcp rename` of every --rename name (comma-separated) in a row, the session's pattern, and back
+  S7  one `dcp rename` of every --rename name (all pairs in one call), and back
 
 After each scenario's edit: build, diffclass FN, asmdiff FN, grade FN, next, dump FN 4, why FN, draft FN --show,
 -h; after the revert: build. The table (median / min / max wall seconds per scenario and command) goes to stdout,
@@ -30,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import statistics
 import subprocess
@@ -56,7 +60,7 @@ class Bench:
         self.fn = a.fn
 
     def dcp(self, scenario: str, step: str, *argv, env=None, record=True, fresh=False) -> dict:
-        e = dict(os.environ, DCP_TIMING="1", **(env or {}))
+        e = dict(os.environ, DCP_TIMING=os.environ.get("DCP_TIMING") or "1", **(env or {}))
         t = time.perf_counter()
         p = subprocess.run((self.fresh if fresh else self.cmd) + list(argv), cwd=self.root, capture_output=True, text=True, env=e)
         wall = time.perf_counter() - t
@@ -84,18 +88,27 @@ class Bench:
         self.dcp(scenario, "draft", "draft", fn, "--show")
         self.dcp(scenario, "-h", "-h")
 
-    # ------------------------------------------------------------------ the fragment and the edits
-    def fragment(self) -> Path:
-        addr = int(self.fn, 16)
-        hits = sorted(self.root.glob(f"src/*/f_{addr:x}.c"))
-        if not hits:
-            sys.exit(f"bench: no src/*/f_{addr:x}.c for {self.fn}")
-        return hits[0]
+    # ------------------------------------------------------------------ the function's span and the edits
+    def span(self) -> tuple[Path, int, int]:
+        """The function's unit file and its span (first, last line, 1-based): `dcp fn`'s record `at=FILE:A-B`."""
+        p = subprocess.run(self.cmd + ["fn", self.fn], cwd=self.root, capture_output=True, text=True)
+        m = re.search(r"\bat=(\S+):(\d+)-(\d+)", p.stdout.split("\n", 1)[0])
+        if p.returncode or not m:
+            sys.exit(f"bench: `dcp fn {self.fn}` found no function\n{p.stderr[-800:]}")
+        return self.root / m[1], int(m[2]), int(m[3])
+
+    @staticmethod
+    def in_span(a: int, b: int, fn):
+        """An edit of the lines a..b of a text (1-based, inclusive), the rest left as it is."""
+        def change(t):
+            lines = t.split("\n")
+            return "\n".join(lines[:a - 1] + fn("\n".join(lines[a - 1:b])).split("\n") + lines[b:])
+        return change
 
     def header(self) -> Path:
         if self.a.header:
             return self.root / self.a.header
-        h = self.root / "include" / f"{self.fragment().parent.name}.h"
+        h = self.root / "include" / f"{self.span()[0].stem}.h"
         if not h.exists():
             sys.exit(f"bench: no {h}; name one with --header")
         return h
@@ -109,37 +122,44 @@ class Bench:
         return text
 
     def scenario(self, name: str):
-        frag = self.fragment()
         if name == "S0":
             self.loop(name)
             return
-        if name == "S5":
-            old = self.a.rename
-            if not old:
-                print("bench: S5 needs --rename NAME; skipped", file=sys.stderr)
+        if name in ("S5", "S6", "S7"):
+            names = [x for x in (self.a.rename or "").split(",") if x]
+            if not names:
+                print(f"bench: {name} needs --rename NAME[,NAME...]; skipped", file=sys.stderr)
                 return
-            new = old + "Bench"
-            log = self.root / "names.log"                    # append-only: the two bench lines are taken out again
+            names = names[:1] if name == "S5" else names
+            log = self.root / "names.log"                    # append-only: the bench lines are taken out again
             saved = log.read_bytes() if log.exists() else None
             try:
-                self.dcp(name, "rename", "rename", old, new, "--why", "bench")
+                there = [w for old in names for w in (old, old + "Bench")]
+                back = [w for old in names for w in (old + "Bench", old)]
+                if name == "S7":
+                    self.dcp(name, "rename", "rename", *there, "--why", "bench")
+                else:
+                    for old in names:
+                        self.dcp(name, "rename", "rename", old, old + "Bench", "--why", "bench")
                 self.loop(name)
-                self.dcp(name, "rename", "rename", new, old, "--why", "bench", record=False)
+                self.dcp(name, "rename", "rename", *back, "--why", "bench", record=False)
             finally:
                 if saved is not None:
                     log.write_bytes(saved)
             self.dcp(name, "revert-build", "build")
             return
+        unit, a, b = self.span()
         if name == "S1":
             if not self.a.swap or "::" not in self.a.swap:
                 print("bench: S1 needs --swap OLD::NEW; skipped", file=sys.stderr)
                 return
             o, n = self.a.swap.split("::", 1)
-            path, change = frag, (lambda t: t.replace(o, n, 1) if o in t else sys.exit(f"bench: {o!r} not in {frag}"))
+            path, change = unit, self.in_span(a, b, lambda t: t.replace(o, n, 1) if o in t
+                                              else sys.exit(f"bench: {o!r} not in {unit.name}:{a}-{b}"))
         elif name == "S2":
-            path, change = frag, (lambda t: t.replace("*/", " (bench) */", 1))
+            path, change = unit, self.in_span(a, a, lambda t: t.replace("*/", " (bench) */", 1))
         elif name == "S3":
-            path, change = frag, (lambda t: t.replace("*/\n", "*/\n\n", 1))
+            path, change = unit, self.in_span(a, a, lambda t: "\n" + t)
         elif name == "S4":
             path, change = self.header(), (lambda t: t + "/* bench */\n")
         else:
@@ -226,12 +246,12 @@ class Bench:
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", required=True)
-    ap.add_argument("--fn", required=True, help="the function's address (its fragment src/*/f_<addr>.c is edited)")
-    ap.add_argument("--swap", help="S1: OLD::NEW, a text of the fragment replaced (it must change the object)")
-    ap.add_argument("--rename", help="S5: a name to rename and back")
+    ap.add_argument("--fn", required=True, help="the function's address (its span in src/<unit>.c is edited)")
+    ap.add_argument("--swap", help="S1: OLD::NEW, a text of the function's span replaced (it must change the object)")
+    ap.add_argument("--rename", help="S5 / S6 / S7: NAME[,NAME...] to rename and back (S5 the first, S6 all in a row, S7 all in one call)")
     ap.add_argument("--header", help="S4: the header to edit (relative to the root)")
     ap.add_argument("--runs", type=int, default=3)
-    ap.add_argument("--scenarios", default="S0,S1,S2,S3,S4,S5")
+    ap.add_argument("--scenarios", default="S0,S1,S2,S3,S4,S5,S6,S7")
     ap.add_argument("--uv", action="store_true", help="run `uv run dcp` instead of the venv's dcp")
     ap.add_argument("--verify", action="store_true", help="check the store against a forced recompute after each scenario")
     ap.add_argument("--verify-build", action="store_true", help="--verify with `dcp build --force` first (slow: every unit)")

@@ -537,17 +537,18 @@ def system_includes(root: Path, files: list[str]) -> list[str]:
     return out
 
 
-def alldecls(root: Path) -> AllDecls:
+def alldecls(root: Path, defines=()) -> AllDecls:
     """The all-declarations unit (module docstring, M5): windows.h, every header of include/ that is not
     private, the sources' file-scope prototypes and extern data (behind `#line`, with the macros of their unit
     that they use), then the sources' definitions (a function definition's head as a prototype, a K&R one with
     an empty body, a data definition as an extern declaration), then per symbol with a definition each other
-    spelling of it renamed and compared with the definition by `__builtin_types_compatible_p`."""
+    spelling of it renamed and compared with the definition by `__builtin_types_compatible_p`. `defines`: the
+    macros of the target's compile, as its units are parsed (the headers' models are the source scan's then)."""
     root = Path(root)
     inc, src = root / "include", root / "src"
     private = private_headers(root)
     headers = [f"include/{h.name}" for h in sorted(inc.glob("*.h")) if h.name not in private] if inc.exists() else []
-    fmodels = srcscan.models(root, srcscan.project_files(root))
+    fmodels = srcscan.models(root, srcscan.project_files(root), defines)
     headers = header_order(root, headers, fmodels)
     srcs = ["src/" + rel for rel, _ in fsmemo.walk(src, ("*.c",))] if src.exists() else []
     hdecls = [d for h in headers for d in scanned(h, root / h, fmodels.get(h, srcscan.EMPTY))[0] if not d.definition]
@@ -622,8 +623,8 @@ def alldecls(root: Path) -> AllDecls:
     return AllDecls("\n".join(lines) + "\n", headers, every, defs, copies, checks, macros)
 
 
-def alldecls_text(root: Path) -> str:
-    return alldecls(root).text
+def alldecls_text(root: Path, defines=()) -> str:
+    return alldecls(root, defines).text
 
 
 def _cast_view(d: Decl) -> str | None:
@@ -836,16 +837,16 @@ def lint(project, log=None) -> dict:
             keys.append((a.unit, key))
         else:
             results[a.unit] = hit
-    ad = alldecls(root)
+    ad = alldecls(root, defines)
     text = ad.text
-    akey = sha256("alldecls", VERSION, *clang, text,
+    akey = sha256("alldecls", VERSION, *clang, text, *defines,
                   *(fsmemo.sha256(p) for p in sorted((Path(root) / "include").glob("*.h"))) if (Path(root) / "include").exists() else "")
     cross = st.blob_json(akey)
     if cross is None:
         out = Path(root) / "build" / "lint" / project.target_name / "alldecls.c"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(text, newline="\n")
-        jobs.append((out.relative_to(root), root, sysdirs, [Path(root) / "include"], [], True, None))
+        jobs.append((out.relative_to(root), root, sysdirs, [Path(root) / "include"], defines, True, None))
         keys.append((None, akey))
     for (unit, key), diags in zip(keys, cparse.many(jobs) if jobs else []):
         st.put_blob_json(key, "lint", diags)

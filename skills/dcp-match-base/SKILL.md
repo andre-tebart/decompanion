@@ -108,8 +108,10 @@ work, however long.
 ### 2.3 Readability (`gates=Q...`)
 - Q1 / Q2 placeholder names (`ai_Unk4a13e0`, `param_1`, `iVar2`, `DAT_...`): name what you understood.
   Functions and data: `uv run dcp rename OLD NEW --why "the evidence"` (project-wide, whole words, names.log;
-  `dcp refs` first; OLD may be `0xADDR` / `exe:0xADDR` for the ledger's name). Rename first, then edit: the
-  rename writes the new name everywhere and logs it (a name already written by hand in some places is
+  `dcp refs` first; OLD may be `0xADDR` / `exe:0xADDR` for the ledger's name). Several names at once:
+  `uv run dcp rename OLD1 NEW1 OLD2 NEW2 ... --why "..."` or `--from FILE` (one `OLD NEW [why]` per line): one
+  rebuild for all of them, and nothing is written unless every pair passes; collect the names of a function
+  and rename them in one call. Rename first, then edit: the rename writes the new name everywhere and logs it (a name already written by hand in some places is
   completed by the rename, not refused). It prints every changed file with its replacements; a refusal is an
   `error=` record with exit 1 and nothing written: read it, never assume the rename happened. A view
   (`ai_Unk7603a0B`) keeps its name when its datum is renamed (the note lists it): rename it on its own.
