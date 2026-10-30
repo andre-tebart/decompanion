@@ -103,7 +103,10 @@ work, however long.
   already written by hand in some places is completed by the rename, not refused). Locals and parameters:
   edit the fragment.
 - Q3 address literals and Q4 raw access (`*(T *)(p + 0x1c)`, macros built on such casts): a typed field, a
-  struct, the symbol (see the hard rule on addresses).
+  struct, the symbol (see the hard rule on addresses). A datum the unit reads as another type is a view macro
+  with the address comment on its line: `#define NAME (*(T *)&datum)  /* 0xADDR */`, or
+  `(*(T *)((char *)&datum + OFF))` for a part of it. `(*(T *)datum)` (no `&`: through the datum's value) is raw
+  access and keeps the function at draft.
 - Q5 markers (ROUGH, TODO, `@rough`): remove them once the function is written.
 - Q6: the address comment says what the function does (`/* 0x4a3000, sends the login reply */`).
 - Q7: every call has a prototype (`dcp lint` evaluates it): the callee's prototype lives in its defining unit's

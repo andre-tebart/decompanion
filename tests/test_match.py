@@ -395,6 +395,22 @@ def test_lint_alldecls_scan():
 
 
 @needs_vc6
+def test_q4_view_forms(tiny):
+    """Q4: `(*(T *)datum)` reads through the datum's value (raw), `(*(T *)&datum)` with its address comment is a
+    view; the message states the accepted form."""
+    with_vc6(tiny)
+    write(tiny, "src/net/head.c", "char *counter = 0;  /* 0x10002000 */\n"
+                                  "#define COUNT_RAW (*(int *)counter)\n#define COUNT (*(int *)&counter)  /* 0x10002000 */\n")
+    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT_RAW;\n}\n")
+    code, out = dcp(tiny, "grade", "get")
+    assert "Q4 raw access: macro COUNT_RAW (" in out and "`#define NAME (*(T *)&datum)  /* 0xADDR */`" in out \
+           and "`(*(T *)datum)` reads through the datum's value and stays raw" in out, out
+    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT;\n}\n")
+    code, out = dcp(tiny, "grade", "get")
+    assert "Q4" not in out, out
+
+
+@needs_vc6
 def test_auto_clear_and_data_order(tiny):
     with_vc6(tiny)
     write(tiny, "src/net/head.c", "int pad = 7;  /* 0x10002004 */\nint counter = 0x1234;  /* 0x10002000 */\n")

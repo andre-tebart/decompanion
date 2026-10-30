@@ -22,7 +22,9 @@ Readability rules, on the fragment's text (comments and strings blanked for the 
   Q3 addresses    no integer literal inside the image's address range in the code.
   Q4 raw access   no `*(T *)` dereference-cast, and no use of a macro any source or header defines with one
                   (a function-like one, or an object-like `(*(T ...` one that is no view with an address
-                  comment: a view is a named part of a data object, srcscan View).
+                  comment: a view is a named part of a data object, srcscan View: `(*(T *)&datum)` or
+                  `(*(T *)((char *)&datum + OFF))` with the address comment on its line; `(*(T *)datum)` is raw).
+                  The message states the accepted view form.
   Q5 markers      no draft marker in the address comment or the body: ROUGH, SKELETON, TODO, FIXME, XXX
                   (whole words) or the `@rough` tag.
   Q6 described    the address comment carries text after the address, or another comment of any source or
@@ -62,7 +64,10 @@ IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
 LITERAL = re.compile(r"(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)[uUlL]*(?![\w.])")
 DEREF_CAST = re.compile(r"\*\s*\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*"
                         r"(?:\s+[A-Za-z_]\w*)*\s*\*+\s*(?:const\s*)?\)")
-READABILITY_VERSION = "2"                          # bump when readability() changes its verdicts
+READABILITY_VERSION = "3"                          # bump when readability() changes its verdicts or texts
+Q4_VIEW = ("a typed field, struct or symbol instead; a datum read as another type is a view: "
+           "`#define NAME (*(T *)&datum)  /* 0xADDR */` or `(*(T *)((char *)&datum + OFF))` with the address comment "
+           "on its line; `(*(T *)datum)` reads through the datum's value and stays raw")
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
 MARKER = re.compile(r"\b(ROUGH|SKELETON|TODO|FIXME|XXX)\b")
 DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
@@ -141,7 +146,8 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
     casts = DEREF_CAST.findall(code)
     macros = sorted({w for w in words if w in raw})
     if casts or macros:
-        fails.append("Q4 raw access: " + ", ".join(([f"{len(casts)} x `*(T *)`"] if casts else []) + ["macro " + m for m in macros]))
+        fails.append("Q4 raw access: " + ", ".join(([f"{len(casts)} x `*(T *)`"] if casts else []) + ["macro " + m for m in macros])
+                     + " (" + Q4_VIEW + ")")
     first = S.comments[0][2] if S.comments else ""
     texts = [first] + [b for s, e, b in S.comments if off <= s < end] + [code]
     marks = sorted({m.group(1) for t in texts for m in MARKER.finditer(t)})
