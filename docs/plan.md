@@ -922,3 +922,9 @@ Done, stages 2 and 3 (2026-10-30; one commit: the editors cannot stay on fragmen
   are no byte match (VC6 /O2 reacts to the token stream; the per-part `#line` directives are gone); the one fall
   is d3if_Prerender's readability: its undeclared call (d3fl_Prerender, M7) was reported under the original's
   file name before and reached no function, it is attributed now (M7 lines under a `#line` name: 3 -> 0).
+
+Done, stages 4 and 5 (2026-10-30): gildegold folded (its commit 259839e: 93 units, 618 address comments moved
+down to their definitions, the 8 declared file names in the units' `#line`; every unit compiles, every byte
+match kept, check and lint as in the scratch clone; d3if_Prerender's readability fall accepted with its reason);
+docs/layout.md, docs/match.md, README.md and the skills dcp-layout / dcp-match-base describe the unit file;
+`dcp unit fold` and source/fold.py are gone (git history holds them), as is the declaration block's old heading.

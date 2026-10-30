@@ -431,37 +431,6 @@ def cmd_build(args):
     return 1 if failed else 0
 
 
-def cmd_unit_fold(args):
-    """Convert units of the fragment layout into one file each (source/fold.py): a record per unit (its parts,
-    the address comments moved down to their definitions, the declared file name's directive), written with
-    --write."""
-    from .ledger import decl as decl_mod
-    from .source import fold as F
-    p, e = open_project(args)
-    src = p.root / "src"
-    units = args.units or sorted(d.name for d in src.iterdir() if d.is_dir()) if src.exists() else []
-    targets = [t["name"] for t in p.input("targets")]
-    decls, _ = decl_mod.load(p.input("decl"), p.root, targets)
-    names = decl_mod.unit_files(decls, p.default_target, p.default_target)
-    failed = 0
-    for u in units:
-        if not (src / u).is_dir():
-            print(record(unit=u, error="no unit directory src/" + u))
-            failed += 1
-            continue
-        f = F.fold(p.root, u, names.get(u))
-        print(record(unit=u, parts=len(f.parts), moved=len(f.moved), lines=f.text.count("\n"), file=f.file_line,
-                     errors=len(f.errors)))
-        for x in f.errors:
-            print("  error " + x)
-        if f.errors:
-            failed += 1
-            continue
-        if args.write:
-            F.write(p.root, f)
-    return 1 if failed else 0
-
-
 def cmd_fn(args):
     """Print one function of the sources: a record with its file and lines (its address comment to the end of
     its definition), then that text. KEY is a function name or an address of the target."""
@@ -862,10 +831,6 @@ def main(argv=None):
     s.add_argument("--force", action="store_true", help="compile every unit")
     s.add_argument("--units", action="store_true", help="list every unit's build row, not only the failed ones")
     un = sub.add_parser("unit", help="units").add_subparsers(dest="sub", required=True)
-    s = cmd(un, "fold", cmd_unit_fold, "convert units of the fragment layout (src/<unit>/) into src/<unit>.c "
-            "(dry run without --write)")
-    s.add_argument("units", nargs="*", help="the units (default: every unit directory)")
-    s.add_argument("--write", action="store_true", help="write src/<unit>.c, move open.md, remove the fragments")
     s = cmd(sub, "fn", cmd_fn, "print one function of the sources (its address comment to the end of its definition)")
     s.add_argument("key", help="a function name or an address")
     from . import cli_layout as CLU

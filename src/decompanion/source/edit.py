@@ -23,7 +23,6 @@ from .. import fsmemo
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
 DCP_BLOCK = "/* dcp draft: declarations of functions and data the unit uses that no included header declares */"
-OLD_BLOCK = "/* dcp draft: declarations of functions and data the fragments use that no included header declares */"
 
 
 class EditError(RuntimeError):
@@ -243,7 +242,7 @@ def insert_function(path: Path, block: str, before: int | None):
 
 def block_line(lines: list[str]) -> int | None:
     """The index of the dcp declaration block's heading line."""
-    return next((i for i, l in enumerate(lines) if l in (DCP_BLOCK, OLD_BLOCK)), None)
+    return next((i for i, l in enumerate(lines) if l == DCP_BLOCK), None)
 
 
 def guard(unit: str) -> str:
