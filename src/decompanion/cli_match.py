@@ -42,7 +42,7 @@ def compiled_code(p, row):
     walk = next((f for f in p.store.facts(Kind.symbol, row["addr"], row["addr"] + 1)
                  if f.run == "S.codewalk" and f.lo == row["addr"] and f.value.get("skind") == "func"), None)
     from .match import diffclass as DC
-    size = (walk.hi - walk.lo) if walk else DC.code_size(p.isa, p.image, code.data, code.mask, row["addr"], p.toolchain.fill_forms)
+    size = (walk.hi - walk.lo) if walk else DC.code_size(p.isa, p.image, code.code_data, code.code_mask, row["addr"], p.toolchain.fill_forms)
     return code, size
 
 
@@ -74,9 +74,9 @@ def cmd_grade(args):
     """The grades: without an argument the matrix and the unit table; a unit: its functions with the failing
     rules; a function (name or address): its grades, the failing rules with evidence, the distance."""
     p, e, rep = build_target(args, getattr(args, "target", None), quiet=True)
+    q7 = current_lint(p, e)
     rows = G.function_grades(p.store)
     units = G.unit_grades(p.store)
-    q7 = "Q7 not evaluated (no lint run: dcp lint)" if p.store.meta("lint") is None else "Q7 from the last dcp lint"
     if not args.what:
         c = Counter((r["code"], r["readability"]) for r in rows)
         print(record(target=p.target_name, functions=len(rows), units=len(units)) + f"  ({q7})")
@@ -114,6 +114,7 @@ def cmd_grade(args):
 def cmd_next(args):
     """The next functions of a queue (base by default)."""
     p, e, rep = build_target(args, getattr(args, "target", None), quiet=True)
+    current_lint(p, e)
     which = "deep" if args.deep else "names" if args.names else "base"
     try:
         shard = G.shard_setting(p.root, args.shard)
@@ -137,7 +138,7 @@ def listings_for(p, r):
     code, size = compiled_code(p, r)
     if code is None:
         raise ConfigError(f"{r['name']}: {size}")
-    return DC.listings(p.isa, p.image, code.data, code.mask, r["addr"], size, p.toolchain.fill_forms)
+    return DC.listings(p.isa, p.image, code.code_data, code.code_mask, r["addr"], size, p.toolchain.fill_forms)
 
 
 def cmd_asmdiff(args):
@@ -287,6 +288,19 @@ def lint_target(p, e):
     res = LI.lint(p)
     refresh(p, e)
     return res
+
+
+def current_lint(p, e) -> str:
+    """Lint again when a unit changed since the last lint (only the changed units parse) so Q7 is current; the
+    note on where Q7 comes from."""
+    from .source import lint as LI
+    st = LI.stale(p)
+    if st is None:
+        return "Q7 not evaluated (no lint run: dcp lint)"
+    if st and LI.clang_path(p) is not None:
+        lint_target(p, e)
+        return f"Q7 linted now ({len(st)} changed units)"
+    return f"Q7 stale: {len(st)} units changed, clang not found" if st else "Q7 current"
 
 
 def cmd_lint(args):

@@ -192,10 +192,12 @@ def cmd_session_wrap(args):
         r = rows.get(a)
         g = f"{r['code']} + {r['readability']}  {r['name']}" if r else "no grade (not compiled)"
         out.append(f"  {a:#010x}  {unit:<16} {g}")
+    graded_units = set()
     for name, tp, _ in targets:                       # the grades against the baseline at the base commit
         ch = S.grade_changes(root, base, name, G.function_grades(tp.store))
         drafted = {a for _, a, _ in c.drafted}
         ch = [x for x in ch if x[0] not in drafted or x[3] is not None]
+        graded_units |= {x[1] for x in ch}
         out.append(f"grades changed ({name}): {len(ch)}")
         for a, unit, fname, b, aft in ch:
             out.append(f"  {a:#010x}  {unit:<16} {fname}: {b or 'new'} -> {aft or 'gone'}")
@@ -205,7 +207,7 @@ def cmd_session_wrap(args):
         out.append("  " + l)
     out.append("")
     v = LV.View.load(p, p.store)
-    touched = set(c.units_new) | {u for u, _, _ in c.drafted} | {l.split(" -> ")[1].split()[0] for l in unit_events}
+    touched = set(c.units_new) | {u for u, _, _ in c.drafted} | {l.split(" -> ")[1].split()[0] for l in unit_events} | graded_units
     out.append("units touched:")
     for r in LV.unit_rows(v):
         if r["unit"] in touched:

@@ -22,7 +22,7 @@ import collections
 import difflib
 from dataclasses import dataclass, field
 
-VERSION = "3"          # part of the classification cache key: bump when a class's criterion changes
+VERSION = "4"          # part of the classification cache key: bump when a class's criterion changes
 
 
 def strip_fill(lines: list) -> list:

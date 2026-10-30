@@ -368,7 +368,9 @@ def build_target(args, name, quiet=False):
 
 
 def cmd_build(args):
-    """Compile every stale unit (one compiler process per unit, in a pool), then refresh the rules."""
+    """Compile every stale unit (one compiler process per unit, in a pool), then refresh the rules. Prints the
+    compiled units, the summary, the failed units with their errors and the grade counts; --units lists every
+    unit's build row."""
     failed = False
     for i, name in enumerate(target_names(args)):
         if i:
@@ -378,7 +380,7 @@ def cmd_build(args):
         bad = [f for f in builds if not f.value["ok"]]
         print(record(target=p.target_name, units=rep.units, compiled=len(rep.compiled), failed=len(bad),
                      fresh=rep.units - len(rep.compiled), removed=len(rep.removed), ms=rep.ms))
-        for f in builds:
+        for f in builds if getattr(args, "units", False) else bad:
             v = f.value
             print("  " + record(tu=v["tu"], at=f.lo, ok=v["ok"], obj=v.get("obj"), fragments=v.get("fragments"),
                                 warnings=v.get("warnings", 0), errors=len(v.get("errors") or []), flags=v.get("flags")))
@@ -768,6 +770,7 @@ def main(argv=None):
     s = cmd(sub, "build", cmd_build, "compile every stale unit, refresh the rules, print the build and grade summary")
     s.add_argument("--all-targets", action="store_true", help="every target in config order")
     s.add_argument("--force", action="store_true", help="compile every unit")
+    s.add_argument("--units", action="store_true", help="list every unit's build row, not only the failed ones")
     un = sub.add_parser("unit", help="units").add_subparsers(dest="sub", required=True)
     s = cmd(un, "cat", cmd_unit_cat, "print a unit's amalgamation")
     s.add_argument("unit")

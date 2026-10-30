@@ -278,7 +278,9 @@ def test_unlinked_helper_builds_without_a_grade(tiny):
     write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n")
     write(tiny, "src/net/u_twice.c", "/* unlinked, inlined everywhere by /Ob1 */\nint twice(int x)\n{\n    return x + x;\n}\n")
     code, out = dcp(tiny, "build")
-    assert code == 0 and "ok=yes" in out, out
+    assert code == 0 and "failed=0" in out and "ok=yes" not in out, out   # only failed units get a row
+    code, out = dcp(tiny, "build", "--units")
+    assert code == 0 and "tu=net" in out and "ok=yes" in out, out
     from decompanion.ledger import grades as G
     rows = G.function_grades(Project(tiny).store)
     assert [r["name"] for r in rows] == ["get"] and rows[0]["code"] == "byte"
@@ -407,3 +409,10 @@ def test_rename_collides_only_with_code(tiny):
     assert dcp(tiny, "rename", "a_10001040", "crc32", "--why", "x")[0] == 1      # nowhere, and not the ledger's name
     write(tiny, "src/a/f_10001020.c", "/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n    return 1;\n}\n")
     assert dcp(tiny, "rename", "a_10001020", "adler32", "--why", "x")[0] == 1
+    # the new name written by hand in part (a header prototype of the same address) while the placeholder is still
+    # in the code: the rename completes it and records it
+    write(tiny, "include/a.h", "int crc32(void);  /* 0x10001020 */\n")
+    code, out = dcp(tiny, "rename", "a_10001020", "crc32", "--why", "the crc table")
+    assert code == 0 and "completes it" in out, out
+    assert "int crc32(void)" in (tiny / "src/a/f_10001020.c").read_text()
+    assert (tiny / "names.log").read_text().splitlines()[-1].split(" ", 1)[1].startswith("0x10001020 func a_10001020 -> crc32")

@@ -232,14 +232,17 @@ class Obj:
     def function_code(self, sym: Symbol) -> FunctionCode:
         """The bytes of a function: from its symbol to the next named symbol of its section (several functions
         share a section without /Gy), else to the section's end; a compiler label (`$L...`: CL gives the switch
-        table after the code a static one) is no end, the table belongs to the function; the relocation mask;
-        the relocations inside."""
+        table after the code a static one) is no end, the table belongs to the function, and the first such
+        static label marks where the instructions end (code_len); the relocation mask; the relocations inside."""
         sec = sym.section
         start = sym.value
         end = next((s.value for s in sec.syms if s.value > start and s.named and not s.name.startswith("$")), sec.size)
+        table = next((s.value for s in sorted(sec.syms, key=lambda s: s.value)
+                      if start < s.value < end and s.named and s.name.startswith("$")), None)
         mask = sec.mask()[start:end]
         relocs = tuple((r.offset - start, r, self.symbols.get(r.symbol_index)) for r in sec.relocs if start <= r.offset < end)
-        return FunctionCode(sym, sec, start, bytes(sec.data[start:end]), mask, relocs)
+        return FunctionCode(sym, sec, start, bytes(sec.data[start:end]), mask, relocs,
+                            None if table is None else table - start)
 
     def data_symbols(self) -> list[tuple[Symbol, str, int]]:
         """(symbol, kind, size) of every named data symbol: kind `data` / `rdata` / `bss` for a symbol of an

@@ -24,6 +24,7 @@ clang: `[lint] clang = "<path>"` in decompanion.toml, else `clang` on PATH, else
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -145,6 +146,19 @@ def alldecls_text(root: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+def stale(project) -> list[str] | None:
+    """The units whose source or include set changed since the last lint (by the compile's hashes), None when
+    there was no lint run: the lint result (Q7, M5..M7) is current exactly when this is empty."""
+    m = project.store.meta("lint")
+    if m is None:
+        return None
+    m = json.loads(m)
+    units, includes = m.get("units", {}), m.get("includes", {})
+    tus = project.store.tus()
+    changed = {u for u, row in tus.items() if units.get(u) != row["src_hash"] or includes.get(u) != row["include_hash"]}
+    return sorted(changed | (set(units) - set(tus)))
+
+
 def lint(project, log=None) -> dict:
     """Lint every unit of the current target and the all-declarations unit; store and return the result
     {units: {unit: amalg hash}, errors: [M6 lines], cross: [M5 lines], calls: {fragment file: [callee (kind)]}}."""
@@ -208,7 +222,8 @@ def lint(project, log=None) -> dict:
         if not m or any(lines.exempt(x["file"], x["line"]) for x in g):
             continue
         conflicts.append(fmt_group(g))
-    res = {"units": {a.unit: a.src_hash for a in amalgs}, "errors": sorted(set(errors)), "cross": sorted(set(conflicts)),
+    res = {"units": {a.unit: a.src_hash for a in amalgs},
+           "includes": {a.unit: (tus.get(a.unit) or {}).get("include_hash", "") for a in amalgs}, "errors": sorted(set(errors)), "cross": sorted(set(conflicts)),
            "calls": {k: sorted(set(v)) for k, v in sorted(calls.items())}}
     st.set_meta("lint", canonical(res))
     project.forget_input("lint")

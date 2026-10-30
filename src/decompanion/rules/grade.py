@@ -204,10 +204,10 @@ def grade(ctx: RuleContext):
     rows = []
     for s, obj, sym, code, c in funcs:
         w = walk.get(s.lo)
-        skey = sha256("codesize", DC.VERSION, plug, code.data.hex(), code.mask.hex(), f"{s.lo:x}")
+        skey = sha256("codesize", DC.VERSION, plug, code.code_data.hex(), code.code_mask.hex(), f"{s.lo:x}")
         size = ctx.store.blob_json(skey)
         if size is None:
-            size = DC.code_size(p.isa, img, code.data, code.mask, s.lo, tc.fill_forms)
+            size = DC.code_size(p.isa, img, code.code_data, code.code_mask, s.lo, tc.fill_forms)
             ctx.store.put_blob_json(skey, "codesize", size)
         orig_size = (w.hi - s.lo) if w is not None else size
         n = min(size, orig_size)
@@ -215,10 +215,10 @@ def grade(ctx: RuleContext):
         if s.lo in matched:
             g, why, hunks, dist_ins = "byte", [], {}, 0
         else:
-            key = sha256("diffclass", DC.VERSION, plug, code.data.hex(), code.mask.hex(), f"{s.lo:x}", img.read(s.lo, orig_size).hex())
+            key = sha256("diffclass", DC.VERSION, plug, code.code_data.hex(), code.code_mask.hex(), f"{s.lo:x}", img.read(s.lo, orig_size).hex())
             cached = ctx.store.blob_json(key)
             if cached is None:
-                A, B = DC.listings(p.isa, img, code.data, code.mask, s.lo, orig_size, tc.fill_forms)
+                A, B = DC.listings(p.isa, img, code.code_data, code.code_mask, s.lo, orig_size, tc.fill_forms)
                 v = DC.verdict(A, B, p.isa)
                 ctx.store.put_blob_json(key, "diffclass", v.to_json())
             else:

@@ -15,7 +15,9 @@ Hard rules
 - Every tool is `uv run dcp ...` from the project root (`--target NAME` for a target other than the first).
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
-  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` write it).
+  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` write it). Shell heredocs,
+  `sed` and quoted script strings eat backslashes: change string literals (`"\n"`, `"\xNN"`) and `#define`
+  continuations with an editing tool, then check the bytes with `dcp dump` / `dcp asmdiff`.
 - The sources are the state: the address comment on line 1 of every fragment (`/* 0x10001234, what it does */`),
   the declarations in `decl/*.dcl`, renames in `names.log` (written by `dcp rename`), notes in
   `src/<unit>/open.md`. Nothing else; no session log.
@@ -58,6 +60,7 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
 - `uv run dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
 - `uv run dcp why 0xADDR` - everything the ledger knows about an address (names, data, tables).
 - `uv run dcp lint` - clang over the units: prototypes (Q7), cross-unit conflicts (M5), calls without one (M7).
+  `dcp grade` and `dcp next` lint the changed units themselves, so their Q7 is current.
 
 ### 2.2 Code below shape (`section=draft`)
 Explain every `code` hunk from the evidence and fix the C's meaning: a wrong condition, operand or constant, a
@@ -71,13 +74,18 @@ work, however long.
 - The original walks pointers, not indices; a `cmp reg, <address>` loop end is an array of structs walked to
   its end (write the array, not address arithmetic). Five fields of one record are one struct, not five
   symbols: separate symbols cost a relocated base each.
+- A `static const` (or any `const`) global is not a literal to VC6: it loads the value from memory
+  (`mov eax, [sym]`) where the original has an immediate. A constant the original codes inline is a `#define`
+  or an enum.
 - A callee defined above its caller changes the caller's code (registers it leaves alone); the unit's
   `src/<unit>/order` file holds the original TU order: never reorder fragments to make a diff go away.
 
 ### 2.3 Readability (`gates=Q...`)
 - Q1 / Q2 placeholder names (`ai_Unk4a13e0`, `param_1`, `iVar2`, `DAT_...`): name what you understood.
   Functions and data: `uv run dcp rename OLD NEW --why "the evidence"` (project-wide, whole words, names.log;
-  `dcp refs` first). Locals and parameters: edit the fragment.
+  `dcp refs` first). Rename first, then edit: the rename writes the new name everywhere and logs it (a name
+  already written by hand in some places is completed by the rename, not refused). Locals and parameters:
+  edit the fragment.
 - Q3 address literals and Q4 raw access (`*(T *)(p + 0x1c)`, macros built on such casts): a typed field, a
   struct, the symbol (see the hard rule on addresses).
 - Q5 markers (ROUGH, TODO, `@rough`): remove them once the function is written.
@@ -108,7 +116,9 @@ stale `@deep` / `@stuck` tag: `uv run dcp escalate NAME --clear`, build again.
 ## 4. When to stop
 A session is **8 functions** raised to shape + readable (or byte + readable) or escalated, then the wrap-up.
 Never stop early: a hard function is escalated, not a reason to end; a long queue is not a reason to end;
-"it feels long" is no clock. One raise or one escalation is one commit: count the commits and stop at 8.
+"it feels long" is no clock. One raise or one escalation is one commit: count the commits and stop at 8
+(escalations count). A reconstruction of a big function (~1000 instructions, missing statements) may take most
+of a session; that is expected base work, not a reason to escalate it.
 
 ## 5. Wrap up
 1. Keep the function in progress if it builds and nothing got worse, else revert; `uv run dcp build` exits 0.

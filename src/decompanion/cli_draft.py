@@ -215,8 +215,9 @@ def cmd_draft(args):
 # ------------------------------------------------------------------------------------------------ rename
 def cmd_rename(args):
     """Rename one identifier: every whole-word occurrence in src/ and include/ (comments and strings too), an
-    unlinked fragment's file u_<old>.c, the `name` declarations of decl/*.dcl; refused when NEW occurs anywhere
-    already (a collision) or OLD nowhere. names.log records the event, with the address the ledger knows for OLD
+    unlinked fragment's file u_<old>.c, the `name` declarations of decl/*.dcl; refused when OLD occurs nowhere, or
+    when NEW occurs already and is not OLD's own (the ledger names another address NEW, or OLD has no address):
+    NEW written by hand in part for OLD's address is completed. names.log records the event, with the address the ledger knows for OLD
     (a name fact, or the address a placeholder spells). The rename done by hand already (OLD nowhere, NEW the
     ledger's name of OLD's address) is only recorded: names.log gets the event, no file changes."""
     from .ledger import srcscan
@@ -244,8 +245,14 @@ def cmd_rename(args):
         return err("rename", f"{args.old} occurs nowhere in src/ or include/" + (
             f" and {args.new} is not the ledger's name of {a:#x}" if a is not None else ""))
     clash = E.code_uses(p.root, args.new)
-    if clash:
-        return err("rename", f"{args.new} exists already ({clash[0][0]}:{clash[0][1]}): refused (a collision)")
+    elsewhere = sorted(set(names.by_name.get(args.new, ())) - ({a} if a is not None else set()))
+    if clash and (a is None or elsewhere):
+        return err("rename", f"{args.new} exists already ({clash[0][0]}:{clash[0][1]})"
+                             + (f", the ledger's name at {', '.join(f'{x:#x}' for x in elsewhere)}" if elsewhere else "")
+                             + ": refused (a collision)")
+    if clash:                                       # NEW is OLD's own address's name, written by hand in part
+        print(f"note: {args.new} occurs already ({clash[0][0]}:{clash[0][1]}) and names no other address: the rename "
+              f"completes it")
     n = E.rename_words(p.root, {args.old: args.new})
     for f in sorted((p.root / "src").glob(f"*/u_{args.old}.c")):
         E.move(p.root, f, f.with_name(f"u_{args.new}.c"))

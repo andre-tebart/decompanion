@@ -35,17 +35,28 @@ class FunctionCode:
     """One compiled function of an object: `data` its bytes (from the function symbol to the next named symbol
     of its section, or the section's end), `mask` 1 for every byte a relocation rewrites, `relocs` the
     relocations inside as (offset from the function start, Reloc, Symbol the relocation refers to), `section`
-    the section, `start` the function's offset in it."""
+    the section, `start` the function's offset in it, `code_len` the bytes of instructions before the data the
+    compiler puts after them in the same section (a switch's jump table), None when there is none. The byte
+    compare takes `data` whole; instruction listings and code sizes take `code_data` / `code_mask`."""
     symbol: object
     section: object
     start: int
     data: bytes
     mask: bytes
     relocs: tuple
+    code_len: int | None = None
 
     @property
     def size(self):
         return len(self.data)
+
+    @property
+    def code_data(self) -> bytes:
+        return self.data if self.code_len is None else self.data[:self.code_len]
+
+    @property
+    def code_mask(self) -> bytes:
+        return self.mask if self.code_len is None else self.mask[:self.code_len]
 
 
 class ObjectFormat:
