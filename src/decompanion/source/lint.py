@@ -269,10 +269,9 @@ def file_scope_decls(rel: str, text: str, m: dict | None = None) -> list[Decl]:
     Typedefs, tags, `__inline` bodies and function pointer types are left out. The declarations are the
     front end's (m: the file's cparse.model entry, `decls`), their text cut from the file by their positions
     (comments blanked, whitespace collapsed); a declaration whose spelled name is not the declared one (a rename
-    macro, `#define X X_ag`, declares X_ag) is left out. Without m: the regex scan (until every caller has a
-    model)."""
-    if m is None:
-        return _file_scope_decls_regex(rel, text)
+    macro, `#define X X_ag`, declares X_ag) is left out. Without m the text is parsed alone
+    (srcscan.model_alone)."""
+    m = srcscan.model_alone(rel, text) if m is None else m
     S = srcscan.Source(rel, text)
     code = S.code
     off = lambda lc: S.offset(*lc)
@@ -383,143 +382,23 @@ def file_scope_decls(rel: str, text: str, m: dict | None = None) -> list[Decl]:
 IDENT = re.compile(r"[A-Za-z_]\w*")
 
 
-def _file_scope_decls_regex(rel: str, text: str) -> list[Decl]:
-    S = srcscan.Source(rel, text)
-    code = srcscan.blank_alternatives(S.code)
-    data = {}
-    for off, name, kind, _, _ in S.data():
-        data.setdefault(off, []).append((name, kind))
-    defs = []                                      # (offset, name, offset after the parameter list, its brace)
-    for off, name in S.definitions():
-        m = re.compile(r"\b" + re.escape(name) + r"\s*\(").search(code, off)
-        if not m:
-            continue
-        k, depth = m.end(), 1
-        while k < len(code) and depth:
-            depth += (code[k] == "(") - (code[k] == ")")
-            k += 1
-        defs.append((off, name, k, code.find("{", k)))
-    out = []
-    n = len(code)
-
-    def first(s):
-        while s < n and code[s].isspace():
-            s += 1
-        return s
-
-    def add_stmt(start, end):
-        s = first(start)
-        stmt = code[s:end]
-        if not stmt.strip() or srcscan.STATIC.match(stmt) or re.match(r"\s*typedef\b", stmt):
-            return
-        line, last = S.line_of(s), S.line_of(end)
-        m = DECL.match(stmt)
-        if m and "=" not in stmt[:m.end()] and not any(t in KEYWORDS for t in re.findall(r"[A-Za-z_]\w*", m.group(1))):
-            flat = _flat(stmt)
-            head = flat[:flat.find("(")]
-            close, depth = -1, 0
-            for j in range(flat.find("("), len(flat)):
-                depth += (flat[j] == "(") - (flat[j] == ")")
-                if depth == 0:
-                    close = j
-                    break
-            if close < 0 or flat[close + 1:].strip():
-                return                     # `f(a, b) int a;`: a K&R head the definition scan did not take
-            if "(*" not in flat[:flat.find("(") + 2] and "*)" not in head:
-                fm = DECL.match(flat)
-                out.append(Decl(rel, line, last, fm.group(2), "proto", flat + ";", fm.start(2)))
-            return
-        items = data.get(s)
-        if not items:
-            return
-        made = _data_decls(stmt, [nm for nm, _ in items])
-        if made is None:
-            return
-        kind = items[0][1]
-        for nm, decl in made:
-            if kind == "extern":
-                decl = _flat(stmt) + ";" if len(made) == 1 else decl
-                out.append(Decl(rel, line, last, nm, "extern", decl, _name_at(decl, nm)))
-            else:
-                out.append(Decl(rel, line, last, nm, "ddef", decl, _name_at(decl, nm), init="=" in stmt))
-
-    di, cur, start, p, b, opened, extern_c = 0, None, 0, 0, 0, -1, 0
-    i = 0
-    while i < n:
-        while di < len(defs) and defs[di][0] <= i:
-            cur = defs[di]
-            di += 1
-        c = code[i]
-        if c in "([":
-            p += 1
-        elif c in ")]":
-            p -= 1
-        elif c == "{":
-            if b == 0 and p == 0 and code[start:i].strip() == "extern":        # extern "C" { (the string blanked)
-                extern_c += 1
-                start = i + 1
-                i += 1
-                continue
-            if b == 0:
-                opened = i
-            b += 1
-        elif c == "}":
-            if b == 0 and extern_c:
-                extern_c -= 1
-                start = i + 1
-            else:
-                b -= 1
-                if b == 0 and p == 0:
-                    if cur is not None and start <= cur[0] < opened and cur[3] == opened:
-                        off, name, k, brace = cur
-                        s = first(start)
-                        head, between = code[s:k], code[k:brace]
-                        if not srcscan.STATIC.match(head):
-                            line = S.line_of(s)
-                            if between.strip():
-                                stmt = _flat(head + " " + between) + " {}"
-                                out.append(Decl(rel, line, S.line_of(brace), name, "knr", stmt, _name_at(_flat(head), name),
-                                                proto=_knr_prototype(code[s:k], between, name)))
-                            else:
-                                stmt = _flat(head) + ";"
-                                out.append(Decl(rel, line, S.line_of(brace), name, "fdef", stmt, _name_at(stmt, name)))
-                        cur = None
-                        start = i + 1
-                    elif code[start:opened].rstrip().endswith((")", ";")) or not code[start:opened].strip():
-                        start = i + 1              # an __inline body, a block without a head: no declaration
-        elif c == ";" and b == 0 and p == 0:
-            if cur is not None and start <= cur[0] < i < cur[3]:              # a K&R parameter declaration
-                pass
-            else:
-                add_stmt(start, i)
-                start = i + 1
-        i += 1
-    return out
-
-
-def file_scope_prototypes(rel: str, text: str) -> list[tuple[int, str]]:
-    """(line, statement) of every file-scope function declaration that is no definition, not static and no
-    function pointer."""
-    return [(d.line, d.stmt) for d in file_scope_decls(rel, text) if d.kind == "proto"]
-
-
 MACRO_LINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)((?:\\\n|[^\n])*)", re.M)
 
 
-def file_macros(rel: str, text: str, m: dict | None = None) -> list[tuple[str, int, str]]:
-    """(name, line, `#define` line) of the macros a file defines (comments blanked, continuations joined): with
-    the file's model, the ones the preprocessor defined (srcscan.live_defines)."""
+def file_macros(rel: str, text: str, m: dict) -> list[tuple[str, int, str]]:
+    """(name, line, `#define` line) of the macros the preprocessor defined in a file (its model's:
+    srcscan.live_defines; comments blanked, continuations joined)."""
     S = srcscan.Source(rel, text)
-    found = MACRO_LINE.finditer(S.code) if m is None else srcscan.live_defines(S, m, MACRO_LINE)
+    found = srcscan.live_defines(S, m, MACRO_LINE)
     return [(x.group(1), S.line_of(x.start()), "#define " + x.group(1) + x.group(2).replace("\\\n", " ")) for x in found]
 
 
 _scans: dict[tuple[str, str], tuple] = {}     # (file, sha256 of its text) -> (its declarations, its macros)
 
 
-def scanned(rel: str, p: Path, m: dict | None = None) -> tuple[list[Decl], list]:
-    """(the declarations, the macros) of one file, from its model (srcscan.models) when given."""
-    key = (rel, fsmemo.sha256(p), None if m is None else hash(repr(m)))
+def scanned(rel: str, p: Path, m: dict) -> tuple[list[Decl], list]:
+    """(the declarations, the macros) of one file, from its model (srcscan.models)."""
+    key = (rel, fsmemo.sha256(p), hash(repr(m)))
     hit = _scans.get(key)
     if hit is None:
         if len(_scans) > 50000:
@@ -527,29 +406,12 @@ def scanned(rel: str, p: Path, m: dict | None = None) -> tuple[list[Decl], list]
         text = fsmemo.read_text(p)
         macros = file_macros(rel, text, m)
         decls = file_scope_decls(rel, text, m)
-        hit = _scans[key] = (_unrenamed(rel, text, decls, macros) if m is None else decls, macros)
+        hit = _scans[key] = (decls, macros)
     return hit
 
 
 RENAME = re.compile(r"#define ([A-Za-z_]\w*)[ \t]+([A-Za-z_]\w*)[ \t]*$")
 UNDEF_LINE = re.compile(r"^[ \t]*#[ \t]*undef[ \t]+([A-Za-z_]\w*)", re.M)
-
-
-def _unrenamed(rel: str, text: str, decls: list[Decl], macros: list) -> list[Decl]:
-    """The declarations without those whose name a rename macro of the file (`#define X X_ag`, active at that
-    line: no `#undef X` between) turns into another name: they declare the other name, not X."""
-    renames = [(m.group(1), line) for name, line, t in macros if (m := RENAME.match(t.strip())) and m.group(1) != m.group(2)]
-    if not renames:
-        return decls
-    S = srcscan.Source(rel, text)
-    undefs = [(m.group(1), S.line_of(m.start())) for m in UNDEF_LINE.finditer(S.code)]
-
-    def renamed(d):
-        for name, line in renames:
-            if name == d.name and line < d.line and not any(u == name and line < ul < d.line for u, ul in undefs):
-                return True
-        return False
-    return [d for d in decls if not renamed(d)]
 
 
 PRIVATE = re.compile(r"@private[ \t]+([A-Za-z_][\w]*(?:[ \t]*,[ \t]*[A-Za-z_]\w*)*)")
@@ -613,52 +475,24 @@ class AllDecls:
 
 
 SYSINC = re.compile(r'^[ \t]*#[ \t]*include[ \t]*<([^>]+)>', re.M)
-TYPEDEF_NAME = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$")
-TAG_BODY = re.compile(r"\b(?:struct|union|enum)\s+([A-Za-z_]\w*)\s*\{")
 
 
-def _provides(rel: str, text: str, m: dict | None = None) -> tuple[set, set]:
-    """(the typedef names, tags with a body and macros a header defines, the identifiers it uses): with the
-    header's model the front end's typedefs, tags and live macros; the identifiers are its words (comments and
-    strings blanked, a tag's name not counted: a tag needs no definition to be named)."""
+def _provides(rel: str, text: str, m: dict) -> tuple[set, set]:
+    """(the typedef names, tags with a body and macros a header defines, the identifiers it uses): the front end's
+    typedefs, tags and live macros of the header's model; the identifiers are the words of its live code
+    (srcscan.live_code: comments, strings, directives and skipped branches blanked; a tag's name not counted: a
+    tag needs no definition to be named)."""
     S = srcscan.Source(rel, text)
-    if m is not None:
-        defined = {name for _, name in m["types"]} | {name for _, name, _ in m["macros"]}
-        # the directives and the skipped branches use nothing
-        code = re.sub(r"\b(?:struct|union|enum)\s+[A-Za-z_]\w*", " ", srcscan.live_code(S, m))
-        return defined, set(IDENTS.findall(code)) - defined
-    code = srcscan.blank_alternatives(S.code)
-    defined = {m.group(1) for m in MACRO_LINE.finditer(S.code)} | {m.group(1) for m in TAG_BODY.finditer(code)}
-    for m in re.finditer(r"\btypedef\b", code):
-        end, depth = m.end(), 0
-        while end < len(code) and not (code[end] == ";" and depth == 0):
-            depth += (code[end] in "({") - (code[end] in ")}")
-            end += 1
-        stmt = code[m.end():end]
-        while re.search(r"\{[^{}]*\}", stmt):
-            stmt = re.sub(r"\{[^{}]*\}", "", stmt)
-        chunks, depth, cur = [], 0, ""
-        for c in stmt:
-            depth += (c == "(") - (c == ")")
-            if c == "," and depth == 0:
-                chunks.append(cur)
-                cur = ""
-            else:
-                cur += c
-        for chunk in chunks + [cur]:
-            fp = srcscan.FUNCPTR.search(chunk)
-            t = fp or TYPEDEF_NAME.search(chunk.strip())
-            if t:
-                defined.add(t.group(1))
-    code = re.sub(r"\b(?:struct|union|enum)\s+[A-Za-z_]\w*", " ", code)      # a tag needs no definition to be named
+    defined = {name for _, name in m["types"]} | {name for _, name, _ in m["macros"]}
+    code = re.sub(r"\b(?:struct|union|enum)\s+[A-Za-z_]\w*", " ", srcscan.live_code(S, m))
     return defined, set(IDENTS.findall(code)) - defined
 
 
-def header_order(root: Path, headers: list[str], models: dict | None = None) -> list[str]:
+def header_order(root: Path, headers: list[str], models: dict) -> list[str]:
     """The headers in an order that defines a name before the headers that use it (by name, alphabetical
     among equals): what the units' own include order gives each of them, as far as names show it."""
     texts = {h: fsmemo.read_text(Path(root) / h) for h in headers}
-    info = {h: _provides(h, texts[h], (models or {}).get(h)) for h in headers}
+    info = {h: _provides(h, texts[h], models.get(h, srcscan.EMPTY)) for h in headers}
     provider = {}
     for h in headers:
         for n in info[h][0]:

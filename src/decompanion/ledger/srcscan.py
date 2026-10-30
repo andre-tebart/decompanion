@@ -46,8 +46,8 @@ before any parse. The function definitions and the file-scope data declarations 
 tail.c; a header as the first unit that includes it sees it, a file no unit holds parsed alone. So `#if` /
 `#ifdef` are evaluated (a declaration in a dead branch is no declaration), a macro is expanded (zlib's `local` is
 `static`), and every declarator of `int a = 1, b = 2;` is one. A data statement's address comment is found by
-its extent as before (on its first line, after its `;`, or the own-line comment above). The regex definitions /
-data scan (Source.definitions / data) stays for the readers not on the front end yet and for tools/scandiff.py.
+its extent as before (on its first line, after its `;`, or the own-line comment above). A text that is no
+project file (a test's, a single line) is parsed alone (model_alone).
 """
 from __future__ import annotations
 
@@ -59,7 +59,6 @@ from pathlib import Path
 from .. import fsmemo
 
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
-DEF = re.compile(r"^[A-Za-z_][^\n;{}#]*?\b([A-Za-z_]\w*)\s*\(", re.M)
 ADDR_ITEM = r"(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+"
 LEAD_ADDRS = re.compile(r"^\s*(" + ADDR_ITEM + r")((?:\s*[,/]\s*" + ADDR_ITEM + r")*)")
 ONE_ADDR = re.compile(r"(?:([A-Za-z][A-Za-z0-9_-]*):)?(0x[0-9a-fA-F]+)")
@@ -78,9 +77,6 @@ PLACEHOLDER_ADDR = re.compile(r"\b[A-Za-z_]\w*?Unk([0-9a-f]{5,8}|[0-9A-F]{5,8})(
 def placeholder_value(m: re.Match) -> int:
     """The address a PLACEHOLDER_ADDR match spells."""
     return int(next(g for g in m.groups() if g), 16)
-STATIC = re.compile(r"\s*(?:(?:const|volatile)\s+)*static\b")
-INLINE = re.compile(r"\b(?:__inline|__forceinline|inline)\b")
-KNR = re.compile(r"^[^=(;]*\b[A-Za-z_]\w*\s*\([^()]*\)\s*[A-Za-z_][^;]*;\s*$")
 DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
 OBJ_DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(?![\w(])[ \t]*([^\n]*)", re.M)
 DEREF_OBJ = re.compile(r"\(\s*\*\s*\(\s*[A-Za-z_]")      # an object-like macro body that dereferences a cast: (*(T ...
@@ -106,8 +102,6 @@ PTR_CAST = re.compile(
     r")\)"
     r"((?:\s*\((?:\s*" + _TYPE + r"\s*\))?)*\s*)"                               # parentheses, casts without `*`
     r"(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)[uUlL]*(?![\w.])")
-QUALIFIERS = {"extern", "static", "const", "volatile", "unsigned", "signed", "int", "char", "short", "long", "float",
-              "double", "void", "struct", "union", "enum", "register", "far", "near", "__cdecl", "__stdcall"}
 
 
 @dataclass(frozen=True)
@@ -205,32 +199,6 @@ def lead_end(body: str) -> int:
     return m.end() if m else 0
 
 
-@functools.lru_cache(maxsize=256)
-def blank_alternatives(code: str) -> str:
-    """The code with every preprocessor line blanked, and the text of `#else` / `#elif` / `#if 0` branches blanked
-    too (their braces need not balance); offsets unchanged."""
-    out = []
-    stack = []
-    cont = False
-    for line in code.split("\n"):
-        m = re.match(r"\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b\s*(.*)", line)
-        blank = any(stack)
-        if m:
-            d, arg = m.group(1), m.group(2).strip()
-            if d in ("if", "ifdef", "ifndef"):
-                stack.append(d == "if" and arg == "0")
-            elif d in ("elif", "else") and stack:
-                stack[-1] = True
-            elif d == "endif" and stack:
-                stack.pop()
-            blank = True
-        elif line.lstrip().startswith("#") or cont:
-            blank = True
-        cont = blank and line.rstrip("\r").endswith("\\")
-        out.append("".join(" " if c != "\r" else c for c in line) if blank else line)
-    return "\n".join(out)
-
-
 class Source:
     """One .c / .h file: its comments, its code with strings and comments blanked, its definitions and data."""
 
@@ -277,144 +245,6 @@ class Source:
             self._own_line_ends = {e: i for i, (s, e, b) in enumerate(self.comments)
                                    if not self.text[self.text.rfind("\n", 0, s) + 1:s].strip()}
         return self._own_line_ends
-
-    def definitions(self) -> list[tuple[int, str]]:
-        """[(offset, name)] of every function definition (a `name(...)` followed by `{`, K&R parameter
-        declarations allowed in between), in file order; `__inline` definitions are no functions of the
-        binary and are left out."""
-        res = []
-        code = blank_alternatives(self.code)
-        for m in DEF.finditer(code):
-            k = m.end()
-            depth = 1
-            while k < len(code) and depth:
-                depth += (code[k] == "(") - (code[k] == ")")
-                k += 1
-            if depth:
-                continue
-            brace = code.find("{", k)
-            if brace < 0 or brace - k > 4000:
-                continue
-            between = code[k:brace]
-            if "=" in between or ")" in between:
-                continue
-            params = set(re.findall(r"[A-Za-z_]\w*", code[m.end():k - 1]))
-            chunks = between.split(";")
-            if len(chunks) > 1 and (chunks[-1].strip() or not all(
-                    re.findall(r"[A-Za-z_]\w*", c) and set(re.findall(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*(?:,|$)", c.strip())) <= params
-                    and set(re.findall(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])*\s*(?:,|$)", c.strip())) for c in chunks[:-1])):
-                continue
-            if chunks[-1].strip():
-                continue
-            if INLINE.search(code, m.start(), m.start(1)):
-                continue
-            res.append((m.start(), m.group(1)))
-        return res
-
-    def data(self, skip_comment: int | None = None):
-        """[(offset, name, kind, [(target, addr)], unlinked)] of every file-scope data declaration (kind extern:
-        a declaration; def: a definition, static, initialised or tentative). The addresses come from a comment
-        on the declaration's first line or right after its `;`, else from the own-line comment directly above
-        it (never from comment `skip_comment`, the fragment's function address comment). With several
-        declarators, the comment's addresses go one per declarator (per target)."""
-        code = blank_alternatives(self.code)
-        res = []
-        n = len(code)
-        i = 0
-        while i < n:
-            while i < n and code[i].isspace():
-                i += 1
-            if i >= n:
-                break
-            s = i
-            depth = brace = 0
-            opened = -1
-            while i < n:
-                c = code[i]
-                if c in "([":
-                    depth += 1
-                elif c in ")]":
-                    depth -= 1
-                elif c == "{":
-                    if brace == 0 and opened < 0:
-                        opened = i
-                    brace += 1
-                elif c == "}":
-                    brace -= 1
-                    if brace == 0 and depth == 0 and (opened == s or code[s:opened].rstrip().endswith(")")):
-                        i += 1
-                        break
-                elif c == ";" and depth == 0 and brace == 0:
-                    i += 1
-                    break
-                i += 1
-            stmt = code[s:i]
-            if not stmt.rstrip().endswith(";"):
-                continue
-            if KNR.match(stmt):
-                b = code.find("{", i)
-                d = 0
-                while 0 <= b < n:
-                    d += code[b] == "{"
-                    d -= code[b] == "}"
-                    b += 1
-                    if not d:
-                        break
-                i = b if b > 0 else n
-                continue
-            head = stmt.rstrip()[:-1]
-            d = 0
-            k = -1
-            for j, c in enumerate(head):
-                d += c in "([{"
-                d -= c in ")]}"
-                if c == "=" and d == 0:
-                    head, k = head[:j], j
-                    break
-            is_extern = head.lstrip().startswith("extern")
-            if head.lstrip().startswith("typedef"):
-                continue
-            body = "{" in head
-            if body:
-                head = head[head.rfind("}") + 1:]
-                if not head.strip():
-                    continue
-            while re.search(r"\[[^\[\]]*\]", head):
-                head = re.sub(r"\[[^\[\]]*\]", "", head)
-            fp = FUNCPTR.search(head)
-            if "(" in head and (fp is None or fp.start() != head.find("(")):
-                continue
-            chunks, d, cur = [], 0, []
-            for c in head:
-                d += c in "([{"
-                d -= c in ")]}"
-                if c == "," and d == 0:
-                    chunks.append("".join(cur))
-                    cur = []
-                else:
-                    cur.append(c)
-            chunks.append("".join(cur))
-            idents = []
-            for j, ch in enumerate(chunks):
-                m = FUNCPTR.search(ch)
-                if m:
-                    idents.append(m.group(1))
-                    continue
-                ws = re.findall(r"[A-Za-z_]\w*", ch)
-                if j == 0 and not body and (len(ws) < 2 or ws[-1] in QUALIFIERS or (len(ws) == 2 and ws[0] in ("struct", "union", "enum"))):
-                    idents = []
-                    break
-                if not ws or ws[-1] in QUALIFIERS:
-                    idents = []
-                    break
-                idents.append(ws[-1])
-            if not idents:
-                continue
-            kind = "extern" if is_extern and k < 0 else "def"
-            per_decl, unlinked = self._attach(code, s, i, len(idents), skip_comment)
-            for j, name in enumerate(idents):
-                res.append((s, name, kind, per_decl[j], unlinked))
-        return res
 
     def _attach(self, code: str, s: int, i: int, n: int, skip_comment: int | None):
         """The address comment of the statement at s..i (i just after its `;`) split over its n declarators, and
@@ -508,11 +338,10 @@ def literal_value(s: str) -> int | None:
         return None
 
 
-def ptr_casts(S: Source, out: Scan, model: dict | None = None):
-    """Every integer literal cast to a pointer type in the code and in `#define` bodies (PTR_CAST over a body: a
-    macro is not parsed until it is used). With the front end's model: the casts clang found in code (any
-    pointer type, a typedef'd one too), and the bodies of the live macros; without it, PTR_CAST over the code
-    (comments and strings blanked, `#if 0` / `#else` / `#elif` text too: blank_alternatives) and every body."""
+def ptr_casts(S: Source, out: Scan, model: dict):
+    """Every integer literal cast to a pointer type in the code (the front end's: model["casts"], any pointer
+    type, a typedef'd one too) and in the bodies of the live macros (PTR_CAST over a body: a macro has no syntax
+    tree until it is used)."""
     def add(code, base=0):
         for m in PTR_CAST.finditer(code):
             v = literal_value(m.group(2))
@@ -520,11 +349,6 @@ def ptr_casts(S: Source, out: Scan, model: dict | None = None):
                 text = " ".join(m.group(0).split())
                 text += ")" * (text.count("(") - text.count(")"))       # close what the match left open
                 out.ptrcasts.append(PtrCast(S.rel, S.line_of(base + m.start()), text, v))
-    if model is None:
-        add(blank_alternatives(S.code))
-        for m in DEFINE_LINE.finditer(S.code):
-            add(m.group(0), m.start())
-        return
     for line, col, eline, ecol, lit in model["casts"]:
         v = literal_value(lit.rstrip("uUlL"))
         if v is not None:
@@ -546,6 +370,25 @@ def live_code(S: Source, model: dict) -> str:
         if directive or n in dead:
             lines[n - 1] = " " * len(ln)
     return "\n".join(lines)
+
+
+def model_alone(rel: str, text: str, root: Path | None = None) -> dict:
+    """The front end's model of one text parsed alone (no unit around it, no includes found unless they exist
+    below root): a text that is no project file (a test's, a single line), as a file no unit holds is."""
+    from ..source import cparse
+    root = Path(root) if root is not None else Path.cwd()
+    if root.joinpath("decompanion.toml").exists():
+        sysdirs = front_end(root)
+    else:
+        if cparse._loaded is None:
+            lib = cparse.library(None)
+            if lib is None:
+                from ..source import lint as L
+                raise RuntimeError(L.NOT_FOUND)
+            cparse.load(lib)
+        sysdirs = []
+    m = cparse.model(root / rel, root, sysdirs, [root / "include"], text, [])
+    return m["files"].get(Path(rel).as_posix(), EMPTY)
 
 
 def model_of(root: Path, rel: str, text: str) -> dict | None:
@@ -577,12 +420,12 @@ def live_defines(S: Source, model: dict, pattern: re.Pattern, text: str | None =
                 yield m
 
 
-def view_macros(S: Source, unit: str, out: Scan, model: dict | None = None):
+def view_macros(S: Source, unit: str, out: Scan, model: dict):
     """The object-like one-line macros: a view (VIEW_BYTE / VIEW_WHOLE / VIEW_ALIAS with an address comment on
     its line) goes to out.views; one whose body dereferences a cast (DEREF_OBJ) and is no view to out.rawobj,
-    and to out.errors (L15) when it has an address comment all the same. With the front end's model the live
-    object-like macros only."""
-    for m in OBJ_DEFINE.finditer(S.code) if model is None else live_defines(S, model, OBJ_DEFINE, like=False):
+    and to out.errors (L15) when it has an address comment all the same. The live object-like macros of the
+    front end's model only."""
+    for m in live_defines(S, model, OBJ_DEFINE, like=False):
         name, body = m.group(1), m.group(2).strip()
         if not body or body.endswith("\\"):
             continue
@@ -609,10 +452,12 @@ def view_macros(S: Source, unit: str, out: Scan, model: dict | None = None):
 
 
 def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
-    """One file's part of the scan; its function definitions and data declarations from the front end's model
-    of the file (cparse.model's entry: defs, vars), from the regex scan when model is None."""
+    """One file's part of the scan: its comments read here, its function definitions, data declarations,
+    macros and casts from the front end's model of the file (cparse.model's entry; the text parsed alone when
+    none is given: model_alone)."""
     S = Source(rel, text)
-    for m in DEFINE.finditer(S.text) if model is None else live_defines(S, model, DEFINE, S.text, like=True):
+    model = model_alone(rel, text) if model is None else model
+    for m in live_defines(S, model, DEFINE, S.text, like=True):
         out.macros.append((m.group(1), m.group(3)))
     for s, e, body in S.comments:
         m = DESCRIBED.match(body)
@@ -625,10 +470,7 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
     unit = unit_of(rel)
     in_src = rel.startswith("src/")
     is_fragment = in_src and bool(FRAGMENT.match(name) or UNLINKED_FRAGMENT.match(name))
-    if model is None:
-        defs = [(off, n, bool(STATIC.match(S.code, off))) for off, n in S.definitions()]
-    else:
-        defs = S.model_definitions(model["defs"])
+    defs = S.model_definitions(model["defs"])
     skip = None
     if in_src and rel.endswith(".c") and not is_fragment and name not in ("head.c", "tail.c"):
         out.errors.append(ScanError(rel, 1, "L.src", f"unexpected source file {name}: a unit holds head.c, f_<addr>.c "
@@ -671,9 +513,7 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
         for off, fname, _ in defs:
             out.errors.append(ScanError(rel, S.line_of(off), "L.src", f"function {fname} defined outside a fragment "
                                                                        f"(src/<unit>/f_<addr>.c)"))
-    decls = ([(*d, bool(STATIC.match(S.code, d[0]))) for d in S.data(skip)] if model is None else
-             S.model_data(model["vars"], skip))
-    for off, dname, kind, addrs, unlinked, static in decls:
+    for off, dname, kind, addrs, unlinked, static in S.model_data(model["vars"], skip):
         out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked, static))
     ptr_casts(S, out, model)
     view_macros(S, unit, out, model)
@@ -688,7 +528,7 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
 
 _cache: dict[tuple[str, str], Scan] = {}
 _files: dict[tuple[str, str, str], Scan] = {}     # (path, sha256 of the text, model digest) -> that file's own scan
-CACHE_VERSION = 6                                 # bump when scan_file's results change
+CACHE_VERSION = 7                                 # bump when scan_file's results change
 MODEL_VERSION = "14"                               # bump when the scan's translation units change
 _models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
 _last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read

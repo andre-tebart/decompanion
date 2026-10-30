@@ -270,15 +270,13 @@ def draft(p, view, names, a: int, unit: str | None = None) -> Draft:
 
 def header_declaring(root: Path, name: str, unit: str) -> str | None:
     """The unit header of include/ that declares `name` (its own unit's first): a function or data declaration of
-    the front end's model of the header (srcscan.model_of), the regex (edit.declared_in) for a header the scan
-    does not hold."""
+    the front end's model of the header (srcscan.model_of)."""
     skip = types_headers()
     for h in sorted((root / "include").glob("*.h"), key=lambda h: (h.stem != unit, h.name)):
         if h.name in skip:
             continue
-        text = fsmemo.read_text(h)
-        m = srcscan.model_of(root, f"include/{h.name}", text)
-        if any(d[1] == name for d in m["decls"]) if m is not None else E.declared_in(text, name):
+        m = srcscan.model_of(root, f"include/{h.name}", fsmemo.read_text(h)) or srcscan.EMPTY
+        if any(d[1] == name for d in m["decls"]):
             return h.name
     return None
 

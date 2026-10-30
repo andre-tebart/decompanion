@@ -59,7 +59,6 @@ QUOTED = re.compile(r"'(\w+)'")
 ARGS = re.compile(r"too (few|many) arguments to function call, expected (?:at least )?(\d+), have (\d+)")
 CONFLICT = re.compile(r"^(?:conflicting types for|redefinition of|redeclaration of|typedef redefinition with "
                       r"different types|non-static declaration of|static declaration of)\b")
-EXTERN = re.compile(r"^\s*extern\b[^;(]*?\b([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*;")
 FRAG = re.compile(r"/f_([0-9a-fA-F]+)\.c$")
 
 
@@ -123,7 +122,7 @@ def include_pos(rel: str, text: str, names, root: Path | None = None) -> int:
         return after
     S = srcscan.Source(rel, text)
     m = srcscan.model_of(root, rel, text) if root is not None else None
-    code = srcscan.live_code(S, m) if m is not None else srcscan.blank_alternatives(S.code)
+    code = srcscan.live_code(S, m or srcscan.model_alone(rel, text))
     decl_lines = declared_names(rel, text, every=True, root=root)
     first = None
     for m in IDENT.finditer(code):
@@ -194,34 +193,16 @@ def drop_line(rel: str, line: str, names, line_names) -> str | None:
 
 def declared_names(rel: str, text: str, every: bool = False, root: Path | None = None) -> dict:
     """name -> line of every file-scope prototype and extern data declaration of a file (each name of a
-    multi-name `extern int a, b, c;`); every=True: name -> the set of its declaration lines. With root and the
-    file as on disk: the front end's declarations (lint.file_scope_decls with its model); else (a text not
-    written yet) the regex scan."""
+    multi-name `extern int a, b, c;`); every=True: name -> the set of its declaration lines. The front end's
+    declarations (lint.file_scope_decls with the file's model: srcscan.model_of, the file as on disk)."""
     out = {}
     m = srcscan.model_of(root, rel, text) if root is not None else None
-    if every or m is not None:
-        for d in L.file_scope_decls(rel, text, m):
-            if d.kind in ("proto", "extern"):
-                if every:
-                    out.setdefault(d.name, set()).add(d.line)
-                else:
-                    out.setdefault(d.name, d.line)
-        return out
-    for line, stmt in L.file_scope_prototypes(rel, text):
-        m = L.DECL.match(stmt.removeprefix("extern "))
-        if m:
-            out.setdefault(m.group(2), line)
-    for d in L.file_scope_decls(rel, text):
-        if d.kind == "extern":
-            out.setdefault(d.name, d.line)
-    depth = 0
-    code = srcscan.blank_alternatives(srcscan.Source(rel, text).code).split("\n")
-    for i, l in enumerate(code, 1):
-        if depth == 0:
-            m = EXTERN.match(l)
-            if m:
-                out.setdefault(m.group(1), i)
-        depth += l.count("{") - l.count("}")
+    for d in L.file_scope_decls(rel, text, m):
+        if d.kind in ("proto", "extern"):
+            if every:
+                out.setdefault(d.name, set()).add(d.line)
+            else:
+                out.setdefault(d.name, d.line)
     return out
 
 
@@ -486,7 +467,7 @@ def call_sites(root: Path, a, callee: str) -> list[tuple[str, int]]:
         text = fsmemo.read_text(Path(root) / m.file)
         S = srcscan.Source(m.file, text)
         model = srcscan.model_of(root, m.file, text)
-        code = srcscan.live_code(S, model) if model is not None else srcscan.blank_alternatives(S.code)
+        code = srcscan.live_code(S, model or srcscan.EMPTY)
         depth, pos = 0, 0
         for hit in pat.finditer(code):
             for c in code[pos:hit.start()]:

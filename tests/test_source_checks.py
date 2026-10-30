@@ -35,7 +35,11 @@ def errors(root, check):
 
 # ------------------------------------------------------------------------------------------------ A1
 def test_ptr_cast_scan():
-    text = ("/* 0x5de460, registers the exit callback */\n"
+    # the names the code uses are declared on the first line (an expression with an undeclared name has no cast
+    # for the front end: clang's recovery drops it)
+    text = ("/* 0x5de460, registers the exit callback */ int atexit(void (*)(void)); char *p, *t; "
+            "struct foo **q; void (__cdecl *r)(int); unsigned s; int u, full_data_6f242c, ai_OptionsFile; char *w;"
+            " int U_I(unsigned);\n"
             "#define CB ((void (*)(void))0x5de471)\n"
             "#if 0\nchar *dead = (char *)0x401234;\n#endif\n"
             "int f(void)\n{\n"
@@ -362,4 +366,5 @@ def test_placeholder_view_suffix_and_shared_comment():
     vals = [srcscan.placeholder_value(m) for m in srcscan.PLACEHOLDER_ADDR.finditer(S.code)]
     assert vals == [0x7603a0, 0x430100, 0x40100a, 0x7603a0], [hex(v) for v in vals]
     S = srcscan.Source("src/u/head.c", "extern char *a; extern char *b;  /* 0x10002000 */\n")
-    assert [(d[1], d[3]) for d in S.data(-1)] == [("a", ()), ("b", ((None, 0x10002000),))]
+    decls = [(1, 1, 1, 15, "a", "extern", False), (1, 17, 1, 31, "b", "extern", False)]    # cparse.model's vars
+    assert [(d[1], d[3]) for d in S.model_data(decls, -1)] == [("a", ()), ("b", ((None, 0x10002000),))]

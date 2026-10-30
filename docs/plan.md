@@ -839,3 +839,12 @@ is no collision. gildegold (in memory, nothing written): ai_ShotHitsGround / ai_
 (7 / 918 / 175), `count` 883 -> 375 (its locals and fields kept); local_refs about 1.5 s per name. The comment and
 directive edits (set_level's tags, unit join's line merge and guards, the declaration blocks) stay lexical (user
 decision).
+
+Done, stage 3 closed (2026-10-30): the regex C scanner is gone (Source.definitions / data, blank_alternatives,
+lint's regex file_scope_decls, _unrenamed, file_scope_prototypes, the extern-line regex of headers, the regex
+branches of the scan, the casts, the views, the macros and _provides; tools/scandiff.py, whose job it was). Every
+reader takes a model: a project file the scan's, a text that is none (a test's, one line) parsed alone
+(srcscan.model_alone). What stays lexical, by decision: the comments (address comments, tags, descriptions,
+exemptions), the directives (#include lines, @private, the guards), the declaration blocks and their
+declared_in, set_level's tags, unit join's line merge, the argument classes of `headers`, the view and cast
+patterns over a `#define` body. gildegold: lint, check and conflicts equal to the commit before.

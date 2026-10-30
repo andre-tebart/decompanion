@@ -239,7 +239,8 @@ def ensure_include(path: Path, line: str) -> bool:
 
 
 def declared_in(text: str, name: str) -> bool:
-    """A declaration or definition of `name` (a function or an extern) in a C text."""
+    """A declaration or definition of `name` (a function or an extern) in a C text: the declaration blocks'
+    own check (a text being written; the blocks are a lexical edit)."""
     code = TOKEN.sub(" ", text)
     return bool(re.search(rf"\b{re.escape(name)}\s*\(", code) or re.search(rf"\bextern\b[^;]*\b{re.escape(name)}\b", code))
 
