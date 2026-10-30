@@ -337,6 +337,7 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 | M6 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
 | M7 parallel sessions | the `names.log` fold at the merge (the log and `dcp rename` itself are M4), claims, `dcp merge`, `dcp session *`, skills, pre-commit hook | two worktrees rename one address differently and edit neighbouring functions; `dcp merge` resolves without hand conflicts; G3 passes; a full /dcp-session round on server.dll |
 | M8 second target | GildeGold.exe as a second target of guild-server (the target itself, its toolchain declaration and archives, setup and the gate run since the multi-target round of 2026-10-29: game code 0x401000..0x5dd3e0, CRT from 0x5de4a0; open: the exe has no `.reloc`, so W3 finds nothing and ~0xc6000 bytes of its game code stay unknown — a `.data` ordered literal scan and code-pointer evidence replace the reloc evidence), rule `X.same.code` (section 1.5) transferring names, sources and the dll's data references to the exe's identical functions; amended 2026-10-29: `rea` is migrated after all, into its own project `../gildegold` (section 13) | setup report rediscovers notes/binary-facts.md (zlib range, CRT start 0x5de4a0, VC6 SP5+PP /O2); every exported or CRT-named dll function with an identical copy in the exe is named there at the proven level |
+| M9 gap data | (section 14) the gap ledger (`D.gap`, `dcp data gaps`): the bytes of the data sections no definition covers, with their users and owner candidates; `dcp data claim` (name, type, size, owner by address order: splits the gap, moves the definition, writes the one header declaration, rewrites the externs and the use sites; dry run unless --write); then the generated gap block and gap header under build/ in place of gildegold's hand-kept block in src/main/tail.c and the `extern GAPDATA` lines of the heads | on gildegold: a claim of a `full_data_` gap used by one unit moves it with `dcp check` unchanged (no new D1 / D4, no M1, the users still match); a claim between two units' blocks is refused with both candidates and their evidence; with the generated block the 707 definitions and ~990 extern lines are gone from src/ and every byte match is kept |
 
 ## 8. What is lifted from `rea` (paths under `C:\Users\andre\Documents\rea\tools\gildegold\`)
 
@@ -581,3 +582,51 @@ later). Measured on gildegold with tools/bench.py (one-line edits of a function'
   (no daemon): build after an edit 7.5 s -> 5.0 s, diffclass / asmdiff / grade / next 2.2 .. 6.1 s -> 0.6 s,
   dump / why / draft --show 1.2 s -> 0.55 s, rename 13 s -> 6.2 s. `tools/bench.py --verify` (a forced
   recompute in a fresh process, DCP_NO_SHORTCUTS=1) agrees with the incremental store after every scenario.
+
+## 14. Gap data (M9, planned 2026-10-30, user decision): what the framework takes over from the projects
+
+The full link must lay out every byte of the data sections, also the bytes no definition covers yet. gildegold
+inherited rea's answer as source: 707 `GAPDATA full_<sec>_<addr>[N] = { .. };` definitions in a generated
+block at the end of `src/main/tail.c` (rea's tools/full_addrs.py; `#define GAPDATA __declspec(align(1))
+unsigned char`), ~990 `extern GAPDATA full_..[];` lines in 11 unit heads, and the rules in
+gildegold/notes/rea/campaign.md: the block is packed (VC6 aligns an object of 8 bytes or more to 8 and every
+object to 4, so unpacked gaps grow padding the ledger reads as part of the item before it: ~1300 overlap
+errors), each size is the exact distance to the next known address, the externs carry the alignment too (VC6
+takes an object's alignment from its first declaration), and the macro exists because `gen` takes a `(` in a
+declaration for a prototype. The tools that made the block (gap_fix.py, full_addrs.py) stayed in rea; in
+decompanion only Q2 knows the names (it flags `full_data_*` as placeholder identifiers). A match-base session
+(2026-10-30) showed what that costs: a gap that a worker named kept its untyped `GAPDATA` form in several heads
+(`main_NetHost`, `main_NetSaveName`, `main_NetGameRecord`), and the skill now carries a long paragraph of
+by-hand steps (dcp-match-base 2.5, "Gap data") for what is one mechanical operation plus a judgment.
+
+What a gap is: bytes of the original's data sections that no symbol of ours covers. Name, type, extent and
+owner are all unknown; a gap runs to the next known address and may hold several objects; its place in main's
+tail.c says nothing about ownership. The owner follows from the address: VC6 lays out one object's data
+contiguously in link order, so an address between two definitions of one unit is that unit's.
+
+Steps, in this order (the second is useful without the third):
+1. The gap ledger. Rule `D.gap` [derived]: the ranges of the data sections no definition covers (least size,
+   as D1), with the unit blocks they lie in or between (the unit data blocks of `dcp layout literals` and
+   `dcp data map`). `dcp data gaps [UNIT|LO..HI]`: each gap with its range, its users (functions, units) and
+   the owner candidates with their evidence (`owner=<unit> by=between|users` or `owner=? between=A,B`).
+2. `dcp data claim ADDR NAME TYPE [--size N] [--unit U] [--write]`: checks the owner (refuses an address
+   between two units' blocks with users in both, printing both candidates and their evidence, unless `--unit`
+   names one), splits the gap (the rest stays a gap at its own address), places the definition in the owner's
+   head.c / tail.c in address order with its address comment and the original's initialised bytes in the
+   type's spelling, writes the one declaration into `include/<unit>.h`, drops every `extern GAPDATA` of the
+   claimed range and rewrites the use sites (`(unsigned)&full_data_X` -> `&NAME`, `U_I(...)` -> `NAME`, an
+   offset into the gap -> the field or element); then the trial compile and `dcp check` of `dcp data fix`
+   (datafix.py) decide: no new D1 / D4, no M1, the users that matched still match (`M.data.site`), else
+   nothing is written and the refusal says which check failed. Dry run by default, like `dcp data fix`.
+3. The generated gap block. The ledger's gaps become an object of their own, generated under build/ (the
+   `GAPDATA` definitions packed as today) with a generated header of the `extern GAPDATA` declarations that the
+   amalgamation includes; gildegold's block in `src/main/tail.c` and the externs in the heads go away, and a
+   claim shrinks the generated block by itself. The `full_<sec>_<addr>` names stay (they hash the address, so
+   use sites in src/ stay valid). Open: where the gap object goes in the link order. Today the whole block
+   sits in main's object, so the relinked image places every gap after main's data, not at its address; a
+   gap object per unit block (or the gaps of a unit emitted into its amalgamation's data after its own
+   definitions) moves toward whole-image identity, and a gap between two units' blocks needs its own object
+   in the link order between them. Decide with the link's data-placement report before building it.
+
+Then the skill's "Gap data" paragraph becomes "settle the name and the type from the users and the bytes, then
+`dcp data claim`", and the layout passes keep only the boundary cases (`owner=?`).
