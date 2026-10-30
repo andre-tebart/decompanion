@@ -75,14 +75,14 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
 2. **layout** (`dcp layout ...`): declarations (`decl/*.dcl`, `ledger/decl.py`), address comments in one
    file per function (`ledger/srcscan.py`), the analyzer's drafts (`ledger/drafts.py`), boundary evidence
    (`L.analyze`: literal first users, fill before a start, leaked source paths), unit extents and status
-   (`L.unit.extent`), and the checks L1, L3..L11 (`rules/layout.py`). The layout tooling (milestone 4): a
+   (`L.unit.extent`), and the checks L1, L3..L10, L13..L16 (`rules/layout.py`). The layout tooling (milestone 4): a
    draft for every function from the analyzer (`dcp setup`, `dcp report`), the reading commands (`dcp disasm`, `dump`, `refs`,
    `layout literals`, `layout starts`, `layout fptrs`), drafting (`dcp unit new|join|rename`, `dcp draft`, `dcp rename`,
    `names.log`), the session protocol (`dcp session start|status|wrap`; the wrap report lists the grade changes
    against the session's base) and the agent skills `dcp-layout` and `dcp-match-base` (8 functions from `dcp
    next` raised to shape + readable or escalated). See [docs/layout.md](docs/layout.md).
-3. **match** (`dcp build`, `grade`, `next`, `link`, `check`): one amalgamation per unit and target (head.c +
-   fragments in address order behind `#line`), one CL.EXE per stale unit in a pool (stale = source, flags or
+3. **match** (`dcp build`, `grade`, `next`, `link`, `check`): one file per unit, `src/<unit>.c`, compiled as it
+   stands per target (a target-only function under `#if` on its `DCP_TARGET_<name>`), one CL.EXE per stale unit in a pool (stale = source, flags or
    include-set contents changed: an edited header recompiles only its includers), masked compare with the DLL
    relocation aid (`M.match` [proven], `M.draft`), M8..M10, data placement (`M.data.site` / `.content` /
    `.draft`, D1 D4 D5 D6), two grades per function (code `draft -> shape -> byte`, readability `draft ->
@@ -186,7 +186,7 @@ dcp status: server
     run   dcp analyzer declare ghidra|rea|none [root=DIR] [file=PATH] --why "..."
 
  7. layout             target server
-    need  311 of 311 functions of the game code without a fragment; units open=0 separated=0
+    need  311 of 311 functions of the game code without a source; units open=0 separated=0
     seen  next=0x10001000 kind=func size=304 unit=- start=immediate analyzed=yes (dcp layout next: the evidence)
     run   dcp session start
     then  dcp layout next
@@ -278,7 +278,7 @@ dcp status: server
     ...                 # confirm it: dcp analyzer declare ghidra --why "..."
 
  2. layout             target server
-    need  311 of 311 functions of the game code without a fragment; units open=0 separated=0
+    need  311 of 311 functions of the game code without a source; units open=0 separated=0
     ...
 
 next: dcp analyzer declare ghidra|rea|none [root=DIR] [file=PATH] --why "..."
@@ -314,7 +314,7 @@ uv run dcp diffclass NAME                 # the hunk classes
 uv run dcp escalate NAME "why"            # @deep why (dcp stuck NAME "why"; --clear)
 uv run dcp link                           # the full link, unresolved externals classified
 uv run dcp lint                           # libclang: M5 (one line per symbol, against its definition) / M6 / M7, Q7
-uv run dcp headers conflicts UNIT H..     # what including headers into head.c collides with, clang + VC6 /Zs (--write: includes + duplicates)
+uv run dcp headers conflicts UNIT H..     # what including headers into a unit's head collides with, clang + VC6 /Zs (--write: includes + duplicates)
 uv run dcp toolchain probe                # the flag grid over the byte-matched functions
 uv run dcp promote [--accept-falls]       # raise the grade baseline ledger/grades.tsv (main only; refuses a fall)
 uv run dcp accept FN --to shape --why ..  # lower one function's baseline entry, the reason next to it (main only)
@@ -369,7 +369,7 @@ timeout = 60                                        # seconds per function for G
 Layout:
 
 ```
-uv run dcp layout next [-n N] [--start ADDR]   # the first function without a fragment, with its evidence
+uv run dcp layout next [-n N] [--start ADDR]   # the first function without a source, with its evidence
 uv run dcp layout units [-v]                   # the unit table: range, status, boundary levels, open bytes
 uv run dcp layout unit propose 0x10008cb0..0x10008d20 --name dllmain --by guess --why "DllMain, Init, Exit"
                                                # runs L3/L4/L7/L8 on the proposal, writes the boundary lines
@@ -382,8 +382,9 @@ uv run dcp refs Init                           # everything that names a functio
 uv run dcp layout starts 0x10008c00..0x10009000     # every start with its evidence
 uv run dcp layout literals 0x10008c00..0x10009000   # the literal-pool view (B-LIT): first users, blocks, interleaving
 uv run dcp layout fptrs UNIT                        # function pointers in data (tables) with their units
-uv run dcp unit new NAME --range 0xA..0xB --by guess --why "..."   # propose + head.c, include/NAME.h, open.md
-uv run dcp draft --next                        # the next function's fragment (the analyzer's pseudocode or a @rough skeleton)
+uv run dcp unit new NAME --range 0xA..0xB --by guess --why "..."   # propose + src/NAME.c, include/NAME.h, notes/units/NAME.md
+uv run dcp draft --next                        # the next function into its unit's file (the analyzer's pseudocode or a @rough skeleton)
+uv run dcp fn NAME|0xADDR                      # one function of the sources: its file, lines and text
 uv run dcp unit join A B --why "..."           # B into A (grades must not change)
 uv run dcp unit rename OLD NEW --by leaked|tag|guess --why "..."
 uv run dcp rename OLD NEW --why "..."          # one identifier (OLD may be [TARGET:]0xADDR); names.log

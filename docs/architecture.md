@@ -168,8 +168,8 @@ never stored:
 | `toolchain.cflags` | no flags declared, or no reason | the wizard's flags; the probe | `dcp toolchain declare cflags=` | M.flags.proven (`dcp toolchain probe`) |
 | `libs.archives` (due once the root is declared) | no archives declared, or no reason | `dcp libs candidates` (build/libcand.py: every run-time archive placed on its own, cached per image and archive) | `dcp libs declare ARCHIVE...` | S.crt.code places the members, S2 / S5 count what is missing |
 | `analyzer` | `[analyzer]` has no reason | the plugin, whether it is installed, the drafts | `dcp analyzer declare` | L.analyzer, L9 |
-| `layout` | functions without a fragment, open units | the first open function | `dcp session start`, `dcp layout next` | L1..L11 |
-| `match` | fragments below byte + readable | the first item of the base queue | `dcp next` | the grades |
+| `layout` | functions without a source, open units | the first open function | `dcp session start`, `dcp layout next` | L1..L10, L13..L16 |
+| `match` | functions below byte + readable | the first item of the base queue | `dcp next` | the grades |
 
 A declaration always carries a reason (`--why`, refused without one) and lands in decompanion.toml as `key =
 value` plus `reason.<key> = "..."` in the same table (`tomledit.py`, a line editor that keeps the comments); it is

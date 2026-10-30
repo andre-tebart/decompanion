@@ -5,7 +5,7 @@ description: Run one layout session of a decompanion project - for 30 minutes (t
 
 # Layout session: 30 minutes, the main checkout
 
-Goals, in order: (1) find the unit boundaries (one directory `src/<unit>/` per translation unit of the
+Goals, in order: (1) find the unit boundaries (one file `src/<unit>.c` per translation unit of the
 original); (2) draft C for every function of each unit in address order, no gaps (a hard or big function gets a
 `@rough` draft, it is never skipped); (3) quick byte fixes only.
 
@@ -20,9 +20,14 @@ Hard rules
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
   state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp accept` write it).
-- The sources are the state: the address comment on line 1 of every fragment (`/* 0x10001234, what it does */`),
-  the declarations in `decl/*.dcl` (unit boundaries, dead bytes, starts, names; always with a reason after
-  ` -- `), renames in `names.log` (written by the dcp commands), notes in `src/<unit>/open.md`. Nothing else.
+- The sources are the state: the address comment directly above every function's definition
+  (`/* 0x10001234, what it does */`), the declarations in `decl/*.dcl` (unit boundaries, dead bytes, starts,
+  names; always with a reason after ` -- `), renames in `names.log` (written by the dcp commands), notes in
+  `notes/units/<unit>.md`. Nothing else.
+- A unit is one file, `src/<unit>.c`, in the original's TU order: the head region (includes, types, prototypes,
+  the dcp declaration block: everything above the first function), then the functions with the data between
+  them. `uv run dcp fn NAME|0xADDR` prints one function with its file and lines (`at=src/<unit>.c:FIRST-LAST`):
+  read a function that way, and edit it in place.
 - Explicit or computed: a boundary is a declaration with the evidence as its reason, or it is open. Never write
   a guess without saying it is one (`--by guess`).
 - No byte-matched function may fall (`dcp check` fails on M1). `dcp build` exits 0 before every commit.
@@ -49,14 +54,14 @@ Hard rules
    checks, no estimating. Until a clock line says `over=yes` the session is not over. The 30 minutes bound the
    work loop only: the wrap-up has no time limit. The only failure is ending the turn before `over=yes` (a
    complete layout is the one exception, below), not the clock running out mid-function.
-3. Read `src/<unit>/open.md` of the unit the `next=` line names (its **Open work** first) when it exists.
+3. Read `notes/units/<unit>.md` of the unit the `next=` line names (its **Open work** first) when it exists.
 
 ## 2. Work loop (until the clock says over=yes)
 
 Always work the first open function; never skip one, never stop early, never end the turn to wait.
 
 1. `uv run dcp layout next` - first the clock line (`over=yes`: go to section 5 now), then the first function of
-   the game code without a fragment, with its evidence: its
+   the game code without a source, with its evidence: its
    start (`how=`: export, call, tail, immediate, fptr, decl, the analyzer's key such as `ghidra` ...), its
    callers and their units, the fill before it, the literals it uses first, leaked source paths, whether the
    analyzer has a draft (`analyzed=`; `uv run dcp draft 0xADDR --show` prints it unchanged).
@@ -69,17 +74,19 @@ Always work the first open function; never skip one, never stop early, never end
      and stays open; declare its end as soon as evidence shows it.
    - `kind=unknown` (code no start explains): find the start (`uv run dcp disasm 0xADDR`, `uv run dcp layout
      starts LO..HI`) and declare it (`uv run dcp decl add "0xADDR start -- why"`), or declare dead bytes (section 3).
-2. `uv run dcp draft --next` - writes `src/<unit>/f_<addr>.c`: line 1 `/* 0x10001234, <unit>_10001234 */`, the
-   body from the analyzer's draft with the ledger's names (callees that the ledger names are spelled that way,
-   others as placeholders `<unit>_<addr>` / `unk_<addr>`, data as `DAT_<addr>`), the prototype in
-   `include/<unit>.h`, the includes and K&R declarations it needs in `src/<unit>/head.c`. Without a draft it
-   writes a `@rough` skeleton with the disassembly as a comment: fill it from `uv run dcp disasm 0xADDR`.
-3. `uv run dcp build` - compile. Fix what the compiler says in the fragment (section 2.1). Then give the
+2. `uv run dcp draft --next` - inserts the function into `src/<unit>.c` in address order (before the unit's
+   next function, else at the end; `file=` and `uv run dcp fn 0xADDR` show where): the address comment
+   `/* 0x10001234, <unit>_10001234 */` directly above it, the body from the analyzer's draft with the ledger's
+   names (callees that the ledger names are spelled that way, others as placeholders `<unit>_<addr>` /
+   `unk_<addr>`, data as `DAT_<addr>`), the prototype in `include/<unit>.h`, the includes and K&R declarations
+   it needs in the unit's head region. Without a draft it writes a `@rough` skeleton with the disassembly as a
+   comment: fill it from `uv run dcp disasm 0xADDR`.
+3. `uv run dcp build` - compile. Fix what the compiler says at the line it names (section 2.1). Then give the
    function a description in its address comment (`/* 0x10001234, sends the login reply */`) and better names
    for what you understood (section 4).
 4. `uv run dcp grade <unit>` - grades and distance per function. Only quick byte fixes (the original's size, a
    few bytes off, one local cause in `uv run dcp asmdiff NAME`); at most two attempts, then note the near-miss
-   in the unit's open.md.
+   in the unit's notes.
 5. Commit every few functions: `git add -A && git commit -m "<unit>: drafts 0x10001130..0x10001510 (layout)"`
    (`dcp build` exits 0 first).
 
@@ -94,7 +101,7 @@ What `dcp build` typically says about a fresh draft and what to do:
 - `left of '._2_4_' must have struct/union type`: Ghidra's partial access to a field; rewrite it as a cast of
   the field's address or as the real fields (`*(int *)&local_20.sa_data[2]`), or use the real struct.
 - `illegal indirection` on a `DAT_` name: the datum is a pointer or an array; change its declaration in the
-  `/* dcp draft: ... */` block of head.c (`extern char *DAT_10027a2c;`). Types of data are a guess until the
+  `/* dcp draft: ... */` block of the unit's head (`extern char *DAT_10027a2c;`). Types of data are a guess until the
   match phase places them; keep them minimal.
 - `in_EAX`, `unaff_ESI`, `extraout_ECX`: registers Ghidra could not tie to a parameter; read the call sites
   (`uv run dcp refs 0xADDR`, `uv run dcp disasm CALLER`) and make them parameters or locals.
@@ -114,7 +121,7 @@ What `dcp build` typically says about a fresh draft and what to do:
   unsigned compare, the operand order of a commutative operation.
 - Warnings that are expected while a unit is half drafted: `M7 call without a prototype` (the K&R lines),
   link `unresolved undrafted=` (placeholders of functions and `DAT_` data the sources do not define yet, exports
-  without a fragment): open work, not errors. `unresolved data=` / `other=` are errors: a real name nothing
+  without a source): open work, not errors. `unresolved data=` / `other=` are errors: a real name nothing
   defines (give it an address comment or a definition).
 
 ## 3. Boundaries: the evidence, strongest first
@@ -141,8 +148,8 @@ Proof is often impossible; spend effort only on contrary evidence. Each kind and
 6. **guess**: what the functions do (`--by guess`, the reason says why).
 
 Commands: `uv run dcp unit new NAME --range 0xSTART..0xEND --by ... --why "..."` (runs L3 / L4 / L7 / L8 on the
-proposal first and refuses errors, writes the boundary lines and the files `src/NAME/head.c`,
-`include/NAME.h`, `src/NAME/open.md`); `uv run dcp layout units -v` (every unit: range, status, boundary
+proposal first and refuses errors, writes the boundary lines and the files `src/NAME.c` (its head),
+`include/NAME.h`, `notes/units/NAME.md`); `uv run dcp layout units -v` (every unit: range, status, boundary
 levels, open bytes, undrafted functions, dead bytes, unlinked helpers, L10); `uv run dcp layout unit propose`
 (the check without the files); `uv run dcp decl add "LINE"` (one declaration, inserted in order).
 
@@ -150,20 +157,21 @@ Unexplained bytes: code no function explains inside a unit keeps it open (`open_
 function (declare its start: `0xADDR start -- reached only through a table at 0x...`) or it is dead
 (`uv run dcp decl add "0xSTART..0xEND bytes dead -- unreachable copy of the epilogue after a noreturn call"`:
 the unit owns the bytes, R5). L10 (a warning) names walked code a byte-matched function does not contain.
-A helper the original inlined everywhere (so no address) lives in `src/<unit>/u_<name>.c` with the first line
-`/* unlinked, why */`; it compiles with the unit and gets no grade.
+A helper the original inlined everywhere (so no address) stands in its unit's file with the address comment
+`/* unlinked, why */` directly above it; it compiles with the unit and gets no grade.
 
 ## 4. Joins and renames
 
 - **Join** as soon as evidence proves two units are one (a function that needs its neighbour's code, literal
-  blocks that interleave, one leaked file): `uv run dcp unit join A B --why "..."` (B directly after A). It moves
-  B's fragments into A (git mv), merges head.c, the headers and open.md, rewrites the boundary lines and B's
-  placeholders, builds before and after and refuses (exit 1) when a grade or the error count changed - that is
-  evidence to keep them apart: revert (`git checkout -- . && git clean -fd src include`). Commit
+  blocks that interleave, one leaked file): `uv run dcp unit join A B --why "..."` (B directly after A). It puts
+  B's head lines that A lacks into A's head and B's functions after A's in `src/A.c`, merges the headers and the
+  notes, rewrites the boundary lines and B's placeholders, builds before and after and refuses (exit 1) when a
+  grade or the error count changed - that is evidence to keep them apart: revert
+  (`git checkout -- . && git clean -fd src include notes`). Commit
   `<A>: join <B> (layout)`.
 - **Unit rename** when a stronger name source turns up (`leaked` > `tag` > `guess`):
-  `uv run dcp unit rename OLD NEW --by leaked|tag --why "..."` (directory, header and guard, includes, boundary
-  lines, placeholders `OLD_<addr>`, names.log). Commit `<old> -> <new> (layout, <by>)`.
+  `uv run dcp unit rename OLD NEW --by leaked|tag --why "..."` (its file and notes, header and guard, includes,
+  boundary lines, placeholders `OLD_<addr>`, names.log). Commit `<old> -> <new> (layout, <by>)`.
 - **Function and data names**: `uv run dcp rename OLD NEW --why "..."` (whole words in src/ and include/,
   refuses a collision with an `error=` record and exit 1, lists every changed file, names.log). Rename a placeholder as soon as the meaning is clear; `uv run dcp refs NAME`
   first shows every use.
@@ -173,7 +181,7 @@ A helper the original inlined everywhere (so no address) lives in `src/<unit>/u_
 - The prototype of a function lives in its defining unit's header `include/<unit>.h` (`dcp draft` puts it
   there); other units include that header. Never write a second prototype elsewhere.
 - Never change other functions' bytes: no edits to types, macros or declarations another unit's matched code
-  depends on; add, do not change (an alias type, a second view, a cast macro local to the fragment).
+  depends on; add, do not change (an alias type, a second view, a cast macro local to the unit).
 - Never rename struct fields or types in a layout session.
 
 ## 5. Wrap up (when the clock says over=yes)
@@ -182,7 +190,7 @@ A helper the original inlined everywhere (so no address) lives in `src/<unit>/u_
 2. `uv run dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
    computed report (check before -> after, units declared / joined / renamed, functions drafted with their
    grades, renames, the units touched with their boundary levels, the next item). It must say `gate: ok`.
-3. Update `src/<unit>/open.md` of every unit you touched: **Open work** first (rough functions, near-misses,
+3. Update `notes/units/<unit>.md` of every unit you touched: **Open work** first (rough functions, near-misses,
    boundary doubts with their leads), then the findings (what the unit is, the evidence for its boundaries).
    No session log: git and the report are the record.
 4. Commit: `git add -A && git commit -m "session: layout wrap (<units>)"` (the baseline `ledger/grades.tsv` and the

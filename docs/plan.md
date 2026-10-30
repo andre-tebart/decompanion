@@ -35,8 +35,9 @@ its own evidence).
 
 Decisions taken with the user (2026-10-29): new repo named decompanion; server.dll first; confidence = enumerated
 evidence ladder per fact (no numbers); VC6 PE32 x86 only, behind plugin seams; **one file per function** compiled
-through a generated per-unit amalgamation; unit-level / pre-source declarations in **`decl/*.dcl`** files (one fact
-per line, sorted by address); function and data addresses stay in the sources.
+through a generated per-unit amalgamation (superseded 2026-10-30 by **one file per unit**, section 19); unit-level /
+pre-source declarations in **`decl/*.dcl`** files (one fact per line, sorted by address); function and data
+addresses stay in the sources.
 
 Amendment (2026-10-29, after M1): **one project may hold several binaries of one codebase** ("targets": for
 The Guild Gold the server dll, GildeGold.exe and GildeGold_TL.exe were built from one tree on one day). The
@@ -96,7 +97,7 @@ dead`, `jumptable fn=`, `foreign kind=`, `name`, `fptr`, ...), file kept sorted 
 in place; unsorted / duplicate key / missing reason = gate error). Sorted-by-address is what keeps parallel
 branches in different hunks.
 
-Source layout per unit: `src/<unit>/head.c` (includes, local types, prototypes, leading file-scope data),
+Source layout per unit (until section 19, which replaces it by `src/<unit>.c`): `src/<unit>/head.c` (includes, local types, prototypes, leading file-scope data),
 `src/<unit>/f_<addr>.c` (the function plus the file-scope definitions that precede it in TU order, so static data
 order and literal pooling follow address order naturally), `include/<unit>.h` (public prototypes with address
 comments). `dcp build` writes `build/amalg/<unit>.c` = head + fragments in address order, each behind
@@ -264,8 +265,9 @@ merge BRANCH...` · `dcp session prepare|wrap|report|close` · `dcp lint`.
 
 ## 4. Parallelism and merge
 
-- **Files**: one function per file → workers on different functions never touch the same file; `head.c`,
-  headers and `.dcl` files are the only shared ones and change additively (sorted inserts).
+- **Files**: one file per unit (section 19; one function per file before) → one worker per unit; a unit's file
+  is that worker's alone, headers and `.dcl` files are the only shared ones and change additively (sorted
+  inserts).
 - **Names**: `names.log` lines `ts addr|TYPE.field|name kind old -> new by:<wt> why:<text>`; `merge=union`;
   fold at merge: latest wins (R-N1), tie → shard owner (R-N2), else `--pick ADDR=NAME`; the loser's name is
   appended as a further event. Lines tagged `@original` / `@alias` are never rewritten (N4). N1 cross-checks the
@@ -357,7 +359,9 @@ order, `repo/seed.py` → overlay. Drop: `game/*` (GildeGold-specific; `dbg` can
 (computed or `decl/`); `game_range.toml` (computed from lib units); one CL per flag group (poisoned stamps);
 global headers digest (include-set hash); objdump via tempfiles (capstone blobs); ten JSON caches (one store);
 regex-based CRT placement at link time (signature store at setup); renames computed by csv archaeology
-(`names.log` + N1 cross-check); "behaviour" grade name (overclaims: "shape").
+(`names.log` + N1 cross-check); "behaviour" grade name (overclaims: "shape"). Of the second (section 19): one
+file per function through a generated amalgamation (merge-free in git only; two workers in one unit still
+interfere in the bytes, and the composition, order files and `#line` segments cost more than they bought).
 
 ## 10. First implementation step (after approval)
 

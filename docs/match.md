@@ -8,14 +8,15 @@ declared candidate (`L.src`), the match rules verify it and emit facts above the
 
 ```
 uv run dcp build [--target T | --all-targets] [--force]
-uv run dcp unit cat UNIT          # the amalgamation as the compiler sees it
+uv run dcp fn NAME|0xADDR         # one function: its file, lines (its span) and text
 ```
 
-One translation unit per (unit, target): `build/amalg/<target>/<unit>.c` = `src/<unit>/head.c`, the fragments
-`f_<addr>.c` in the target's address order, the unlinked fragments `u_<name>.c` in name order, `tail.c`, each
-behind `#line 1 "<its path>"` (diagnostics name the fragment). A fragment belongs to the targets its address
-comment lists (a bare address: the default target), an unlinked one to every target; a unit without a
-fragment of the target is no unit of it.
+One translation unit per unit file: `src/<unit>.c`, compiled as it stands, with the target's define
+`DCP_TARGET_<name>` (Toolchain.define_flag; build/tu.py): a function of some targets only stands under `#if` on
+their macros. A function belongs to the targets its address comment lists (a bare address: the default
+target), an unlinked one to every target; a unit without a function of the target is no unit of it. The
+compiler's diagnostics name the unit's file and its physical line (a `#line` name or pin of the file mapped
+back).
 
 Flags: the target's `cflags`, then the cflags of the first `[[toolchain.unit]]` whose `glob` matches the unit
 name (optionally restricted by `targets = [...]`; a `reason` is mandatory):
@@ -27,10 +28,10 @@ cflags = ["/Ob1"]
 reason = "zlib's own makefile flags"
 ```
 
-Include directories: `src/<unit>` and `include/`; the toolchain adds its own headers (VC6: `VC98/Include`,
+Include directories: `include/` (a quoted include also resolves beside the file, in `src/`); the toolchain adds its own headers (VC6: `VC98/Include`,
 `[toolchain] include_dirs` first) and libraries (`VC98/Lib`, `[toolchain] lib_dirs` first).
 
-A unit is stale iff its source hash (the amalgamation's text), its flags hash or its include hash (the contents
+A unit is stale iff its source hash (the file's text), its flags hash or its include hash (the contents
 of every file of its actual include set) differs from its `tu` row in the store. The include set comes from
 the preprocessor (VC6: `CL /E`, the `/P` listing on stdout, its `#line` directives) and is cached per (source
 hash, flags hash, listing hash of every include directory); a changed file of the set makes the unit stale and
@@ -46,14 +47,14 @@ Without the toolchain installed nothing compiles; the units are reported as warn
 
 | rule | level | criterion |
 |---|---|---|
-| `M.compile` | proven | one `build` fact per unit (ok, object, flags, diagnostics, stale); a failed or never compiled unit is an error, a stale one a warning; `M.gen`: every function of the object has exactly one fragment of the unit and vice versa |
-| `M.match` (R1) | proven | the function's section bytes equal the image's at the fragment's address with our relocated fields masked; the original does not continue after our end (only fill up to the next start); for a dll every absolute relocation site of ours is a base-relocation site and the counts agree (`relocs 7/7`). Emits a `symbol` func (to the last non-fill instruction or the first switch table) and a `source` fact (what: match) |
+| `M.compile` | proven | one `build` fact per unit (ok, object, flags, diagnostics, stale); a failed or never compiled unit is an error, a stale one a warning; `M.gen`: every function of the object has an address comment of the target in the unit's file and vice versa |
+| `M.match` (R1) | proven | the function's section bytes equal the image's at the function's address with our relocated fields masked; the original does not continue after our end (only fill up to the next start); for a dll every absolute relocation site of ours is a base-relocation site and the counts agree (`relocs 7/7`). Emits a `symbol` func (to the last non-fill instruction or the first switch table) and a `source` fact (what: match) |
 | `M.draft` (R2) | ≤ declared | a compiled function that is no match owns the walk's extent: a `source` fact (what: draft) with why it differs |
 | `M8.reloc` | proven | for a match, or a dll function whose absolute sites the aid lines up, at every relocation site where our instruction and the original's at the same offset are the same (equal size, equal outside our relocated fields): M8 our relocation names X registered elsewhere than the original's site holds; M9 string literal bytes differ; M10 float constant bits differ |
 | `M.data.site` | proven | a byte-matched function's relocation confirms a data definition's address comment |
 | `M.data.content` | proven | the definition's initialised bytes (relocated fields and possible alignment padding masked) equal the image's at the declared address and occur nowhere else in initialised data |
 | `M.data.draft` | declared | every other data definition with an address |
-| `D.data` | — | D1 extent overlaps the next symbol (an error when even the least size reaches it, a warning when only alignment padding may: COFF has no sizes, an object's size runs to the next symbol), D4 definition order vs address order per unit and section kind (in the amalgamation's order, `order` files included), D5 a tentative definition in uninitialised data, D6 a pointer-table entry refers elsewhere than the original's |
+| `D.data` | — | D1 extent overlaps the next symbol (an error when even the least size reaches it, a warning when only alignment padding may: COFF has no sizes, an object's size runs to the next symbol), D4 definition order vs address order per unit and section kind (in the unit file's order, a header's definitions at the line that includes it), D5 a tentative definition in uninitialised data, D6 a pointer-table entry refers elsewhere than the original's |
 
 A data extent claims only the bytes the definition certainly owns (`least_size`).
 
@@ -174,15 +175,15 @@ empty notes; the next promote or accept writes the 8-column form.
 
 ## The full link (`dcp link`)
 
-LINK.EXE over the target's objects in the order of their first fragment's address, `/OPT:REF /OPT:ICF /MAP`,
+LINK.EXE over the target's objects in the order of their least function address, `/OPT:REF /OPT:ICF /MAP`,
 `/INCLUDE` of every external function symbol, for a dll `/DLL /BASE:<image base> /DEF:<generated from the
 exports with their ordinals>`, the target's archives, the import library of every imported DLL, a generated
 entry object when the start-up code calls an entry the sources name otherwise, and an alias object of weak
 externals for the several source names of one data address. Output under `build/link/<target>/`; unresolved
 externals are classified into `data` (a data name of the sources nothing defines), `renames` (a stale name of
-a function whose fragment defines another), `aliases` (a name at another data object's address), `undrafted`
+a function whose source defines another), `aliases` (a name at another data object's address), `undrafted`
 (a placeholder or registered name of an address the sources do not define yet, and every export without a
-fragment, which the generated .def leaves out: open layout work, milestone 4), `library` (a name no class above
+source, which the generated .def leaves out: open layout work, milestone 4), `library` (a name no class above
 takes that an archive the target does not declare defines: an archive directly in the project's `libs/` or the
 toolchain's library directories, `[toolchain] lib_dirs` first; the line names the archives and the `dcp libs
 declare` that adds one; the symbol tables come from each archive's first linker member, indexed once per
@@ -206,7 +207,7 @@ the library's flags and prove nothing about the user's units.
 ## Lint (`dcp lint`)
 
 clang, in process through the LLVM installation's libclang (source/cparse.py; `[lint] libclang = ...`, else the
-libclang.dll beside `clang` on PATH, else `C:/Program Files/LLVM/bin/libclang.dll`), parses each amalgamation as
+libclang.dll beside `clang` on PATH, else `C:/Program Files/LLVM/bin/libclang.dll`), parses each unit's file (the target's define set) as
 C89 with MS compatibility against the toolchain's headers: M6 / M7 and Q7. The units one lint parses go to
 worker processes; a unit relinted alone (after an edit of it) is parsed in process and kept live, so the next
 edit reparses it over its precompiled preamble. M5 comes from an
@@ -229,7 +230,7 @@ compared as its default-promoted prototype (`f(x) short x;` as `f(int x)`), a da
 A pair whose two sides read the same after whitespace normalisation, or one side of which has an error of its
 own, is clang's error recovery and not reported. Only `@original why` / `@vc6 why` on a line exempt a
 diagnostic, and for M5 only on a declaration in src/: a header is included into many units and repeats the
-definition's spelling, so a unit's own spelling belongs in that unit, as a cast macro in its head.c
+definition's spelling, so a unit's own spelling belongs in that unit, as a cast macro in its head region
 (`#define name_X ((T (*)(..))name) /* @original why */`); the M5 line of a marked header spelling says so and
 names the defining unit and the spelling to repeat. A header the original only included into some units
 (zlib's deflate.h / infutil.h each define `struct internal_state`) says so with `@private UNIT[,UNIT..]` in its
@@ -238,8 +239,8 @@ an M5 error. Per-unit results are cached by the unit's text, the clang arguments
 hash. `dcp check` lints when libclang is installed.
 
 `dcp headers conflicts UNIT HEADER..` (source/headers.py) answers "what would including these headers into
-the unit's head.c collide with" before the include is made: the unit is parsed twice the way lint parses it,
-as it is and with the includes after head.c's last one (or before the first file-scope statement using a name
+the unit's head collide with" before the include is made: the unit is parsed twice the way lint parses it,
+as it is and with the includes after its last one (or before the first file-scope statement using a name
 the headers declare, when that comes first: a head that uses a duplicate above its last include; `--at LINE`
 chooses the line), and only the trial's new diagnostics count:
 `supersedes` (a declaration of the unit the header declares differently), `duplicate` (one it repeats with
