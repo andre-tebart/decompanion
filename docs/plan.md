@@ -673,3 +673,19 @@ debt shows as errors and the gate keeps it from coming back:
   carries `@original` with an address of the original whose bytes need it, else an error.
 - **Debt count:** per unit, the cast / view macros, `@keep` copies and `@original` exemptions in `dcp status`
   (and the session wrap), so the debt stays visible as it is paid down.
+
+## 17. Accepted falls (queued 2026-10-30, user decision: "queue both")
+
+M1 holds every function at its baseline grade (ledger/grades.tsv); the only way past a fall is `dcp promote`,
+which rewrites the whole baseline and accepts every current fall at once, without a reason. The header
+passes in gildegold met a fall the user accepts (ai_Unk483a60, byte -> shape: any include from ai.h flips
+it, a VC6 declaration-set tie-break that blocked ai.h from including any header), so the escape hatch needs
+to be narrow:
+- `dcp accept ADDR --to shape|draft --why TEXT`: lowers that one function's baseline entry, records the
+  reason (and the commit) next to it in the ledger; M1 then holds it at the accepted grade.
+- `dcp promote` raises entries only; a fall it finds that no `dcp accept` covers is refused (listed, nothing
+  written) unless `--accept-falls` is given.
+- dcp-match-base skill: the rule "never accept a regression" gets its exception: a byte or shape match that
+  declaration changes unrelated to the function flip (an empty include, an extra typedef or prototype) is a
+  tie-break, not evidence; when keeping it blocks typing, `dcp accept` the fall with that evidence.
+Built after the current gildegold header pass (it promotes once by hand, checking the single fall).
