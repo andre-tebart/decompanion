@@ -808,3 +808,13 @@ its tree digest once per file epoch, fsmemo.epoch); a text not written yet (a tr
 until stage 3. The argument classes of a call (an integer / float / string constant) stay lexical. gildegold:
 output equal on ls / he but the declaration-set counts (769 -> 771, 507 -> 564: the declarations the regex
 missed); 8.8 -> 8.5 s.
+
+Done, stage 2c system headers (2026-10-30): vc6.declaring_header indexes the C-calling-convention functions of
+VC98/Include as a C compile sees them (cparse.function_headers: one translation unit including every header in
+the order of preference, clang_getFunctionTypeCallingConv); the regex took declarations of dead branches too:
+math.h's float / long double variants of other platforms, crtdbg.h's _DEBUG-only functions, C++-only ones (226
+of 1062 names), and gave a name to a later header than an earlier one that declares it (_wchdir: wchar.h).
+draft.header_declaring: the declarations of the header's model. gildegold: `dcp draft --show` equal on three
+functions. Stage 2 is complete; the regex definitions / data scan (Source.definitions, Source.data,
+blank_alternatives, lint._file_scope_decls_regex) stays for the texts not on disk (`headers` trials, the
+editors' texts) and tools/scandiff.py until stage 3 moves the editors.

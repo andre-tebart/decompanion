@@ -228,21 +228,19 @@ class VC6(Toolchain):
         return self.tools.lib_path
 
     def declaring_header(self, name: str) -> str | None:
-        """The first header of VC98/Include whose text declares `name` as a `__cdecl` function (every C library
-        declaration of VC6's headers carries the calling convention: `_CRTIMP char * __cdecl strrchr(const char
-        *, int);`), the C89 standard headers first, then alphabetical (memset: string.h, not memory.h). Read once
-        per process."""
+        """The first header of VC98/Include that declares `name` as a cdecl function in a C compile (the C
+        library's: `_CRTIMP char * __cdecl strrchr(const char *, int);`), the C89 standard headers first, then
+        alphabetical (memset: string.h, not memory.h): the front end's (source/cparse.function_headers, the
+        project's libclang, else the default one), once per process."""
         idx = self.__dict__.get("_decls")
         if idx is None:
-            import re
-            idx = {}
-            pat = re.compile(r"\b__cdecl\s+\**\s*([A-Za-z_]\w*)\s*\(")
-            for d in self.tools.system_include:
-                if not d.exists():
-                    continue
-                for h in sorted(d.glob("*.h"), key=lambda q: (q.name.lower() not in C89_HEADERS, q.name.lower())):
-                    for m in pat.finditer(h.read_text(errors="replace")):
-                        idx.setdefault(m.group(1), h.name.lower())
+            from ...source import cparse
+            dirs = [d for d in self.tools.system_include if d.exists()]
+            headers = sorted({h.name for d in dirs for h in d.glob("*.h")},
+                             key=lambda n: (n.lower() not in C89_HEADERS, n.lower()))
+            if cparse._loaded is None and cparse.library(None) is not None:
+                cparse.load(cparse.library(None))
+            idx = cparse.function_headers(dirs, headers) if headers and cparse._loaded is not None else {}
             self.__dict__["_decls"] = idx
         return idx.get(name)
 

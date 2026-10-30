@@ -49,7 +49,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .. import analyzers
+from .. import analyzers, fsmemo
 from ..analyzers.base import Names as Spelling
 from ..ledger import srcscan
 from . import edit as E
@@ -269,10 +269,16 @@ def draft(p, view, names, a: int, unit: str | None = None) -> Draft:
 
 
 def header_declaring(root: Path, name: str, unit: str) -> str | None:
-    """The unit header of include/ that declares `name` (its own unit's first)."""
+    """The unit header of include/ that declares `name` (its own unit's first): a function or data declaration of
+    the front end's model of the header (srcscan.model_of), the regex (edit.declared_in) for a header the scan
+    does not hold."""
     skip = types_headers()
     for h in sorted((root / "include").glob("*.h"), key=lambda h: (h.stem != unit, h.name)):
-        if h.name not in skip and E.declared_in(h.read_text(errors="replace"), name):
+        if h.name in skip:
+            continue
+        text = fsmemo.read_text(h)
+        m = srcscan.model_of(root, f"include/{h.name}", text)
+        if any(d[1] == name for d in m["decls"]) if m is not None else E.declared_in(text, name):
             return h.name
     return None
 

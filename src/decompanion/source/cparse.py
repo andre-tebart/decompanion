@@ -450,6 +450,31 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
     return {"files": out, "deps": deps, "missing": missing}
 
 
+CC_C = 1                                          # CXCallingConv_C: cdecl
+
+
+def function_headers(sysdirs: list[Path], headers: list[str]) -> dict[str, str]:
+    """name -> the header (lower case) of every C-calling-convention function the system headers declare as a
+    C compile sees them (dead `#if` branches, `_DEBUG` and C++ only declarations are none), parsed as one
+    translation unit that includes `headers` in their order of preference; a name several headers declare
+    goes to the first of that order. The library must be loaded (load)."""
+    cc = _flags.get("clang_getFunctionTypeCallingConv")
+    if cc is None:
+        cc = _flags["clang_getFunctionTypeCallingConv"] = ci.conf.lib.clang_getFunctionTypeCallingConv
+        cc.argtypes, cc.restype = [ci.Type], ctypes.c_uint
+    text = "".join(f"#include <{h}>\n" for h in headers)
+    tu = ci.Index.create().parse("dcp_system_headers.c", args=args(sysdirs, []),
+                                 unsaved_files=[("dcp_system_headers.c", text)], options=KEEP_GOING)
+    order = {h.lower(): k for k, h in enumerate(headers)}
+    out: dict[str, str] = {}
+    for c in tu.cursor.get_children():
+        if c.kind == ci.CursorKind.FUNCTION_DECL and c.location.file is not None and cc(c.type) == CC_C:
+            h = Path(c.location.file.name).name.lower()
+            if c.spelling not in out or order.get(h, len(order)) < order.get(out[c.spelling], len(order)):
+                out[c.spelling] = h
+    return out
+
+
 _pool: ProcessPoolExecutor | None = None
 WORK = {"diagnostics": diagnostics, "model": model}
 
