@@ -37,6 +37,7 @@ in process (with its live unit).
 from __future__ import annotations
 
 import bisect
+import ctypes
 import os
 import re
 import shutil
@@ -211,26 +212,121 @@ def diagnostics(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path],
     return out
 
 
+_inlined = None
+
+
+def inlined(c: ci.Cursor) -> bool:
+    global _inlined
+    if _inlined is None:
+        _inlined = ci.conf.lib.clang_Cursor_isFunctionInlined     # not among the functions the bindings register
+        _inlined.argtypes, _inlined.restype = [ci.Cursor], ctypes.c_uint
+    return bool(_inlined(c))
+
+
+def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str | None = None,
+          parts: list[tuple[int, str]] | None = None, keep: str | None = None) -> dict:
+    """What the scan reads of one translation unit, per project file it holds (the parsed file's parts by its
+    `#line` names, or by `parts`, the [(physical line of its `#line 1 "<path>"`, path)] the caller composed the
+    text of: a `#line` pin inside a part (a declared original file name) is no part; every header below root it
+    includes):
+      defs  [(line, col, name, static)] of every function definition that is no inline helper
+      vars  [(line, col, end line, end col, name, kind, static)] of every file-scope data declarator: (line, col)
+            the start of its declaration (one per statement: several declarators share it), (end line, end col)
+            the end of the declarator (its initialiser included); kind extern (declared `extern` without an
+            initialiser) or def (a definition, a tentative one too)
+    plus `deps`, the absolute paths of every file the parse read besides the parsed one (the system headers
+    too). Columns count characters of the file's text (fsmemo.read_text), from 1. keep: as parse's."""
+    root = Path(root)
+    path = src if src.is_absolute() else root / src
+    text = path.read_text(errors="replace") if text is None else text
+    tu = parse(path, root, sysdirs, incdirs, text, keep)
+    lmap = (line_map(text, str(path)) if parts is None else
+            ([0] + [d for d, _ in parts], [(str(path), 1)] + [(r, 1) for _, r in parts]))
+    main = path.resolve()
+    main_lines = text.split("\n")
+    rootr = root.resolve()
+    files: dict[str, tuple] = {}         # clang's file name -> (parsed file?, the file below root or None)
+    raw: dict[str, list[bytes]] = {}
+
+    def where(loc: ci.SourceLocation):
+        if loc.file is None:
+            return None
+        f = loc.file.name
+        if f not in files:
+            p = Path(f).resolve()
+            inside = p.is_relative_to(rootr)
+            files[f] = (p == main, p.relative_to(rootr).as_posix() if inside else None)
+        is_main, rel_ = files[f]
+        line, col = loc.line, loc.column
+        if is_main:
+            bline = main_lines[line - 1].encode() if 0 < line <= len(main_lines) else b""
+            mf, line = locate(lmap, line)
+            p = Path(mf) if Path(mf).is_absolute() else root / mf
+            if not p.resolve().is_relative_to(rootr):
+                return None
+            rel_ = p.resolve().relative_to(rootr).as_posix()
+        elif rel_ is None:
+            return None
+        else:
+            if f not in raw:
+                raw[f] = Path(f).read_bytes().split(b"\n")
+            bl = raw[f]
+            bline = bl[line - 1] if 0 < line <= len(bl) else b""
+        return rel_, line, len(bline[:col - 1].decode("utf-8", errors="replace")) + 1
+
+    out: dict[str, dict] = {}
+    for c in tu.cursor.get_children():
+        k = c.kind
+        if k == ci.CursorKind.FUNCTION_DECL:
+            if not c.is_definition() or inlined(c):
+                continue
+            w = where(c.extent.start)
+            if w is not None:
+                out.setdefault(w[0], {"defs": [], "vars": []})["defs"].append(
+                    (w[1], w[2], c.spelling, c.storage_class == ci.StorageClass.STATIC))
+        elif k == ci.CursorKind.VAR_DECL:
+            w, e = where(c.extent.start), where(c.extent.end)
+            if w is not None and e is not None and e[0] == w[0]:
+                out.setdefault(w[0], {"defs": [], "vars": []})["vars"].append(
+                    (w[1], w[2], e[1], e[2], c.spelling,            # a tentative definition is no definition
+                     "def" if c.is_definition() or c.storage_class != ci.StorageClass.EXTERN else "extern",
+                     c.storage_class == ci.StorageClass.STATIC))
+    deps = sorted({str(Path(i.include.name).resolve()) for i in tu.get_includes()})
+    # every project file the parse read holds its entry, an empty one too: the unit holds it
+    for d in deps:
+        if Path(d).is_relative_to(rootr):
+            out.setdefault(Path(d).relative_to(rootr).as_posix(), {"defs": [], "vars": []})
+    for _, r in parts or []:
+        out.setdefault(r, {"defs": [], "vars": []})
+    # an include clang did not find: the file may appear later without the text changing, no result to keep
+    missing = any(d.severity == ci.Diagnostic.Fatal and "not found" in d.spelling for d in tu.diagnostics)
+    return {"files": out, "deps": deps, "missing": missing}
+
+
 _pool: ProcessPoolExecutor | None = None
+WORK = {"diagnostics": diagnostics, "model": model}
 
 
-def _work(job) -> list[dict]:
-    lib, src, root, sysdirs, incdirs = job
+def _work(job):
+    fn, lib, args_ = job
     load(lib)
-    return diagnostics(src, root, sysdirs, incdirs)
+    return WORK[fn](*args_)
 
 
-def many(jobs: list[tuple[Path, Path, list[Path], list[Path], str | None]]) -> list[list[dict]]:
-    """diagnostics(src, root, sysdirs, incdirs, keep) for each job, in order: a single job, and the single one to
-    keep among several (the unit an edit relints next to the all-declarations unit), in process, where it stays
-    live; the others in the worker processes meanwhile."""
+def many(jobs: list[tuple], fn: str = "diagnostics") -> list:
+    """WORK[fn](*job) for each job, in order (diagnostics: (src, root, sysdirs, incdirs, keep); model: (src, root,
+    sysdirs, incdirs, text, parts, keep)), keep last: a single job, and the single one to keep among several (the
+    unit an edit relints next to the all-declarations unit), in process, where it stays live; the others in the
+    worker processes meanwhile, without their keep."""
     global _pool
+    if not jobs:
+        return []
     if len(jobs) == 1:
-        return [diagnostics(*jobs[0])]
-    kept = [k for k, j in enumerate(jobs) if j[4] is not None]
+        return [WORK[fn](*jobs[0])]
+    kept = [k for k, j in enumerate(jobs) if j[-1] is not None]
     here = kept[0] if len(kept) == 1 else None
     if _pool is None:
         _pool = ProcessPoolExecutor(os.cpu_count() or 4)
-    futures = {k: _pool.submit(_work, (_loaded, *j[:4])) for k, j in enumerate(jobs) if k != here}
-    mine = diagnostics(*jobs[here]) if here is not None else None
+    futures = {k: _pool.submit(_work, (fn, _loaded, j[:-1])) for k, j in enumerate(jobs) if k != here}
+    mine = WORK[fn](*jobs[here]) if here is not None else None
     return [mine if k == here else futures[k].result() for k in range(len(jobs))]

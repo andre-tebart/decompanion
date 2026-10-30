@@ -38,6 +38,16 @@ Address comments
 scan(root) returns every definition, data declaration, placeholder and parse error of the tree, for all
 targets; the loader rule L.src (rules/layout.py) picks the current target's addresses and emits the facts.
 Results are memoised per tree hash, so the loader and the checks parse once per process.
+
+Two layers (docs/plan.md section 18). The comments (the address comments, the tags, the descriptions) are read
+per file by a lexer of comments and strings (TOKEN): the amalgamations are made of what they say, so they come
+before any parse. The function definitions and the file-scope data declarations come from the front end
+(source/cparse.py, libclang) over one translation unit per unit (models): head.c, the fragments of every target,
+tail.c; a header as the first unit that includes it sees it, a file no unit holds parsed alone. So `#if` /
+`#ifdef` are evaluated (a declaration in a dead branch is no declaration), a macro is expanded (zlib's `local` is
+`static`), and every declarator of `int a = 1, b = 2;` is one. A data statement's address comment is found by
+its extent as before (on its first line, after its `;`, or the own-line comment above). The regex definitions /
+data scan (Source.definitions / data) stays for the readers not on the front end yet and for tools/scandiff.py.
 """
 from __future__ import annotations
 
@@ -228,6 +238,7 @@ class Source:
         self.text = text
         self._line_starts = None
         self._own_line_ends = None
+        self._cstarts = None
         self.comments = []            # (start, end, body)
         out = []
         pos = 0
@@ -247,6 +258,11 @@ class Source:
         if self._line_starts is None:
             self._line_starts = [0] + [i + 1 for i, c in enumerate(self.text) if c == "\n"]
         return bisect.bisect_right(self._line_starts, off)
+
+    def offset(self, line: int, col: int) -> int:
+        """The offset of a (line, column) position, both from 1 (the front end's)."""
+        self.line_of(0)
+        return self._line_starts[min(line, len(self._line_starts)) - 1] + col - 1
 
     def end_before(self, off: int) -> int:
         text = self.text
@@ -302,8 +318,6 @@ class Source:
         declarators, the comment's addresses go one per declarator (per target)."""
         code = blank_alternatives(self.code)
         res = []
-        ends = self.own_line_comment_ends()
-        cstarts = [c[0] for c in self.comments]
         n = len(code)
         i = 0
         while i < n:
@@ -396,35 +410,69 @@ class Source:
             if not idents:
                 continue
             kind = "extern" if is_extern and k < 0 else "def"
-            addrs: list = []
-            unlinked = False
-            eol = code.find("\n", s)
-            after = i
-            while after < len(self.text) and self.text[after] in " \t":
-                after += 1
-            for ci in range(bisect.bisect_left(cstarts, s), len(cstarts)):
-                cs = cstarts[ci]
-                on_first_line = cs < eol if eol >= 0 else True
-                if not (on_first_line or i <= cs <= after):
-                    if cs > after:
-                        break
-                    continue
-                if ci == skip_comment:
-                    continue
-                if cs >= i and ";" in code[i:cs]:
-                    continue                          # behind a later statement of this line: that one's comment
-                addrs = lead_addrs(self.comments[ci][2])
-                unlinked = unlinked or bool(UNLINKED.match(self.comments[ci][2]))
-                if addrs:
-                    break
-            if not addrs:
-                e = self.end_before(s)
-                if e in ends and ends[e] != skip_comment:
-                    addrs = lead_addrs(self.comments[ends[e]][2])
-                    unlinked = unlinked or bool(UNLINKED.match(self.comments[ends[e]][2]))
-            per_decl = assign(addrs, len(idents))
+            per_decl, unlinked = self._attach(code, s, i, len(idents), skip_comment)
             for j, name in enumerate(idents):
                 res.append((s, name, kind, per_decl[j], unlinked))
+        return res
+
+    def _attach(self, code: str, s: int, i: int, n: int, skip_comment: int | None):
+        """The address comment of the statement at s..i (i just after its `;`) split over its n declarators, and
+        whether it says `unlinked`: a comment on the statement's first line or right after its `;`, else the
+        own-line comment directly above it (never comment `skip_comment`)."""
+        if self._cstarts is None:
+            self._cstarts = [c[0] for c in self.comments]
+        cstarts = self._cstarts
+        addrs: list = []
+        unlinked = False
+        eol = code.find("\n", s)
+        after = i
+        while after < len(self.text) and self.text[after] in " \t":
+            after += 1
+        for ci in range(bisect.bisect_left(cstarts, s), len(cstarts)):
+            cs = cstarts[ci]
+            on_first_line = cs < eol if eol >= 0 else True
+            if not (on_first_line or i <= cs <= after):
+                if cs > after:
+                    break
+                continue
+            if ci == skip_comment:
+                continue
+            if cs >= i and ";" in code[i:cs]:
+                continue                          # behind a later statement of this line: that one's comment
+            addrs = lead_addrs(self.comments[ci][2])
+            unlinked = unlinked or bool(UNLINKED.match(self.comments[ci][2]))
+            if addrs:
+                break
+        if not addrs:
+            ends = self.own_line_comment_ends()
+            e = self.end_before(s)
+            if e in ends and ends[e] != skip_comment:
+                addrs = lead_addrs(self.comments[ends[e]][2])
+                unlinked = unlinked or bool(UNLINKED.match(self.comments[ends[e]][2]))
+        return assign(addrs, n), unlinked
+
+    def model_definitions(self, defs: list) -> list[tuple[int, str, bool]]:
+        """[(offset, name, static)] of the front end's function definitions of this file (cparse.model)."""
+        return [(self.offset(line, col), name, static) for line, col, name, static in defs]
+
+    def model_data(self, decls: list, skip_comment: int | None = None) -> list[tuple]:
+        """[(offset, name, kind, [(target, addr)], unlinked, static)] of the front end's file-scope data
+        declarators of this file (cparse.model), each statement's address comment found as data() finds it."""
+        code = self.code
+        stmts: dict[tuple, list] = {}
+        for d in decls:
+            stmts.setdefault((d[0], d[1]), []).append(d)
+        res = []
+        for (line, col), ds in stmts.items():
+            s = self.offset(line, col)
+            e = max(self.offset(d[2], d[3]) for d in ds)
+            j = e
+            while j < len(code) and code[j].isspace():
+                j += 1
+            i = j + 1 if j < len(code) and code[j] == ";" else e
+            per_decl, unlinked = self._attach(code, s, i, len(ds), skip_comment)
+            for k, d in enumerate(ds):
+                res.append((s, d[4], d[5], per_decl[k], unlinked, d[6]))
         return res
 
 
@@ -504,7 +552,9 @@ def view_macros(S: Source, unit: str, out: Scan):
                                                                  f"(*(T *)((char *)&CONTAINER + OFFSET)) with a byte offset"))
 
 
-def scan_file(rel: str, text: str, out: Scan):
+def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
+    """One file's part of the scan; its function definitions and data declarations from the front end's model
+    of the file (cparse.model's entry: defs, vars), from the regex scan when model is None."""
     S = Source(rel, text)
     for m in DEFINE.finditer(S.text):
         out.macros.append((m.group(1), m.group(3)))
@@ -519,7 +569,10 @@ def scan_file(rel: str, text: str, out: Scan):
     unit = unit_of(rel)
     in_src = rel.startswith("src/")
     is_fragment = in_src and bool(FRAGMENT.match(name) or UNLINKED_FRAGMENT.match(name))
-    defs = S.definitions()
+    if model is None:
+        defs = [(off, n, bool(STATIC.match(S.code, off))) for off, n in S.definitions()]
+    else:
+        defs = S.model_definitions(model["defs"])
     skip = None
     if in_src and rel.endswith(".c") and not is_fragment and name not in ("head.c", "tail.c"):
         out.errors.append(ScanError(rel, 1, "L.src", f"unexpected source file {name}: a unit holds head.c, f_<addr>.c "
@@ -539,7 +592,7 @@ def scan_file(rel: str, text: str, out: Scan):
             body = first[2]
             addrs = lead_addrs(body)
             um = UNLINKED.match(body)
-            off, fname = defs[-1]
+            off, fname, fstatic = defs[-1]
             what = (um.group(1) if um else body[lead_end(body):]).strip().lstrip(",").strip()
             what = re.sub(r"\s+", " ", re.split(r"@(?:deep|stuck|rough)\b", what)[0]).strip()
             dm, sm = DEEP.search(body), STUCK.search(body)
@@ -557,13 +610,15 @@ def scan_file(rel: str, text: str, out: Scan):
                 out.errors.append(ScanError(rel, 1, "L11", f"the file name says {um_name.group(1)}, the definition {fname}"))
             out.functions.append(Function(rel, S.line_of(off), unit, fname, tuple(addrs), bool(um) and not addrs, what,
                                           dm.group(1).strip() if dm else None, sm.group(1).strip() if sm else None,
-                                          bool(ROUGH.search(body)), static=bool(STATIC.match(S.code, off))))
+                                          bool(ROUGH.search(body)), static=fstatic))
     elif defs:
-        for off, fname in defs:
+        for off, fname, _ in defs:
             out.errors.append(ScanError(rel, S.line_of(off), "L.src", f"function {fname} defined outside a fragment "
                                                                        f"(src/<unit>/f_<addr>.c)"))
-    for off, dname, kind, addrs, unlinked in S.data(skip):
-        out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked, bool(STATIC.match(S.code, off))))
+    decls = ([(*d, bool(STATIC.match(S.code, d[0]))) for d in S.data(skip)] if model is None else
+             S.model_data(model["vars"], skip))
+    for off, dname, kind, addrs, unlinked, static in decls:
+        out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked, static))
     ptr_casts(S, out)
     view_macros(S, unit, out)
     seen = set()
@@ -576,8 +631,157 @@ def scan_file(rel: str, text: str, out: Scan):
 
 
 _cache: dict[tuple[str, str], Scan] = {}
-_files: dict[tuple[str, str], Scan] = {}          # (path, sha256 of the text) -> that file's own scan
-CACHE_VERSION = 4                                 # bump when scan_file's results change
+_files: dict[tuple[str, str, str], Scan] = {}     # (path, sha256 of the text, model digest) -> that file's own scan
+CACHE_VERSION = 5                                 # bump when scan_file's results change
+MODEL_VERSION = "5"                               # bump when the scan's translation units change
+_models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
+_last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read
+EMPTY = {"defs": [], "vars": []}
+
+
+def front_end(root: Path) -> list[Path]:
+    """Load the project's libclang (cparse) and return its system include directories (none without a
+    decompanion.toml)."""
+    from ..source import cparse
+    from ..source import lint as L
+    if (root / "decompanion.toml").exists():
+        from ..config import Project
+        p = Project(root)
+        L.setup(p)
+        return L.sysdirs_of(p)
+    lib = cparse.library(None)
+    if lib is None:
+        raise RuntimeError(L.NOT_FOUND)
+    cparse.load(lib)
+    return []
+
+
+def _model_hit(root: Path, key: str):
+    """A kept model whose dependencies (every file the parse read) are unchanged, else None."""
+    import pickle
+    hit = _models.get(key)
+    path = root / "build" / "cache" / "cparse" / f"{key}.pickle"
+    if hit is None and path.exists():
+        try:
+            hit = pickle.loads(path.read_bytes())
+        except (OSError, ValueError, EOFError, pickle.UnpicklingError, TypeError, AttributeError, ImportError):
+            hit = None
+    if hit is None:
+        return None
+    try:
+        if any(fsmemo.sha256(d) != h for d, h in hit[0]):
+            return None
+    except OSError:
+        return None
+    _models[key] = hit
+    return hit[1]
+
+
+def _model_keep(root: Path, key: str, m: dict):
+    import pickle
+    if m["missing"]:
+        return
+    try:
+        hit = ([(d, fsmemo.sha256(d)) for d in m["deps"]], m["files"])
+    except OSError:
+        return
+    _models[key] = hit
+    if (root / "build").is_dir():
+        path = root / "build" / "cache" / "cparse" / f"{key}.pickle"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_bytes(pickle.dumps(hit))
+            tmp.replace(path)
+        except OSError:
+            pass
+
+
+def models(root: Path, files: list[tuple[str, str]]) -> dict[str, dict]:
+    """rel -> the front end's model of that file (cparse.model: defs, vars). Each unit is one translation unit of
+    every target's fragments (the scan reads all targets): head.c, the fragments in address order (the file
+    name's) or the unit's order file's, the unlinked ones by name, tail.c, each behind `#line 1 "<path>"` as in
+    the amalgamation. A file takes the model of the first unit (by name) that holds it, a header too (as that
+    unit's preprocessor sees it); a file no unit holds (a header no unit includes, a stray .c) is parsed alone.
+    Each parse is kept by its text, arguments and libclang (build/cache/cparse/) as long as every file it read
+    is unchanged."""
+    from ..ledger.fact import canonical
+    from ..ledger.store import sha256
+    from ..source import cparse
+    sysdirs = front_end(root)
+    by_unit: dict[str, dict[str, str]] = {}
+    for rel, _ in files:
+        parts = rel.split("/")
+        if parts[0] == "src" and len(parts) == 3:
+            by_unit.setdefault(parts[1], {})[parts[2]] = rel
+    vc = cparse.version()
+
+    def tu(path: Path, members: list[str], incdirs: list[Path], composed: bool):
+        """(key, path, members, incdirs, composed): keyed by the members' content hashes (no file is read for a
+        kept model); composed: the members go behind `#line 1 "<path>"` (a unit), else path alone is parsed."""
+        key = sha256("srcscan.model", MODEL_VERSION, cparse.VERSION, vc, canonical(cparse.args(sysdirs, incdirs)),
+                     str(path), *(f"{r}={fsmemo.sha256(root / r)}" for r in members))
+        return key, path, members, incdirs, composed
+
+    def live(path) -> str:
+        try:
+            return sha256("srcscan.live", *(f"{d}={fsmemo.sha256(d)}" for d in _last_deps.get(str(path), [])))
+        except OSError:
+            return "gone"
+
+    def job(path, members, incdirs, composed, keep):
+        if not composed:
+            return path, root, sysdirs, incdirs, fsmemo.read_text(path), [], keep
+        text, parts, n = "", [], 1
+        for r in members:
+            t = fsmemo.read_text(root / r)
+            t += "\n" if t and not t.endswith("\n") else ""
+            parts.append((n, r))                          # a `#line` pin inside a part maps nothing
+            text += f'#line 1 "{r}"\n' + t
+            n += 1 + t.count("\n")
+        return path, root, sysdirs, incdirs, text, parts, keep
+
+    def run(tus) -> list[dict]:
+        got, misses = {}, []
+        for key, *rest in tus:
+            hit = _model_hit(root, key)
+            if hit is None:
+                misses.append((key, rest))
+            else:
+                got[key] = hit
+        # a lone miss (the unit an edit changed) is parsed in process and stays live: the next edit reparses it
+        # while every file its last parse read is unchanged (keep: their hashes)
+        jobs = [job(*rest, live(rest[0]) if len(misses) == 1 else None) for _, rest in misses]
+        for (key, rest), m in zip(misses, cparse.many(jobs, fn="model")):
+            _model_keep(root, key, m)
+            _last_deps[str(rest[0])] = m["deps"]
+            got[key] = m["files"]
+        return [got[t[0]] for t in tus]
+
+    tus = []
+    for unit in sorted(by_unit):
+        names = by_unit[unit]
+        addressed = [(int(fm.group(1), 16), r) for n, r in names.items() if (fm := FRAGMENT.match(n))]
+        frags = [r for _, r in sorted(addressed)]
+        frags += sorted(r for n, r in names.items() if UNLINKED_FRAGMENT.match(n))
+        op = root / "src" / unit / "order"
+        if op.exists():
+            listed = [ln.strip() for ln in fsmemo.read_text(op).split("\n") if ln.strip() and not ln.strip().startswith("#")]
+            pos = {f"src/{unit}/{n}": k for k, n in enumerate(listed)}
+            frags = sorted(frags, key=lambda r: pos.get(r, len(pos)))
+        members = [names[n] for n in ("head.c",) if n in names] + frags + [names[n] for n in ("tail.c",) if n in names]
+        tus.append(tu(root / "build" / "cache" / "cparse" / f"{unit}.c", members,
+                      [root / "src" / unit, root / "include"], True))
+    out: dict[str, dict] = {}
+    for files_ in run(tus):
+        for rel, m in files_.items():
+            out.setdefault(rel, m)
+    alone = [(rel, p) for rel, p in files if rel not in out]
+    tus = [tu(Path(p), [rel], ([root / "src" / rel.split("/")[1]] if rel.startswith("src/") else [])
+              + [root / "include"], False) for rel, p in alone]
+    for (rel, _), files_ in zip(alone, run(tus)):
+        out[rel] = files_.get(rel, EMPTY)
+    return out
 
 
 def _file_cache(root: Path) -> tuple[Path | None, dict]:
@@ -606,32 +810,35 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
     out = Scan()
     path, disk = None, None                  # the on-disk memo, read on the first file this process has not scanned
     used, changed = {}, False
+    files = []
     for d, pats in (("src", ("*.c", "*.h")), ("include", ("*.h",))):
         base = root / d
-        if not base.exists():
-            continue
-        for rel, p in sorted({(d + "/" + r, p) for r, p in fsmemo.walk(base, pats)}, key=lambda t: t[0].lower()):
-            key = (rel, fsmemo.sha256(p))
-            piece = _files.get(key)
-            if piece is None:
-                if disk is None:
-                    path, disk = _file_cache(root)
-                piece = disk.get(key)
-            if piece is None:
-                piece = Scan()
-                scan_file(rel, fsmemo.read_text(p), piece)
-                changed = True
-            _files[key] = used[key] = piece
-            out.files += 1
-            out.functions += piece.functions
-            out.data += piece.data
-            out.placeholders += piece.placeholders
-            out.errors += piece.errors
-            out.macros += piece.macros
-            out.described += piece.described
-            out.ptrcasts += piece.ptrcasts
-            out.views += piece.views
-            out.rawobj += piece.rawobj
+        if base.exists():
+            files += sorted({(d + "/" + r, p) for r, p in fsmemo.walk(base, pats)}, key=lambda t: t[0].lower())
+    ms = models(root, files)
+    for rel, p in files:
+        m = ms.get(rel, EMPTY)
+        key = (rel, fsmemo.sha256(p), hashlib.sha256(repr(m).encode()).hexdigest())
+        piece = _files.get(key)
+        if piece is None:
+            if disk is None:
+                path, disk = _file_cache(root)
+            piece = disk.get(key)
+        if piece is None:
+            piece = Scan()
+            scan_file(rel, fsmemo.read_text(p), piece, m)
+            changed = True
+        _files[key] = used[key] = piece
+        out.files += 1
+        out.functions += piece.functions
+        out.data += piece.data
+        out.placeholders += piece.placeholders
+        out.errors += piece.errors
+        out.macros += piece.macros
+        out.described += piece.described
+        out.ptrcasts += piece.ptrcasts
+        out.views += piece.views
+        out.rawobj += piece.rawobj
     if path is not None and (changed or len(used) != len(disk)):      # (nothing new to this process: no write)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

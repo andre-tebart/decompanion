@@ -132,7 +132,7 @@ def join(root: Path, targets: list[str], a: str, b: str, why: str) -> Join:
     drop = {f'#include "{b}.h"', f'#include "{a}.h"'}
     if hb.exists():
         text = ha.read_text() if ha.exists() else f'#include "{a}.h"\n'
-        E.write(ha, merge_lines(text, hb.read_text(), drop | {l.strip() for l in hb.read_text().splitlines()[:2] if l.lstrip().startswith(("/*", "   unit"))}))
+        E.write(ha, merge_lines(text, hb.read_text(), drop | {l.strip() for l in hb.read_text().splitlines()[:2] if l.lstrip().startswith(("/*", "unit"))}))
         E.remove(root, hb)
     for tail in (sb / "tail.c",):
         if tail.exists():

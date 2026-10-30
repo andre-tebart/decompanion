@@ -745,3 +745,23 @@ Done, stage 1 (2026-10-30):
 - gildegold: `dcp lint` equal to the clang.exe run but for the 5 named pointer calls (m6=0 m5=0 m7=4710);
   `dcp headers conflicts ls cm.h ai_types.h` and `he d3.h am.h` equal. Lint (no daemon): cold 8.8 -> 6.4..8.2 s,
   warm 5.4 -> 4.5 s, after a one-line edit of he (compile included) 10.8 -> 10.5 s.
+
+Done, stage 2a (2026-10-30; user decisions: the comments stay a per-file lexical layer, since the amalgamations
+are made of what the address comments say and must exist before any parse; a header is scanned as the first
+unit that includes it sees it):
+- srcscan: function definitions and file-scope data declarations from cparse.model over one translation unit per
+  unit (every target's fragments; models() keyed by the members' content hashes, kept in build/cache/cparse/ while
+  every file the parse read is unchanged; a parse that missed an include is never kept); the address comment of a
+  data statement found by its extent as before. A `#line` pin inside a part (a declared original file name) maps
+  nothing: the scan maps lines by the parts it composed. tools/scandiff.py diffs it against the regex scan.
+- gildegold (scandiff, every difference read): 41 functions and 22 data `static` through zlib's `local` macro;
+  declarations in dead branches gone (zlib's trees/head.c GEN_TREES_H block with 4 addresses, unzip's
+  NO_ERRNO_H errno, sv_MenuOpen / ai_TimeHour behind the view headers' guards), deflate.h's live branch's lines;
+  `int snd_W2 = -1, snd_W1 = -2, ..;` is eight declarators (the regex saw one), so its one-address comment
+  assigns none; two regex misreadings (Z_OK) gone. `dcp check` and `dcp conflicts` unchanged; the byte map loses
+  the declared names at 0x5ec500.. (static_ltree, static_dtree, base_length, base_dist) and 0x5f3108 (snd_W2):
+  their address comments belong on the live definitions (include/trees.h) and one address per declarator.
+- Found on the way: `dcp unit join` left the second line of the joined unit's header comment in head.c (its drop
+  test compared a stripped line with an indented prefix); the regex scan read past the stray text, clang does not.
+- Speed (gildegold): a scan after a one-fragment edit 0.11 -> 0.20 s (the unit reparsed live), a warm scan in a
+  new process 0.08 -> 0.32 s, cold 2.4 -> 5.9 s (once).
