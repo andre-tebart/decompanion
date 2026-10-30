@@ -98,12 +98,21 @@ work, however long.
 - Q6: the address comment says what the function does (`/* 0x4a3000, sends the login reply */`).
 - Q7: every call has a prototype (`dcp lint` evaluates it): the callee's prototype lives in its defining unit's
   header `include/<unit>.h`; include that header, never write a second prototype (`dcp refs NAME` shows them).
-  When that include does not compile because the unit's `head.c` declares the header's data untyped (`extern
-  GAPDATA ...`, its own partial struct of a type the header defines: redefinition errors C2371 and the like),
-  the head needs a typing pass, which is not base work. Do not copy prototypes or write local struct views to get
-  around it: leave Q7 open for those calls, add `head: include/<x>.h conflicts with N untyped declarations` under
-  **Open work** in the unit's open.md, and commit the function at the grade it reached as
-  `<unit>: <name> shape, Q7 blocked by head (match-base)`. It counts as one of the session's 8.
+  When that include does not compile because the unit's `head.c` redeclares the header's symbols (its own
+  prototype, a partial struct view of a type the header defines, a named object declared `extern GAPDATA`:
+  C2371 redefinition, C2198 too few parameters and the like), fix the head: include the header, delete the
+  local declarations it supersedes, correct the calls and accesses that only compiled against them. Commit
+  that on its own, before the function: `<unit>: head includes <x>.h (typing)`; it does not count toward the 8,
+  and `uv run dcp check` must show no M1. A byte-matched function is evidence of what the original declared:
+  when a correction changes its bytes, the correction is wrong, not the match. Find which side is: fix the
+  header when its signature or type is the guess, or keep the original's declaration with `@original why`
+  (the matched caller as evidence) when the original really called it that way. Never accept the regression,
+  and never get around a conflict with a copied prototype or a local struct view. A conflict you cannot settle
+  in the session: leave it, note `head: include/<x>.h, <symbol> unsettled (<why>)` under **Open work** in the
+  unit's open.md, and leave Q7 open for the calls it blocks.
+- `extern GAPDATA name[]` (`__declspec(align(1)) unsigned char`) is for the unnamed gap blocks only
+  (`full_data_<addr>`; it keeps the full rebuild's data packed). An object you name gets its real type and one
+  declaration, in its unit's header.
 - `@original why` / `@vc6 why` on a declaration line only with evidence (a byte-matched caller that needs it).
 
 ### 2.4 Commit
