@@ -142,8 +142,11 @@ class Isa:
 
 @dataclass(frozen=True, slots=True)
 class Line:
-    """One instruction of a listing: address, size, the normalised text, whether its bytes are a fill form."""
+    """One instruction of a listing: address, size, the normalised text, whether its bytes are a fill form, and
+    the target of a direct branch (a jump with an immediate target no relocation of ours rewrites; the text
+    reads it as X), else None."""
     addr: int
     size: int
     text: str
     fill: bool
+    target: int | None = None

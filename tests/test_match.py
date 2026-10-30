@@ -580,3 +580,49 @@ def test_auto_clear_and_data_order(tiny):
     assert "D4" in out and "counter (0x10002000) is defined after pad (0x10002004)" in out, out
     syms = {f.lo: f.value["extent"] for f in Project(tiny).store.facts(Kind.symbol) if f.run.startswith("M.data")}
     assert syms[0x10002000] == "site" and syms[0x10002004] == "draft"
+
+
+def test_branch_targets():
+    """The listings read a jump's target as X: a jump to another block of the function is a `branch`
+    difference that keeps it from shape; a jump to an identical copy of an epilogue is not."""
+    x86 = isa_plugins.get("x86")
+
+    def fn(*rows):
+        return [Line(0x1000 + k, 1, t, False, None if g is None else 0x1000 + g) for k, (t, g) in enumerate(rows)]
+    body = [("test eax, eax", None), ("je X", 4), ("mov eax, 1", None), ("jmp X", 5), ("xor eax, eax", None),
+            ("pop esi", None), ("ret", None)]
+    a = fn(*body)
+    assert DC.verdict(a, fn(*body), x86).shape
+    b = fn(*body[:1], ("je X", 2), *body[2:])                     # the same text, the jump goes elsewhere
+    v = DC.verdict(a, b, x86)
+    assert not v.shape and v.hunks == {"branch": 1} and "je at +0x1: ours to +0x4, the original's to +0x2" in v.branches[0]
+    # register-renamed hunks keep their lines paired one to one: the targets still align
+    assert DC.verdict(a, fn(*[(t.replace("eax", "ecx"), g) for t, g in body]), x86).shape
+    # a jump to an identical copy of the epilogue: the same code
+    dup = [("test eax, eax", None), ("je X", 6), ("mov eax, 1", None), ("pop esi", None), ("ret", None),
+           ("int3", None), ("pop esi", None), ("ret", None)]
+    ours = fn(*dup[:1], ("je X", 3), *dup[2:5])
+    v = DC.verdict(ours, fn(*dup), x86)
+    assert not v.branches, v.branches
+    # an `order` hunk across a jump target: the target is the same instruction on both sides (gildegold's
+    # ai_Unk49a5b0: `xor eax, eax` moved past the `pop edi` both jumps land on)
+    o = [("test esi, esi", None), ("je X", 3), ("ret", None), ("xor eax, eax", None), ("pop edi", None),
+         ("pop esi", None), ("ret", None)]
+    ours = fn(*o[:1], ("je X", 3), o[2], o[4], o[5], o[3], o[6])
+    assert DC.verdict(ours, fn(*o[:1], ("je X", 4), *o[2:]), x86).shape
+    assert DC.verdict(ours, fn(*o), x86).shape                     # both enter the reordered hunk at its start
+    assert not DC.verdict(ours, fn(*o[:1], ("je X", 5), *o[2:]), x86).shape    # the original's skips the pop edi
+    # a block the compiler placed elsewhere: ours falls through to the join, the original's jumps back to it
+    ours = fn(("cmp edx, 0xa", None), ("jg X", 4), ("mov edx, 1", None), ("jmp X", 5), ("mov edx, 0xa", None),
+              ("push edi", None), ("ret", None))
+    orig = fn(("cmp edx, 0xa", None), ("jg X", 5), ("mov edx, 1", None), ("push edi", None), ("ret", None),
+              ("mov edx, 0xa", None), ("jmp X", 3))
+    v = DC.verdict(ours, orig, x86)
+    assert v.shape and not v.branches, v.summary()
+    orig = fn(("cmp edx, 0xa", None), ("jg X", 5), ("mov edx, 1", None), ("push edi", None), ("ret", None),
+              ("mov edx, 0xa", None), ("jmp X", 4))
+    assert DC.verdict(ours, orig, x86).branches                    # the original's block jumps to the ret instead
+    # a target inside our code against one outside the original's
+    v = DC.verdict(a, fn(*body[:1], ("je X", 0x40), *body[2:]), x86)
+    assert v.branches and "outside the code" in v.branches[0]
+    assert DC.Verdict.from_json(v.to_json()).branches == v.branches

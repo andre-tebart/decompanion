@@ -304,7 +304,8 @@ class X86(Isa):
 
     def listing(self, code, va, mask, image_range, fill_forms):
         """capstone's Intel text, spaces normalised; masked fields hold the image's first address (an absolute
-        field reads X; a relative one's target is replaced by X), and every number inside the image reads X."""
+        field reads X; a relative one's target is replaced by X), and every number inside the image reads X.
+        A jump with an immediate target outside the masked fields keeps the target in Line.target."""
         lo, hi = image_range
         data = bytearray(code)
         dummy = lo.to_bytes(4, "little")
@@ -336,8 +337,9 @@ class X86(Isa):
             def num(m, masked=masked):
                 v = int(m.group(0), 16)
                 return "X" if v in masked or lo <= v < hi else m.group(0)
+            target = int(ops, 0) if not masked and mn.startswith(("j", "loop")) and NUMBER.match(ops) else None
             text = HEXNUM.sub(num, text)
-            out.append(Line(a, size, text, bytes(code[o:o + size]) in fills))
+            out.append(Line(a, size, text, bytes(code[o:o + size]) in fills, target))
         return out
 
     def disasm(self, code, va, fill_forms=()):

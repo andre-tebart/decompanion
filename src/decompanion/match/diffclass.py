@@ -35,10 +35,21 @@ stack offset and the frame size masked (Isa.stack_mask); the lines that are equa
 in their offsets form `frame` hunks of their own (never joined with the others), the rest is classified as
 above. The frame-aligned verdict is taken when the plain one is no shape (a function the plain diff explains
 keeps its verdict).
+The branch targets: the listings read every address as X, a jump's target too, so a jump to another block of
+the function would read the same as the original's. Every jump of ours with a target inside our code (Line.
+target) is paired with the original's through the alignment (the equal runs; inside a hunk, the jumps of the
+same text in order) and its target mapped the same way (the equal runs; the lines of an `order` hunk each to
+the same instruction, the ones a renaming changed in order; the lines of any other hunk of equal length on
+both sides one to one): the targets must be aligned instructions, or both the first line of the same `order`
+hunk, or start the same code (same_code: walked side by side, unconditional jumps followed, the same
+instructions up to aligned ones or the same `ret`: a jump to an identical copy of an epilogue, a block the
+compiler placed elsewhere). Any other target is a
+`branch` difference that keeps the function from shape; a jump whose target leaves the code on both sides
+(the original's tail jump, our relocated one) is not compared.
 The function-level verdict (grade B2, rules/grade.py): every hunk is explained, or the instructions left in
 the code hunks are the same multiset on both sides (moved further than a hunk reaches), or the whole function
-is equal under one bijective renaming of registers and stack slots (Isa.one_renaming); and the switch tables,
-when both sides have them, are equal.
+is equal under one bijective renaming of registers and stack slots (Isa.one_renaming); and the branch targets
+agree; and the switch tables, when both sides have them, are equal.
 
 The distance: the number of differing instructions on both sides (the - and + lines of the plain diff).
 """
@@ -48,7 +59,7 @@ import collections
 import difflib
 from dataclasses import dataclass, field
 
-VERSION = "6"          # part of the classification cache key: bump when a class's criterion changes
+VERSION = "7"          # part of the classification cache key: bump when a class's criterion changes
 
 
 def strip_fill(lines: list) -> list:
@@ -141,6 +152,7 @@ class Verdict:
     distance: int = 0
     tables: dict | None = None                      # {entries, bytes, diffs} of the switch tables both sides have
     frame: list | None = None                       # [our frame size, the original's] of a frame-aligned verdict
+    branches: list = field(default_factory=list)    # the jumps whose targets do not align (branch_diffs)
 
     def summary(self) -> str:
         hs = ", ".join(f"{k} {v}" for k, v in sorted(self.hunks.items(), key=lambda kv: -kv[1])) or "identical instructions"
@@ -148,6 +160,8 @@ class Verdict:
             "; equal under one function-wide renaming" if self.renamed else "")
         if self.frame:
             extra += f"; frame {self.frame[0]:#x} vs {self.frame[1]:#x} (stack offsets aligned)"
+        if self.branches:
+            extra += f"; branch targets differ ({len(self.branches)}): " + "; ".join(self.branches[:3])
         t = self.tables
         if t is not None:
             if t["diffs"]:
@@ -158,12 +172,106 @@ class Verdict:
 
     def to_json(self):
         return {"shape": self.shape, "hunks": self.hunks, "moved": self.moved, "renamed": self.renamed,
-                "code": self.code, "distance": self.distance, "tables": self.tables, "frame": self.frame}
+                "code": self.code, "distance": self.distance, "tables": self.tables, "frame": self.frame,
+                "branches": self.branches}
 
     @classmethod
     def from_json(cls, d):
         return cls(d["shape"], d["hunks"], d["moved"], d["renamed"], [tuple(x) for x in d["code"]], d["distance"],
-                   d.get("tables"), d.get("frame"))
+                   d.get("tables"), d.get("frame"), d.get("branches", []))
+
+
+def aligned(A: list, B: list, hs) -> tuple[list, dict, set]:
+    """(the pairs of jumps (our index, the original's), our instruction index -> the original's, the first
+    lines (ours, the original's) of the `order` hunks) of two listings over their classified hunks (module
+    docstring: the branch targets). The lines between the hunks are the equal runs; a run whose two sides
+    differ in length (overlapping hunks of the frame-aligned diff) is not paired."""
+    jumps, m, starts = [], {}, set()
+    i = j = 0
+    for i1, i2, j1, j2, cls, _ in sorted(hs) + [(len(A), len(A), len(B), len(B), "", "")]:
+        if i1 - i == j1 - j > 0:
+            m.update(zip(range(i, i1), range(j, j1)))
+            jumps += [(k, j + k - i) for k in range(i, i1) if A[k].target is not None and B[j + k - i].target is not None]
+        if cls == "order":                    # the same instructions: each to its own, the rest (renamed) in order
+            same = collections.defaultdict(collections.deque)
+            for k in range(j1, j2):
+                same[B[k].text].append(k)
+            rest = []
+            for k in range(i1, i2):
+                if same[A[k].text]:
+                    m[k] = same[A[k].text].popleft()
+                else:
+                    rest.append(k)
+            m.update(zip(rest, sorted(k for q in same.values() for k in q)))
+            starts.add((i1, j1))
+        elif i2 - i1 == j2 - j1 and cls != "fill":
+            m.update(zip(range(i1, i2), range(j1, j2)))
+        theirs = collections.defaultdict(collections.deque)
+        for k in range(j1, j2):
+            if B[k].target is not None:
+                theirs[B[k].text].append(k)
+        jumps += [(k, theirs[A[k].text].popleft()) for k in range(i1, i2)
+                  if A[k].target is not None and theirs[A[k].text]]
+        i, j = max(i, i2), max(j, j2)
+    return jumps, m, starts
+
+
+def same_code(A: list, B: list, ia: int, ib: int, m: dict, starts: set, depth: int = 4, steps: int = 24) -> bool:
+    """The code from A[ia] and from B[ib] is the same (module docstring: the branch targets): walked side by
+    side, every unconditional jump followed to its target (a block the compiler placed elsewhere, a fall-through
+    against a jump), until both reach aligned instructions, or the same `ret` (an identical copy of an
+    epilogue), or the same jump out of the code; the instructions on the way equal, and every conditional jump
+    on the way going to the same code again (`depth` deep). At most `steps` instructions."""
+    pos_a = {x.addr: i for i, x in enumerate(A)}
+    pos_b = {x.addr: i for i, x in enumerate(B)}
+
+    def follow(L, pos, i):
+        for _ in range(8):
+            if i is None or i >= len(L) or L[i].target is None or L[i].text.split(" ", 1)[0] != "jmp":
+                break
+            i = pos.get(L[i].target)
+        return i if i is not None and i < len(L) else None
+    for _ in range(steps):
+        ia, ib = follow(A, pos_a, ia), follow(B, pos_b, ib)
+        if ia is None or ib is None:
+            return False
+        if m.get(ia) == ib or (ia, ib) in starts:
+            return True
+        if A[ia].text != B[ib].text:
+            return False
+        mn = A[ia].text.split(" ", 1)[0]
+        if mn in ("ret", "jmp"):              # the same return, or the same jump out of the code
+            return True
+        if A[ia].target is not None or B[ib].target is not None:
+            ja, jb = pos_a.get(A[ia].target), pos_b.get(B[ib].target)
+            if ja is None or jb is None or depth == 0 or not same_code(A, B, ja, jb, m, starts, depth - 1, steps):
+                return False
+        ia, ib = ia + 1, ib + 1
+    return False
+
+
+def branch_diffs(A: list, B: list, hs) -> list[str]:
+    """The jumps of ours whose target does not align with the original's jump's (module docstring)."""
+    if not A or not B:
+        return []
+    jumps, m, starts = aligned(A, B, hs)
+    pos_a = {x.addr: i for i, x in enumerate(A)}
+    pos_b = {x.addr: i for i, x in enumerate(B)}
+    base = A[0].addr
+
+    def where(t, pos):
+        return f"+{t - base:#x}" if t in pos else "outside the code"
+    out = []
+    for i, j in jumps:
+        ta, tb = A[i].target, B[j].target
+        ia, ib = pos_a.get(ta), pos_b.get(tb)
+        if ia is None and ib is None:
+            continue
+        if ia is not None and ib is not None and same_code(A, B, ia, ib, m, starts):
+            continue
+        out.append(f"{A[i].text.split(' ', 1)[0]} at +{A[i].addr - base:#x}: ours to {where(ta, pos_a)}, "
+                   f"the original's to {where(tb, pos_b)}")
+    return out
 
 
 def judge(A: list, B: list, isa, hs, tables=None) -> Verdict:
@@ -182,7 +290,11 @@ def judge(A: list, B: list, isa, hs, tables=None) -> Verdict:
     bad = bool(tables and tables["diffs"])
     if bad:
         weight["table"] += len(tables["diffs"])
-    return Verdict((not code or moved or renamed) and not bad, dict(weight), moved, renamed, code[:6], distance(a, b), tables)
+    branches = branch_diffs(A, B, hs)
+    if branches:
+        weight["branch"] += len(branches)
+    return Verdict((not code or moved or renamed) and not bad and not branches, dict(weight), moved, renamed, code[:6],
+                   distance(a, b), tables, branches=branches[:12])
 
 
 def analyse(A: list, B: list, isa, tables=None) -> tuple[list, Verdict]:

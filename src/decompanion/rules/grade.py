@@ -11,13 +11,15 @@ Code rules:
              `order`, or explained by the ISA (`regs`, `slots`, `order` after a register renaming, `sib`,
              `fpu`) or `frame` (stack offsets shifted by a frame of another size); or the instructions left in
              the `code` hunks are the same multiset on both sides; or the whole function is equal under one
-             bijective renaming of registers and stack slots; and the switch tables, when both sides have them,
-             are equal as data. Identical instruction text (a byte difference in a relocated field only, or
-             in a branch displacement the listing reads as X) is shape too. Not a proof of equal behaviour:
-             what the instruction diff can see. The original is read over the function's extent (the code
+             bijective renaming of registers and stack slots; and every jump inside the function goes to the
+             instruction the alignment pairs with the original's target, or to an identical copy of its
+             epilogue (diffclass's branch targets: the listing reads a target as X); and the switch tables,
+             when both sides have them, are equal as data. Identical instruction text (a byte difference in a
+             relocated field only, or a branch displacement whose target aligns) is shape too. Not a proof of
+             equal behaviour: what the instruction diff can see. The original is read over the function's extent (the code
              walk's, else L.src.extent's) up to its first switch table (diffclass.compare_function).
-  B3 draft   a `code` hunk or a `table` difference B2 does not explain remains, or the function has no compiled
-             object to compare.
+  B3 draft   a `code` hunk, a `branch` or a `table` difference B2 does not explain remains, or the function has
+             no compiled object to compare.
 Readability rules, on the function's text (comments and strings blanked for the code tests):
   Q1 name         the function's own name is no placeholder (`Unk` + 4 hex digits, or ending in 6 hex digits with
                   a digit among them: FUN_10008d20, Unk10008d20, thread_10008d20).

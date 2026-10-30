@@ -206,6 +206,10 @@ def cmd_diffclass(args):
         print("  " + record(tables="differ" if tables["diffs"] else "equal", entries=tables["entries"], index_bytes=tables["bytes"]))
         for x in tables["diffs"]:
             print(f"      {x}")
+    if v.branches:
+        print(f"  branch targets differ ({len(v.branches)}): jumps the alignment pairs go to other code")
+        for x in v.branches:
+            print(f"      {x}")
     for i1, i2, j1, j2, cls, info in hs:
         at = A[i1].addr if i1 < len(A) else B[j1].addr
         print(f"  {at:#010x}  {cls:<6} {i2 - i1 + j2 - j1:>4}  {info}")
