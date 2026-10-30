@@ -239,3 +239,29 @@ def test_library_order_from_the_image():
     out, chains = L.library_order(project, libs, {"mss32lib": lib})
     assert [p.name.lower() for p in out] == ["dinput.lib", "strmiids.lib", "gdi32.lib", "mss32.lib", "ddraw.lib", "libc.lib"]
     assert ".text: dinput.lib < mss32.lib < ddraw.lib < libc.lib" in chains
+
+
+# ------------------------------------------------------------------------------------------------ dcp headers conflicts
+@pytest.mark.skipif(not Path("C:/Program Files/LLVM/bin/clang.exe").exists(), reason="clang not installed")
+def test_headers_conflicts(tiny):
+    write(tiny, "include/net.h", "extern int counter;\nextern short width;\nint add2(int a, int b);\n")
+    write(tiny, "src/net/head.c", "extern int counter;  /* the same as net.h */\nextern char width;\n")
+    write(tiny, "src/net/f_10001030.c",
+          "/* 0x10001030, logs hello */\nvoid log_hello(void)\n{\n    add2(1);\n    other(2);\n}\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net")
+    assert code == 1, out
+    assert "supersedes=1  call=1" in out and "duplicate=1" in out, out
+    assert "kind=supersedes  name=width  at=src/net/head.c:2  header=include/net.h:2" in out, out
+    assert "kind=duplicate  name=counter  at=src/net/head.c:1" in out, out
+    assert "kind=call  name=add2  at=src/net/f_10001030.c:4" in out and "too few arguments" in out, out
+    assert "fn=0x10001030" in out, out                     # the function to re-grade
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
+    assert code == 1 and "write=refused" in out, out
+    assert "extern char width;" in (tiny / "src/net/head.c").read_text()
+
+    write(tiny, "src/net/head.c", "extern int counter;  /* the same as net.h */\n")
+    write(tiny, "src/net/f_10001030.c", "/* 0x10001030, logs hello */\nvoid log_hello(void)\n{\n    add2(1, 2);\n}\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net.h", "--write")
+    assert code == 0 and "dropped=1" in out, out
+    head = (tiny / "src/net/head.c").read_text()
+    assert '#include "net.h"' in head and "extern int counter" not in head and "trial" not in head, head

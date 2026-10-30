@@ -713,6 +713,7 @@ def main(argv=None):
     s = sub.add_parser("serve", help="run the project's daemon: every dcp command of the project runs in it (daemon.py)")
     s.add_argument("--stop", action="store_true", help="stop the running daemon")
     s.add_argument("--status", action="store_true", help="print the running daemon's state")
+    s.add_argument("--foreground", action="store_true", help="run the supervisor in this process instead of detached")
     s.set_defaults(fn=cmd_serve)
     s = cmd(sub, "rules", cmd_rules, "the rule graph and run status")
     s.add_argument("-v", "--verbose", action="store_true", help="print each rule's criterion")
@@ -720,6 +721,8 @@ def main(argv=None):
     CD.register(sub, cmd)
     from . import cli_data as CDA
     CDA.register(sub, cmd)
+    from . import cli_headers as CH
+    CH.register(sub, cmd)
 
     from . import cli_match as CM
     s = cmd(sub, "grade", CM.cmd_grade, "the grades: matrix and units, or one unit / function with the failing rules")

@@ -630,3 +630,24 @@ Steps, in this order (the second is useful without the third):
 
 Then the skill's "Gap data" paragraph becomes "settle the name and the type from the users and the bytes, then
 `dcp data claim`", and the layout passes keep only the boundary cases (`owner=?`).
+
+## 15. Header typing (2026-10-30, user decision: "extend dcp tooling now")
+
+A typing pass on gildegold's `src/main/head.c` (19 headers included, 84 copied prototypes and 6 local struct
+views dropped, every byte match kept) was driven by a by-hand trial script; it is now `dcp headers conflicts
+UNIT HEADER.. [--write]` (source/headers.py, docs/match.md "Lint"): a trial parse of the unit with the
+includes, the new diagnostics classified (supersedes / duplicate / clash / header / call with the original's
+pushes and `add esp` / prototyped / other; a clash whose side carries `@original` is marked), the functions to
+re-grade, and `--write` for the include when only duplicates are in the way. About 1 s a unit.
+
+Open:
+- M5 misses header-vs-header struct and typedef redefinitions: the all-declarations unit's filter counts only
+  `conflicting types` / `redeclaration`, so `D3OBJBITS` (ch.h vs d3_engine.h) passes the gate. Widening it
+  fails gildegold's gate on the existing clashes; decide together with the header consistency pass.
+- The header consistency pass (project work in gildegold): ch.h vs d3_engine.h (D3OBJBITS), d3_anim.h /
+  ch.h vs d3_engine.h / d3.h (d3anim_* with `@original` spellings: two headers that cannot be included
+  together, so the unit-specific spelling belongs in the unit that needs it, not in a shared header), mem.h
+  vs vfs.h (MPOOLITER), d3_d3d.h vs dd_vesa.h (dd_SetSurfaceName), the ai_Time / ai_Chars / ai_BTypes shapes
+  of hmt.h, hst.h, ahm.h, amt.h, gv.h, cm.h against ai.h; headers for sblib, d3_snd, sv, f3init, io_text,
+  d3_tools, ls. Then the dedicated head passes of unk_58bbd0, he, unk_575860, sv (the base queue's largest
+  units).

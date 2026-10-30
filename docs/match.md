@@ -179,6 +179,16 @@ includes every `include/*.h` and repeats every file-scope prototype of the sourc
 `@original why` / `@vc6 why` on the line exempt a diagnostic. Per-unit results are cached by the unit's text,
 the flags and its include hash. `dcp check` lints when clang is installed.
 
+`dcp headers conflicts UNIT HEADER..` (source/headers.py) answers "what would including these headers into
+the unit's head.c collide with" before the include is made: the unit is parsed twice the way lint parses it,
+as it is and with the includes after head.c's last one, and only the trial's new diagnostics count:
+`supersedes` (a declaration of the unit the header declares differently), `duplicate` (one it repeats with
+the same type: safe to drop), `clash` (two headers disagree), `header` (the header does not compile in this
+unit's include set), `call` (a call the header's prototype rejects, with the original's pushes and `add esp`
+at that function's call of the callee), `prototyped` (calls that compiled without a prototype and now convert
+their arguments), `other`; then the functions to re-grade. `--write` inserts the includes and drops the
+duplicates, only when nothing else is left and the trial without them has no new error. About 1 s a unit.
+
 ## The gate (`dcp check`)
 
 Per target: build the stale units, lint (when clang is installed), refresh every rule, fail on any bug or

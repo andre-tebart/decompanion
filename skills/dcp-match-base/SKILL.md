@@ -67,6 +67,9 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
 - `uv run dcp why 0xADDR` - everything the ledger knows about an address (names, data, tables).
 - `uv run dcp lint` - clang over the units: prototypes (Q7), cross-unit conflicts (M5), calls without one (M7).
   `dcp grade` and `dcp next` lint the changed units themselves, so their Q7 is current.
+- `uv run dcp headers conflicts UNIT HEADER..` - before including a header into head.c: what it collides with
+  (supersedes / duplicate / clash / header / call with the original's pushes / prototyped) and the functions to
+  re-grade; `--write` makes the include when only duplicates are in the way.
 
 ### 2.2 Code below shape (`section=draft`)
 Explain every `code` hunk from the evidence and fix the C's meaning: a wrong condition, operand or constant, a
@@ -100,8 +103,9 @@ work, however long.
   header `include/<unit>.h`; include that header, never write a second prototype (`dcp refs NAME` shows them).
   When that include does not compile because the unit's `head.c` redeclares the header's symbols (its own
   prototype, a partial struct view of a type the header defines, a named object declared `extern GAPDATA`:
-  C2371 redefinition, C2198 too few parameters and the like), fix the head: include the header, delete the
-  local declarations it supersedes, correct the calls and accesses that only compiled against them. Commit
+  C2371 redefinition, C2198 too few parameters and the like), fix the head (`dcp headers conflicts UNIT HEADER`
+  lists what is in the way): include the header, delete the local declarations it supersedes, correct the
+  calls and accesses that only compiled against them. Commit
   that on its own, before the function: `<unit>: head includes <x>.h (typing)`; it does not count toward the 8,
   and `uv run dcp check` must show no M1. A byte-matched function is evidence of what the original declared:
   when a correction changes its bytes, the correction is wrong, not the match. Find which side is: fix the
