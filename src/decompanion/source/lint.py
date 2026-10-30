@@ -623,7 +623,7 @@ def _provides(rel: str, text: str, m: dict | None = None) -> tuple[set, set]:
     strings blanked, a tag's name not counted: a tag needs no definition to be named)."""
     S = srcscan.Source(rel, text)
     if m is not None:
-        defined = set(m["types"]) | {name for _, name, _ in m["macros"]}
+        defined = {name for _, name in m["types"]} | {name for _, name, _ in m["macros"]}
         # the directives and the skipped branches use nothing
         code = re.sub(r"\b(?:struct|union|enum)\s+[A-Za-z_]\w*", " ", srcscan.live_code(S, m))
         return defined, set(IDENTS.findall(code)) - defined

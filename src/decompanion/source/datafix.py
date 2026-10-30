@@ -111,12 +111,19 @@ class Files:
         self.root = Path(root)
         self.texts: dict[str, str] = {}
         self._parsed: dict[str, tuple] = {}
+        self._models: dict[str, dict | None] = {}
 
     def text(self, rel: str) -> str:
         t = self.texts.get(rel)
         if t is None:
             t = self.texts[rel] = (self.root / rel).read_text(errors="replace")
         return t
+
+    def model(self, rel: str) -> dict | None:
+        """The front end's model of the file (srcscan.model_of), None for a file the scan does not hold."""
+        if rel not in self._models:
+            self._models[rel] = srcscan.model_of(self.root, rel, self.text(rel))
+        return self._models[rel]
 
     def parsed(self, rel: str):
         """(Source, line starts) of the file."""
@@ -188,15 +195,27 @@ class Declarator:
     has_init: bool
     count: int                 # declarators in the statement
     end: int                   # the end of the whole declarator (before a `,` `;` or `=` at the statement's top level)
+    aggregate: bool | None = None   # an array, struct or union (the front end's type; None: not known)
 
 
 def declarator(files: Files, st: Stmt, name: str) -> Declarator | None:
-    code = files.parsed(st.file)[0].code
+    """The declarator of `name` in a statement: the name where the front end's model has it (its type's class
+    too), else its first whole-word occurrence; its dimensions and its end read from the text."""
+    S = files.parsed(st.file)[0]
+    code = S.code
     seg = code[st.s0:st.s1]
-    m = re.search(r"\b" + re.escape(name) + r"\b", seg)
-    if m is None:
-        return None
-    k, dims = m.end(), []
+    m = files.model(st.file)
+    group = [d for d in m["decls"] if d[0] == "v" and st.s0 <= S.offset(*d[3]) < st.s1] if m is not None else []
+    hit = next((d for d in group if d[1] == name), None)
+    if hit is not None:
+        start, aggregate, count = S.offset(*hit[4]) - st.s0, hit[8], len(group)
+    else:
+        mm = re.search(r"\b" + re.escape(name) + r"\b", seg)
+        if mm is None:
+            return None
+        start, aggregate, count = mm.start(), None, None
+    name_end = start + len(name)
+    k, dims = name_end, []
     while True:
         j = k
         while j < len(seg) and seg[j] in " \t\n":
@@ -217,7 +236,8 @@ def declarator(files: Files, st: Stmt, name: str) -> Declarator | None:
     end = len(seg) - 1 if end is None else end
     while end > k and seg[end - 1] in " \t\n":
         end -= 1
-    return Declarator(st.s0 + m.end(), st.s0 + k, dims, seg[:m.start()], init, commas + 1, st.s0 + end)
+    return Declarator(st.s0 + name_end, st.s0 + k, dims, seg[:start], init, count or commas + 1, st.s0 + end,
+                      aggregate)
 
 
 # ------------------------------------------------------------------------------------------------ the edits
@@ -246,7 +266,8 @@ def d5_edits(files: Files, model) -> tuple[list[Edit], list[str]]:
             manual.append(f"D5 {d.name} {d.file}:{d.line}: it has an initialiser already")
             continue
         words = set(re.findall(r"[A-Za-z_]\w*", dc.before)) - SKIP
-        scalar = not dc.dims and ("*" in dc.before or "(" in dc.before or (words and words <= BASIC))
+        scalar = (not dc.aggregate if dc.aggregate is not None else
+                  not dc.dims and ("*" in dc.before or "(" in dc.before or (words and words <= BASIC)))
         init = " = 0" if scalar else " = {0}"
         edits.append(Edit(d.file, dc.end, 0, init, f"D5 {d.name}{init.strip()} ({d.addr:#x})", d.unit, f"D5 {d.name}"))
     return edits, manual
@@ -339,6 +360,27 @@ def defined_in(code: str, idents: set[str]) -> str | None:
     return None
 
 
+def defined_between(files: Files, order: list[str], a: tuple[str, int], b: tuple[str, int], idents: set[str]) -> str | None:
+    """The first of `idents` (by name) the unit defines or declares from position a (file, offset) up to position
+    b, in amalgamation order: a macro, typedef, tag, enum constant or declaration of the files' models starting
+    on a line in between; the text (defined_in over `between`) when a file has no model."""
+    rank = {f: i for i, f in enumerate(order)}
+    (fa, oa), (fb, ob) = a, b
+    seq = [fa] if fa == fb else [fa] + order[rank[fa] + 1:rank[fb]] + [fb]
+    found = set()
+    for f in seq:
+        m = files.model(f)
+        if m is None:
+            return defined_in(between(files, order, a, b), idents)
+        S = files.parsed(f)[0]
+        lo = S.line_of(oa) if f == fa else 1
+        hi = S.line_of(ob) if f == fb else float("inf")
+        names = ([(ln, n) for ln, n in m["types"]] + [(ln, n) for ln, n, _ in m["macros"]]
+                 + [(d[3][0], d[1]) for d in m["decls"]])
+        found |= {n for ln, n in names if lo <= ln < hi and n in idents}
+    return min(found) if found else None
+
+
 def between(files: Files, order: list[str], a: tuple[str, int], b: tuple[str, int]) -> str:
     """The comment-blanked code of the unit from position a (file, offset) up to position b, in amalgamation
     order (a before b)."""
@@ -387,7 +429,7 @@ def d4_edits(files: Files, model, unit_order: dict[str, list[str]]) -> tuple[lis
             if up and t.file in rank and d.file in rank:
                 code = files.parsed(d.file)[0].code
                 used = set(re.findall(r"[A-Za-z_]\w*", code[st.s0:st.s1])) - C_WORDS - {d.name}
-                x = defined_in(between(files, unit_order[unit], (t.file, at), (d.file, st.start)), used)
+                x = defined_between(files, unit_order[unit], (t.file, at), (d.file, st.start), used)
                 if x is not None:
                     manual.append(f"D4 {d.name} {d.file}:{d.line}: it uses {x}, which the unit defines between "
                                   f"{t.file} (before {t.name}) and its place; move {x} up first")

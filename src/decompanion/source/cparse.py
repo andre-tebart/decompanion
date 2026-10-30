@@ -257,6 +257,8 @@ def skipped(tu: ci.TranslationUnit, f: ci.File) -> list[tuple[ci.SourceLocation,
             free(p)
 
 
+AGGREGATE = {ci.TypeKind.CONSTANTARRAY, ci.TypeKind.INCOMPLETEARRAY, ci.TypeKind.VARIABLEARRAY, ci.TypeKind.RECORD}
+
 # a K&R parameter's default promotion (C89 6.5.4.3: what the caller pushes, what a prototype has to say)
 PROMOTED = {ci.TypeKind.CHAR_S: "int", ci.TypeKind.CHAR_U: "int", ci.TypeKind.SCHAR: "int", ci.TypeKind.UCHAR: "int",
             ci.TypeKind.SHORT: "int", ci.TypeKind.USHORT: "int", ci.TypeKind.FLOAT: "double"}
@@ -308,10 +310,12 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
       defs  [(line, col, name, static)] of every function definition that is no inline helper
       decls [("f", name, static, start, name position, end, body start or None, K&R parameters or None) of every
             function declaration and definition (no inline helper); ("v", name, static, start, name position,
-            end, kind, initialised) of every data declarator]: (line, col) positions; the name position is where
+            end, kind, initialised, aggregate: an array, struct or union, None for a type clang does not know)
+            of every data declarator]: (line, col) positions; the name position is where
             the name is spelled (a rename macro's name: the declared name differs); a definition's parameters
             [(name, `int` / `double` when its type is promoted, else None)] (what a K&R one's prototype says)
-      types [name] of every typedef and every struct / union / enum with a body defined there
+      types [(line, name)] of every typedef, every struct / union / enum with a body and every enum constant
+            defined there
       dead  [(first line, last line)] of every range the preprocessor skipped (a dead `#if` branch)
       macros [(line, name, function-like)] of every macro the preprocessor defined there (a live `#define`)
       casts [(line, col, end line, end col, literal)] of every integer literal cast to a pointer type in code
@@ -374,6 +378,14 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
                 entry(w[0])["dead"].append((w[1], e[1]))
 
     tags = (ci.CursorKind.STRUCT_DECL, ci.CursorKind.UNION_DECL, ci.CursorKind.ENUM_DECL)
+    err: list = []
+
+    def errors() -> set:
+        """(file, line) of every error, as where() maps it (computed on first use)."""
+        if not err:
+            err.append({w[:2] for d in tu.diagnostics if d.severity >= ci.Diagnostic.Error
+                        and (w := where(d.location)) is not None})
+        return err[0]
     for c in tu.cursor.get_children():
         k = c.kind
         if k == ci.CursorKind.FUNCTION_DECL:
@@ -401,11 +413,18 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
                 kind = "def" if c.is_definition() or c.storage_class != ci.StorageClass.EXTERN else "extern"
                 entry(w[0])["vars"].append((w[1], w[2], e[1], e[2], c.spelling, kind, static))
                 init = any(x.kind.is_expression() for x in c.get_children())
-                entry(w[0])["decls"].append(("v", c.spelling, static, w[1:], n[1:], e[1:], kind, init))
+                # None: a type clang does not know (its recovery makes an unknown type name int)
+                agg = (None if any((w[0], ln) in errors() for ln in range(w[1], e[1] + 1))
+                       else c.type.get_canonical().kind in AGGREGATE)
+                entry(w[0])["decls"].append(("v", c.spelling, static, w[1:], n[1:], e[1:], kind, init, agg))
         elif k == ci.CursorKind.TYPEDEF_DECL or k in tags and c.is_definition() and c.spelling:
             n = where(c.location)
             if n is not None and not c.spelling.startswith(("struct (", "union (", "enum (")):
-                entry(n[0])["types"].append(c.spelling)
+                entry(n[0])["types"].append((n[1], c.spelling))
+            if k == ci.CursorKind.ENUM_DECL and n is not None:
+                for x in c.get_children():
+                    if x.kind == ci.CursorKind.ENUM_CONSTANT_DECL and (xn := where(x.location)) is not None:
+                        entry(xn[0])["types"].append((xn[1], x.spelling))
         elif k == ci.CursorKind.MACRO_DEFINITION:
             w = where(c.location)
             if w is not None:

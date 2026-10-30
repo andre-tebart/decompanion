@@ -818,3 +818,13 @@ draft.header_declaring: the declarations of the header's model. gildegold: `dcp 
 functions. Stage 2 is complete; the regex definitions / data scan (Source.definitions, Source.data,
 blank_alternatives, lint._file_scope_decls_regex) stays for the texts not on disk (`headers` trials, the
 editors' texts) and tools/scandiff.py until stage 3 moves the editors.
+
+Done, stage 3 data fix (2026-10-30): datafix.declarator takes the name's position and the statement's declarator
+count from the front end's model (the regex took the first whole-word match), D5 chooses `= 0` / `= {0}` by
+the declarator's type (cparse.model: aggregate = an array, struct or union by the canonical type; unknown when
+the declaration has an error: clang's recovery makes an unknown type name int), and D4's "defined between"
+reads the models' macros, typedefs, tags, enum constants and declarations by line (defined_between; the seven
+regexes of defined_in only for a file without a model). The statement's block, dimensions and splices stay
+text (the edits are text). gildegold: no open D1 / D4 / D5; over all 6948 data declarators the positions equal,
+one declarator the regex did not find, 154 typedef'd pointers / handles / enums now `= 0` (the word list gave
+`= {0}`).
