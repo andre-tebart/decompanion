@@ -765,11 +765,6 @@ def models(root: Path, files: list[tuple[str, str]]) -> dict[str, dict]:
     from ..ledger.store import sha256
     from ..source import cparse
     sysdirs = front_end(root)
-    by_unit: dict[str, dict[str, str]] = {}
-    for rel, _ in files:
-        parts = rel.split("/")
-        if parts[0] == "src" and len(parts) == 3:
-            by_unit.setdefault(parts[1], {})[parts[2]] = rel
     vc = cparse.version()
 
     def tu(path: Path, members: list[str], incdirs: list[Path], composed: bool):
@@ -788,14 +783,7 @@ def models(root: Path, files: list[tuple[str, str]]) -> dict[str, dict]:
     def job(path, members, incdirs, composed, keep):
         if not composed:
             return path, root, sysdirs, incdirs, fsmemo.read_text(path), [], keep
-        text, parts, n = "", [], 1
-        for r in members:
-            t = fsmemo.read_text(root / r)
-            t += "\n" if t and not t.endswith("\n") else ""
-            parts.append((n, r))                          # a `#line` pin inside a part maps nothing
-            text += f'#line 1 "{r}"\n' + t
-            n += 1 + t.count("\n")
-        return path, root, sysdirs, incdirs, text, parts, keep
+        return path, root, sysdirs, incdirs, *compose_unit(root, members), keep
 
     def run(tus) -> list[dict]:
         got, misses = {}, []
@@ -805,6 +793,7 @@ def models(root: Path, files: list[tuple[str, str]]) -> dict[str, dict]:
                 misses.append((key, rest))
             else:
                 got[key] = hit
+                _last_deps[str(rest[0])] = [d for d, _ in _models[key][0]]
         # a lone miss (the unit an edit changed) is parsed in process and stays live: the next edit reparses it
         # while every file its last parse read is unchanged (keep: their hashes)
         jobs = [job(*rest, live(rest[0]) if len(misses) == 1 else None) for _, rest in misses]
@@ -814,20 +803,8 @@ def models(root: Path, files: list[tuple[str, str]]) -> dict[str, dict]:
             got[key] = m["files"]
         return [got[t[0]] for t in tus]
 
-    tus = []
-    for unit in sorted(by_unit):
-        names = by_unit[unit]
-        addressed = [(int(fm.group(1), 16), r) for n, r in names.items() if (fm := FRAGMENT.match(n))]
-        frags = [r for _, r in sorted(addressed)]
-        frags += sorted(r for n, r in names.items() if UNLINKED_FRAGMENT.match(n))
-        op = root / "src" / unit / "order"
-        if op.exists():
-            listed = [ln.strip() for ln in fsmemo.read_text(op).split("\n") if ln.strip() and not ln.strip().startswith("#")]
-            pos = {f"src/{unit}/{n}": k for k, n in enumerate(listed)}
-            frags = sorted(frags, key=lambda r: pos.get(r, len(pos)))
-        members = [names[n] for n in ("head.c",) if n in names] + frags + [names[n] for n in ("tail.c",) if n in names]
-        tus.append(tu(root / "build" / "cache" / "cparse" / f"{unit}.c", members,
-                      [root / "src" / unit, root / "include"], True))
+    tus = [tu(unit_path(root, unit), members, unit_incdirs(root, unit), True)
+           for unit, members in unit_members(root, files)]
     out: dict[str, dict] = {}
     for files_ in run(tus):
         for rel, m in files_.items():
@@ -838,6 +815,86 @@ def models(root: Path, files: list[tuple[str, str]]) -> dict[str, dict]:
     for (rel, _), files_ in zip(alone, run(tus)):
         out[rel] = files_.get(rel, EMPTY)
     return out
+
+
+def unit_members(root: Path, files: list[tuple[str, str]]) -> list[tuple[str, list[str]]]:
+    """(unit, its files in the scan's translation unit order) per unit, by name: head.c, the fragments of every
+    target in address order (the file name's) or the unit's order file's, the unlinked ones by name, tail.c."""
+    by_unit: dict[str, dict[str, str]] = {}
+    for rel, _ in files:
+        parts = rel.split("/")
+        if parts[0] == "src" and len(parts) == 3:
+            by_unit.setdefault(parts[1], {})[parts[2]] = rel
+    out = []
+    for unit in sorted(by_unit):
+        names = by_unit[unit]
+        addressed = [(int(fm.group(1), 16), r) for n, r in names.items() if (fm := FRAGMENT.match(n))]
+        frags = [r for _, r in sorted(addressed)]
+        frags += sorted(r for n, r in names.items() if UNLINKED_FRAGMENT.match(n))
+        op = root / "src" / unit / "order"
+        if op.exists():
+            listed = [ln.strip() for ln in fsmemo.read_text(op).split("\n") if ln.strip() and not ln.strip().startswith("#")]
+            pos = {f"src/{unit}/{n}": k for k, n in enumerate(listed)}
+            frags = sorted(frags, key=lambda r: pos.get(r, len(pos)))
+        out.append((unit, [names[n] for n in ("head.c",) if n in names] + frags
+                    + [names[n] for n in ("tail.c",) if n in names]))
+    return out
+
+
+def local_refs(root: Path, names: list[str]) -> dict[str, set[tuple[int, int]]]:
+    """rel -> {(line, col)} of the occurrences of `names` the front end finds referring to a declaration not at
+    file scope (cparse.refs: a local, a parameter, a field, a label), over every unit whose files or headers
+    hold one of the names: what a rename of a file-scope symbol leaves alone."""
+    from ..source import cparse
+    root = Path(root)
+    files = project_files(root)
+    sysdirs = front_end(root)
+    models(root, files)                                   # every unit's dependencies (_last_deps)
+    pat = re.compile(r"\b(?:" + "|".join(map(re.escape, names)) + r")\b")
+    holds = {}
+    rootr = root.resolve()
+
+    def held(p) -> bool:
+        if p not in holds:
+            try:
+                holds[p] = bool(pat.search(fsmemo.read_text(p)))
+            except OSError:
+                holds[p] = False
+        return holds[p]
+
+    jobs = []
+    for unit, members in unit_members(root, files):
+        path = unit_path(root, unit)
+        deps = [d for d in _last_deps.get(str(path), []) if Path(d).resolve().is_relative_to(rootr)]
+        if any(held(str(root / r)) for r in members) or any(held(d) for d in deps):
+            jobs.append((path, root, sysdirs, unit_incdirs(root, unit), *compose_unit(root, members), list(names), None))
+    out: dict[str, set] = {}
+    for r in cparse.many(jobs, fn="refs"):
+        for rel, xs in r.items():
+            out.setdefault(rel, set()).update(xs)
+    return out
+
+
+def unit_path(root: Path, unit: str) -> Path:
+    """Where the scan's translation unit of a unit stands (never written: its text is handed to the parser)."""
+    return root / "build" / "cache" / "cparse" / f"{unit}.c"
+
+
+def unit_incdirs(root: Path, unit: str) -> list[Path]:
+    return [root / "src" / unit, root / "include"]
+
+
+def compose_unit(root: Path, members: list[str]) -> tuple[str, list[tuple[int, str]]]:
+    """(text, parts) of a unit's translation unit: each member behind `#line 1 "<path>"`; parts: (the physical
+    line of that directive, the path), what cparse.model maps by (a `#line` pin inside a part maps nothing)."""
+    text, parts, n = "", [], 1
+    for r in members:
+        t = fsmemo.read_text(root / r)
+        t += "\n" if t and not t.endswith("\n") else ""
+        parts.append((n, r))
+        text += f'#line 1 "{r}"\n' + t
+        n += 1 + t.count("\n")
+    return text, parts
 
 
 def project_files(root: Path) -> list[tuple[str, str]]:

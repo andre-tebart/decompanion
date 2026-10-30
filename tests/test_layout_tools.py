@@ -392,6 +392,24 @@ def test_rename_leaves_strings_and_includes():
     assert "/* socket_net: f calls socket_net */" in new
 
 
+def test_rename_is_symbol_exact(tiny):
+    """A symbol with an address is renamed where it is used, not where a parameter, a local or a struct field of
+    the same name stands (comments still follow by word); a new name that is only a local elsewhere is no
+    collision."""
+    write(tiny, "src/a/head.c", "struct S { int a_10001000; };\nint count;\n")
+    write(tiny, "src/a/f_10001000.c", "/* 0x10001000, a_10001000 */\nint a_10001000(int count)\n{\n"
+                                      "    struct S s;\n    s.a_10001000 = count;\n    return s.a_10001000;\n}\n")
+    write(tiny, "src/a/f_10001020.c", "/* 0x10001020, a_10001020 */\nint a_10001020(void)\n{\n"
+                                      "    int a_10001000 = 1;\n    int checksum = 2;\n    return a_10001000 + checksum + a_10001000;\n}\n")
+    code, out = dcp(tiny, "rename", "a_10001000", "checksum", "--why", "what it computes")
+    assert code == 0, out
+    f1 = (tiny / "src/a/f_10001000.c").read_text()
+    assert "/* 0x10001000, checksum */\nint checksum(int count)" in f1
+    assert "s.a_10001000 = count;" in f1 and "return s.a_10001000;" in f1
+    assert "int a_10001000 = 1;" in (tiny / "src/a/f_10001020.c").read_text()
+    assert "struct S { int a_10001000; };" in (tiny / "src/a/head.c").read_text()
+
+
 def test_draft_keeps_analyzer_comments_off_the_signature():
     from decompanion.source import draft as DR
     text = "\r\n/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */\r\n\r\nvoid f(int a)\r\n\r\n{\r\n  return;\r\n}\r\n"

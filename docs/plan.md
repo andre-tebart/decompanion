@@ -828,3 +828,14 @@ regexes of defined_in only for a file without a model). The statement's block, d
 text (the edits are text). gildegold: no open D1 / D4 / D5; over all 6948 data declarators the positions equal,
 one declarator the regex did not find, 154 typedef'd pointers / handles / enums now `= 0` (the word list gave
 `= {0}`).
+
+Done, stage 3 rename (2026-10-30; user decision: symbol-exact, words elsewhere): `dcp rename` of a name with an
+address leaves alone the occurrences clang finds referring to a declaration not at file scope (a local, a
+parameter, a struct field, a label: cparse.refs, the cursor at each word occurrence; srcscan.local_refs over every
+unit whose files or headers hold the name, srcscan.unit_members / compose_unit being the scan's own units);
+comments, dead branches and macro bodies follow by word as before; a name without an address (a type, a field)
+is renamed by its words. The collision check: a new name that is only a local, a parameter or a field elsewhere
+is no collision. gildegold (in memory, nothing written): ai_ShotHitsGround / ai_Chars / d3_Time rename as before
+(7 / 918 / 175), `count` 883 -> 375 (its locals and fields kept); local_refs about 1.5 s per name. The comment and
+directive edits (set_level's tags, unit join's line merge and guards, the declaration blocks) stay lexical (user
+decision).

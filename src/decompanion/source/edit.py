@@ -11,6 +11,7 @@ type or a name without one); kind one of func, data, ident, unit; checkout `main
 """
 from __future__ import annotations
 
+import bisect
 import datetime
 import re
 import subprocess
@@ -67,29 +68,39 @@ def uses(root: Path, name: str) -> list[tuple[str, int]]:
 STRINGS = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|^[ \t]*#[ \t]*include\b[^\n]*', re.M)
 
 
-def replace_words(text: str, mapping: dict[str, str]) -> tuple[str, int]:
+def replace_words(text: str, mapping: dict[str, str], skip: set | None = None) -> tuple[str, int]:
     """Every whole-word occurrence of an old name in code and comments replaced by its new one; string and
     character literals and #include lines are left alone (a unit's header may carry the old spelling of a
-    name). Returns (text, replacements)."""
+    name), and the occurrences at the (line, col) positions of `skip` (another symbol of that name: a local, a
+    parameter, a field). Returns (text, replacements)."""
     pat = re.compile(r"\b(" + "|".join(sorted(map(re.escape, mapping), key=len, reverse=True)) + r")\b")
     out, pos, n = [], 0, 0
+    starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"] if skip else None
 
-    def sub(m):
+    def sub(m, base):
         nonlocal n
+        if skip:
+            at = base + m.start()
+            line = bisect.bisect_right(starts, at)
+            if (line, at - starts[line - 1] + 1) in skip:
+                return m.group(0)
         n += 1
         return mapping[m.group(1)]
     for m in STRINGS.finditer(text):
-        out.append(pat.sub(sub, text[pos:m.start()]))
+        b = pos
+        out.append(pat.sub(lambda x: sub(x, b), text[pos:m.start()]))
         out.append(m.group(0))
         pos = m.end()
-    out.append(pat.sub(sub, text[pos:]))
+    b = pos
+    out.append(pat.sub(lambda x: sub(x, b), text[pos:]))
     return "".join(out), n
 
 
-def rename_words(root: Path, mapping: dict[str, str], dry: bool = False) -> dict[str, int]:
+def rename_words(root: Path, mapping: dict[str, str], dry: bool = False, skip: dict | None = None) -> dict[str, int]:
     """Replace every whole-word occurrence of each old name by its new one in one pass over src/ and include/
     (code and comments: a name in an address comment or a description follows the rename; not inside string
-    literals or #include lines). Returns {file: replacements}; `dry` counts them and writes nothing."""
+    literals or #include lines; not at the positions skip[file] gives: srcscan.local_refs, the occurrences
+    that are another symbol). Returns {file: replacements}; `dry` counts them and writes nothing."""
     if not mapping:
         return {}
     out = {}
@@ -98,7 +109,7 @@ def rename_words(root: Path, mapping: dict[str, str], dry: bool = False) -> dict
         text = fsmemo.read_text(p)
         if not any_old.search(text):
             continue
-        new, n = replace_words(text, mapping)
+        new, n = replace_words(text, mapping, (skip or {}).get(p.relative_to(root).as_posix()))
         if n:
             if not dry:
                 write(p, new)
@@ -120,9 +131,11 @@ def words_with_prefix(root: Path, prefix: str) -> set[str]:
 _blank: dict[tuple[str, str], str] = {}     # (file, sha256) -> its text with comments, strings and includes blanked
 
 
-def code_uses(root: Path, name: str) -> list[tuple[str, int]]:
+def code_uses(root: Path, name: str, skip: dict | None = None) -> list[tuple[str, int]]:
     """(file, line) of every occurrence of name as an identifier of the code (comments, strings and #include
-    lines blanked): what a rename to `name` would collide with."""
+    lines blanked), but those at the (line, col) positions skip[file] gives (srcscan.local_refs: a local, a
+    parameter, a field of that name, which a file-scope symbol does not collide with): what a rename to `name`
+    would collide with."""
     pat = re.compile(rf"\b{re.escape(name)}\b")
     out = []
     for p in sources(root):
@@ -136,9 +149,11 @@ def code_uses(root: Path, name: str) -> list[tuple[str, int]]:
                 _blank.clear()
             blank = TOKEN.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
             blank = _blank[key] = re.sub(r"(?m)^[ \t]*#[ \t]*include\b[^\n]*", "", blank)
+        rel = p.relative_to(root).as_posix()
+        local = (skip or {}).get(rel, set())
         for i, line in enumerate(blank.splitlines(), 1):
-            if pat.search(line):
-                out.append((p.relative_to(root).as_posix(), i))
+            if any((i, m.start() + 1) not in local for m in pat.finditer(line)):
+                out.append((rel, i))
     return out
 
 

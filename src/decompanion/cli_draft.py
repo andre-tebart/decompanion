@@ -289,6 +289,10 @@ def cmd_rename(args):
     decl_pat = re.compile(DECL_NAME.format(old=re.escape(old)))
     decls = [path for path in sorted((p.root / "decl").glob("*.dcl")) if decl_pat.search(path.read_text())]
     used = E.uses(p.root, old)
+    # a symbol with an address is renamed where clang finds it, not where a local, a parameter or a field of the
+    # same name stands (srcscan.local_refs); a name without one (a type, a field) by its words
+    exact = a is not None
+    skip_old = srcscan.local_refs(p.root, [old]) if exact and used else None
     if not used and not decls:
         if a is not None and a in names.by_name.get(args.new, ()):
             E.log_names(p.root, [(a, kind, old, args.new)], args.why)
@@ -296,11 +300,13 @@ def cmd_rename(args):
             return 0
         return rename_fail(args, f"{old} occurs nowhere in src/, include/ or decl/" + (
             f" and {args.new} is not the ledger's name of {a:#x}" if a is not None else ""))
-    if used and not E.rename_words(p.root, {old: args.new}, dry=True) and not decls:
+    if used and not E.rename_words(p.root, {old: args.new}, dry=True, skip=skip_old) and not decls:
         where = ", ".join(f"{f}:{l}" for f, l in used[:4])
         return rename_fail(args, f"{old} occurs only inside string literals or #include lines ({where}): nothing to "
                                  f"rename (a header file's name is no identifier; edit a string by hand)")
     clash = E.code_uses(p.root, args.new)
+    if clash and exact:                             # a local, a parameter or a field of that name is no collision
+        clash = E.code_uses(p.root, args.new, srcscan.local_refs(p.root, [args.new]))
     elsewhere = sorted(set(names.by_name.get(args.new, ())) - ({a} if a is not None else set()))
     if clash and (a is None or elsewhere):
         return rename_fail(args, f"{args.new} exists already ({clash[0][0]}:{clash[0][1]})"
@@ -309,7 +315,7 @@ def cmd_rename(args):
     if clash:                                       # NEW is OLD's own address's name, written by hand in part
         print(f"note: {args.new} occurs already ({clash[0][0]}:{clash[0][1]}) and names no other address: the rename "
               f"completes it")
-    n = E.rename_words(p.root, {old: args.new})
+    n = E.rename_words(p.root, {old: args.new}, skip=skip_old)
     moved = []
     for f in sorted((p.root / "src").glob(f"*/u_{old}.c")):
         E.move(p.root, f, f.with_name(f"u_{args.new}.c"))

@@ -469,6 +469,54 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
     return {"files": out, "deps": deps, "missing": missing}
 
 
+LOCAL = {ci.CursorKind.PARM_DECL, ci.CursorKind.FIELD_DECL, ci.CursorKind.LABEL_STMT}
+
+
+def refs(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str, parts: list, names: list[str],
+         keep: str | None = None) -> dict[str, list[tuple[int, int]]]:
+    """rel -> [(line, col)] of every whole-word occurrence of one of `names` in the project files of a translation
+    unit (its parts, the headers below root it reads) that refers to a declaration not at file scope: a local
+    variable, a parameter, a struct / union field, a label (clang's cursor at the occurrence, the declaration it
+    refers to or is). What a rename of a file-scope symbol leaves alone; an occurrence in a comment, a string,
+    a dead branch or a macro body refers to nothing and is not listed."""
+    root = Path(root)
+    path = src if src.is_absolute() else root / src
+    tu = parse(path, root, sysdirs, incdirs, text, keep)
+    rootr = root.resolve()
+    lmap = ([0] + [d for d, _ in parts], [(str(path), 1)] + [(r, 1) for _, r in parts])
+    pat = re.compile(rb"\b(?:" + b"|".join(re.escape(n.encode()) for n in names) + rb")\b")
+    out: dict[str, list] = {}
+    files = [(str(path), text.encode(), None)]
+    for i in tu.get_includes():
+        p = Path(i.include.name).resolve()
+        if p.is_relative_to(rootr) and all(p != Path(f).resolve() for f, _, _ in files):
+            files.append((str(p), p.read_bytes(), p.relative_to(rootr).as_posix()))
+    for fname, data, rel_ in files:
+        f = ci.File.from_name(tu, fname)
+        nl = None
+        for m in pat.finditer(data):
+            c = ci.Cursor.from_location(tu, ci.SourceLocation.from_offset(tu, f, m.start()))
+            t = c.referenced if c is not None and c.referenced is not None else c
+            if t is None or t.spelling != m.group(0).decode():
+                continue
+            if not (t.kind in LOCAL or t.kind == ci.CursorKind.VAR_DECL
+                    and t.semantic_parent is not None and t.semantic_parent.kind != ci.CursorKind.TRANSLATION_UNIT):
+                continue
+            if nl is None:
+                nl = [x.start() for x in re.finditer(rb"\n", data)]
+            line = bisect.bisect_left(nl, m.start()) + 1
+            bol = nl[line - 2] + 1 if line > 1 else 0
+            col = len(data[bol:m.start()].decode("utf-8", errors="replace")) + 1
+            r = rel_
+            if r is None:
+                mf, line = locate(lmap, line)
+                if mf == str(path):
+                    continue
+                r = mf
+            out.setdefault(r, []).append((line, col))
+    return out
+
+
 CC_C = 1                                          # CXCallingConv_C: cdecl
 
 
@@ -495,7 +543,7 @@ def function_headers(sysdirs: list[Path], headers: list[str]) -> dict[str, str]:
 
 
 _pool: ProcessPoolExecutor | None = None
-WORK = {"diagnostics": diagnostics, "model": model}
+WORK = {"diagnostics": diagnostics, "model": model, "refs": refs}
 
 
 def _work(job):
