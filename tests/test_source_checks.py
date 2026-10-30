@@ -292,6 +292,48 @@ def test_headers_conflicts_warnings(tiny):
     assert "f_10001030.c:4 (constants: safe)" in out, out
 
 
+@pytest.mark.skipif(not Path("C:/Program Files/LLVM/bin/clang.exe").exists(), reason="clang not installed")
+def test_headers_conflicts_multi_name_and_position(tiny):
+    """Every name of a multi-name `extern a, b, c;` line is a duplicate (the line keeps its other names when
+    written); the include goes before the first statement using a duplicate when that is above the last
+    include (--at LINE chooses); q6 is about functions only, a datum's only description is no q6."""
+    write(tiny, "include/net.h", "extern int counter;\nextern int width;\nextern int height;\n")
+    write(tiny, "include/late.h", "typedef int LATE;\n")
+    write(tiny, "include/base.h", "typedef int BASE;\n")
+    write(tiny, "src/net/f_10001020.c", "/* 0x10001020, reads */\nint get(void)\n{\n    return counter + depth;\n}\n")
+    write(tiny, "src/net/head.c", '#include "base.h"\nextern int counter, width, depth;  /* 0x10002000, the counter */\n'
+                                  "extern int height;\nint *pw = &width;\n#include \"late.h\"\nLATE spare;\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net")
+    assert code == 0, out
+    for n, ln in (("counter", 2), ("width", 2), ("height", 3)):
+        assert f"kind=duplicate  name={n}  at=src/net/head.c:{ln}" in out, out
+    assert "duplicate=3" in out and "warning=q6" not in out, out      # 0x10002000 is data
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
+    assert code == 0 and "at=4" in out and "dropped=3  lines=2" in out, out
+    head = (tiny / "src/net/head.c").read_text()
+    assert head == ('#include "base.h"\nextern int depth;  /* 0x10002000, the counter */\n#include "net.h"\n'
+                    'int *pw = &width;\n#include "late.h"\nLATE spare;\n'), head
+    # --at: the includes go where the caller says (the trial still checks them)
+    write(tiny, "include/net2.h", "extern int depth;\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net2", "--write", "--at", "1")
+    assert code == 0 and "at=1" in out, out
+    assert (tiny / "src/net/head.c").read_text().startswith('#include "net2.h"\n#include "base.h"\n#include "net.h"\n')
+
+
+def test_drop_names_and_include_pos():
+    from decompanion.source import headers as H
+    assert H.drop_names("h.c", "extern int a, *b, c[3];  /* 0x1 */", {"b"}) == "extern int a, c[3];  /* 0x1 */"
+    assert H.drop_names("h.c", "extern int a, *b, c[3];  /* 0x1 */", {"a"}) == "extern int *b, c[3];  /* 0x1 */"
+    assert H.drop_names("h.c", "extern int a, *b;  /* 0x1 */", {"a", "b"}) is None
+    assert H.drop_names("h.c", "extern int x; extern char *y, z;", {"x"}) == "extern char *y, z;"
+    assert H.drop_line("h.c", "int f(void);  /* 0x1 */", {"f"}, {"f"}) is None
+    assert H.declared_names("h.c", "extern int a, *b, c[3];\n") == {"a": 1, "b": 1, "c": 1}
+    text = '#include "a.h"\nextern int x;\nstatic int tab[] = {\n  1,\n  x\n};\n#include "late.h"\n'
+    assert H.include_pos("h.c", text, {"x"}) == 2 and H.include_pos("h.c", text, {"y"}) == 7
+    text = '#include "a.h"\nextern int x;\n/* the table,\n   of x */ static int *px =\n  &x;\n#include "late.h"\n'
+    assert H.include_pos("h.c", text, {"x"}) == 2              # not inside the comment, not inside the statement
+
+
 VC6_ROOT = Path("C:/Tools/MSVC600-SP5PP")
 
 

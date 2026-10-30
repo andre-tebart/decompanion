@@ -204,9 +204,11 @@ when clang is installed.
 
 `dcp headers conflicts UNIT HEADER..` (source/headers.py) answers "what would including these headers into
 the unit's head.c collide with" before the include is made: the unit is parsed twice the way lint parses it,
-as it is and with the includes after head.c's last one, and only the trial's new diagnostics count:
+as it is and with the includes after head.c's last one (or before the first file-scope statement using a name
+the headers declare, when that comes first: a head that uses a duplicate above its last include; `--at LINE`
+chooses the line), and only the trial's new diagnostics count:
 `supersedes` (a declaration of the unit the header declares differently), `duplicate` (one it repeats with
-the same type: safe to drop), `clash` (two headers disagree), `header` (the header does not compile in this
+the same type: safe to drop; every name of a multi-name `extern a, b, c;` line), `clash` (two headers disagree), `header` (the header does not compile in this
 unit's include set), `call` (a call the header's prototype rejects, with the original's pushes and `add esp`
 at that function's call of the callee), `vc6` (an error only VC6's own front end reports: both files also go
 through `CL /Zs` with the unit's flags, since clang accepts what VC6 rejects, e.g. C2079 for a struct passed by
@@ -216,7 +218,8 @@ else re-grade: an expression, an integer constant to a float parameter), `other`
 re-grade and two warnings: `declaration-set` (the includes add declarations or --write drops duplicates: under
 VC6 /O2 the declaration set alone moves code generation, so every function of the unit is re-graded, byte ones
 first, and they are listed) and `q6` (a duplicate's comment is the only description of a function: dropping it
-drops the function to draft under Q6). `--write` inserts the includes and drops the duplicates, only when
+drops the function to draft under Q6; function addresses only). `--write` inserts the includes and drops the
+duplicates (a line whose names are all duplicates goes, a multi-name line keeps its other declarators), only when
 nothing else is left and the trial without them has no new error (clang's or VC6's). About 1 s a unit (more
 with the VC6 trial).
 

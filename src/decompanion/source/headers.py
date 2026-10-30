@@ -1,13 +1,15 @@
 """`dcp headers conflicts UNIT HEADER..`: what including headers into a unit's head.c would collide with, before
 the include is made. A trial amalgamation of the unit (head.c with `#include "<header>"` after its last
-include, written to build/lint/<target>/trial/) is parsed by clang the way `dcp lint` parses it (lint.py: the
+include, or before the first file-scope statement that uses a name the headers declare when that comes
+first, or before the line --at names; written to build/lint/<target>/trial/) is parsed by clang the way `dcp lint` parses it (lint.py: the
 same flags, system and include directories), and so is the unit as it is; the diagnostics only the trial has
 are what the include causes:
 
   supersedes  a declaration of the unit (head.c or a fragment) the header declares differently (`conflicting
               types`, `redefinition .. with a different type`, a struct defined twice): the local one goes, and
               its users follow the header's type
-  duplicate   a declaration of head.c the header repeats with the same type: safe to drop (no diagnostic, by name)
+  duplicate   a declaration of head.c the header repeats with the same type: safe to drop (no diagnostic, by name;
+              each name of a multi-name `extern int a, b, c;` line)
   clash       two headers disagree (both sides in include/): no head edit settles it; one header is wrong
   call        a call of the unit the header's prototype rejects (too few / too many arguments), with the
               original's evidence at the matching call site of the same function: the pushes since the previous
@@ -33,8 +35,10 @@ call that is not safe) and two warnings:
                    ones first (listed: byte, then shape)
   q6               a duplicate's comment is the only text describing a function's address (rule Q6 reads it):
                    dropping the line drops the function to draft; move the words to its address comment first
-The tool reads only; `--write` inserts the includes and drops the `duplicate` lines of head.c, and only when
-the trial without them has no new error at all (clang's or VC6's).
+                   (a function's address only: Q6 grades functions; a line that keeps a declarator keeps it)
+The tool reads only; `--write` inserts the includes and drops the `duplicate` declarations of head.c (a line
+whose names are all duplicates goes, comment and all; a multi-name extern line keeps its other declarators),
+and only when the trial without them has no new error at all (clang's or VC6's).
 """
 from __future__ import annotations
 
@@ -97,20 +101,119 @@ def resolve_header(root: Path, unit: str, h: str) -> str | None:
     return None
 
 
-def insert_includes(text: str, headers: list[str]) -> str:
+def after_includes(text: str) -> int:
+    """The line index (0-based) after head.c's last include (0 without one)."""
+    return max((i for i, l in enumerate(text.split("\n")) if INCLUDE.match(l)), default=-1) + 1
+
+
+def insert_includes(text: str, headers: list[str], pos: int | None = None) -> str:
+    """The text with an `#include "h"` line per header inserted before line index `pos` (0-based; default:
+    after the last include)."""
     lines = text.split("\n")
-    last = max((i for i, l in enumerate(lines) if INCLUDE.match(l)), default=-1)
+    pos = after_includes(text) if pos is None else max(0, min(pos, len(lines)))
     add = [f'#include "{h}"   /* dcp headers conflicts: trial */' for h in headers]
-    return "\n".join(lines[:last + 1] + add + lines[last + 1:])
+    return "\n".join(lines[:pos] + add + lines[pos:])
 
 
-def declared_names(rel: str, text: str) -> dict[str, int]:
-    """name -> line of every file-scope prototype and extern data declaration of a file."""
+IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
+
+
+def include_pos(rel: str, text: str, names) -> int:
+    """Where the includes go in head.c (a line index, 0-based; the includes are inserted before it): after its
+    last include, or earlier, at the start of the file-scope statement holding the first use of a name the
+    headers declare (`names`) when that use comes first, so a head that uses a duplicate above its last
+    include still compiles once the duplicate is dropped. A use is an occurrence outside a declaration line
+    of that name."""
+    after = after_includes(text)
+    names = set(names)
+    if not names:
+        return after
+    S = srcscan.Source(rel, text)
+    code = srcscan.blank_alternatives(S.code)
+    decl_lines = declared_names(rel, text, every=True)
+    first = None
+    for m in IDENT.finditer(code):
+        n = m.group(0)
+        if n in names and S.line_of(m.start()) not in decl_lines.get(n, ()):
+            first = S.line_of(m.start()) - 1
+            break
+    if first is None or first >= after:
+        return after
+    raw, code_lines = text.split("\n"), code.split("\n")
+    inside = set()                           # line indices (0-based) that start inside a comment
+    for cs, ce, _ in S.comments:
+        inside.update(range(S.line_of(cs), S.line_of(ce - 1)))
+    ok, depth, prev = [], 0, ";"             # ok[i]: line i starts a file-scope statement (not in a comment)
+    for i, l in enumerate(code_lines):
+        ok.append(depth == 0 and i not in inside and prev in ";}#")
+        if raw[i].lstrip().startswith("#"):
+            prev = "#"
+        elif l.strip():
+            prev = l.strip()[-1]
+        depth += l.count("{") - l.count("}")
+    return next((i for i in range(first, -1, -1) if ok[i]), 0)
+
+
+EXTERN_STMT = re.compile(r"(?:^|(?<=;))([ \t]*)extern\b([^;(]*);")
+DECLARATOR = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$")
+
+
+def drop_names(rel: str, line: str, names) -> str | None:
+    """One head.c line without the declarators of `names` in its `extern T a, b, c;` statements: None when no
+    code is left (the line goes, its comment with it), else the line with the other declarators (and its
+    comment) kept."""
+    names = set(names)
+    code = srcscan.Source(rel, line).code
+    out, pos = [], 0
+    for m in EXTERN_STMT.finditer(code):
+        chunks = m.group(2).split(",")
+        heads = [DECLARATOR.search(c.split("=")[0].rstrip()) for c in chunks]
+        if not all(heads):
+            continue
+        kept = [i for i, h in enumerate(heads) if h.group(1) not in names]
+        if len(kept) == len(chunks):
+            continue
+        spec = chunks[0][:heads[0].start()].rstrip(" \t*")       # `extern int *a, b`: " int"; "*a" is a's
+        starts = [m.start(2)]
+        for c in chunks:
+            starts.append(starts[-1] + len(c) + 1)
+        decls = [line[starts[i] + (len(spec) if i == 0 else 0):starts[i] + len(chunks[i])].strip() for i in kept]
+        out.append(line[pos:m.start()])
+        if kept:
+            out.append(m.group(1) + "extern" + line[m.start(2):m.start(2) + len(spec)] + " " + ", ".join(decls) + ";")
+        pos = m.end()
+    out.append(line[pos:])
+    new = "".join(out).rstrip()
+    if not srcscan.Source(rel, new).code.strip():
+        return None
+    return new if line[:1].isspace() else new.lstrip()
+
+
+def drop_line(rel: str, line: str, names, line_names) -> str | None:
+    """A head.c line with its duplicates `names` dropped (drop_names); a line whose declarations
+    (`line_names`) are all duplicates but are no extern data statement (a prototype) goes whole: None."""
+    new = drop_names(rel, line, names)
+    if new is None or new == line and set(line_names) <= set(names):
+        return None
+    return new
+
+
+def declared_names(rel: str, text: str, every: bool = False) -> dict:
+    """name -> line of every file-scope prototype and extern data declaration of a file (each name of a
+    multi-name `extern int a, b, c;`); every=True: name -> the set of its declaration lines."""
     out = {}
+    if every:
+        for d in L.file_scope_decls(rel, text):
+            if d.kind in ("proto", "extern"):
+                out.setdefault(d.name, set()).add(d.line)
+        return out
     for line, stmt in L.file_scope_prototypes(rel, text):
         m = L.DECL.match(stmt.removeprefix("extern "))
         if m:
             out.setdefault(m.group(2), line)
+    for d in L.file_scope_decls(rel, text):
+        if d.kind == "extern":
+            out.setdefault(d.name, d.line)
     depth = 0
     code = srcscan.blank_alternatives(srcscan.Source(rel, text).code).split("\n")
     for i, l in enumerate(code, 1):
@@ -205,9 +308,21 @@ def _key(g):
     return tuple((d["file"], d["line"], d["msg"]) for d in g)
 
 
-def trial(project, unit: str, headers: list[str], drop: set[int] = frozenset()):
+def head_names(root: Path, unit: str, headers: list[str]) -> dict[str, str]:
+    """name -> header file:line of every prototype and extern the headers (and what they include) declare."""
+    out = {}
+    for rel in header_closure(root, unit, headers):
+        for n, ln in declared_names(rel, fsmemo.read_text(Path(root) / rel)).items():
+            out.setdefault(n, f"{rel}:{ln}")
+    return out
+
+
+def trial(project, unit: str, headers: list[str], drop: dict | None = None, at: int | None = None):
     """(amalgamation, head.c, baseline groups, trial groups, head.c's trial text, (VC6 baseline, VC6 trial) or
-    None) of the unit with `headers` included and head.c's lines `drop` (1-based) removed."""
+    None, the include position) of the unit with `headers` included and head.c's duplicates `drop` removed
+    ({line (1-based): the names to drop there}: the line goes when they are all its names, else only their
+    declarators). The includes go before head.c's line `at` (1-based) when given, else where include_pos puts
+    them; the position returned is a line index (0-based) of head.c on disk."""
     a = next((x for x in B.plan(project) if x.unit == unit), None)
     if a is None:
         raise LookupError(f"no unit {unit} in target {project.target_name}")
@@ -216,8 +331,21 @@ def trial(project, unit: str, headers: list[str], drop: set[int] = frozenset()):
         raise LookupError(f"unit {unit} has no head.c")
     old = fsmemo.read_text(Path(project.root) / head)
     lines = old.split("\n")
-    kept = "\n".join(l for i, l in enumerate(lines, 1) if i not in drop)
-    new = insert_includes(kept, headers)
+    pos = at - 1 if at else include_pos(head, old, head_names(project.root, unit, headers))
+    drop = drop or {}
+    per_line = {}
+    for n, ln in declared_names(head, old).items():
+        per_line.setdefault(ln, set()).add(n)
+    kept, kpos = [], pos
+    for i, l in enumerate(lines, 1):
+        if i in drop:
+            new_l = drop_line(head, l, drop[i], per_line.get(i, set()))
+            if new_l is None:
+                kpos -= i <= pos
+                continue
+            l = new_l
+        kept.append(l)
+    new = insert_includes("\n".join(kept), headers, kpos)
     base_text, base_segs = A.compose(a.root, a.members, a.file_name)
     new_text, new_segs = A.compose(a.root, a.members, a.file_name, read=_reader(a, new))
     rb, rn = _write(project, a, base_text, "base"), _write(project, a, new_text, "trial")
@@ -227,7 +355,7 @@ def trial(project, unit: str, headers: list[str], drop: set[int] = frozenset()):
         base, tri = _map(a, base_segs, fb.result()), _map(a, new_segs, fn.result())
         vbase, vtri = vb.result(), vn.result()
     vc6 = None if vbase is None or vtri is None else (_map(a, base_segs, vbase), _map(a, new_segs, vtri))
-    return a, head, L.grouped(base), L.grouped(tri), new, vc6
+    return a, head, L.grouped(base), L.grouped(tri), new, vc6, pos
 
 
 def vc6_new(vc6) -> list[dict]:
@@ -239,12 +367,12 @@ def vc6_new(vc6) -> list[dict]:
     return [d for d in vtri if d["kind"] == "error" and (d["file"], d["msg"]) not in seen]
 
 
-def analyse(project, unit: str, headers: list[str]):
+def analyse(project, unit: str, headers: list[str], at: int | None = None):
     from ..ledger.names import Names
     root = Path(project.root)
-    a, head, base, tri, new_head, vc6 = trial(project, unit, headers)
+    a, head, base, tri, new_head, vc6, pos = trial(project, unit, headers, at=at)
     old_lines = fsmemo.read_text(root / head).split("\n")
-    last_inc = max((i for i, l in enumerate(old_lines) if INCLUDE.match(l)), default=-1)
+    last_inc = pos - 1                               # the trial includes follow head.c's line index pos - 1
     n_added = len(headers)
     seen = {_key(g) for g in base}
     base_calls = {}
@@ -405,20 +533,31 @@ def declaration_set(root: Path, a, head: str, headers: list[str], hdr_names: dic
 
 def only_descriptions(project, head: str, old_lines: list[str], dups: list) -> list[tuple]:
     """(duplicate, address) for each head.c duplicate whose comment is the only text describing a function's
-    address in the tree (readability rule Q6 reads it): dropping the line drops the description."""
+    address in the tree (readability rule Q6 reads it): dropping the line drops the description. Only a line
+    --write drops whole counts (every name it declares is a duplicate; a line that keeps a declarator keeps
+    its comment), each once, and only a function's address (a fragment's; Q6 grades functions, not data)."""
     from collections import Counter
     if not dups:
         return []
     sc = srcscan.scan(project.root, project.input_hash("src"))
     total = Counter(sc.described)
-    out = []
+    functions = {a for f in sc.functions for _, a in f.addrs}
+    per_line = {}
+    for n, ln in declared_names(head, "\n".join(old_lines)).items():
+        per_line.setdefault(ln, set()).add(n)
+    dup_names = {it.name for it in dups}
+    out, done = [], set()
     for it in dups:
         ln = int(it.at.rsplit(":", 1)[1])
+        line = old_lines[ln - 1] if 0 < ln <= len(old_lines) else ""
+        if ln in done or drop_line(head, line, dup_names, per_line.get(ln, set())) is not None:
+            continue
+        done.add(ln)
         tmp = srcscan.Scan()
         srcscan.scan_file(head, old_lines[ln - 1] if 0 < ln <= len(old_lines) else "", tmp)
         mine = Counter(tmp.described)
         for addr, n in mine.items():
-            if total[addr] - n <= 0:
+            if addr in functions and total[addr] - n <= 0:
                 out.append((it, addr))
     return out
 

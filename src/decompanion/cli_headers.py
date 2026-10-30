@@ -6,8 +6,12 @@ record per line, key=value tokens, addresses 0x%08x, counts before lists.
                                         header / supersedes / call / vc6 / other / prototyped / duplicate, the
                                         warnings (the declaration set changes; a dropped duplicate carries the
                                         only description of a function), then the functions to re-grade.
-                                        --write inserts the includes and drops the duplicates, only when nothing
-                                        else is left.
+                                        --write inserts the includes and drops the duplicates (every name of a
+                                        multi-name `extern a, b, c;`: the line goes, or keeps its other names),
+                                        only when nothing else is left and the trial without them has no new
+                                        error. The includes go after head.c's last include, or before the first
+                                        statement that uses a name the headers declare when that comes first;
+                                        --at LINE chooses the line.
 """
 from __future__ import annotations
 
@@ -35,7 +39,7 @@ def cmd_headers_conflicts(args):
             return 2
         hdrs.append(r)
     try:
-        a, head, items, info = H.analyse(p, args.unit, hdrs)
+        a, head, items, info = H.analyse(p, args.unit, hdrs, at=args.at)
     except LookupError as ex:
         print(record(unit=args.unit, error=str(ex)))
         return 2
@@ -99,20 +103,25 @@ def cmd_headers_conflicts(args):
     if blocking:
         print(record(write="refused", why=f"{blocking} conflicts left; only includes and duplicates are written"))
         return 1
-    drop = {int(i.at.rsplit(":", 1)[1]) for i in items if i.kind == "duplicate"}
-    _, _, base, tri, new, vc6 = H.trial(p, args.unit, hdrs, drop)
+    drop = {}
+    for i in items:
+        if i.kind == "duplicate":
+            drop.setdefault(int(i.at.rsplit(":", 1)[1]), set()).add(i.name)
+    _, _, base, tri, new, vc6, pos = H.trial(p, args.unit, hdrs, drop, at=args.at)
     seen = {H._key(g) for g in base}
     left = [g for g in tri if g[0]["kind"] == "error" and H._key(g) not in seen]
     vleft = H.vc6_new(vc6)
     if left or vleft:
-        print(record(write="refused", why=f"without the duplicates the trial has {len(left) + len(vleft)} new errors"))
+        print(record(write="refused", why=f"without the duplicates the trial has {len(left) + len(vleft)} new errors",
+                     at=pos + 1) + "  (the includes went before head.c's line `at`; --at LINE puts them elsewhere)")
         for g in left[:10]:
             print("  " + L.fmt_group(g))
         for d in vleft[:10]:
             print(f"  vc6 {d['file']}:{d['line']}: {d['msg']}")
         return 1
     (p.root / head).write_text(new.replace('   /* dcp headers conflicts: trial */', ''), newline="\n")
-    print(record(write=head, included=",".join(hdrs), dropped=len(drop)) + "  (dcp build, then dcp check and re-grade the unit)")
+    print(record(write=head, included=",".join(hdrs), at=pos + 1, dropped=sum(len(v) for v in drop.values()), lines=len(drop))
+          + "  (dcp build, then dcp check and re-grade the unit)")
     return 0
 
 
@@ -124,3 +133,6 @@ def register(sub, cmd):
     s.add_argument("headers", nargs="+", metavar="HEADER")
     s.add_argument("--write", action="store_true",
                    help="insert the includes and drop head.c's duplicates when no other conflict is left")
+    s.add_argument("--at", type=int, metavar="LINE",
+                   help="insert the includes before head.c's line LINE (default: after its last include, or before "
+                        "the first statement using a name the headers declare when that comes first)")
