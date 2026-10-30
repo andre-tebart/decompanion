@@ -466,6 +466,9 @@ class Project:
             return json.loads(m) if m else None
         if name == "lint":
             import json
-            m = self.store.meta("lint")
-            return json.loads(m) if m else None
+            m = json.loads(self.store.meta("lint") or "null")
+            # a lint of an older decompanion (calls without their lines) counts as none: `dcp lint` again
+            if m and any(isinstance(c, str) for cs in m.get("calls", {}).values() for c in cs):
+                return None
+            return m
         raise ConfigError(f"unknown input {name!r}")

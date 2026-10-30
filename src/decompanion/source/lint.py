@@ -824,7 +824,7 @@ def stale(project) -> list[str] | None:
 
 def lint(project, log=None) -> dict:
     """Lint every unit of the current target and the all-declarations unit; store and return the result
-    {units: {unit: amalg hash}, errors: [M6 lines], cross: [M5 lines], calls: {fragment file: [callee (kind)]}}."""
+    {units: {unit: amalg hash}, errors: [M6 lines], cross: [M5 lines], calls: {file: [[line, callee (kind)]]}}."""
     from . import cparse
     root, st = project.root, project.store
     setup(project)
@@ -873,13 +873,13 @@ def lint(project, log=None) -> dict:
                 errors.append(fmt_group(g))
             elif c := call_of(d):
                 callee, how = c
-                calls.setdefault(d["file"], []).append(f"{callee}() at line {d['line']}" if how == "proto" else
-                                                       f"{callee} (undeclared) at line {d['line']}")
+                calls.setdefault(d["file"], []).append((d["line"], f"{callee}() at line {d['line']}" if how == "proto" else
+                                                                     f"{callee} (undeclared) at line {d['line']}"))
     conflicts = cross_conflicts(ad, cross, lines)
     conflicts += private_violations(root, private_headers(root))
     res = {"units": {a.unit: a.src_hash for a in amalgs},
            "includes": {a.unit: (tus.get(a.unit) or {}).get("include_hash", "") for a in amalgs}, "errors": sorted(set(errors)), "cross": sorted(set(conflicts)),
-           "calls": {k: sorted(set(v)) for k, v in sorted(calls.items())}}
+           "calls": {k: [list(c) for c in sorted(set(v))] for k, v in sorted(calls.items())}}
     st.set_meta("lint", canonical(res))
     project.forget_input("lint")
     return dict(res, parsed=len(jobs), cached=len(amalgs) - len(jobs))

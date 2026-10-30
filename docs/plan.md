@@ -856,3 +856,41 @@ M1 followed. The definition now stays its head's file's (its end None: readabili
 and the spill is its own L.src error naming where the body ends. cparse is a helper of L.src now: a change of the
 front end reruns the loader (a change of what the scan sees reached the dependent rules' stored results only
 through a forced run).
+
+## 19. One file per unit (planned 2026-10-30, user decision: "the amalgamation structure is not a good idea anymore")
+
+The decision of 2026-10-29 (one file per function, compiled through a generated per-unit amalgamation) was taken
+for merge-free parallel work (section 4). It does not buy that: the merge conflicts of `rea` came from
+project-wide renames in hub files (names.log's job), and two workers inside one unit interfere in the bytes even
+when git merges cleanly (literal pooling, static data order, a callee defined above its caller, D4). What it
+costs: build/amalg.py's composition and `#line` segments, the `order` files and L12, the head / tail / u_ split,
+L11 (file name against address), the spills of srcscan and cparse, the virtual compositions of datafix and
+headers, 4668 files in gildegold. The unit is the unit of work and of ownership (one worker per unit).
+
+The model:
+- `src/<unit>.c` is the translation unit; its text order is the TU order. The head region is everything before
+  the first function definition (the includes, the dcp declaration block). Notes: `notes/units/<unit>.md`.
+- A function's address comment is the own-line comment directly above its definition (`/* unlinked, what */`
+  for a function the binary does not hold); data comments stay trailing.
+- `__FILE__`: the unit carries its `#line 1 "<original path>"` and its `#line N` pins itself; diagnostics map
+  back through the file's own directives; the `file` declaration checks the image and the directive.
+- Targets: every target's cflags define `DCP_TARGET_<name>`; a function of some targets only stands under `#if`
+  on those macros; the scan parses a unit once per target; a check reports a function whose comment and guard
+  disagree.
+
+Stages, each with gildegold as the check (objects, grades, check, lint against the commit before):
+- stage 1: function spans (a function's address comment to the end of its definition), under the fragment
+  layout too: Q5, Q7, M5..M7, the readability memo, set_level and headers' function lookup key on the function,
+  not on the file.
+- stage 2: `dcp unit fold` (the old layout into one file per unit) and the switch of the scan and the build.
+- stage 3: the editors on spans: draft inserts in address order, `dcp fn ADDR`, unit new / join / rename, data
+  fix, headers, lint, the session's change list.
+- stage 4: gildegold folded.
+- stage 5: docs, skills, tests; the fold command and the composition removed.
+
+Done, stage 1 (2026-10-30): srcscan.Function has `end_line`; `source` facts carry `comment` and `end`;
+srcscan.Spans maps (file, line) to the function whose span holds it. Q5 reads the function's own address comment,
+Q7 and M7 count the calls inside the span (lint's `calls` carry their lines: a stored lint without them counts as
+none), M5 / M6 go to the function at the line, the readability memo keys on the span's text, set_level writes
+the comment on the grade's `comment` line, headers' `fn=` comes from the spans. gildegold: lint and conflicts
+equal to the commit before.

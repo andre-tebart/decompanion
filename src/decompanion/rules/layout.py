@@ -388,13 +388,14 @@ def load_decl_starts(ctx: RuleContext):
             yield ctx.declared(d.lo, d.lo + 1, Kind.start, {"skind": "func", "how": "decl"}, d.by, d.reason)
 
 
-@rule("L.src", version="4", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
+@rule("L.src", version="5", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
       loader=True, helpers=(srcscan, cparse))         # the front end decides what the scan sees
 def load_src(ctx: RuleContext):
     """The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function
-    fragment with an address gives a `source` fact {file, line, unit, symbol, what: func, deep / stuck / rough
-    tags}, a `name` fact (origin source) and a `start` fact (how source); every data definition with an address
-    a `source` fact (what: data) and a `name`; every extern with an address a `name`. Producer
+    fragment with an address gives a `source` fact {file, line, comment (the address comment's line), end (the
+    definition's last line), unit, symbol, what: func, deep / stuck / rough tags}, a `name` fact (origin source)
+    and a `start` fact (how source); every data definition with an address a `source` fact (what: data) and a
+    `name`; every extern with an address a `name`. Producer
     src:<file>:<line>, reason = the comment's description. Errors: a parse error of the scan (L.src: a fragment
     without its address comment on line 1, a function outside a fragment, two definitions in a fragment, a
     stray file), L11 (the file name's address differs from the comment's first address), an unknown target
@@ -434,7 +435,8 @@ def load_src(ctx: RuleContext):
             yield ctx.conflict(Severity.error, "L.src", a if img.in_image(a) else base, (a if img.in_image(a) else base) + 1,
                                f"{f.file}: function {f.name} at {a:#x}, outside every code section", a=by)
             continue
-        v = {"file": f.file, "line": f.line, "unit": f.unit, "symbol": f.name, "what": "func"}
+        v = {"file": f.file, "line": f.line, "comment": f.comment_line, "end": f.end_line, "unit": f.unit, "symbol": f.name,
+             "what": "func"}
         if f.deep is not None:
             v["deep"] = f.deep
         if f.stuck is not None:

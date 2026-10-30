@@ -59,7 +59,6 @@ QUOTED = re.compile(r"'(\w+)'")
 ARGS = re.compile(r"too (few|many) arguments to function call, expected (?:at least )?(\d+), have (\d+)")
 CONFLICT = re.compile(r"^(?:conflicting types for|redefinition of|redeclaration of|typedef redefinition with "
                       r"different types|non-static declaration of|static declaration of)\b")
-FRAG = re.compile(r"/f_([0-9a-fA-F]+)\.c$")
 
 
 @dataclass
@@ -369,6 +368,11 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
     def is_unit(f):
         return f.startswith(f"src/{unit}/")
 
+    spans = srcscan.function_spans(srcscan.scan(root, project.input_hash("src")), project.target_name, project.default_target)
+
+    def fn_at(d):
+        return spans.at(d["file"], d["line"]) if d.get("file") else None
+
     items, conflicting = [], set()
     rd = Reader(root)
     names = Names(project, project.store)
@@ -386,9 +390,8 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
         if m:
             note = next((x for x in g[1:] if "declared here" in x["msg"]), None)
             callee = (note.get("name") if note else None) or name
-            fm = FRAG.search(d["file"])
             it = Item("call", callee, fix(d), fix(note) if note else None, d["msg"], rd.line(fix(d)),
-                      rd.line(fix(note)) if note else "", int(fm.group(1), 16) if fm else None)
+                      rd.line(fix(note)) if note else "", fn_at(d))
             it.evidence = call_evidence(project, names, it.fn, callee)
             items.append(it)
             continue
@@ -403,16 +406,14 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
                 items.append(it)
                 continue
             conflicting.add(name)
-            fm = FRAG.search(ours["file"])
             items.append(Item("supersedes", name, fix(ours), fix(theirs) if theirs else fix(note), d["msg"],
-                              rd.line(fix(ours)), rd.line(fix(theirs or note)), int(fm.group(1), 16) if fm else None))
+                              rd.line(fix(ours)), rd.line(fix(theirs or note)), fn_at(ours)))
             continue
         if d["file"].startswith("include/") and not any(is_unit(x["file"]) for x in g):
             items.append(Item("header", name, fix(d), None, d["msg"], rd.line(fix(d))))
             continue
-        fm = FRAG.search(d["file"])
         items.append(Item("other", name, fix(d), fix(g[1]) if len(g) > 1 else None, d["msg"], rd.line(fix(d)),
-                          fn=int(fm.group(1), 16) if fm else None))
+                          fn=fn_at(d)))
     # what VC6 itself rejects and clang accepted (C2079: a struct by value, incomplete in this unit)
     reported = {i.at for i in items}            # VC6's own C2371 of a `supersedes` line says the same
     for d in vc6_new(vc6):
@@ -420,10 +421,9 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
         if at in reported:
             continue
         reported.add(at)
-        fm = FRAG.search(d["file"])
         q = QUOTED.search(d["msg"])
         items.append(Item("vc6", q.group(1) if q else None, at, None, d["msg"], rd.line(at) if d["file"] else "",
-                          fn=int(fm.group(1), 16) if fm else None))
+                          fn=fn_at(d)))
     per_callee: dict[str, list] = {}
     for (f, callee), lines in sorted(base_calls.items()):
         if (f, callee) in trial_calls or not is_unit(f):
@@ -441,7 +441,7 @@ def analyse(project, unit: str, headers: list[str], at: int | None = None):
         sites = call_sites(root, a, callee) or sites        # clang warns at the first implicit call only
         classes = [(f, ln, call_class(rd.memo_text(f), ln, callee, hdr_decls.get(callee))) for f, ln in sites]
         risky = [(f, ln) for f, ln, c in classes if not c[0]]
-        fns = sorted({int(m.group(1), 16) for f, _ in risky if (m := FRAG.search(f))})
+        fns = sorted({fa for f, ln in risky if (fa := spans.at(f, ln)) is not None})
         n_safe = len(sites) - len(risky)
         it = Item("prototyped", callee, f"{sites[0][0]}:{sites[0][1]}", msg=f"{len(sites)} calls compiled without a "
                   f"prototype; the header's now converts their arguments: safe={n_safe} (constant arguments, the "

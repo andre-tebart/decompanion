@@ -228,7 +228,7 @@ def cmd_level(args):
         print(f"dcp {level}: no graded function {args.name} (dcp build first)", file=sys.stderr)
         return 1
     if args.clear:
-        action = G.set_level(p.root, r["file"], None, None)
+        action = G.set_level(p.root, r["file"], None, None, G.comment_line(r))
     else:
         if not (args.why or "").strip():
             print(f"dcp {level}: a reason is required", file=sys.stderr)
@@ -237,7 +237,7 @@ def cmd_level(args):
             print(f"dcp escalate: refused: the reason names only missing statements; reconstruction is base work "
                   f"(say which leads were tried and what is left)", file=sys.stderr)
             return 1
-        action = G.set_level(p.root, r["file"], level, args.why)
+        action = G.set_level(p.root, r["file"], level, args.why, G.comment_line(r))
     print(record(fn=r["addr"], name=r["name"], file=r["file"], action=action))
     return 0
 
@@ -399,7 +399,7 @@ def cmd_lint(args):
         for x in res["cross"]:
             print("  M5 " + x)
         for f, cs in res["calls"].items():
-            for c in cs:
+            for _, c in cs:
                 print(f"  M7 {f}: {c}")
         failed = failed or bool(res["errors"] or res["cross"])
     return 1 if failed else 0

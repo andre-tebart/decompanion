@@ -118,6 +118,7 @@ class Function:
     rough: bool = False
     comment_line: int = 1
     static: bool = False      # `static`: its name is the unit's own (N2 compares it within the unit only)
+    end_line: int = 0         # the last line of the definition (0: the front end gave no end)
 
 
 @dataclass(frozen=True)
@@ -509,9 +510,10 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
                 out.errors.append(ScanError(rel, 1, "L11", "an unlinked function lives in u_<name>.c, not f_<addr>.c"))
             elif um and um_name and um_name.group(1) != fname:
                 out.errors.append(ScanError(rel, 1, "L11", f"the file name says {um_name.group(1)}, the definition {fname}"))
+            ends = [d[5] for d in model["decls"] if d[0] == "f" and d[1] == fname and d[6] is not None and d[5]]
             out.functions.append(Function(rel, S.line_of(off), unit, fname, tuple(addrs), bool(um) and not addrs, what,
                                           dm.group(1).strip() if dm else None, sm.group(1).strip() if sm else None,
-                                          bool(ROUGH.search(body)), static=fstatic))
+                                          bool(ROUGH.search(body)), static=fstatic, end_line=ends[-1][0] if ends else 0))
     elif defs:
         for off, fname, _ in defs:
             out.errors.append(ScanError(rel, S.line_of(off), "L.src", f"function {fname} defined outside a fragment "
@@ -531,7 +533,7 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None):
 
 _cache: dict[tuple[str, str], Scan] = {}
 _files: dict[tuple[str, str, str], Scan] = {}     # (path, sha256 of the text, model digest) -> that file's own scan
-CACHE_VERSION = 8                                 # bump when scan_file's results change
+CACHE_VERSION = 9                                 # bump when scan_file's results change
 MODEL_VERSION = "15"                               # bump when the scan's translation units change
 _models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
 _last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read
@@ -848,6 +850,33 @@ def scan_order(rel: str, text: str, files: list[str], out: Scan):
     if missing:
         out.errors.append(ScanError(rel, 1, "L12", f"the order leaves out {len(missing)} fragment(s): " + ", ".join(missing[:6])))
     out.orders[unit] = names
+
+
+class Spans:
+    """(file, line) -> the function whose span holds the line: from its address comment to the last line of its
+    definition (an end of 0: to the next span or the end of the file). items: (file, first, last, value)."""
+
+    def __init__(self, items):
+        by: dict[str, list] = {}
+        for f, lo, hi, v in items:
+            by.setdefault(f, []).append((lo, hi, v))
+        self._by = {f: sorted(xs, key=lambda x: x[0]) for f, xs in by.items()}
+        self._keys = {f: [x[0] for x in xs] for f, xs in self._by.items()}
+
+    def at(self, file: str, line: int):
+        xs = self._by.get(file)
+        if not xs:
+            return None
+        k = bisect.bisect_right(self._keys[file], line) - 1
+        if k < 0 or xs[k][1] and line > xs[k][1]:
+            return None
+        return xs[k][2]
+
+
+def function_spans(sc: Scan, target: str, default: str) -> Spans:
+    """(file, line) -> the address of the target's function whose span holds the line."""
+    return Spans((f.file, f.comment_line, f.end_line, a) for f in sc.functions
+                 if (a := address_for(f.addrs, target, default)) is not None)
 
 
 def address_for(addrs: tuple, target: str, default: str) -> int | None:

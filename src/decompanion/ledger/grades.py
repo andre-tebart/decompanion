@@ -163,15 +163,17 @@ DEEP = re.compile(r"[ \t]*@deep\b[^@*\n]*")
 STUCK = re.compile(r"[ \t]*@stuck\b[^@*\n]*")
 
 
-def set_level(root: Path, rel: str, level: str | None, reason: str | None) -> str:
-    """Write `@<level> reason` into the address comment (line 1) of the fragment `rel`, replacing a @deep or
-    @stuck tag already there; level None removes either tag. Returns what was done."""
+def set_level(root: Path, rel: str, level: str | None, reason: str | None, line: int = 1) -> str:
+    """Write `@<level> reason` into the address comment of a function (the comment that starts on `line` of
+    `rel`), replacing a @deep or @stuck tag already there; level None removes either tag. Returns what was
+    done."""
     p = Path(root) / rel
     text = p.read_text()
     S = srcscan.Source(rel, text)
-    if not S.comments or S.comments[0][0] != 0 and text[:S.comments[0][0]].strip():
-        raise ValueError(f"{rel}: no address comment on line 1")
-    cs, ce, body = S.comments[0]
+    c = next((c for c in S.comments if S.line_of(c[0]) == line), None)
+    if c is None or not (srcscan.lead_addrs(c[2]) or srcscan.UNLINKED.match(c[2])):
+        raise ValueError(f"{rel}:{line}: no address comment there")
+    cs, ce, body = c
     raw = text[cs:ce]
     old = "@deep" if DEEP.search(body) else "@stuck" if STUCK.search(body) else None
     stripped = STUCK.sub("", DEEP.sub("", body)).rstrip()
@@ -192,12 +194,17 @@ def set_level(root: Path, rel: str, level: str | None, reason: str | None) -> st
     return action
 
 
+def comment_line(row: dict) -> int:
+    """The line of a graded function's address comment."""
+    return row.get("comment") or 1
+
+
 def auto_clear(project, rows) -> list[str]:
     """Remove the level tag of every function that reached byte + readable; one line per change."""
     out = []
     for r in rows:
         if r["level"] and r["code"] == "byte" and r["readability"] == "readable":
-            action = set_level(project.root, r["file"], None, None)
+            action = set_level(project.root, r["file"], None, None, comment_line(r))
             out.append(f"auto-clear {r['file']}: {r['name']} is byte + readable, {action}")
     return out
 

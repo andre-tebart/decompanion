@@ -99,6 +99,13 @@ def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
     return frozenset(raw), frozenset(described)
 
 
+def own_calls(lint: dict, fn_value: dict) -> list[str]:
+    """The lint's M7 calls (source/lint.py's `calls`) inside one function's span (its address comment to the
+    end of its definition; the whole file without an end)."""
+    lo, hi = fn_value.get("comment", 1), fn_value.get("end") or 0
+    return [c for line, c in lint.get(fn_value["file"], []) if lo <= line and (not hi or line <= hi)]
+
+
 def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=None) -> tuple[str, list[str]]:
     """(readable | draft, [failing rule with evidence]) of one function fragment (Q1..Q7, module docstring)."""
     from pathlib import Path
@@ -139,7 +146,8 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
     if casts or macros:
         fails.append("Q4 raw access: " + ", ".join(([f"{len(casts)} x `*(T *)`"] if casts else []) + ["macro " + m for m in macros])
                      + " (" + Q4_VIEW + ")")
-    first = S.comments[0][2] if S.comments else ""
+    cline = fn_value.get("comment", 1)
+    first = next((b for s, e, b in S.comments if S.line_of(s) == cline), "")
     texts = [first] + [b for s, e, b in S.comments if off <= s < end] + [code]
     marks = sorted({m.group(1) for t in texts for m in MARKER.finditer(t)})
     if fn_value.get("rough"):
@@ -149,7 +157,7 @@ def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=No
     if addr not in described:
         fails.append("Q6 described: no text after the address, no other comment describes it")
     if lint is not None:
-        bad = lint.get(rel)
+        bad = own_calls(lint, fn_value)
         if bad:
             fails.append("Q7 prototypes: " + ", ".join(bad[:6]))
     return ("draft" if fails else "readable"), fails
@@ -162,8 +170,9 @@ MEMO_MAX = 15000
 
 
 def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None):
-    """readability(), memoised in the store by everything it reads: the fragment's text, the function's tags,
-    its address, the tree's context (macros, described addresses) and its lint entry."""
+    """readability(), memoised in the store by everything it reads: the text of the function's span (its address
+    comment to the end of its definition), the function's source fact, its address, the tree's context (macros,
+    described addresses) and its lint entry."""
     from pathlib import Path
     p = Path(root) / fn_value["file"]
     if not p.exists():
@@ -172,8 +181,10 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
     if dig is None:
         raw, described = context(str(root), tree)
         dig = _ctx_digest[tree] = sha256(json.dumps(sorted(raw)), json.dumps(sorted(described)))
-    key = sha256("readability", READABILITY_VERSION, fsmemo.sha256(p), json.dumps(fn_value, sort_keys=True), f"{addr:x}",
-                 dig, json.dumps(list(image_range)), json.dumps(lint.get(fn_value["file"]) if lint is not None else None))
+    lines = fsmemo.read_text(p).split("\n")
+    span = "\n".join(lines[fn_value.get("comment", 1) - 1:fn_value.get("end") or len(lines)])
+    key = sha256("readability", READABILITY_VERSION, span, json.dumps(fn_value, sort_keys=True), f"{addr:x}",
+                 dig, json.dumps(list(image_range)), json.dumps(own_calls(lint, fn_value) if lint is not None else None))
     hit = _read_memo.get(key)
     if hit is not None:
         return hit
@@ -189,7 +200,7 @@ def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None
     return q, qf
 
 
-@rule("G.grade", version="4", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
+@rule("G.grade", version="5", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
       inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, context, DC, C,
                                                          build_compile.plan))
 def grade(ctx: RuleContext):
@@ -277,7 +288,8 @@ def grade(ctx: RuleContext):
             q, qf = "draft", qf + [f"Q8 complete: our code is {dist['size']} bytes, the original's {dist['orig']}: the body is "
                                     f"a stub or unfinished (at least half the original's size)"]
         level = "stuck" if s.value.get("stuck") is not None else ("deep" if s.value.get("deep") is not None else "")
-        v = {"of": "function", "name": s.value["symbol"], "unit": s.value["unit"], "file": s.value["file"], "code": g,
+        v = {"of": "function", "name": s.value["symbol"], "unit": s.value["unit"], "file": s.value["file"],
+             "comment": s.value.get("comment", 1), "code": g,
              "readability": q, "level": level, "failing": why + qf, "dist": dist}
         if hunks:
             v["hunks"] = hunks
