@@ -32,7 +32,7 @@ def resolve(p, names, key: str) -> int | None:
         return sorted(hits)[0]
     m = srcscan.PLACEHOLDER_ADDR.fullmatch(k)
     if m:
-        return int(m.group(1) or m.group(2), 16)
+        return srcscan.placeholder_value(m)
     return None
 
 

@@ -310,3 +310,13 @@ def test_headers_conflicts_vc6(tiny):
     assert "kind=vc6" in out and "C2079" in out and "COLOR" in out, out
     code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
     assert code == 1 and "write=refused" in out, out
+
+
+def test_placeholder_view_suffix_and_shared_comment():
+    """`ai_Unk7603a0B` is the view B of 0x7603a0 (an upper-case suffix after lower-case hex); a comment behind
+    the second statement of a line is that statement's, not the first's."""
+    S = srcscan.Source("src/u/head.c", "int x = ai_Unk7603a0B + ai_Unk430100C + FUN_0040100a + DAT_7603A0;\n")
+    vals = [srcscan.placeholder_value(m) for m in srcscan.PLACEHOLDER_ADDR.finditer(S.code)]
+    assert vals == [0x7603a0, 0x430100, 0x40100a, 0x7603a0], [hex(v) for v in vals]
+    S = srcscan.Source("src/u/head.c", "extern char *a; extern char *b;  /* 0x10002000 */\n")
+    assert [(d[1], d[3]) for d in S.data(-1)] == [("a", ()), ("b", ((None, 0x10002000),))]

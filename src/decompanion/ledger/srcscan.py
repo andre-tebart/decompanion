@@ -58,8 +58,16 @@ DEEP = re.compile(r"@deep\b[ \t]*(.*?)[ \t]*(?:\*/|\n|$)")
 STUCK = re.compile(r"@stuck\b[ \t]*(.*?)[ \t]*(?:\*/|\n|$)")
 ROUGH = re.compile(r"@rough\b")
 FUNCPTR = re.compile(r"\(\s*(?:__cdecl|__stdcall|__fastcall|WINAPI|CALLBACK|APIENTRY|PASCAL)?\s*\*+\s*(?:const\s+)?([A-Za-z_]\w*)\s*\)")
-PLACEHOLDER_ADDR = re.compile(r"\b[A-Za-z_]\w*?(?:Unk|FUN_|DAT_|PTR_|LAB_)([0-9a-fA-F]{5,8})\b"
+# `Unk<hex>` takes hex digits of one case and may carry an upper-case view suffix (`ai_Unk7603a0B` is the view B
+# of 0x7603a0, not 0x7603a0b); the lower-case reading is tried first, so `Unk430100B` is 0x430100 too
+PLACEHOLDER_ADDR = re.compile(r"\b[A-Za-z_]\w*?Unk([0-9a-f]{5,8}|[0-9A-F]{5,8})(?:[A-Z][A-Za-z]*)?\b"
+                              r"|\b[A-Za-z_]\w*?(?:FUN_|DAT_|PTR_|LAB_)([0-9a-fA-F]{5,8})\b"
                               r"|\b[A-Za-z_]\w*?_((?=[0-9a-fA-F]*\d)[0-9a-fA-F]{6,8})\b")
+
+
+def placeholder_value(m: re.Match) -> int:
+    """The address a PLACEHOLDER_ADDR match spells."""
+    return int(next(g for g in m.groups() if g), 16)
 STATIC = re.compile(r"\s*(?:(?:const|volatile)\s+)*static\b")
 INLINE = re.compile(r"\b(?:__inline|__forceinline|inline)\b")
 KNR = re.compile(r"^[^=(;]*\b[A-Za-z_]\w*\s*\([^()]*\)\s*[A-Za-z_][^;]*;\s*$")
@@ -403,6 +411,8 @@ class Source:
                     continue
                 if ci == skip_comment:
                     continue
+                if cs >= i and ";" in code[i:cs]:
+                    continue                          # behind a later statement of this line: that one's comment
                 addrs = lead_addrs(self.comments[ci][2])
                 unlinked = unlinked or bool(UNLINKED.match(self.comments[ci][2]))
                 if addrs:
@@ -562,7 +572,7 @@ def scan_file(rel: str, text: str, out: Scan):
         if ident in seen:
             continue
         seen.add(ident)
-        out.placeholders.append(Placeholder(rel, S.line_of(m.start()), ident, int(m.group(1) or m.group(2), 16)))
+        out.placeholders.append(Placeholder(rel, S.line_of(m.start()), ident, placeholder_value(m)))
 
 
 _cache: dict[tuple[str, str], Scan] = {}

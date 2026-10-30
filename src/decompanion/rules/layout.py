@@ -387,7 +387,7 @@ def load_decl_starts(ctx: RuleContext):
             yield ctx.declared(d.lo, d.lo + 1, Kind.start, {"skind": "func", "how": "decl"}, d.by, d.reason)
 
 
-@rule("L.src", version="3", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
+@rule("L.src", version="4", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
       loader=True, helpers=(srcscan,))
 def load_src(ctx: RuleContext):
     """The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function
@@ -769,7 +769,7 @@ def file_targets(sc, targets: list[str]) -> dict[str, set[str]]:
     return out
 
 
-@rule("L5.placeholder", version="2", ceiling=P, inputs=("src", "targets"), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
+@rule("L5.placeholder", version="3", ceiling=P, inputs=("src", "targets"), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
       helpers=(srcscan, file_targets))
 def placeholder(ctx: RuleContext):
     """L5: an identifier that spells an address (`Unk<hex>`, `FUN_<hex>`, `DAT_<hex>`, `<name>_<6-8 hex with a

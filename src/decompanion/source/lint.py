@@ -70,7 +70,7 @@ CROSS = re.compile(r"(?:conflicting types for|redeclaration of|redefinition of|t
                    r"types) ('(\w+)'|\()")
 KEYWORDS = {"return", "else", "goto", "case", "sizeof", "if", "while", "for", "switch", "do", "typedef", "default"}
 DEFAULT_CLANG = "C:/Program Files/LLVM/bin/clang.exe"
-VERSION = "4"
+VERSION = "5"
 
 
 def clang_path(project) -> Path | None:
@@ -405,8 +405,30 @@ def scanned(rel: str, p: Path) -> tuple[list[Decl], list]:
         if len(_scans) > 50000:
             _scans.clear()
         text = fsmemo.read_text(p)
-        hit = _scans[key] = (file_scope_decls(rel, text), file_macros(rel, text))
+        macros = file_macros(rel, text)
+        hit = _scans[key] = (_unrenamed(rel, text, file_scope_decls(rel, text), macros), macros)
     return hit
+
+
+RENAME = re.compile(r"#define ([A-Za-z_]\w*)[ \t]+([A-Za-z_]\w*)[ \t]*$")
+UNDEF_LINE = re.compile(r"^[ \t]*#[ \t]*undef[ \t]+([A-Za-z_]\w*)", re.M)
+
+
+def _unrenamed(rel: str, text: str, decls: list[Decl], macros: list) -> list[Decl]:
+    """The declarations without those whose name a rename macro of the file (`#define X X_ag`, active at that
+    line: no `#undef X` between) turns into another name: they declare the other name, not X."""
+    renames = [(m.group(1), line) for name, line, t in macros if (m := RENAME.match(t.strip())) and m.group(1) != m.group(2)]
+    if not renames:
+        return decls
+    S = srcscan.Source(rel, text)
+    undefs = [(m.group(1), S.line_of(m.start())) for m in UNDEF_LINE.finditer(S.code)]
+
+    def renamed(d):
+        for name, line in renames:
+            if name == d.name and line < d.line and not any(u == name and line < ul < d.line for u, ul in undefs):
+                return True
+        return False
+    return [d for d in decls if not renamed(d)]
 
 
 PRIVATE = re.compile(r"@private[ \t]+([A-Za-z_][\w]*(?:[ \t]*,[ \t]*[A-Za-z_]\w*)*)")

@@ -400,7 +400,7 @@ def classify(project, unresolved: list[str]) -> dict[str, list[str]]:
         addrs = set(name_at.get(cn, ()))
         m = srcscan.PLACEHOLDER_ADDR.fullmatch(cn)
         if m:
-            addrs.add(int(m.group(1) or m.group(2), 16))
+            addrs.add(srcscan.placeholder_value(m))
         hit = next((a for a in sorted(addrs) if a in func_at and func_at[a] != cn), None)
         if hit is not None:
             out["renames"].append(f"{u}  ->  {func_at[hit]}  ({hit:#010x})")

@@ -156,7 +156,7 @@ def rewrite_body(p, entry, own: str, names, view, labels: dict) -> tuple[str, di
             continue
         hits = names.by_name.get(n)
         ph = srcscan.PLACEHOLDER_ADDR.fullmatch(n)
-        a = sorted(hits)[0] if hits else (int(ph.group(1) or ph.group(2), 16) if ph else None)
+        a = sorted(hits)[0] if hits else (srcscan.placeholder_value(ph) if ph else None)
         if a is None:
             continue
         uses[n] = (a, is_start(view, a), types.get(a, az.unknown_data_type))

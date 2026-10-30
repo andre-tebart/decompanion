@@ -239,7 +239,7 @@ def cmd_rename(args):
     names = Names(p, p.store)
     hits = names.by_name.get(args.old)
     ph = srcscan.PLACEHOLDER_ADDR.fullmatch(args.old)
-    a = sorted(hits)[0] if hits else (int(ph.group(1) or ph.group(2), 16) if ph else None)
+    a = sorted(hits)[0] if hits else (srcscan.placeholder_value(ph) if ph else None)
     kind = "ident"
     if a is not None:
         sym = names.symbol(a)

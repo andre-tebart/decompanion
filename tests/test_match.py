@@ -381,6 +381,10 @@ def test_lint_m5_per_symbol(tiny):
     code, out = dcp(tiny, "lint")
     assert "m5=1" in out and "include/c.h:1: include/c.h does not compile in the all-declarations unit (1 errors, " \
                              "first: unknown type name 'NOSUCHTYPE')" in out, out
+    # a rename macro (`#define get get_ag`) makes the header declare get_ag, not get
+    write(tiny, "include/c.h", "#define get get_ag\nlong get(void);\n#undef get\n")
+    code, out = dcp(tiny, "lint")
+    assert "m5=0" in out, out
 
 
 def test_lint_alldecls_scan():
