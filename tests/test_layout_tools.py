@@ -27,9 +27,9 @@ def errors(root) -> list:
 
 
 def analyze(root: Path, tmp: Path, items: list) -> int:
-    """Drafts from a batch_decompile file (the Ghidra export's shape, read by the `rea` analyzer in dcp setup) with
-    these items: (address, name, pseudocode, body ranges)."""
-    from conftest import use_rea
+    """Drafts from a Ghidra export (a stand-in installation writes the batch_decompile file in dcp setup) with these
+    items: (address, name, pseudocode, body ranges)."""
+    from conftest import use_fake_ghidra
     sha = Project(root).image.sha256
     js = {"subject": {"digest": {"sha256": sha}}, "normalized_result": {"items": [
         {"address": f"{a:#010x}", "status": "ok", "procedure": {"address": f"{a:#010x}", "name": n}, "pseudocode": text,
@@ -38,7 +38,7 @@ def analyze(root: Path, tmp: Path, items: list) -> int:
         for a, n, text, rs in items]}}
     f = tmp / "export.json"
     f.write_text(json.dumps(js), newline="\n")
-    use_rea(root, f)
+    use_fake_ghidra(root, f)
     code, out = dcp(root, "setup")
     assert code == 0 and f"exported={len(items)}" in out, out
     return code
@@ -115,7 +115,7 @@ def test_unit_new_draft_rename(tiny, tmp_path):
         return text, text[:text.index("\n/* 0x1000")]               # the file and its head region
     # f1 from the analyzer (Ghidra's dialect): the callees spelled as placeholders of their unit, the data label kept, declarations added
     code, out = dcp(tiny, "draft", "--next")
-    assert code == 0 and "drafted=0x10001000" in out and "body=rea" in out and "file=src/net.c" in out, out
+    assert code == 0 and "drafted=0x10001000" in out and "body=ghidra" in out and "file=src/net.c" in out, out
     text, head = unit_text()
     f1 = text[text.index("/* 0x10001000"):]
     assert f1.startswith("/* 0x10001000, net_10001000 */\nvoid net_10001000(void)\n{")
@@ -205,7 +205,7 @@ def test_l9_and_analyzer_report(tiny, tmp_path):
     l9 = [c for c in Project(tiny).store.conflicts() if c.check == "L9"]
     assert len(l9) == 1 and l9[0].severity.value == "warn" and "0x10001020" in l9[0].message and "0x10001030" in l9[0].message
     code, out = dcp(tiny, "report")
-    assert code == 0 and "analyzer=rea  drafts=2  export=up-to-date" in out, out
+    assert code == 0 and "analyzer=ghidra  drafts=2  export=up-to-date" in out, out
     assert "l9=1" in out and "analyzer_only=1" in out and "ours_only=3" in out, out
     assert "analyzer_only=0x10001058" in out
     code, out = dcp(tiny, "check", "--strict")
@@ -375,18 +375,7 @@ def test_no_analyzer_drafts_rough_skeletons(tiny, capsys):
 
 def test_analyzer_registry():
     from decompanion import analyzers
-    from decompanion.analyzers.base import Analyzer
-    assert {"ghidra", "rea", "none"} <= set(analyzers.ANALYZERS)
-    assert analyzers.DEFAULT == "ghidra" and analyzers.get(None) is analyzers.ANALYZERS["ghidra"]
-    assert analyzers.get("nothing") is None
-    for key, cls in analyzers.ANALYZERS.items():
-        assert issubclass(cls, Analyzer) and cls.key == key
-    g = analyzers.dialect("ghidra")
-    assert g.is_placeholder("FUN_10001000") and g.is_placeholder("thunk_FUN_10001000") and not g.is_placeholder("Init")
-    assert g.data_labels("x = PTR_s_hello_10002030 + DAT_10002000;") == {0x10002030: "undefined *", 0x10002000: "undefined4"}
-    assert analyzers.dialect("rea").types_header == g.types_header and analyzers.dialect("none").types_header is None
-    assert analyzers.ANALYZERS["none"]({}, None).available().ok
-    assert not analyzers.ANALYZERS["rea"]({}, None).available().ok      # no file named
+    assert analyzers.ANALYZERS == ("ghidra", "none") and analyzers.DEFAULT == "ghidra"
 
 
 def test_unknown_analyzer(tiny, capsys):

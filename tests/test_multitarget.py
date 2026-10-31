@@ -198,24 +198,21 @@ def test_layout_per_target(tiny2):
 
 # ------------------------------------------------------------------------------------------------ analyzer
 def test_analyzer_per_target(tiny2, tmp_path):
-    """One rea file about the second target's binary: setup of the default target skips it (and names the target
-    it is about), setup of `other` stores its draft."""
-    from conftest import use_rea
+    """The analyzer's export of the second target stores its drafts in that target's store only."""
+    from conftest import use_fake_ghidra
     other_sha = Project(tiny2, "other").image.sha256
     j = {"subject": {"digest": {"sha256": other_sha}},
          "normalized_result": {"items": [{"address": "0x10001050", "status": "ok", "pseudocode": "int f(void)\n{\n  return 0;\n}\n",
                                           "procedure": {"address": "0x10001050", "name": "FUN_10001050"}}]}}
     f = tmp_path / "other.json"
     f.write_text(json.dumps(j), newline="\n")
-    use_rea(tiny2, f)
-    code, out = dcp(tiny2, "setup")
-    assert code == 0 and "exported=0" in out and "skipped=other.json" in out and "target=other" in out, out
+    use_fake_ghidra(tiny2, f)
     code, out = dcp(tiny2, "--target", "other", "setup")
-    assert code == 0 and "analyzer=rea  exported=1" in out and "target=other" in out
+    assert code == 0 and "analyzer=ghidra  exported=1" in out and "target=other" in out, out
     assert dcp(tiny2, "--target", "other", "draft", "0x10001050", "--show")[0] == 0
     assert dcp(tiny2, "draft", "0x10001050", "--show")[0] == 1
-    assert [s.lo for s in facts(tiny2, Kind.start, "other") if s.value["how"] == "rea"] == [0x10001050]
-    assert not [s for s in facts(tiny2, Kind.start) if s.value["how"] == "rea"]
+    assert [s.lo for s in facts(tiny2, Kind.start, "other") if s.value["how"] == "ghidra"] == [0x10001050]
+    assert not [s for s in facts(tiny2, Kind.start) if s.value["how"] == "ghidra"]
 
 
 # ------------------------------------------------------------------------------------------------ queries and seed

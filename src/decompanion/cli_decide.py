@@ -277,12 +277,12 @@ def cmd_analyzer_declare(args):
         return 2
     if args.plugin not in analyzers.ANALYZERS:
         return err(cmd, f"unknown analyzer {args.plugin!r} (known: {', '.join(analyzers.ANALYZERS)}); nothing written", 2)
-    kv = parse_pairs(cmd, args.pairs, ("root", "java_home", "file", "timeout"))
+    kv = parse_pairs(cmd, args.pairs, ("root", "java_home", "timeout"))
     if kv is None:
         return 2
     vals: dict = {"plugin": args.plugin}
     for k, v in kv.items():
-        vals[k] = int(v) if k == "timeout" else (Path(v).as_posix() if k in ("root", "java_home", "file") else v)
+        vals[k] = int(v) if k == "timeout" else (Path(v).as_posix() if k in ("root", "java_home") else v)
     vals["reason"] = args.why.strip()
     p = Project(Path(args.root) if args.root else None, getattr(args, "target", None))
     TE.set_keys(p.config_path, "analyzer", vals)
@@ -389,6 +389,6 @@ def register(sub, cmd):
     s2.add_argument("--why", help="the reason (required)")
     az = sub.add_parser("analyzer", help="the third-party analyzer").add_subparsers(dest="sub", required=True)
     s2 = cmd(az, "declare", cmd_analyzer_declare, "confirm or change the analyzer with --why")
-    s2.add_argument("plugin", metavar="PLUGIN", help="ghidra | rea | none")
-    s2.add_argument("pairs", nargs="*", metavar="KEY=VALUE", help="root= java_home= file= timeout=")
+    s2.add_argument("plugin", metavar="PLUGIN", help="ghidra | none")
+    s2.add_argument("pairs", nargs="*", metavar="KEY=VALUE", help="root= java_home= timeout=")
     s2.add_argument("--why", help="the reason (required)")

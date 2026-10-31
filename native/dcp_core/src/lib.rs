@@ -5,6 +5,7 @@
 //! `canonical` and `out_hash` are fact.canonical and the run hash, byte for byte: the shadow mode of the engine
 //! compares them with Python's for every rule's output.
 
+mod analyzers;
 mod asmcmd;
 mod clang;
 mod cliread;
@@ -697,6 +698,11 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(session::session_record, m)?)?;
     m.add_function(wrap_pyfunction!(session::session_overview, m)?)?;
     m.add_function(wrap_pyfunction!(session::session_report, m)?)?;
+    m.add_function(wrap_pyfunction!(analyzers::analyzer_state, m)?)?;
+    m.add_function(wrap_pyfunction!(analyzers::analyzer_run, m)?)?;
+    m.add_function(wrap_pyfunction!(analyzers::analyzer_available, m)?)?;
+    m.add_function(wrap_pyfunction!(analyzers::analyzer_default, m)?)?;
+    m.add_function(wrap_pyfunction!(analyzers::analyzer_keys, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_stale, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_available, m)?)?;

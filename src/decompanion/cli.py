@@ -123,27 +123,22 @@ def cmd_setup(args):
 
 
 def run_analyzer(p, e, args) -> bool:
-    """The analyzer step of `dcp setup` (build/analyzer.py); False when the export failed."""
-    from .build import analyzer as AX
-    o = AX.run(p, force=args.analyzer_force)
-    if o.status == "unavailable":
-        print(f"analyzer={o.analyzer} unavailable: {o.reason}", file=sys.stderr)
-    elif o.status == "failed":
-        print(f"analyzer={o.analyzer} failed: {o.reason}", file=sys.stderr)
+    """The analyzer step of `dcp setup` (the core's analyzers.rs); False when the export failed."""
+    o = native.core().analyzer_run(p.core, bool(args.analyzer_force))
+    if o["status"] == "unavailable":
+        print(f"analyzer={o['analyzer']} unavailable: {o['reason']}", file=sys.stderr)
+    elif o["status"] == "failed":
+        print(f"analyzer={o['analyzer']} failed: {o['reason']}", file=sys.stderr)
         return False
-    elif o.status == "exported":
-        ex = o.export
-        out = ex.out.relative_to(p.root).as_posix() if ex.out is not None and ex.out.is_relative_to(p.root) else None
-        print(record(analyzer=o.analyzer, exported=o.stored, failed=len(ex.failed), skipped=len(ex.skipped) or None, ms=ex.ms,
-                     where=o.where, out=out))
-        for f in ex.failed[:20]:
+    elif o["status"] == "exported":
+        out = Path(o["out"]) if o["out"] else None
+        out = out.relative_to(p.root).as_posix() if out is not None and out.is_relative_to(p.root) else None
+        print(record(analyzer=o["analyzer"], exported=o["stored"], failed=len(o["failed"]), ms=o["ms"], where=o["where"], out=out))
+        for f in o["failed"][:20]:
             print("  failed  " + f)
-        for f, digest in ex.skipped:
-            other = next((t.name for t in p.targets if t.name != p.target_name and p.image_of(t.name).sha256 == digest), None)
-            print("  " + record(skipped=f, sha256=digest[:16], target=other))
         refresh(p, e, verbose=args.verbose)
-    if o.note:
-        print(f"analyzer={o.analyzer}: {o.note}", file=sys.stderr)
+    if o["note"]:
+        print(f"analyzer={o['analyzer']}: {o['note']}", file=sys.stderr)
     return True
 
 

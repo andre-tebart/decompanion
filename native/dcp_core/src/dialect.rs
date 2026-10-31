@@ -1,5 +1,5 @@
 //! An analyzer's dialect: how a draft reads the pseudocode of an analyzer (analyzers/: the key of a stored entry
-//! names it). Ghidra's (and REA's, whose files are Ghidra output):
+//! names it). Ghidra's:
 //!   placeholders   FUN_<hex>, thunk_FUN_<hex>, LAB_, SUB_, DAT_, PTR_ + hex: Ghidra's names for what it does not know
 //!   functions      FUN_<hex> / thunk_FUN_<hex>, or a name Ghidra gave an address
 //!   data labels    DAT_<hex>, _DAT_<hex>, PTR_..._<hex>, s_..._<hex>, u_..._<hex>, BYTE_ / WORD_ / DWORD_ / QWORD_ /
@@ -24,7 +24,7 @@ pub struct Dialect {
 
 /// The dialect of an analyzer key.
 pub fn of(key: &str) -> Dialect {
-    Dialect { ghidra: matches!(key, "ghidra" | "rea") }
+    Dialect { ghidra: key == "ghidra" }
 }
 
 /// The file names of every analyzer's types header.

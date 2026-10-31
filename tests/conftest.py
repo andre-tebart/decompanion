@@ -193,12 +193,27 @@ plugin = "none"
 '''
 
 
-def use_rea(root: Path, path: Path):
-    """Switch the project's analyzer to `rea` reading the batch_decompile file `path`."""
+FAKE_HEADLESS = """import shutil, sys
+args = sys.argv[1:]
+i = args.index("-postScript")
+shutil.copyfile({export!r}, args[i + 2])
+"""
+
+
+def use_fake_ghidra(root: Path, export: Path):
+    """Switch the project's analyzer to Ghidra, a stand-in installation beside the project whose analyzeHeadless
+    writes the batch_decompile file `export` (the shape DcpExport.java writes) as the export."""
+    import sys
+    fake = root.parent / f"{root.name}-ghidra"
+    (fake / "support").mkdir(parents=True, exist_ok=True)
+    (fake / "jdk" / "bin").mkdir(parents=True, exist_ok=True)
+    (fake / "headless.py").write_text(FAKE_HEADLESS.format(export=str(export)), newline="\n")
+    (fake / "support" / "analyzeHeadless.bat").write_text(f'@"{sys.executable}" "{fake / "headless.py"}" %*\n', newline="\n")
     cfg = root / "decompanion.toml"
     text = cfg.read_text()
     assert '[analyzer]\nplugin = "none"\n' in text
-    text = text.replace('[analyzer]\nplugin = "none"\n', f'[analyzer]\nplugin = "rea"\nfile = "{path.as_posix()}"\n')
+    text = text.replace('[analyzer]\nplugin = "none"\n', f'[analyzer]\nplugin = "ghidra"\nroot = "{fake.as_posix()}"\n'
+                                                          f'java_home = "{(fake / "jdk").as_posix()}"\n')
     cfg.write_text(text, newline="\n")
 
 

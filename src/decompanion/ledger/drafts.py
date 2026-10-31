@@ -1,6 +1,6 @@
-"""Drafts: what the configured analyzer (analyzers/) said about a target's functions, kept in the target's store.
+"""Drafts: what the configured analyzer said about a target's functions, kept in the target's store.
 
-`dcp setup` runs the analyzer's export (build/analyzer.py) and replaces the store's drafts with its entries:
+`dcp setup` runs the analyzer's export (the core's analyzers.rs) and replaces the store's drafts with its entries:
 one blob of kind `drafts` per function, keyed by (image sha256, function entry), its value the entry with the
 analyzer's key, so a worktree reads main's drafts through its overlay. The meta key `drafts` is the hash over
 the stored entries: the input hash of the loader rule L.analyzer, which turns every entry into a `start` fact
@@ -12,41 +12,27 @@ from __future__ import annotations
 
 import json
 
-from ..analyzers.base import Entry
-from .fact import canonical
-from .store import Store, sha256
+from dataclasses import dataclass
+
+from .store import Store
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One function as an analyzer sees it."""
+    start: int                    # the function's entry
+    name: str                     # the tool's name for it ('' when none)
+    body: str                     # the pseudocode ('' when the tool gave none)
+    end: int | None = None        # the end of its highest address range (exclusive), when the tool reports ranges
+    size: int | None = None       # bytes in its ranges
+    ranges: tuple = ()            # ((lo, hi), ...)
+    seeded: bool = False          # made by the tool at one of our starts on our request: no claim of the tool's
+    requested: int | None = None  # the address it was asked for (None: its start)
+    source: str = ""              # the file the entry came from (its name)
+    analyzer: str = ""            # the plugin key
+
 
 KIND = "drafts"
-EXPORT = "drafts.export"
-STARTS = "drafts.starts"          # the starts the last export was seeded with (build/analyzer.py: fresh or not)
-
-
-def key(image_sha: str, start: int) -> str:
-    return sha256(KIND, image_sha, f"{start:08x}")
-
-
-def _value(e: Entry) -> dict:
-    v = {"start": e.start, "name": e.name, "requested": e.requested if e.requested is not None else e.start, "source": e.source,
-         "body": e.body, "analyzer": e.analyzer}
-    if e.end is not None:
-        v.update(end=e.end, size=e.size, ranges=[list(r) for r in e.ranges])
-    if e.seeded:
-        v["seeded"] = True
-    return v
-
-
-def replace(store: Store, image_sha: str, entries: list[Entry]) -> int:
-    """Make these entries the store's drafts (every older draft of this store goes) and set meta `drafts`."""
-    store.drop_blobs(KIND)
-    by_start = {e.start: e for e in entries}
-    h = ""
-    for a in sorted(by_start):
-        k = key(image_sha, a)
-        data = canonical(_value(by_start[a]))
-        store.put_blob(k, KIND, data.encode(), replace=True)
-        h = sha256(h, k, data)
-    store.set_meta(KIND, h)
-    return len(by_start)
 
 
 def _entry(v: dict) -> Entry:
@@ -61,14 +47,3 @@ def entries(store: Store) -> list[Entry]:
         v = json.loads(data.decode())
         out[v["start"]] = _entry(v)
     return [out[k] for k in sorted(out)]
-
-
-def draft(store: Store, image_sha: str, start: int) -> Entry | None:
-    b = store.blob(key(image_sha, start))
-    if b is None:
-        return None
-    return _entry(json.loads(b.decode()))
-
-
-def input_hash(store: Store) -> str:
-    return sha256(store.main_meta(KIND) or "", store.meta(KIND) or "")

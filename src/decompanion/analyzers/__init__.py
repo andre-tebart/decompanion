@@ -1,28 +1,40 @@
-"""Analyzer plugins (the Analyzer seam, analyzers/base.py). A plugin registers its class with @register;
-importing this package imports every plugin. `[analyzer] plugin = "<key>"` selects one; without the table (or
-the key) the default `ghidra` is meant."""
+"""The analyzer seam: a third-party tool that reads the image and hands back opinions about it (function starts,
+names, a pseudocode body per function). The analyzers are the core's (native/dcp_core/src/analyzers.rs: Ghidra
+headless with its post-script data/ghidra/DcpExport.java, the default; none); `[analyzer] plugin = "<key>"` selects
+one. This module is their face: the keys and what `available()` found."""
 from __future__ import annotations
 
-ANALYZERS: dict[str, type] = {}
+from dataclasses import dataclass
+
+from .. import native
+
 DEFAULT = "ghidra"
+ANALYZERS = tuple(native.core().analyzer_keys())
 
 
-def register(cls):
-    """Class decorator: make an Analyzer subclass available under its `key`."""
-    ANALYZERS[cls.key] = cls
-    return cls
+@dataclass(frozen=True)
+class Install:
+    """What `available()` found: `where` the tool is, or the `reason` it is not there; `note`: a warning `dcp setup`
+    prints although the analyzer is there; `root` / `java_home` of a Ghidra installation."""
+    key: str
+    ok: bool
+    where: str
+    reason: str | None
+    note: str
+    root: str | None
+    java_home: str | None
 
 
-def get(key: str | None):
-    """The analyzer class `key` (None: the default), or None when no plugin has that key."""
-    return ANALYZERS.get(key or DEFAULT)
+class Analyzer:
+    """The configured analyzer of a project."""
+
+    def __init__(self, project, key: str):
+        self.project, self.key = project, key
+
+    def available(self) -> Install:
+        return Install(**native.core().analyzer_available(self.project.core))
 
 
-def dialect(key: str):
-    """An instance of the analyzer `key` without configuration: what reading its output needs (is_placeholder,
-    rewrite, data_labels, types_header), never a run. The base Analyzer for an unknown key."""
-    from .base import Analyzer
-    return ANALYZERS.get(key, Analyzer)({}, None)
-
-
-from . import ghidra, none, rea  # noqa: E402,F401  (registers)
+def default_install() -> Install:
+    """The default analyzer without configuration and what it finds (`dcp init`)."""
+    return Install(**native.core().analyzer_default())

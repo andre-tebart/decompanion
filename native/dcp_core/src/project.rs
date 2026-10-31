@@ -29,7 +29,7 @@ const REASON_KEYS: [&str; 6] = ["compiler", "linker", "cflags", "archives", "roo
 pub const IMAGE_FORMATS: [&str; 1] = ["pe32"];
 pub const TOOLCHAINS: [&str; 1] = ["vc6"];
 
-fn cfg_err(msg: String) -> PyErr {
+pub(crate) fn cfg_err(msg: String) -> PyErr {
     ConfigError::new_err(msg)
 }
 

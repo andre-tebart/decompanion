@@ -5,7 +5,7 @@ the object format, the toolchain, the instruction set or the third-party analyze
 each a package with a registry (`FORMATS` / `TOOLCHAINS` / `ISAS` / `ANALYZERS` and a `register` decorator in its
 `__init__.py`; the package imports its plugins, each plugin module registers itself, so adding a plugin touches
 only its own package). VC6 / PE32 / COFF / x86-32 are the only implementations of the first four so far; the
-analyzers are Ghidra, saved REA files and none.
+analyzers are Ghidra and none (the core's analyzers.rs).
 
 ## The five seams
 
@@ -15,7 +15,7 @@ analyzers are Ghidra, saved REA files and none.
 | ObjectFormat | `objfmt/base.py` | `Toolchain.object_format` | `objfmt/coff.py` |
 | Toolchain | `toolchains/base.py` | `[toolchain] plugin =` (default: the only registered one) | `toolchains/vc6/` |
 | Isa | `isa/base.py` | `[[target]] isa =` (default: `Image.default_isa`, the machine type's) | `isa/x86.py` (capstone) |
-| Analyzer | `analyzers/base.py` | `[analyzer] plugin =` (default: `ghidra`; `dcp init` writes the installation it finds, else `none`) | `analyzers/ghidra.py`, `rea.py`, `none.py` |
+| Analyzer | `analyzers/__init__.py` (the core's `analyzers.rs`) | `[analyzer] plugin =` (default: `ghidra`; `dcp init` writes the installation it finds, else `none`) | `ghidra`, `none` |
 
 `Project.image`, `Project.objfmt`, `Project.toolchain` and `Project.isa` hand the selected plugins to the rules.
 The source of every plugin package of the first four and the selection are an input of every rule run
@@ -119,19 +119,19 @@ function. Neither a toolchain nor a language property; its answers are declarati
 `<key> analysis`), never derived or proven. Constructed like a Toolchain with its table (`[analyzer]`) and the
 project's path expansion.
 
-- `key`: `ghidra` | `rea` | `none`: the `[analyzer] plugin` value, the `how` of its start facts, the
+- `key`: `ghidra` | `none`: the `[analyzer] plugin` value, the `how` of its start facts, the
   `decl:analyzer:<key>:<file>` producer of L.analyzer's facts, the origin `analyzer` of its names
 - `available()` -> Install (`where`, `detail`; `ok`, else `reason`): Ghidra looks for its installation and the
   JDK (`[analyzer] root` / `java_home`, `$GHIDRA_INSTALL_DIR` / `$JAVA_HOME`, the newest `C:/Tools/ghidra_*` /
-  JDK 21); REA for its files (`[analyzer] file`, a path or a list); none is always there
+  JDK 21); none is always there
 - `script_hash()`: what makes the export besides the image and our starts (Ghidra: the post-script
-  `data/ghidra/DcpExport.java`; REA: the files' contents); part of the export key
+  `data/ghidra/DcpExport.java`); part of the export key
 - `export(install, image, isa_key, starts, out_dir, fresh)` -> Export: `entries` (Entry: `start`, `end`, `ranges`,
   `size`, `name`, `body` (the pseudocode), `seeded` (made at one of our starts on our request: no claim of the
   tool's), `requested`, `source`, `analyzer`), `failed` (one message per item), `digest` (the analysed binary's
-  sha256), `ms`, `out`, `log`, `skipped` (files about another binary). Ghidra: `analyzeHeadless` with the
+  sha256), `ms`, `out`. Ghidra: `analyzeHeadless` with the
   post-script, the language from the instruction set (`LANGUAGES`: `x86` -> `x86:LE:32:default`), project and
-  log in `out_dir` = `build/ghidra/<target>/`; REA: reads the files; none: nothing
+  log in `out_dir` = `build/ghidra/<target>/`; none: nothing
 - The dialect, what `dcp draft` reads (source/draft.py composes it with the toolchain's language out):
   `is_placeholder(name)` (names the ledger never adopts; Ghidra: `FUN_` / `LAB_` / `SUB_` / `DAT_` / `PTR_` /
   `thunk_FUN_` + hex), `rewrite(body, own, names, labels)` (its labels to our names: `own` = the drafted
@@ -140,7 +140,7 @@ project's path expansion.
   label prefix, `PTR_` `undefined *`, `s_` / `u_` `char []`, ...), `unknown_data_type` (Ghidra: `undefined4`),
   `types_header` (the shipped header of its type names; Ghidra: `data/dcp_ghidra.h`; none: None)
 - `analyzers.dialect(key)`: the plugin without configuration, for reading stored entries of any analyzer
-  (`ledger/names.py`, `source/draft.py`); the REA plugin subclasses Ghidra's dialect (REA's decompiler is Ghidra)
+  (the core's dialect.rs, names.rs, draft.rs)
 
 The run (`build/analyzer.py`, inside `dcp setup` after the rules): when `available()` and the export key
 sha256(key, image sha256, `script_hash()`, our starts) differs from the store's meta `drafts.export` (or

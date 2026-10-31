@@ -181,8 +181,7 @@ uv run dcp draft 0x10008cc0 --show                    # one draft as the analyze
 ```
 
 The drafts come from the project's analyzer (`[analyzer] plugin`, src/decompanion/analyzers/, docs/architecture.md),
-a third-party tool whose opinions are declarations: `ghidra` (the default), `rea` (saved REA `batch_decompile`
-results, `file = "..."` or a list) or `none` (no drafts: `dcp draft` writes `@rough` skeletons). `dcp setup` runs
+a third-party tool whose opinions are declarations: `ghidra` (the default) or `none` (no drafts: `dcp draft` writes `@rough` skeletons). `dcp setup` runs
 the rules, then the export when its key (analyzer, image sha256, script, our starts) differs from the last one,
 then the rules again (only `L.analyzer` and what reads its facts rerun); a second setup does nothing,
 `--analyzer-force` exports again, `--no-analyzer` skips the step. A missing installation is one warning line
@@ -191,7 +190,7 @@ then the rules again (only `L.analyzer` and what reads its facts rerun); a secon
 Ghidra: headless on the target's binary (project under `build/ghidra/<target>/`, log `headless.log`, the
 language from the target's instruction set: `x86` -> `x86:LE:32:default`), the post-script
 `data/ghidra/DcpExport.java` creates a function at every start of ours Ghidra lacks (tagged `DCP_SEEDED`: they
-are ours, no claim of Ghidra's, no `start how=ghidra` fact), decompiles every function and writes the REA
+are ours, no claim of Ghidra's, no `start how=ghidra` fact), decompiles every function and writes the
 `batch_decompile` shape plus each function's body (its ranges, for L9). Ghidra and its JDK: `[analyzer] root =`,
 `java_home =`, `timeout =` in decompanion.toml (`dcp init` writes what it finds), else `$GHIDRA_INSTALL_DIR` /
 `$JAVA_HOME`, else the newest `C:/Tools/ghidra_*` / `C:/Program Files/Eclipse Adoptium/jdk-21*`. On server.dll:

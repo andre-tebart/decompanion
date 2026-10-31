@@ -7,6 +7,7 @@ from __future__ import annotations
 import sys
 from collections import Counter
 
+from . import native
 from .cli import record
 
 
@@ -58,11 +59,10 @@ def print_analyzer(p, verbose=False):
     """The analyzer lines of `dcp report`: how many functions have drafts, the export's state, the starts only the
     analyzer has (and where they lie), the game-code starts only we have, L9 (an analyzer's function spanning one
     of our starts). Returns the layout view it loaded (the status tail reuses it)."""
-    from .build import analyzer as AX
     v, ents, a_only, o_only, l9 = analyzer_overview(p)
     glo, ghi, _ = v.game
     game_funcs = [lo for lo, _, _ in v.funcs if glo <= lo < ghi]
-    print(record(analyzer=p.analyzer.key, drafts=len(ents), export=AX.state(p), game_functions=len(game_funcs),
+    print(record(analyzer=p.analyzer.key, drafts=len(ents), export=native.core().analyzer_state(p.core), game_functions=len(game_funcs),
                  with_draft=sum(1 for a in game_funcs if a in ents), analyzer_only=len(a_only), ours_only=len(o_only), l9=len(l9)))
     where = Counter(w.split(" ")[0] for _, _, w in a_only)
     if where:

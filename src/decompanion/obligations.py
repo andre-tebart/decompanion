@@ -13,7 +13,7 @@ The obligations, in order (the ids are stable; Project.waiting names the ones a 
   toolchain.cflags     the compiler flags (until the probe proves)    dcp toolchain declare cflags=...
   libs.archives        the static libraries linked in                 dcp libs declare ARCHIVE...   (due once the root is declared;
                        open again while the last link has unresolved names an undeclared archive defines: link class `library`)
-  analyzer             the third-party analyzer for the drafts        dcp analyzer declare ghidra|rea|none
+  analyzer             the third-party analyzer for the drafts        dcp analyzer declare ghidra|none
   layout               functions without a source, open units       dcp session start, dcp layout next
   match                the grade queue                                dcp next
 An obligation is open while its value is missing or declared without a reason. The toolchain and libs
@@ -196,7 +196,7 @@ def analyzer_obligation(p) -> Obligation | None:
     origin = "as dcp init found it" if cfg.get("plugin") else "the default, no [analyzer] plugin written"
     ev = f"[analyzer] plugin={az.key} {origin} ({found}); drafts={n}"
     return Obligation("analyzer", None, "the analyzer whose pseudocode the drafts start from (computed, not confirmed)", ev,
-                      'dcp analyzer declare ghidra|rea|none [root=DIR] [file=PATH] --why "..."')
+                      'dcp analyzer declare ghidra|none [root=DIR] --why "..."')
 
 
 def work_obligations(p, view=None) -> list[Obligation]:

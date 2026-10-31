@@ -18,8 +18,7 @@ decompanion.toml
   [libs]         archives = [...]  reason = "..."     (the default of every target without its own archives)
   [sources]      roots = ["src"]  include = ["include"]
   [analyzer]     plugin = "ghidra"  root = "C:/Tools/ghidra_12.1.4_PUBLIC"  java_home = "..."  timeout = 60
-                 (the third-party analyzer `dcp setup` runs for drafts; default: ghidra; plugin "rea" reads
-                 file = "..." (saved batch_decompile results), "none" exports nothing)
+                 (the third-party analyzer `dcp setup` runs for drafts; default: ghidra; "none" exports nothing)
 
 The plugins (image format, toolchain, object format, instruction set, analyzer) come from the registries of
 their packages; this module names none of them.
@@ -169,14 +168,13 @@ class Project:
 
     @cached_property
     def analyzer(self):
-        """The analyzer plugin of [analyzer] plugin = ... (analyzers/; default: ghidra), with its table."""
+        """The analyzer of [analyzer] plugin = ... (the core's analyzers.rs; default: ghidra)."""
         cfg = self.cfg.get("analyzer") or {}
         key = cfg.get("plugin") or analyzer_plugins.DEFAULT
-        plugin = analyzer_plugins.get(key)
-        if plugin is None:
+        if key not in analyzer_plugins.ANALYZERS:
             raise ConfigError(f"unknown analyzer plugin {key!r} (known: {', '.join(analyzer_plugins.ANALYZERS)}); "
                               f"name one with [analyzer] plugin = ...")
-        return plugin(cfg, self.expand)
+        return analyzer_plugins.Analyzer(self, key)
 
     def image_of(self, name: str):
         """The image of any target (the current one's is `image`); checked against its declared sha256."""

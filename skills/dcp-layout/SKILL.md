@@ -92,7 +92,7 @@ Always work the first open function; never skip one, never stop early, never end
 
 ### 2.1 Making a Ghidra draft compile (VC6, C89)
 
-Ghidra-specific advice: the analyzer is Ghidra (`analyzer=ghidra`, or `rea`, whose files are Ghidra output).
+Ghidra-specific advice: the analyzer is Ghidra (`analyzer=ghidra`).
 What `dcp build` typically says about a fresh draft and what to do:
 - `'sockaddr' : undeclared identifier` and the like: Ghidra writes struct types without `struct`; write
   `struct sockaddr`. Windows types are the common case: Ghidra spells the struct tag (`_EXCEPTION_POINTERS`,

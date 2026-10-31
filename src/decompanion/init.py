@@ -37,9 +37,8 @@ roots = ["src"]
 include = ["include"]
 
 [analyzer]
-# The third-party analyzer `dcp setup` runs for a draft of every function (src/decompanion/analyzers/): "ghidra"
-# (headless; root, java_home, timeout = seconds per function), "rea" (file = saved batch_decompile results),
-# "none" (dcp draft writes @rough skeletons from the disassembly). Its function starts are declarations.
+# The third-party analyzer `dcp setup` runs for a draft of every function: "ghidra" (headless; root, java_home,
+# timeout = seconds per function) or "none" (dcp draft writes @rough skeletons from the disassembly). Its function starts are declarations.
 # Written by `dcp init` from what this machine has; an obligation until `dcp analyzer declare` confirms it.
 {analyzer}
 '''
@@ -97,13 +96,11 @@ decompanion = {{ path = "{dcp_path}", editable = true }}
 def analyzer_lines() -> list[str]:
     """The [analyzer] keys of a new project: the default analyzer with the installation it finds, else none."""
     from . import analyzers
-    cls = analyzers.get(None)
-    inst = cls({}, None).available()
+    inst = analyzers.default_install()
     if not inst.ok:
-        return [f"# {cls.key}: {inst.reason}", 'plugin = "none"']
-    out = [f"plugin = {toml_str(cls.key)}"]
-    for k in ("root", "java_home"):
-        v = inst.detail.get(k)
+        return [f"# {inst.key}: {inst.reason}", 'plugin = "none"']
+    out = [f"plugin = {toml_str(inst.key)}"]
+    for v, k in ((inst.root, "root"), (inst.java_home, "java_home")):
         if v is not None:
             out.append(f"{k} = {toml_str(Path(v).as_posix())}")
     return out

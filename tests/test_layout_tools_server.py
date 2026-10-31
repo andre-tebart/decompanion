@@ -15,7 +15,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.skipif(not (SERVER.exists() and TOOLC
 
 def ghidra_ready() -> bool:
     from decompanion import analyzers
-    return analyzers.get("ghidra")({}, None).available().ok
+    return analyzers.default_install().ok
 
 
 @pytest.fixture(scope="module")
