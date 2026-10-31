@@ -147,7 +147,7 @@ def server(tmp_path_factory):
     return root
 
 
-@pytest.mark.slow
+@pytest.mark.e2e
 def test_server_status_and_libs_candidates(server):
     code, out = dcp(server, "status")
     assert obligations(out)[:5] == ["toolchain.compiler", "toolchain.linker", "toolchain.root", "toolchain.cflags", "libs.archives"]

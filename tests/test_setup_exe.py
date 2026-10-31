@@ -12,7 +12,7 @@ GAME = Path("C:/Program Files/GOG Galaxy/Games/The Guild Gold")
 SERVER, EXE = GAME / "server" / "server.dll", GAME / "GildeGold.exe"
 TOOLCHAIN = Path("C:/Tools/MSVC600-SP5PP")
 
-pytestmark = [pytest.mark.slow, pytest.mark.skipif(not (SERVER.exists() and EXE.exists() and TOOLCHAIN.exists()),
+pytestmark = [pytest.mark.e2e, pytest.mark.skipif(not (SERVER.exists() and EXE.exists() and TOOLCHAIN.exists()),
                                 reason="The Guild Gold or VC6 not installed")]
 
 

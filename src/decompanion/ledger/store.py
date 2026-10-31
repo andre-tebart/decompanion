@@ -141,8 +141,13 @@ class Store:
         self.db = sqlite3.connect(self.path, isolation_level=None, uri=True)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
-        self.db.executescript(SCHEMA)
-        v = self.meta("schema")
+        try:
+            v = self.meta("schema")
+        except sqlite3.OperationalError:          # a new store: no meta table yet
+            v = None
+        if v != SCHEMA_VERSION:
+            self.db.executescript(SCHEMA)
+            v = self.meta("schema")
         if v is None:
             self.set_meta("schema", SCHEMA_VERSION)
         elif v != SCHEMA_VERSION:

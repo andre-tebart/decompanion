@@ -697,7 +697,32 @@ def cmd_seed(args):
 
 
 # ------------------------------------------------------------------------------------------------- parser
+_parser = None
+
+
 def main(argv=None):
+    global _parser
+    if _parser is None:
+        _parser = parser()
+    args = _parser.parse_args(argv)
+    try:
+        return run_command(args)
+    except ConfigError as ex:
+        print(f"dcp: {ex}", file=sys.stderr)
+        return 2
+    except RuleError as ex:
+        print(f"dcp: {ex}", file=sys.stderr)
+        return 2
+    except Exception as ex:
+        from .repo.wt import WtError
+        if isinstance(ex, WtError):
+            print(f"dcp: {ex}", file=sys.stderr)
+            return 2
+        raise
+
+
+def parser() -> argparse.ArgumentParser:
+    """The command line (built once per process: main)."""
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--target", default=argparse.SUPPRESS, help="the target to work on (default: the first [[target]])")
     common.add_argument("--root", default=argparse.SUPPRESS, help="the target project (default: the decompanion.toml above the cwd)")
@@ -848,21 +873,7 @@ def main(argv=None):
     s = cmd(sub, "seed", cmd_seed, "copy this checkout's stores into another checkout (fallback for the overlay)")
     s.add_argument("path")
 
-    args = ap.parse_args(argv)
-    try:
-        return run_command(args)
-    except ConfigError as ex:
-        print(f"dcp: {ex}", file=sys.stderr)
-        return 2
-    except RuleError as ex:
-        print(f"dcp: {ex}", file=sys.stderr)
-        return 2
-    except Exception as ex:
-        from .repo.wt import WtError
-        if isinstance(ex, WtError):
-            print(f"dcp: {ex}", file=sys.stderr)
-            return 2
-        raise
+    return ap
 
 
 def cmd_serve(args):

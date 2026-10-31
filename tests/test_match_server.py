@@ -9,7 +9,7 @@ from conftest import dcp, declare_vc6
 SERVER = Path("C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll")
 TOOLCHAIN = Path("C:/Tools/MSVC600-SP5PP")
 
-pytestmark = [pytest.mark.slow, pytest.mark.skipif(not (SERVER.exists() and (TOOLCHAIN / "VC98" / "Bin" / "CL.EXE").exists()),
+pytestmark = [pytest.mark.e2e, pytest.mark.skipif(not (SERVER.exists() and (TOOLCHAIN / "VC98" / "Bin" / "CL.EXE").exists()),
                                 reason="server.dll or VC6 not installed")]
 
 HEAD = """/* dllmain: the dll's entry points and the server thread's handle and stop flag */

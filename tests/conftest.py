@@ -19,8 +19,36 @@ from pathlib import Path
 
 import pytest
 
-BUDGET = 2.0                    # seconds: a default run (no `slow`, no `ghidra`) that takes longer fails
-DEFAULT_MARKS = "not ghidra and not slow"
+BUDGET = 2.0                    # seconds: a default run (no `e2e`, no `ghidra`) that takes longer fails
+DEFAULT_MARKS = "not ghidra and not e2e"
+E2E_FIXTURES = {"server", "srv", "guild", "project"}     # the real binaries' projects
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items):
+    """Mark e2e (user decision: "e2e tests are not the way to go. most of the tests should be fast in memory tests")
+    every test that runs a dcp command (its source, or a function of its module it calls, calls dcp()) or stands on
+    a real binary's project; before the markers deselect."""
+    import inspect
+    import re
+    calls_dcp: dict[object, set] = {}
+    for item in items:
+        mod = item.module
+        if mod not in calls_dcp:
+            funcs = {n: inspect.getsource(f) for n, f in vars(mod).items()
+                     if inspect.isfunction(f) and f.__module__ == mod.__name__}
+            hits = {n for n, s in funcs.items() if "dcp(" in s}
+            while True:                                   # a helper that calls a helper that runs dcp
+                more = {n for n, s in funcs.items() if n not in hits and any(re.search(rf"\b{h}\(", s) for h in hits)}
+                if not more:
+                    break
+                hits |= more
+            calls_dcp[mod] = hits
+        fn = getattr(item, "function", None)
+        src = inspect.getsource(fn) if fn is not None else ""
+        if ("dcp(" in src or any(re.search(rf"\b{h}\(", src) for h in calls_dcp[mod])
+                or E2E_FIXTURES & set(getattr(item, "fixturenames", ()))):
+            item.add_marker(pytest.mark.e2e)
 
 
 def pytest_sessionstart(session):

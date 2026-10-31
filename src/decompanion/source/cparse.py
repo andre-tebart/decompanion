@@ -40,6 +40,7 @@ in process (with its live unit).
 """
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import threading
@@ -60,7 +61,7 @@ VERSION = "4"                        # with lint.VERSION and version() in every 
 def library(cfg: dict | None) -> Path | None:
     """The libclang to load for a project configuration (None: the defaults only); None when there is none."""
     want = ((cfg or {}).get("lint") or {}).get("libclang")
-    clang = shutil.which("clang")
+    clang = _which_clang()
     for c in [want] if want else [Path(clang).with_name("libclang.dll") if clang else None, DEFAULT_LIBCLANG]:
         if c and Path(c).exists():
             return Path(c)
@@ -68,6 +69,12 @@ def library(cfg: dict | None) -> Path | None:
 
 
 _loaded: Path | None = None
+
+
+@functools.lru_cache(maxsize=1)
+def _which_clang() -> str | None:
+    """clang on PATH, looked up once per process."""
+    return shutil.which("clang")
 
 
 def load(lib: Path) -> None:
