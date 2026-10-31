@@ -84,14 +84,15 @@ Two grades per (function, target), computed by `G.grade` (the core's grade.rs, r
 
 **code** `draft → shape → byte`
 - B1 byte: M.match holds, and every string literal and floating constant the function references holds the
-  original's bytes where its site refers to (M9 / M10); a match with a differing literal is shape, B1 failing.
+  original's bytes where its site refers to (M9 / M10); a match with a differing literal is draft (a meaning difference: B1 fails with the M9 / M10
+  message, B3 names the mismatch).
 - B2 shape: every differing hunk of the instruction diff is `fill`, `order` (same multiset), or explained by
   the ISA (`regs`, `slots`, `order` after a register renaming, `sib`, `fpu`; x86: `[esp + N]` is compared as it
   was at the hunk's start, so a store moved across a `push` / `pop` is `order`, or `slots` when its slot changed
   too), or `frame`; or the leftover `code` hunks are
   the same multiset on both sides; or one bijective register / slot renaming explains the whole function; and
   the switch tables, when both sides have them, are equal.
-- B3 draft: otherwise, or no compiled object.
+- B3 draft: otherwise, or no compiled object, or a referenced literal / floating constant differs (M9 / M10).
 
 What the diff compares (the core's diffclass.rs, the one reading `G.grade`, `dcp asmdiff` and
 `dcp diffclass` share): our instructions up to the first compiler label after the code (CL's switch tables),

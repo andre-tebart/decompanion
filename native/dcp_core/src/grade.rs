@@ -11,7 +11,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 fn err(e: rusqlite::Error) -> PyErr {
@@ -194,10 +194,14 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
         if matched.contains(&lo) && consts.is_empty() {
             (g, why, hunks, dist_ins) = ("byte".to_string(), vec![], json!({}), 0usize);
         } else if matched.contains(&lo) {
-            // the bytes match, a literal or a floating constant they reference does not (M9 / M10): no byte, the
-            // instructions are the same
-            (g, hunks, dist_ins) = ("shape".to_string(), json!({}), 0usize);
-            why = consts.into_iter().map(|(_, _, rule, msg)| format!("B1 byte: {rule} {msg}")).collect();
+            // the bytes match, a literal or a floating constant they reference does not (M9 / M10): a meaning
+            // difference, draft (it must not pass at shape)
+            (g, hunks, dist_ins) = ("draft".to_string(), json!({}), 0usize);
+            let mut w: Vec<String> = consts.iter().map(|(_, _, rule, msg)| format!("B1 byte: {rule} {msg}")).collect();
+            let rules: BTreeSet<&str> = consts.iter().map(|c| c.2).collect();
+            w.push(format!("B3 draft: {} referenced literal(s) / constant(s) differ from the original's ({}): a meaning difference",
+                           consts.len(), rules.into_iter().collect::<Vec<_>>().join(", ")));
+            why = w;
         } else {
             if h.verdict.get().is_none() {
                 let v = diffclass::function_verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o).map_err(e)?;
