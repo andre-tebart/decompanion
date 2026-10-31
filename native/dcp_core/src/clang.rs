@@ -200,20 +200,30 @@ fn api() -> PyResult<&'static Api> {
 /// Load libclang once per process; another library later is an error.
 #[pyfunction]
 pub fn clang_load(path: &str) -> PyResult<()> {
+    load(path).map_err(PyRuntimeError::new_err)
+}
+
+pub(crate) fn load(path: &str) -> Result<(), String> {
     if let Some((have, _)) = LIB.get() {
-        if have != path {
-            return Err(PyRuntimeError::new_err(format!("libclang {path} asked for, {have} already loaded in this process")));
+        let norm = |p: &str| crate::project::py_path(p).to_lowercase();
+        if norm(have) != norm(path) {
+            return Err(format!("libclang {path} asked for, {have} already loaded in this process"));
         }
         return Ok(());
     }
     let wide: Vec<u16> = path.encode_utf16().chain([0]).collect();
     let m = unsafe { LoadLibraryW(wide.as_ptr()) };
     if m.is_null() {
-        return Err(PyRuntimeError::new_err(format!("libclang {path}: cannot be loaded")));
+        return Err(format!("libclang {path}: cannot be loaded"));
     }
-    let a = load_api(m).map_err(|f| PyRuntimeError::new_err(format!("libclang {path} lacks {f}")))?;
+    let a = load_api(m).map_err(|f| format!("libclang {path} lacks {f}"))?;
     let _ = LIB.set((path.to_string(), a));
     Ok(())
+}
+
+/// The loaded libclang's path, if one is.
+pub(crate) fn loaded() -> Option<String> {
+    LIB.get().map(|l| l.0.clone())
 }
 
 /// The loaded libclang's version text.
@@ -316,27 +326,52 @@ fn cstr(s: &str) -> PyResult<CString> {
 /// preamble for the reparses of a live unit.
 #[pyfunction]
 pub fn clang_parse(py: Python<'_>, path: &str, args: Vec<String>, text: &str, preamble: bool) -> PyResult<Unit> {
-    let a = api()?;
-    let cpath = cstr(path)?;
-    let cargs: Vec<CString> = args.iter().map(|s| cstr(s)).collect::<PyResult<_>>()?;
-    let ctext = text.as_bytes().to_vec();
-    struct Send_(P);
-    unsafe impl Send for Send_ {}
+    py.detach(|| parse(path, &args, text, preamble)).map_err(PyRuntimeError::new_err)
+}
+
+/// Parse a file (its text handed over) with the arguments, in any thread (each parse has its own index).
+pub(crate) fn parse(path: &str, args: &[String], text: &str, preamble: bool) -> Result<Unit, String> {
+    let a = LIB.get().map(|l| &l.1).ok_or("libclang is not loaded (cparse.load)")?;
+    let cpath = CString::new(path).map_err(|_| format!("a NUL in {path:?}"))?;
+    let cargs: Vec<CString> = args.iter().map(|s| CString::new(s.as_str()).map_err(|_| format!("a NUL in {s:?}"))).collect::<Result<_, _>>()?;
+    let ctext = text.as_bytes();
     let opts = DETAILED | KEEP_GOING | if preamble { PREAMBLE } else { 0 };
-    let (idx, tu) = py.detach(|| {
-        let argv: Vec<*const c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
-        let mut un = CXUnsavedFile { name: cpath.as_ptr(), contents: ctext.as_ptr() as *const c_char, length: ctext.len() as c_ulong };
-        unsafe {
-            let idx = (a.clang_createIndex)(0, 0);
-            let tu = (a.clang_parseTranslationUnit)(idx, cpath.as_ptr(), argv.as_ptr(), argv.len() as c_int, &mut un, 1, opts);
-            (Send_(idx), Send_(tu))
-        }
-    });
-    if tu.0.is_null() {
-        unsafe { (a.clang_disposeIndex)(idx.0) };
-        return Err(PyRuntimeError::new_err(format!("libclang could not parse {path}")));
+    let argv: Vec<*const c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
+    let mut un = CXUnsavedFile { name: cpath.as_ptr(), contents: ctext.as_ptr() as *const c_char, length: ctext.len() as c_ulong };
+    let (idx, tu) = unsafe {
+        let idx = (a.clang_createIndex)(0, 0);
+        let tu = (a.clang_parseTranslationUnit)(idx, cpath.as_ptr(), argv.as_ptr(), argv.len() as c_int, &mut un, 1, opts);
+        (idx, tu)
+    };
+    if tu.is_null() {
+        unsafe { (a.clang_disposeIndex)(idx) };
+        return Err(format!("libclang could not parse {path}"));
     }
-    Ok(Unit { inner: Mutex::new(Tu { index: idx.0, tu: tu.0, path: cpath, path_s: path.to_string() }) })
+    Ok(Unit { inner: Mutex::new(Tu { index: idx, tu, path: cpath, path_s: path.to_string() }) })
+}
+
+impl Unit {
+    /// Parse again with a new text over the precompiled preamble.
+    pub(crate) fn reparse_text(&self, text: &str) -> Result<(), String> {
+        let a = LIB.get().map(|l| &l.1).ok_or("libclang is not loaded")?;
+        let t = lock(self);
+        let ctext = text.as_bytes();
+        let mut un = CXUnsavedFile { name: t.path.as_ptr(), contents: ctext.as_ptr() as *const c_char, length: ctext.len() as c_ulong };
+        if unsafe { (a.clang_reparseTranslationUnit)(t.tu, 1, &mut un, 0) } != 0 {
+            return Err(format!("libclang could not reparse {}", t.path_s));
+        }
+        Ok(())
+    }
+
+    /// Every file the parse read besides the parsed one.
+    pub(crate) fn included(&self) -> PyResult<Vec<String>> {
+        Ok(includes(api()?, lock(self).tu))
+    }
+
+    /// The model of the unit (root: the project root; text: the parsed text).
+    pub(crate) fn model_out(&self, root: &str, text: &str) -> PyResult<ModelOut> {
+        model_rs(api()?, &lock(self), root, text)
+    }
 }
 
 fn lock(u: &Unit) -> std::sync::MutexGuard<'_, Tu> {

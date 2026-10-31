@@ -151,33 +151,65 @@ class ScanError:
     message: str
 
 
-@dataclass
 class Scan:
-    functions: list[Function] = field(default_factory=list)
-    data: list[Data] = field(default_factory=list)
-    placeholders: list[Placeholder] = field(default_factory=list)
-    errors: list[ScanError] = field(default_factory=list)
-    files: int = 0
-    macros: list[tuple[str, str]] = field(default_factory=list)  # (name, body) of every function-like #define
-    described: list[int] = field(default_factory=list)          # addresses an address comment describes in words
-    ptrcasts: list[PtrCast] = field(default_factory=list)       # integer literals cast to a pointer type (A1)
-    views: list[View] = field(default_factory=list)             # view macros (L15)
-    rawobj: list[str] = field(default_factory=list)             # object-like macros dereferencing a cast, no view (Q4)
-    models: dict = field(default_factory=dict)                  # file -> its front end model (cparse.model's entry)
-    target_models: dict = field(default_factory=dict, repr=False, compare=False)  # target -> its models (models())
-    native: list = field(default_factory=list, repr=False, compare=False)  # its files' pieces in the core (ScanPiece)
-    own_errors: list[ScanError] = field(default_factory=list)   # the errors of the whole scan (L16), after the files'
+    """A scan: the core's (scan(): native/dcp_core/src/frontend.rs; its rows become the dataclasses above when read)
+    or an accumulator of scan_file (a text's scan). functions, data, placeholders, errors (the files', then the
+    scan's own), files, macros [(name, body)] of every function-like #define, described (addresses an address
+    comment describes in words), ptrcasts, views, rawobj (object-like macros dereferencing a cast, no view),
+    own_errors (L16), piece_ids (its files' pieces in the core)."""
+
+    LISTS = ("functions", "data", "placeholders", "errors", "macros", "described", "ptrcasts", "views", "rawobj", "own_errors",
+             "piece_ids")
+
+    def __init__(self, core=None):
+        self._x = core
+        if core is None:
+            for k in self.LISTS:
+                setattr(self, k, [])
+            self.files = 0
+
+    def __getattr__(self, name):
+        x = self.__dict__.get("_x")
+        if x is None or name.startswith("__"):
+            raise AttributeError(name)
+        if name == "functions":
+            v = [Function(*a[:4], tuple(a[4]), *a[5:], *b[:6], tuple(b[6])) for a, b in x.function_rows]
+        elif name == "data":
+            v = [Data(*d[:5], tuple(d[5]), *d[6:]) for d in x.data_rows]
+        elif name == "placeholders":
+            v = [Placeholder(*r) for r in x.placeholder_rows]
+        elif name == "errors":
+            v = [ScanError(*e) for e in x.error_rows]
+        elif name == "own_errors":
+            v = [ScanError(*e) for e in x.own_error_rows]
+        elif name == "macros":
+            v = [tuple(m) for m in x.macros]
+        elif name == "ptrcasts":
+            v = [PtrCast(*c) for c in x.ptrcast_rows]
+        elif name == "views":
+            v = [View(*r[:6], tuple(r[6]), r[7]) for r in x.view_rows]
+        elif name in ("described", "rawobj", "piece_ids", "files"):
+            v = getattr(x, name)
+        elif name == "models":
+            v = _Models(x)
+        else:
+            raise AttributeError(name)
+        self.__dict__[name] = v
+        return v
 
     def digest(self) -> str:
-        """The hash of what the native rules read of the scan (its files' pieces, its own errors): the input
-        `scan` of the rules that read only that (an edit that changes no address comment, name, macro or line
-        of them leaves it as it was)."""
-        import hashlib
-        h = hashlib.sha256()
-        for x in self.native:
-            h.update(x.digest.encode())
-        h.update(repr([(e.check, e.file, e.line, e.message) for e in self.own_errors]).encode())
-        return h.hexdigest()
+        """The hash of what the native rules read of the scan (its files' pieces, its own errors)."""
+        return self._x.digest()
+
+
+class _Models:
+    """rel -> the default target's front end model of a file (dict form, made when read)."""
+
+    def __init__(self, x):
+        self._x = x
+
+    def get(self, rel: str, default=None):
+        return self._x.model(rel)
 
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
@@ -251,38 +283,17 @@ def live_code(S: Source, model: dict) -> str:
 def model_alone(rel: str, text: str, root: Path | None = None) -> dict:
     """The front end's model of one text parsed alone (no unit around it, no includes found unless they exist
     below root): a text that is no project file (a test's, a single line), as a file no unit holds is."""
-    from ..source import cparse
-    root = Path(root) if root is not None else Path.cwd()
-    if root.joinpath("decompanion.toml").exists():
-        sysdirs = front_end(root)
-    else:
-        if cparse._loaded is None:
-            lib = cparse.library(None)
-            if lib is None:
-                from ..source import lint as L
-                raise RuntimeError(L.NOT_FOUND)
-            cparse.load(lib)
-        sysdirs = []
-    m = cparse.model(root / rel, root, sysdirs, [root / "include"], text, [])
-    return m["files"].get(Path(rel).as_posix(), EMPTY)
+    from .. import native
+    return native.core().front_model_alone(str(Path(root) if root is not None else Path.cwd()), rel, text)
 
 
 def model_of(root: Path, rel: str, text: str) -> dict | None:
     """The front end's model of a file when text is the file as it is on disk (the scan's), else None."""
-    import hashlib
     p = Path(root) / rel
     if not p.exists() or fsmemo.read_text(p) != text:
         return None
-    key = (str(root), fsmemo.epoch())                # the tree's digest once per file epoch (a write starts a new one)
-    tree = _trees.get(key)
-    if tree is None:
-        tree = hashlib.sha256("\0".join(f"{r}={fsmemo.sha256(q)}" for r, q in project_files(Path(root))).encode()).hexdigest()
-        _trees.clear()
-        _trees[key] = tree
+    tree = fsmemo.tree_hash([Path(root) / "src", Path(root) / "include"], ("*.c", "*.h"))
     return scan(Path(root), tree).models.get(rel, EMPTY)
-
-
-_trees: dict[tuple, str] = {}
 
 
 @dataclass(frozen=True)
@@ -318,7 +329,8 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None, views: 
     model = model_alone(rel, text) if model is None else model
     macros, described, functions, data, ptrcasts, views_, rawobj, errors, placeholders, piece = \
         native.core().scan_file(rel, text, model, list(views.items()) if views else [])
-    out.native.append(piece)
+    out.piece_ids.append(piece.id)
+    out.__dict__.setdefault("_pieces", []).append(piece)
     out.macros += [tuple(x) for x in macros]
     out.described += described
     out.functions += [Function(*a[:4], tuple(a[4]), *a[5:], *b[:6], tuple(b[6])) for a, b in functions]
@@ -330,13 +342,7 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None, views: 
     out.placeholders += [Placeholder(*x) for x in placeholders]
 
 
-_cache: dict[tuple[str, str], Scan] = {}
-_files: dict[tuple[str, str], tuple] = {}        # (path, sha256 of the text) -> (the models it was scanned with, its scan)
-MODEL_VERSION = "18"                               # bump when the scan's translation units change
-_models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
-_last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read
 EMPTY = {"defs": [], "vars": [], "macros": [], "defines": [], "comments": [], "strings": [], "casts": [], "decls": [], "types": [], "dead": []}
-UNIT_FILE = re.compile(r"^src/[^/]+\.c$")
 
 
 def target_macro(name: str) -> str:
@@ -344,140 +350,21 @@ def target_macro(name: str) -> str:
     return "DCP_TARGET_" + re.sub(r"\W", "_", name)
 
 
-def target_defines(root: Path) -> list[tuple[str | None, list[str]]]:
-    """(target, the macros its compile defines) of every target, the default first; [(None, [])] without a
-    decompanion.toml."""
-    if not (Path(root) / "decompanion.toml").exists():
-        return [(None, [])]
-    from ..config import Project
-    return [(t.name, [target_macro(t.name)]) for t in Project(root).targets]
-
-
-def incdirs(root: Path) -> list[Path]:
-    """The include directories of a unit's parse (a quoted include also resolves beside the file, in src/)."""
-    return [Path(root) / "include"]
-
-
-def front_end(root: Path) -> list[Path]:
-    """Load the project's libclang (cparse) and return its system include directories (none without a
-    decompanion.toml)."""
-    from ..source import cparse
-    from ..source import lint as L
-    if (root / "decompanion.toml").exists():
-        from ..config import Project
-        p = Project(root)
-        L.setup(p)
-        return L.sysdirs_of(p)
-    lib = cparse.library(None)
-    if lib is None:
-        raise RuntimeError(L.NOT_FOUND)
-    cparse.load(lib)
-    return []
-
-
-def _model_hit(root: Path, key: str):
-    """A kept model whose dependencies (every file the parse read) are unchanged, else None."""
-    import pickle
-    hit = _models.get(key)
-    path = root / "build" / "cache" / "cparse" / f"{key}.pickle"
-    if hit is None and path.exists():
-        try:
-            hit = pickle.loads(path.read_bytes())
-        except (OSError, ValueError, EOFError, pickle.UnpicklingError, TypeError, AttributeError, ImportError):
-            hit = None
-    if hit is None:
-        return None
-    try:
-        if any(fsmemo.sha256(d) != h for d, h in hit[0]):
-            return None
-    except OSError:
-        return None
-    _models[key] = hit
-    return hit[1]
-
-
-def _model_keep(root: Path, key: str, m: dict):
-    import pickle
-    if m["missing"]:
-        return
-    try:
-        hit = ([(d, fsmemo.sha256(d)) for d in m["deps"]], m["files"])
-    except OSError:
-        return
-    _models[key] = hit
-    if (root / "build").is_dir():
-        path = root / "build" / "cache" / "cparse" / f"{key}.pickle"
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_bytes(pickle.dumps(hit))
-            tmp.replace(path)
-        except OSError:
-            pass
-
-
-def models(root: Path, files: list[tuple[str, str]], defines=()) -> dict[str, dict]:
-    """rel -> the front end's model of that file (cparse.model: defs, vars) as a compile with `defines` sees it.
-    Each unit file src/<unit>.c is one translation unit; a header takes the model of the first unit (by name)
-    that includes it (as that unit's preprocessor sees it); a file no unit holds (a header no unit includes, a
-    stray .c) is parsed alone. Each parse is kept by its text, arguments and libclang (build/cache/cparse/) as
-    long as every file it read is unchanged."""
-    from ..ledger.fact import canonical
-    from ..ledger.store import sha256
-    from ..source import cparse
-    sysdirs = front_end(root)
-    vc = cparse.version()
-    dirs = incdirs(root)
-
-    def tu(path: Path, rel: str):
-        """(key, path): keyed by the file's content hash (no file is read for a kept model)."""
-        key = sha256("srcscan.model", MODEL_VERSION, cparse.VERSION, vc, canonical(cparse.args(sysdirs, dirs, defines)),
-                     str(path), f"{rel}={fsmemo.sha256(path)}")
-        return key, path
-
-    def run(tus) -> list[dict]:
-        got, misses = {}, []
-        for key, path in tus:
-            hit = _model_hit(root, key)
-            if hit is None:
-                misses.append((key, path))
-            else:
-                got[key] = hit
-                _last_deps[str(path)] = [d for d, _ in _models[key][0]]
-        # a lone miss (the unit an edit changed) is parsed in process and stays live: the lint of the edit reads
-        # the same parse, the next edit reparses it
-        jobs = [(path, root, sysdirs, dirs, fsmemo.read_text(path), list(defines), True if len(misses) == 1 else None)
-                for _, path in misses]
-        for (key, path), m in zip(misses, cparse.many(jobs, fn="model")):
-            _model_keep(root, key, m)
-            _last_deps[str(path)] = m["deps"]
-            got[key] = m["files"]
-        return [got[t[0]] for t in tus]
-
-    out: dict[str, dict] = {}
-    for files_ in run([tu(Path(p), rel) for rel, p in files if UNIT_FILE.match(rel)]):
-        for rel, m in files_.items():
-            out.setdefault(rel, m)
-    alone = [(rel, p) for rel, p in files if rel not in out]
-    for (rel, _), files_ in zip(alone, run([tu(Path(p), rel) for rel, p in alone])):
-        out[rel] = files_.get(rel, EMPTY)
-    return out
-
-
 def local_refs(root: Path, names: list[str]) -> dict[str, set[tuple[int, int]]]:
     """rel -> {(line, col)} of the occurrences of `names` the front end finds referring to a declaration not at
     file scope (cparse.refs: a local, a parameter, a field, a label), in every project file that holds one of
     the names (as the default target's compile sees it): what a rename of a file-scope symbol leaves alone.
     One parse per such file, not per unit that reads it: each unit file that holds a name, and for a header
-    that holds one, the first unit that includes it (an occurrence in a header refers to the same declaration
-    in every unit that includes it, as models() takes a header's model from its first unit); a unit's parse
-    covers the headers it reads."""
+    that holds one, the first unit that includes it; a unit's parse covers the headers it reads."""
+    from .. import native
     from ..source import cparse
     root = Path(root)
-    files = project_files(root)
-    sysdirs = front_end(root)
-    defines = target_defines(root)[0][1]
-    models(root, files, defines)                          # every unit's dependencies (_last_deps)
+    core = native.core()
+    sysdirs, incdirs_, targets = core.front_of(str(root))
+    defines = targets[0][1]
+    tree = fsmemo.tree_hash([root / "src", root / "include"], ("*.c", "*.h"))
+    scan(root, tree)                                      # every unit's dependencies (its last parse's)
+    files = [(rel, p) for rel, p in fsmemo.walk(root / "src", ("*.c",))] if (root / "src").exists() else []
     pat = re.compile(r"\b(?:" + "|".join(map(re.escape, names)) + r")\b")
     holds = {}
     under = os.path.normcase(str(root.resolve())) + os.sep
@@ -495,9 +382,9 @@ def local_refs(root: Path, names: list[str]) -> dict[str, set[tuple[int, int]]]:
         return holds[p]
 
     units = []                                            # (unit file, it holds a name, the headers below root it reads that do)
-    for rel, p in files:
-        if UNIT_FILE.match(rel):
-            deps = {norm(d) for d in _last_deps.get(str(Path(p)), [])}
+    for rel, p in sorted(files, key=lambda t: t[0].lower()):
+        if "/" not in rel:
+            deps = {norm(d) for d in core.front_last_deps(str(Path(p)))}
             units.append((p, held(str(p)), {d for d in deps if d.startswith(under) and held(d)}))
     covered, pick = set(), set()
     for p, own, deps in units:
@@ -508,7 +395,7 @@ def local_refs(root: Path, names: list[str]) -> dict[str, set[tuple[int, int]]]:
         if not own and deps - covered:
             pick.add(p)
             covered |= deps
-    jobs = [(Path(p), root, sysdirs, incdirs(root), fsmemo.read_text(p), list(defines), list(names), None)
+    jobs = [(Path(p), root, [Path(d) for d in sysdirs], [Path(d) for d in incdirs_], fsmemo.read_text(p), list(defines), list(names), None)
             for p, _, _ in units if p in pick]
     out: dict[str, set] = {}
     for r in cparse.many(jobs, fn="refs"):
@@ -517,89 +404,11 @@ def local_refs(root: Path, names: list[str]) -> dict[str, set[tuple[int, int]]]:
     return out
 
 
-def project_files(root: Path) -> list[tuple[str, str]]:
-    """(path relative to root, full path) of src/**/*.c, src/**/*.h and include/**/*.h, in the scan's order."""
-    files = []
-    for d, pats in (("src", ("*.c", "*.h")), ("include", ("*.h",))):
-        base = root / d
-        if base.exists():
-            files += sorted({(d + "/" + r, p) for r, p in fsmemo.walk(base, pats)}, key=lambda t: t[0].lower())
-    return files
-
-
 def scan(root: Path, tree_hash: str | None = None) -> Scan:
     """Scan src/**/*.c, src/**/*.h and include/**/*.h of the project at root (memoised per tree hash), every
-    file as each target's compile sees it (models per target; L16). Each file's own scan is kept while its text
-    and its models are the same (the models() objects: a model stands while its parse does), so an edit scans
-    only the files it changed."""
-    root = Path(root)
-    if tree_hash is not None and (str(root), tree_hash) in _cache:
-        return _cache[(str(root), tree_hash)]
-    out = Scan()
-    used = {}
-    files = project_files(root)
-    targets = target_defines(root)
-    default = targets[0][0]
-    from .. import timing
-    with timing.phase("scan.models"):
-        per_target = {t: models(root, files, d) for t, d in targets}
-    ms = out.models = per_target[default]
-    out.target_models = per_target
-    for rel, p in files:
-        m = ms.get(rel, EMPTY)
-        views = {t: per_target[t].get(rel, EMPTY) for t, _ in targets} if default is not None else None
-        held = [m, *(views or {}).values()]
-        key = (str(root), rel, fsmemo.sha256(p))
-        hit = _files.get(key)
-        if hit is not None and len(hit[0]) == len(held) and all(a is b for a, b in zip(hit[0], held)):
-            piece = hit[1]
-        else:
-            piece = Scan()
-            with timing.phase("scan.file"):
-                scan_file(rel, fsmemo.read_text(p), piece, m, views)
-        used[key] = (held, piece)
-        out.files += 1
-        out.functions += piece.functions
-        out.data += piece.data
-        out.placeholders += piece.placeholders
-        out.errors += piece.errors
-        out.macros += piece.macros
-        out.described += piece.described
-        out.ptrcasts += piece.ptrcasts
-        out.views += piece.views
-        out.rawobj += piece.rawobj
-        out.native += piece.native
-    for k in [k for k in _files if k[0] == str(root)]:
-        del _files[k]
-    _files.update(used)
-    if default is not None:
-        out.own_errors = guards(out.functions, [t for t, _ in targets])
-        out.errors += out.own_errors
-    if tree_hash is not None:
-        if len(_cache) > 2:                       # a long-lived process (dcp serve) sees a new tree per edit
-            _cache.clear()
-        _cache[(str(root), tree_hash)] = out
-    return out
-
-
-def guards(functions: list[Function], targets: list[str]) -> list[ScanError]:
-    """L16: a function compiled into a target its address comment does not list, or listed for a target whose
-    compile does not hold it (its `#if` on the DCP_TARGET_<name> macros)."""
-    out = []
-    for f in functions:
-        if f.unlinked or not f.targets or any(t is not None and t not in targets for t, _ in f.addrs):
-            continue                                       # (an unknown target prefix is L.src's error)
-        listed = [t for t in targets if address_for(f.addrs, t, targets[0]) is not None]
-        extra = [t for t in f.targets if t not in listed]
-        missing = [t for t in listed if t not in f.targets]
-        if extra:
-            out.append(ScanError(f.file, f.line, "L16", f"{f.name} is compiled into {', '.join(extra)}, its address comment "
-                                                        f"lists no address there (guard it: #if on "
-                                                        f"{', '.join(map(target_macro, listed))})"))
-        if missing:
-            out.append(ScanError(f.file, f.line, "L16", f"{f.name}: its address comment lists {', '.join(missing)}, whose "
-                                                        f"compile does not hold it (its #if)"))
-    return out
+    file as each target's compile sees it (the core's: native/dcp_core/src/frontend.rs)."""
+    from .. import native
+    return Scan(native.core().front_scan(str(Path(root)), tree_hash))
 
 
 class Spans:
@@ -624,10 +433,8 @@ class Spans:
 
 
 def native_pieces(sc: Scan) -> tuple[list[int], list[tuple]]:
-    """The scan as the native rules read it (L.src, L5, A1, L13, G.grade): its files' pieces in the core by id (they
-    hold every item the rules read: native/dcp_core/src/srcscan.rs Piece), the errors of the whole scan (L16). The
-    scan holds its pieces, so they stand while it does."""
-    return [x.id for x in sc.native], [(e.check, e.file, e.line, e.message) for e in sc.own_errors]
+    """The scan as the native rules read it: its files' pieces in the core by id, the errors of the whole scan."""
+    return list(sc.piece_ids), [(e.check, e.file, e.line, e.message) for e in sc.own_errors]
 
 
 def function_spans(sc: Scan, target: str, default: str) -> Spans:

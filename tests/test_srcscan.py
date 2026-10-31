@@ -80,4 +80,4 @@ def test_line_directives():
 def test_memo(tmp_path):
     unit(tmp_path, "u", "/* 0x10001000, x */\nvoid f(void)\n{\n}\n")
     a = srcscan.scan(tmp_path, "h1")
-    assert srcscan.scan(tmp_path, "h1") is a
+    assert srcscan.scan(tmp_path, "h1").piece_ids == a.piece_ids      # the same pieces: the core's memo

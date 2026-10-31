@@ -34,6 +34,7 @@ pub struct View {
     bounds: Vec<Boundary>,
     refs: Vec<Rc<SFact>>,
     drafted: HashSet<i64>,
+    made: HashMap<&'static str, Py<PyAny>>, // the Python objects of the attributes, made once
 }
 
 fn py_layout(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
@@ -75,6 +76,7 @@ impl View {
         Ok(View {
             image: image.to_string(), game, funcs, starts, sources, units, lits: layout::lits_of(&ev), leaks: layout::leaks_of(&ev), fills,
             bounds: layout::bounds_of(&all("boundary")?), refs: all("ref")?, drafted, syms, unit_facts, src_facts,
+            made: HashMap::new(),
         })
     }
 
@@ -190,13 +192,31 @@ impl View {
 
     /// (lo, hi, level of hi) of the game code.
     #[getter]
-    fn game<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+    fn game(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(o) = self.made.get("game") {
+            return Ok(o.clone_ref(py));
+        }
+        let o = self.make_game(py)?.into_any().unbind();
+        self.made.insert("game", o.clone_ref(py));
+        Ok(o)
+    }
+
+    fn make_game<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
         PyTuple::new(py, [self.game.0.into_pyobject(py)?.into_any(), self.game.1.into_pyobject(py)?.into_any(), level_obj(py, self.game.2)?.into_bound(py)])
     }
 
     /// [(lo, hi, fact)] of the function symbols above open.
     #[getter]
-    fn funcs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+    fn funcs(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(o) = self.made.get("funcs") {
+            return Ok(o.clone_ref(py));
+        }
+        let o = self.make_funcs(py)?.into_any().unbind();
+        self.made.insert("funcs", o.clone_ref(py));
+        Ok(o)
+    }
+
+    fn make_funcs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let l = PyList::empty(py);
         for f in &self.funcs {
             l.append((f.lo, f.hi, object(py, "symbol", f)?))?;
@@ -206,13 +226,31 @@ impl View {
 
     /// The symbol facts (not the match phase's).
     #[getter]
-    fn syms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+    fn syms(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(o) = self.made.get("syms") {
+            return Ok(o.clone_ref(py));
+        }
+        let o = self.make_syms(py)?.into_any().unbind();
+        self.made.insert("syms", o.clone_ref(py));
+        Ok(o)
+    }
+
+    fn make_syms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         PyList::new(py, self.syms.iter().map(|f| object(py, "symbol", f)).collect::<PyResult<Vec<_>>>()?)
     }
 
     /// addr -> its start facts.
     #[getter]
-    fn starts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    fn starts(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(o) = self.made.get("starts") {
+            return Ok(o.clone_ref(py));
+        }
+        let o = self.make_starts(py)?.into_any().unbind();
+        self.made.insert("starts", o.clone_ref(py));
+        Ok(o)
+    }
+
+    fn make_starts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
         for (a, fs) in &self.starts {
             d.set_item(a, PyList::new(py, fs.iter().map(|f| object(py, "start", f)).collect::<PyResult<Vec<_>>>()?)?)?;
@@ -222,7 +260,16 @@ impl View {
 
     /// addr -> the source fact of the function there.
     #[getter]
-    fn sources<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    fn sources(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(o) = self.made.get("sources") {
+            return Ok(o.clone_ref(py));
+        }
+        let o = self.make_sources(py)?.into_any().unbind();
+        self.made.insert("sources", o.clone_ref(py));
+        Ok(o)
+    }
+
+    fn make_sources<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
         for (a, f) in &self.sources {
             d.set_item(a, object(py, "source", f)?)?;
@@ -232,13 +279,31 @@ impl View {
 
     /// The game units (layout.UnitX), by address.
     #[getter]
-    fn units<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+    fn units(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(o) = self.made.get("units") {
+            return Ok(o.clone_ref(py));
+        }
+        let o = self.make_units(py)?.into_any().unbind();
+        self.made.insert("units", o.clone_ref(py));
+        Ok(o)
+    }
+
+    fn make_units<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         PyList::new(py, self.units.iter().map(|u| unit_py(py, u)).collect::<PyResult<Vec<_>>>()?)
     }
 
     /// start -> its fill evidence value.
     #[getter]
-    fn fills<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    fn fills(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(o) = self.made.get("fills") {
+            return Ok(o.clone_ref(py));
+        }
+        let o = self.make_fills(py)?.into_any().unbind();
+        self.made.insert("fills", o.clone_ref(py));
+        Ok(o)
+    }
+
+    fn make_fills<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let d = PyDict::new(py);
         for (a, v) in &self.fills {
             d.set_item(a, json_py(py, v)?)?;
@@ -248,7 +313,16 @@ impl View {
 
     /// The declared boundaries (layout.Bound).
     #[getter]
-    fn bounds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+    fn bounds(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if let Some(o) = self.made.get("bounds") {
+            return Ok(o.clone_ref(py));
+        }
+        let o = self.make_bounds(py)?.into_any().unbind();
+        self.made.insert("bounds", o.clone_ref(py));
+        Ok(o)
+    }
+
+    fn make_bounds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let cls = py_layout(py)?.getattr("Bound")?;
         PyList::new(py, self.bounds.iter().map(|b| cls.call1((b.0, b.1.clone(), b.2.clone(), b.3.clone(), b.4.clone()))).collect::<PyResult<Vec<_>>>()?)
     }

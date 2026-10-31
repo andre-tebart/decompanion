@@ -467,7 +467,10 @@ impl Project {
                     k => sha256_parts(&[meta(k)?]),
                 }
             }
-            "scan" => return Ok(None),
+            "scan" => {
+                let src = self.input_hash("src")?.unwrap_or_default();
+                crate::frontend::scan(&self.root.to_string_lossy(), Some(&src))?.digest()
+            }
             _ => return Err(format!("unknown input {}", crate::decl::py_repr(name))),
         };
         self.hashes.lock().unwrap().insert(name.to_string(), h.clone());

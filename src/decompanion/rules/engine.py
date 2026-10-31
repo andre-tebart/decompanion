@@ -1,8 +1,7 @@
 """The rule engine is the core's (native/dcp_core/src/engine.rs: order, run keys, waiting, the runs; registry.rs:
 every rule with its needs, outputs, inputs, ceiling and criterion). This module is its face, and the front end
-the engine calls back for what the core does not compute yet (Front): the source scan's digest and pieces, the
-tree's raw macros and described addresses, the last lint, the units' text hashes, and the rules whose code is still
-Python (registered here with @rule: M.compile, M.flags.proven).
+the engine calls back for what the core does not compute yet (Front): the last lint, the units' text hashes, and the
+rules whose code is still Python (registered here with @rule: M.compile, M.flags.proven).
 
 A rule (any kind) yields facts and conflicts and nothing else; a Python rule sees the project only through its
 RuleContext: the facts of the rules it needs, the named external inputs it declares.
@@ -130,22 +129,15 @@ class Front:
         return self.p.input_hash(name)
 
     def front_inputs(self, rule_id: str) -> dict:
+        """M.lint: the units' text hashes today; G.grade: the last lint's calls and the units whose text it parsed."""
         from ..build import compile as build_compile
-        from ..ledger import srcscan
         if rule_id == "M.lint":
             return {"units": {a.unit: a.src_hash for a in build_compile.plan(self.p)}}
-        tree = self.p.input_hash("src")
-        out = {"scan": srcscan.native_pieces(srcscan.scan(self.p.root, tree))}
-        if rule_id == "G.grade":
-            from .grade import context
-            raw, described = context(str(self.p.root), tree)
-            lint = self.p.input("lint")
-            current = {a.unit: a.src_hash for a in build_compile.plan(self.p)} if lint else {}
-            calls = lint.get("calls") if lint else None
-            out.update(raw=sorted(raw), described=sorted(described),
-                       lint_calls=None if calls is None else {f: [tuple(c) for c in cs] for f, cs in calls.items()},
-                       linted=sorted(u for u, h in (lint or {}).get("units", {}).items() if current.get(u) == h))
-        return out
+        lint = self.p.input("lint")
+        current = {a.unit: a.src_hash for a in build_compile.plan(self.p)} if lint else {}
+        calls = lint.get("calls") if lint else None
+        return {"lint_calls": None if calls is None else {f: [tuple(c) for c in cs] for f, cs in calls.items()},
+                "linted": sorted(u for u, h in (lint or {}).get("units", {}).items() if current.get(u) == h)}
 
     def run_python(self, rule_id: str, needed: list[str]):
         ctx = RuleContext(self.engine, RULES[rule_id], tuple(needed))

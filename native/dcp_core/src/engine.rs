@@ -153,11 +153,12 @@ pub struct Engine<'a> {
     pub capstone: String,
     pub hook: Option<Bound<'a, PyAny>>,
     base: Option<Rc<Inputs>>,
+    scans: Vec<Rc<crate::frontend::Scan>>, // the scans whose pieces the rules of this run read
 }
 
 impl<'a> Engine<'a> {
     pub fn new(project: &'a Project, core_hash: &str, capstone: &str, hook: Option<Bound<'a, PyAny>>) -> Engine<'a> {
-        Engine { project, db: project.store_path(), main: project.main_uri(), core_hash: core_hash.into(), capstone: capstone.into(), hook, base: None }
+        Engine { project, db: project.store_path(), main: project.main_uri(), core_hash: core_hash.into(), capstone: capstone.into(), hook, base: None, scans: vec![] }
     }
 
     fn hook(&self) -> PyResult<&Bound<'a, PyAny>> {
@@ -227,23 +228,29 @@ impl<'a> Engine<'a> {
         if !front {
             return Ok(base);
         }
-        let got = self.hook()?.call_method1("front_inputs", (r.id,))?;
-        let d = got.cast::<PyDict>()?;
         let mut x = Inputs {
             toolchain: base.toolchain.clone(), root: base.root.clone(), archives: base.archives.clone(), libs: base.libs.clone(),
             decl: base.decl.clone(), target: base.target.clone(), targets: base.targets.clone(), images: base.images.clone(),
             function_alignment: base.function_alignment, code_rank: base.code_rank.clone(), ..Default::default()
         };
-        if let Some(s) = d.get_item("scan")? {
-            let (pieces, errors): (Vec<u64>, Vec<(String, String, i64, String)>) = s.extract()?;
-            x.scan = crate::layout::ScanRef { pieces, errors };
+        if r.id != "M.lint" {
+            let root = self.project.root.to_string_lossy().into_owned();
+            let src = self.input_hash_of("src")?;
+            let s = crate::frontend::scan(&root, Some(&src)).map_err(rule_err)?;
+            x.scan = crate::layout::ScanRef {
+                pieces: s.piece_ids(),
+                errors: s.own_errors.iter().map(|(f, l, c, m)| (c.clone(), f.clone(), *l, m.clone())).collect(),
+            };
+            if r.id == "G.grade" {
+                (x.raw, x.described) = crate::frontend::context(&s);
+            }
+            self.scans.push(s);
         }
-        if let Some(v) = d.get_item("raw")? {
-            x.raw = v.extract()?;
+        if r.id != "G.grade" && r.id != "M.lint" {
+            return Ok(Rc::new(x));
         }
-        if let Some(v) = d.get_item("described")? {
-            x.described = v.extract()?;
-        }
+        let got = self.hook()?.call_method1("front_inputs", (r.id,))?;
+        let d = got.cast::<PyDict>()?;
         if let Some(v) = d.get_item("lint_calls")? {
             x.lint_calls = v.extract()?;
         }

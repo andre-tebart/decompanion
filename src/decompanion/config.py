@@ -237,12 +237,7 @@ class Project:
     def input_hash(self, name: str) -> str:
         """The content hash of a named input (the core's: project.rs; the source scan's digest is the front end's)."""
         with timing.phase(f"hash.{name}"):
-            h = self.core.input_hash(name)
-            if h is None:                                 # scan: the front end's
-                from .ledger import srcscan
-                h = srcscan.scan(self.root, self.input_hash("src")).digest()
-                self.core.set_input_hash(name, h)
-        return h
+            return self.core.input_hash(name)
 
     def forget_input(self, name: str):
         """Drop a memoised input hash (after a command changed the input, e.g. the analyzer's export)."""

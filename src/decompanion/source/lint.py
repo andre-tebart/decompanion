@@ -234,7 +234,7 @@ def native_alldecls(root: Path, sc, target: str | None):
     private = private_headers(root)
     headers = [f"include/{h.name}" for h in sorted(inc.glob("*.h")) if h.name not in private] if inc.exists() else []
     srcs = ["src/" + rel for rel, _ in fsmemo.walk(src, ("*.c",))] if src.exists() else []
-    return native.core().lint_alldecls([x.id for x in sc.native], target, headers, srcs)
+    return native.core().lint_alldecls(list(sc.piece_ids), target, headers, srcs)
 
 
 def stale(project) -> list[str] | None:

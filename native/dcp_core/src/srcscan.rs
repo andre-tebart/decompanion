@@ -310,6 +310,16 @@ pub struct ScanPiece {
 static HELD: LazyLock<Mutex<HashMap<u64, Weak<Piece>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
+impl ScanPiece {
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
 fn hold(p: Piece) -> ScanPiece {
     use sha2::{Digest, Sha256};
     let v = &p.view;
