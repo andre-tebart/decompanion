@@ -507,8 +507,30 @@ pub fn report_command(project: PyRef<'_, PyProject>, verbose: bool) -> PyResult<
 
 // ------------------------------------------------------------------------------------------------ why / facts / conflicts / map
 
-/// `dcp why ADDR|NAME...`: everything known about an address: the byte map row, every fact that covers it,
-/// references to and from it. Exit 1 when a name is unknown.
+/// The value line of `dcp why` at a datum (an address in a section that holds no code, with file bytes): the bytes
+/// from the address to its owner's end (at most 16), as u32 / f32 at a 4-aligned address with 4 of them, as f64 at
+/// an 8-aligned one with 8 (an unnamed constant shows what it holds without `dcp dump`).
+fn value_line(img: &crate::pe::Image, a: i64, owner_hi: i64) -> Option<String> {
+    let sec = img.section_of(a as u32).filter(|s| !s.holds_code())?;
+    let n = (owner_hi.min(sec.va as i64 + sec.raw_size as i64) - a).clamp(0, 16) as usize;
+    if n == 0 {
+        return None;
+    }
+    let b = img.read(a as u32, n);
+    let mut toks = vec![("value", Tok::S(b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")))];
+    if n >= 4 && a % 4 == 0 {
+        let w = [b[0], b[1], b[2], b[3]];
+        toks.push(("u32", Tok::S(format!("{:#010x}", u32::from_le_bytes(w)))));
+        toks.push(("f32", Tok::S(crate::cliread::fmt_g(f32::from_le_bytes(w) as f64, 7))));
+    }
+    if n >= 8 && a % 8 == 0 {
+        toks.push(("f64", Tok::S(crate::cliread::fmt_g(f64::from_le_bytes(b[..8].try_into().unwrap()), 15))));
+    }
+    Some(format!("  {}", record(&toks)))
+}
+
+/// `dcp why ADDR|NAME...`: everything known about an address: the byte map row, the value of a datum (value_line),
+/// every fact that covers it, references to and from it. Exit 1 when a name is unknown.
 #[pyfunction]
 pub fn why_command(project: PyRef<'_, PyProject>, keys: Vec<String>, refs: bool) -> PyResult<Out> {
     let p = &project.p;
@@ -540,6 +562,9 @@ pub fn why_command(project: PyRef<'_, PyProject>, keys: Vec<String>, refs: bool)
             None => "  (headers)".into(),
         };
         out.push(format!("addr={}  target={t}{off}  cls={cls}  level={}  owner={}", fmt_addr(a), level(lvl), fmt_range(lo, hi)));
+        if let Some(line) = value_line(&img, a, hi) {
+            out.push(line);
+        }
         let facts = facts_in(&db, None, a, a + 1)?;
         let mut probed: Vec<&SFact> = facts.iter().filter(|(k, f)| k == "toolchain" && f.value.get("flag").is_some()).map(|x| &x.1).collect();
         if let Some(first) = probed.first().copied() {

@@ -61,6 +61,8 @@ def test_disasm_dump_refs(tiny):
     assert code == 0 and out.startswith("addr=0x10001020") and "cls=func" in out, out
     code, out = dcp(tiny, "why", "NoSuchName")
     assert code == 1 and "name=NoSuchName" in out and "unknown" in out, out
+    code, out = dcp(tiny, "why", "0x10002000")               # a datum shows its value (no dcp dump needed)
+    assert code == 0 and "  value='34 12 00 00" in out and "u32=0x00001234  f32=" in out, out
     code, out = dcp(tiny, "dump", "0x10002000", "0x48", "--str", "--dword")
     assert code == 0 and "section=.data" in out
     assert "text=hello" in out and "text=world" in out and "text=c:\\src\\net\\net.c" in out
