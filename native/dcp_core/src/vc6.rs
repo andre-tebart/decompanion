@@ -242,3 +242,179 @@ mod tests {
         assert_eq!(cp1252(&[0x80, b'a', 0xe4]), "\u{20ac}a\u{e4}");
     }
 }
+
+// ------------------------------------------------------------------------------------------------ the linker
+
+/// What one link reads and writes: paths as the link names them (relative to cwd where they lie below it).
+pub struct LinkJob {
+    pub cwd: String,
+    pub out: String,
+    pub objects: Vec<String>,
+    pub libraries: Vec<String>,
+    pub dll: bool,
+    pub base: u32,
+    pub map_file: String,
+    pub def_file: Option<String>,
+    pub includes: Vec<String>,
+    pub subsystem: String,
+    pub rsp: String,
+}
+
+pub struct LinkResult {
+    pub ok: bool,
+    pub log: String,
+    pub unresolved: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// A path as the link names it: relative to cwd in posix spelling when it lies below cwd, else as given.
+pub fn rel_to(cwd: &str, p: &str) -> String {
+    let (c, x) = (py_path(cwd), py_path(p));
+    if !Path::new(&x).is_absolute() {
+        return x.replace('\\', "/");
+    }
+    match Path::new(&x).strip_prefix(&c) {
+        Ok(r) => r.to_string_lossy().replace('\\', "/"),
+        Err(_) => x,
+    }
+}
+
+/// LINK.EXE's arguments (vc6/link.py link_args): /NOLOGO /OUT /OPT:REF /OPT:ICF /MAP, /DLL /BASE /DEF for a dll, the
+/// subsystem, the objects in link order, one /INCLUDE per function symbol, the libraries.
+pub fn link_args(job: &LinkJob) -> Vec<String> {
+    let rel = |p: &str| rel_to(&job.cwd, p);
+    let mut args = vec!["/NOLOGO".to_string(), format!("/OUT:{}", rel(&job.out)), "/OPT:REF".into(), "/OPT:ICF".into(),
+                        format!("/MAP:{}", rel(&job.map_file)), "/MACHINE:IX86".into()];
+    if job.dll {
+        args.push("/DLL".into());
+        args.push(format!("/BASE:{:#x}", job.base));
+        if let Some(d) = &job.def_file {
+            args.push(format!("/DEF:{}", rel(d)));
+        }
+    }
+    if !job.subsystem.is_empty() {
+        args.push(format!("/SUBSYSTEM:{}", match job.subsystem.as_str() { "gui" => "WINDOWS", "console" => "CONSOLE", s => s }));
+    }
+    args.extend(job.objects.iter().map(|o| rel(o)));
+    args.extend(job.includes.iter().map(|s| format!("/INCLUDE:{s}")));
+    args.extend(job.libraries.iter().map(|l| rel(l)));
+    args
+}
+
+impl Tools {
+    /// LINK.EXE @<response file>; the unresolved externals from the LNK2001 / LNK2019 lines.
+    pub fn link(&self, job: &LinkJob) -> Result<LinkResult, String> {
+        let args = link_args(job);
+        let rsp_abs = if Path::new(&job.rsp).is_absolute() { job.rsp.clone() } else { py_path(&format!("{}/{}", job.cwd, job.rsp)) };
+        if let Some(d) = Path::new(&rsp_abs).parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        std::fs::write(&rsp_abs, args.join("\n") + "\n").map_err(|e| format!("{rsp_abs}: {e}"))?;
+        let (code, out, err) = self.run("LINK.EXE", &[format!("@{}", rel_to(&job.cwd, &rsp_abs))], &job.cwd)?;
+        let log = format!("{out}{err}").replace("\r\n", "\n");
+        static UNRESOLVED: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"unresolved external symbol\s+(\S+)").unwrap());
+        let unresolved: std::collections::BTreeSet<String> = UNRESOLVED.captures_iter(&log).map(|m| m[1].to_string()).collect();
+        let (diags, _) = diagnostics(&log);
+        let errors = diags.iter().filter(|d| d.severity == "error" && !["LNK2001", "LNK2019", "LNK1120"].contains(&d.code.as_str())).map(|d| d.text()).collect();
+        Ok(LinkResult { ok: code == 0, log, unresolved: unresolved.into_iter().collect(), errors })
+    }
+
+    /// LIB.EXE /OUT:lib lib obj...: the archive with the objects added (a member of the same name replaced); the
+    /// failure, else None.
+    pub fn add_library_members(&self, lib: &str, objects: &[String]) -> Result<Option<String>, String> {
+        let p = Path::new(lib);
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut args = vec!["/NOLOGO".to_string(), format!("/OUT:{name}"), name.clone()];
+        args.extend(objects.iter().map(|o| resolved("", o)));
+        let (code, out, err) = self.run("LIB.EXE", &args, &p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default())?;
+        Ok((code != 0).then(|| format!("LIB.EXE failed: {}", format!("{out}{err}").trim().chars().take(300).collect::<String>())))
+    }
+
+    /// An import library from the image's own import directory (vc6/implib.py): LIB.EXE /DEF writes it; in each
+    /// short import member the name type becomes NAME where the image imports the stored symbol itself (a
+    /// decorated stdcall name) and the hint the image's own. The failure, else None.
+    pub fn make_import_library(&self, dll: &str, imports: &[crate::pe::Import], out: &str) -> Result<Option<String>, String> {
+        let named: Vec<&crate::pe::Import> = imports.iter().filter(|i| i.name.is_some()).collect();
+        if named.len() != imports.len() {
+            return Ok(Some("it imports by ordinal (not supported)".into()));
+        }
+        if named.is_empty() {
+            return Ok(Some("nothing is imported by name".into()));
+        }
+        let outp = Path::new(out);
+        let dir = outp.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+        let _ = std::fs::create_dir_all(&dir);
+        let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let def = outp.with_extension("def");
+        let lines: String = named.iter().map(|i| {
+            let n = i.name.as_deref().unwrap();
+            format!("    {}\n", n.strip_prefix('_').unwrap_or(n))
+        }).collect();
+        std::fs::write(&def, format!("; built by dcp link from the image's import directory\nLIBRARY {}\nEXPORTS\n{lines}", stem(Path::new(dll))))
+            .map_err(|e| e.to_string())?;
+        let fname = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let (code, o, e) = self.run("LIB.EXE", &["/NOLOGO".into(), format!("/DEF:{}", fname(&def)), format!("/OUT:{}", fname(outp)), "/MACHINE:IX86".into()], &dir)?;
+        if code != 0 || !outp.exists() {
+            return Ok(Some(format!("LIB.EXE failed: {}", format!("{o}{e}").trim().chars().take(300).collect::<String>())));
+        }
+        let mut lib = std::fs::read(outp).map_err(|e| e.to_string())?;
+        // the short-format import members (signature 0 / 0xffff) by their stored symbol
+        let mut by_symbol: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut i = 8usize;
+        while i + 60 <= lib.len() {
+            let size: usize = String::from_utf8_lossy(&lib[i + 48..i + 58]).trim().parse().unwrap_or(0);
+            let d = i + 60;
+            if lib.get(d..d + 4) == Some(&b"\0\0\xff\xff"[..]) {
+                if let Some(end) = lib[d + 20..].iter().position(|&b| b == 0) {
+                    by_symbol.insert(lib[d + 20..d + 20 + end].iter().map(|&c| c as char).collect(), d);
+                }
+            }
+            i += 60 + size + (size & 1);
+        }
+        for imp in named {
+            let n = imp.name.as_deref().unwrap();
+            let stored = if n.starts_with('_') { n.to_string() } else { format!("_{n}") };
+            let Some(&d) = by_symbol.get(&stored) else { return Ok(Some(format!("LIB.EXE wrote no member for {n}"))) };
+            let mut word = u16::from_le_bytes([lib[d + 18], lib[d + 19]]);
+            if n == stored {
+                word = (word & !(0x7 << 2)) | (1 << 2); // NAME: import by the stored symbol exactly
+            }
+            lib[d + 18..d + 20].copy_from_slice(&word.to_le_bytes());
+            lib[d + 16..d + 18].copy_from_slice(&imp.hint.unwrap_or(0).to_le_bytes());
+        }
+        std::fs::write(outp, lib).map_err(|e| e.to_string())?;
+        Ok(None)
+    }
+
+    /// The CRT start-up calls DllMain / WinMain / main: when the function at the user entry has another name in the
+    /// sources, a stub calling it is written to out_dir/entry.c and compiled; None when no stub is needed.
+    pub fn entry_object(&self, kind: &str, out_dir: &str, user: Option<&str>) -> Result<Option<String>, String> {
+        let expected = match kind { "dll" => "DllMain", "gui" => "WinMain", "console" => "main", _ => return Ok(None) };
+        let Some(user) = user.filter(|u| *u != expected) else { return Ok(None) };
+        let text = match kind {
+            "dll" => format!("#include <windows.h>\nBOOL WINAPI {user}(HINSTANCE h, DWORD reason, LPVOID reserved);\nBOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved)\n{{\n    return {user}(h, reason, reserved);\n}}\n"),
+            "gui" => format!("#include <windows.h>\nint WINAPI {user}(HINSTANCE h, HINSTANCE prev, LPSTR cmd, int show);\nint WINAPI WinMain(HINSTANCE h, HINSTANCE prev, LPSTR cmd, int show)\n{{\n    return {user}(h, prev, cmd, show);\n}}\n"),
+            _ => format!("int {user}(int argc, char **argv);\nint main(int argc, char **argv)\n{{\n    return {user}(argc, argv);\n}}\n"),
+        };
+        std::fs::write(Path::new(out_dir).join("entry.c"), text).map_err(|e| e.to_string())?;
+        let r = self.compile("entry.c", "entry.obj", &["/O2".into(), "/Gy".into()], &[], out_dir)?;
+        if !r.ok {
+            return Err(format!("the entry stub does not compile:\n{}", r.log));
+        }
+        Ok(Some(py_path(&format!("{out_dir}/entry.obj"))))
+    }
+}
+
+/// LIBRARY <name> / EXPORTS <name> @<ordinal> (NONAME for an export without a name).
+pub fn module_definition(name: &str, exports: &[&crate::pe::Export]) -> String {
+    let mut es: Vec<&&crate::pe::Export> = exports.iter().collect();
+    es.sort_by_key(|e| e.ordinal);
+    let mut lines = vec![format!("LIBRARY {name}"), "EXPORTS".to_string()];
+    for e in es {
+        lines.push(match &e.name {
+            Some(n) => format!("    {n} @{}", e.ordinal),
+            None => format!("    Ord{} @{} NONAME", e.ordinal, e.ordinal),
+        });
+    }
+    lines.join("\n") + "\n"
+}

@@ -20,6 +20,7 @@ mod fsmemo;
 mod frontend;
 mod grade;
 mod libcand;
+mod link;
 mod lint;
 mod lintrun;
 mod mrules;
@@ -655,6 +656,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
+    m.add_function(wrap_pyfunction!(link::link_full, m)?)?;
+    m.add_function(wrap_pyfunction!(link::link_classify, m)?)?;
     m.add_function(wrap_pyfunction!(probe::probe_run, m)?)?;
     m.add_function(wrap_pyfunction!(libcand::libs_candidates, m)?)?;
     m.add_class::<pyimage::PeImage>()?;

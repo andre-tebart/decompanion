@@ -118,6 +118,11 @@ fn assign(addrs: &Addrs, n: usize) -> Vec<Addrs> {
 
 /// srcscan's placeholder: an identifier that spells an address (PLACEHOLDER_ADDR: a match is always a whole word;
 /// its three forms in the order the expression tries them, the shortest prefix first).
+/// PLACEHOLDER_ADDR.fullmatch of a name: the address it spells when the whole name is a placeholder.
+pub(crate) fn placeholder_whole(w: &str) -> Option<u64> {
+    (!w.is_empty() && w.chars().all(|c| c.is_alphanumeric() || c == '_')).then(|| placeholder(w)).flatten()
+}
+
 fn placeholder(w: &str) -> Option<u64> {
     let first = w.chars().next()?;
     if !(first.is_ascii_alphabetic() || first == '_') {
