@@ -37,16 +37,17 @@ scan(root) returns every definition, data declaration, placeholder and parse err
 targets; the loader rule L.src (rules/layout.py) picks the current target's addresses and emits the facts.
 Results are memoised per tree hash, so the loader and the checks parse once per process.
 
-Two layers (docs/plan.md section 18). The comments (the address comments, the tags, the descriptions) are read
-per file by a lexer of comments and strings (TOKEN). The function definitions and the file-scope data
-declarations come from the front end (source/cparse.py, libclang) over each unit file as a target's compile sees
-it (models: its DCP_TARGET_<name> defined); a header as the first unit that includes it sees it, a file no unit
+Everything C comes from the front end (docs/plan.md section 18; source/cparse.py, libclang): the comments and
+literals (its tokens), the macro definitions, the function definitions and the file-scope data declarations,
+over each unit file as a target's compile sees it (models: its DCP_TARGET_<name> defined); a header as the first unit that includes it sees it, a file no unit
 holds parsed alone. So `#if` / `#ifdef` are evaluated (a declaration in a dead branch is no declaration), a macro
 is expanded (zlib's `local` is `static`), and every declarator of `int a = 1, b = 2;` is one. The default
 target's view gives everything; another target's adds the function definitions only it holds (L16 compares
 the targets a function is live in with those its comment lists). A data statement's address comment is found by
 its extent (on its first line, after its `;`, or the own-line comment above). A text that is no project file (a
-test's, a single line) is parsed alone (model_alone).
+test's, a single line) is parsed alone (model_alone). What the comments say (the address comments, the tags, the
+descriptions) and what the macros' bodies hold (views, casts) the scan reads: per file in the native core
+(native/dcp_core/src/srcscan.rs: scan_file). Source (TOKEN, its own lexer) serves the other readers of a text.
 """
 from __future__ import annotations
 
@@ -58,6 +59,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from .. import fsmemo
 
+NATIVE = True                 # the per-file scan is the native core's: a rule with this module as a helper hashes it
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
 ADDR_ITEM = r"(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+"
 LEAD_ADDRS = re.compile(r"^\s*(" + ADDR_ITEM + r")((?:\s*[,/]\s*" + ADDR_ITEM + r")*)")
@@ -77,27 +79,7 @@ PLACEHOLDER_ADDR = re.compile(r"\b[A-Za-z_]\w*?Unk([0-9a-f]{5,8}|[0-9A-F]{5,8})(
 def placeholder_value(m: re.Match) -> int:
     """The address a PLACEHOLDER_ADDR match spells."""
     return int(next(g for g in m.groups() if g), 16)
-DEREF_OBJ = re.compile(r"\(\s*\*\s*\(\s*[A-Za-z_]")      # an object-like macro body that dereferences a cast: (*(T ...
-_NUM = r"(0[xX][0-9a-fA-F]+|\d+)[uUlL]*"
-_TYPEP = r"[^()]*(?:\([^()]*\)[^()]*)*"
-VIEW_BYTE = re.compile(r"\(\s*\*\s*\(" + _TYPEP + r"\)\s*\(\s*\(\s*(?:unsigned\s+|signed\s+)?char\s*\*\s*\)\s*(&\s*)?([A-Za-z_]\w*)\s*\+\s*"
-                       + _NUM + r"\s*\)\s*\)")
-VIEW_WHOLE = re.compile(r"\(\s*\*\s*\(" + _TYPEP + r"\)\s*&\s*([A-Za-z_]\w*)\s*\)")
-VIEW_ALIAS = re.compile(r"([A-Za-z_]\w*)")
-DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
-# A1: an integer literal cast to a pointer type. The cast's type names a pointer explicitly: a declarator with
-# `*` (`(char *)`, `(struct x **)`, `(void (__cdecl *)(int))`); a typedef'd pointer name (`(LPVOID)`) is not
-# recognised (the scan has no types). Between the cast and the literal only parentheses and casts to a type
-# without `*` may stand (`(char *)(unsigned)0x5de470`, `(void (*)(void))(0x5de470)`).
-_TYPE = r"(?:(?:const|volatile|unsigned|signed|struct|union|enum)\s+)*[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*"
-_CC = r"(?:__cdecl|__stdcall|__fastcall|WINAPI|CALLBACK|APIENTRY|PASCAL)"
-PTR_CAST = re.compile(
-    r"\(\s*" + _TYPE + r"\s*(?:"
-    r"(?:\*\s*(?:(?:const|volatile)\b\s*)?)+"                                    # (T *), (T * const *)
-    r"|\**\s*\(\s*" + _CC + r"?\s*\*+\s*\)\s*\([^()]*\)\s*"                      # (T (cc *)(params))
-    r")\)"
-    r"((?:\s*\((?:\s*" + _TYPE + r"\s*\))?)*\s*)"                               # parentheses, casts without `*`
-    r"(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)[uUlL]*(?![\w.])")
+
 
 
 @dataclass(frozen=True)
@@ -140,7 +122,8 @@ class Placeholder:
 
 @dataclass(frozen=True)
 class PtrCast:
-    """An integer literal cast to a pointer type (PTR_CAST; check A1 in rules/layout.py)."""
+    """An integer literal cast to a pointer type (the front end's in code, a pointer cast's spelling in a macro's
+    body: native/dcp_core/src/srcscan.rs; check A1 in rules/layout.py)."""
     file: str
     line: int
     text: str                 # the cast and the literal as written (whitespace collapsed)
@@ -192,11 +175,6 @@ def lead_addrs(body: str) -> list[tuple[str | None, int]]:
     return [(t or None, int(a, 16)) for t, a in ONE_ADDR.findall(m.group(0))]
 
 
-def lead_end(body: str) -> int:
-    m = LEAD_ADDRS.match(body)
-    return m.end() if m else 0
-
-
 class Source:
     """One .c / .h file: its comments, its code with strings and comments blanked, its definitions and data."""
 
@@ -205,7 +183,6 @@ class Source:
         self.text = text
         self._line_starts = None
         self._own_line_ends = None
-        self._cstarts = None
         self.comments = []            # (start, end, body)
         out = []
         pos = 0
@@ -243,114 +220,6 @@ class Source:
             self._own_line_ends = {e: i for i, (s, e, b) in enumerate(self.comments)
                                    if not self.text[self.text.rfind("\n", 0, s) + 1:s].strip()}
         return self._own_line_ends
-
-    def _attach(self, code: str, s: int, i: int, n: int, skip: frozenset):
-        """The address comment of the statement at s..i (i just after its `;`) split over its n declarators, and
-        whether it says `unlinked`: a comment on the statement's first line or right after its `;`, else the
-        own-line comment directly above it (never a comment of `skip`: the functions' address comments)."""
-        if self._cstarts is None:
-            self._cstarts = [c[0] for c in self.comments]
-        cstarts = self._cstarts
-        addrs: list = []
-        unlinked = False
-        eol = code.find("\n", s)
-        after = i
-        while after < len(self.text) and self.text[after] in " \t":
-            after += 1
-        for ci in range(bisect.bisect_left(cstarts, s), len(cstarts)):
-            cs = cstarts[ci]
-            on_first_line = cs < eol if eol >= 0 else True
-            if not (on_first_line or i <= cs <= after):
-                if cs > after:
-                    break
-                continue
-            if ci in skip:
-                continue
-            if cs >= i and ";" in code[i:cs]:
-                continue                          # behind a later statement of this line: that one's comment
-            addrs = lead_addrs(self.comments[ci][2])
-            unlinked = unlinked or bool(UNLINKED.match(self.comments[ci][2]))
-            if addrs:
-                break
-        if not addrs:
-            ends = self.own_line_comment_ends()
-            e = self.end_before(s)
-            if e in ends and ends[e] not in skip:
-                addrs = lead_addrs(self.comments[ends[e]][2])
-                unlinked = unlinked or bool(UNLINKED.match(self.comments[ends[e]][2]))
-        return assign(addrs, n), unlinked
-
-    def model_definitions(self, defs: list) -> list[tuple[int, str, bool]]:
-        """[(offset, name, static)] of the front end's function definitions of this file (cparse.model)."""
-        return [(self.offset(line, col), name, static) for line, col, name, static in defs]
-
-    def model_data(self, decls: list, skip: frozenset = frozenset()) -> list[tuple]:
-        """[(offset, name, kind, [(target, addr)], unlinked, static)] of the front end's file-scope data
-        declarators of this file (cparse.model), each statement's address comment found as data() finds it."""
-        code = self.code
-        stmts: dict[tuple, list] = {}
-        for d in decls:
-            stmts.setdefault((d[0], d[1]), []).append(d)
-        res = []
-        for (line, col), ds in stmts.items():
-            s = self.offset(line, col)
-            e = max(self.offset(d[2], d[3]) for d in ds)
-            j = e
-            while j < len(code) and code[j].isspace():
-                j += 1
-            i = j + 1 if j < len(code) and code[j] == ";" else e
-            per_decl, unlinked = self._attach(code, s, i, len(ds), skip)
-            for k, d in enumerate(ds):
-                res.append((s, d[4], d[5], per_decl[k], unlinked, d[6]))
-        return res
-
-
-def assign(addrs: list, n: int) -> list[tuple]:
-    """Split a comment's addresses over n declarators: per target, either one address per declarator or (one
-    declarator) all of them. A list that fits neither gives every declarator nothing."""
-    if n == 1:
-        return [tuple(addrs)]
-    by_t: dict = {}
-    for t, a in addrs:
-        by_t.setdefault(t, []).append(a)
-    if any(len(v) != n for v in by_t.values()):
-        return [()] * n
-    return [tuple((t, v[j]) for t, v in by_t.items()) for j in range(n)]
-
-
-def unit_of(rel: str) -> str:
-    """The unit of a source file: src/<unit>.c (a header: its stem)."""
-    return Path(rel).stem
-
-
-
-def literal_value(s: str) -> int | None:
-    """The value of a C integer literal's digits (hex, octal with a leading 0, decimal); None when malformed."""
-    try:
-        return int(s, 16) if s[:2] in ("0x", "0X") else int(s, 8) if len(s) > 1 and s[0] == "0" else int(s, 10)
-    except ValueError:
-        return None
-
-
-def ptr_casts(S: Source, out: Scan, model: dict):
-    """Every integer literal cast to a pointer type in the code (the front end's: model["casts"], any pointer
-    type, a typedef'd one too) and in the bodies of the live macros (PTR_CAST over a body: a macro has no syntax
-    tree until it is used)."""
-    def add(code, base=0):
-        for m in PTR_CAST.finditer(code):
-            v = literal_value(m.group(2))
-            if v is not None:
-                text = " ".join(m.group(0).split())
-                text += ")" * (text.count("(") - text.count(")"))       # close what the match left open
-                out.ptrcasts.append(PtrCast(S.rel, S.line_of(base + m.start()), text, v))
-    for line, col, eline, ecol, lit in model["casts"]:
-        v = literal_value(lit.rstrip("uUlL"))
-        if v is not None:
-            text = " ".join(S.text[S.offset(line, col):S.offset(eline, ecol)].split())
-            out.ptrcasts.append(PtrCast(S.rel, line, text + ")" * (text.count("(") - text.count(")")), v))
-    for d in defines(S, model):
-        add(S.code[d.start:d.end], d.start)
-
 
 def live_code(S: Source, model: dict) -> str:
     """The file's code (comments and strings blanked) with its preprocessor lines and the ranges the preprocessor
@@ -426,110 +295,33 @@ def defines(S: Source, model: dict, like: bool | None = None):
             yield Define(name, line, S.offset(line, col), S.offset(eline, ecol), flike)
 
 
-def view_macros(S: Source, unit: str, out: Scan, model: dict):
-    """The object-like one-line macros: a view (VIEW_BYTE / VIEW_WHOLE / VIEW_ALIAS with an address comment on
-    its line) goes to out.views; one whose body dereferences a cast (DEREF_OBJ) and is no view to out.rawobj,
-    and to out.errors (L15) when it has an address comment all the same. The live object-like macros of the
-    front end's model only."""
-    for d in defines(S, model, like=False):
-        name, body = d.name, d.rest(S.code).strip()
-        if not body or "\n" in body:
-            continue
-        bol = S.offset(d.line, 1)
-        eol = S.text.find("\n", bol)
-        eol = len(S.text) if eol < 0 else eol
-        addrs = next((lead_addrs(b) for s, e, b in S.comments if bol <= s < eol and lead_addrs(b)), [])
-        line = d.line
-        v = VIEW_BYTE.fullmatch(body)
-        if v:
-            container, offset, alias = v.group(2), literal_value(v.group(3)), False
-        elif (v := VIEW_WHOLE.fullmatch(body)) is not None:
-            container, offset, alias = v.group(1), 0, False
-        elif (v := VIEW_ALIAS.fullmatch(body)) is not None:
-            container, offset, alias = v.group(1), 0, True
-        else:
-            container = None
-        if container is not None and addrs and offset is not None:
-            out.views.append(View(S.rel, line, unit, name, container, offset, tuple(addrs), alias))
-        elif DEREF_OBJ.search(body):
-            out.rawobj.append(name)
-            if addrs:
-                out.errors.append(ScanError(S.rel, line, "L15", f"{name} has an address comment but is no view: write it "
-                                                                 f"(*(T *)((char *)&CONTAINER + OFFSET)) with a byte offset"))
-
-
 def scan_file(rel: str, text: str, out: Scan, model: dict | None = None, views: dict | None = None):
-    """One file's part of the scan: its comments read here, its function definitions, data declarations,
-    macros and casts from the front end's model of the file (cparse.model's entry; the text parsed alone when
-    none is given: model_alone). views: target -> that target's model of the file (model is the default
-    target's): a function's `targets` are the views that hold its definition, and a definition only another
-    target's view holds (under its `#if`) is a function too."""
-    S = Source(rel, text)
+    """One file's part of the scan (native/dcp_core/src/srcscan.rs): its address comments, function definitions,
+    data declarations, macros, casts and placeholders from its text and the front end's model of the file
+    (cparse.model's entry; the text parsed alone when none is given: model_alone). views: target -> that target's
+    model of the file (model is the default target's): a function's `targets` are the views that hold its
+    definition, and a definition only another target's view holds (under its `#if`) is a function too."""
+    from .. import native
     model = model_alone(rel, text) if model is None else model
-    for d in defines(S, model, like=True):
-        rest = d.rest(S.text)
-        out.macros.append((d.name, rest[rest.find(")") + 1:].strip()))
-    for s, e, body in S.comments:
-        m = DESCRIBED.match(body)
-        if m:
-            rest = re.split(r"@(?:deep|stuck|rough)\b", m.group(2))[0]
-            rest = re.sub(r"^(?:\s*[,/]\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+)*", "", rest)
-            if rest.strip(" \t\r\n,.-:;*/"):
-                out.described.extend(a for _, a in lead_addrs(body))
-    unit = unit_of(rel)
-    in_src = rel.startswith("src/")
-    is_unit = in_src and rel.endswith(".c") and "/" not in rel[4:]
-    if in_src and rel.endswith(".c") and not is_unit:
-        out.errors.append(ScanError(rel, 1, "L.src", f"unexpected source file {rel}: a unit is one file, src/<unit>.c"))
-    # the definitions of every target's view of the file, with the targets that hold each
-    defs: dict[tuple, list] = {}
-    for t, m in (views or {None: model}).items():
-        ends = {tuple(d[3]): d[5] for d in m["decls"] if d[0] == "f" and d[6] is not None}
-        for line, col, fname, fstatic in m["defs"]:
-            e = defs.setdefault((line, col), [fname, fstatic, ends.get((line, col)), []])
-            if t is not None:
-                e[3].append(t)
-    own = S.own_line_comment_ends()
-    skip = set()
-    for (line, col), (fname, fstatic, end, ts) in sorted(defs.items()):
-        if not is_unit:
-            out.errors.append(ScanError(rel, line, "L.src", f"function {fname} defined outside a unit file (src/<unit>.c)"))
-            continue
-        k = own.get(S.end_before(S.offset(line, col)))
-        body = S.comments[k][2] if k is not None else ""
-        addrs, um = lead_addrs(body), UNLINKED.match(body)
-        if not addrs and not um:
-            out.errors.append(ScanError(rel, line, "L.src", f"function {fname}: no address comment (`/* 0x..., what */`, "
-                                                            f"`/* unlinked, why */`) directly above its definition"))
-            continue
-        skip.add(k)
-        what = (um.group(1) if um else body[lead_end(body):]).strip().lstrip(",").strip()
-        what = re.sub(r"\s+", " ", re.split(r"@(?:deep|stuck|rough)\b", what)[0]).strip()
-        dm, sm = DEEP.search(body), STUCK.search(body)
-        out.functions.append(Function(rel, line, unit, fname, tuple(addrs), bool(um) and not addrs, what,
-                                      dm.group(1).strip() if dm else None, sm.group(1).strip() if sm else None,
-                                      bool(ROUGH.search(body)), comment_line=S.line_of(S.comments[k][0]), static=fstatic,
-                                      end_line=end[0] if end else 0, targets=tuple(ts)))
-    for off, dname, kind, addrs, unlinked, static in S.model_data(model["vars"], frozenset(skip)):
-        out.data.append(Data(rel, S.line_of(off), unit, dname, kind, addrs, unlinked, static))
-    ptr_casts(S, out, model)
-    view_macros(S, unit, out, model)
-    seen = set()
-    for m in PLACEHOLDER_ADDR.finditer(S.code):
-        ident = m.group(0)
-        if ident in seen:
-            continue
-        seen.add(ident)
-        out.placeholders.append(Placeholder(rel, S.line_of(m.start()), ident, placeholder_value(m)))
+    macros, described, functions, data, ptrcasts, views_, rawobj, errors, placeholders = \
+        native.core().scan_file(rel, text, model, list(views.items()) if views else [])
+    out.macros += [tuple(x) for x in macros]
+    out.described += described
+    out.functions += [Function(*a[:4], tuple(a[4]), *a[5:], *b[:6], tuple(b[6])) for a, b in functions]
+    out.data += [Data(*d[:5], tuple(d[5]), *d[6:]) for d in data]
+    out.ptrcasts += [PtrCast(*c) for c in ptrcasts]
+    out.views += [View(*v[:6], tuple(v[6]), v[7]) for v in views_]
+    out.rawobj += rawobj
+    out.errors += [ScanError(*e) for e in errors]
+    out.placeholders += [Placeholder(*x) for x in placeholders]
 
 
 _cache: dict[tuple[str, str], Scan] = {}
-_files: dict[tuple[str, str, str], Scan] = {}     # (path, sha256 of the text, model digest) -> that file's own scan
-CACHE_VERSION = 11                                # bump when scan_file's results change
-MODEL_VERSION = "17"                               # bump when the scan's translation units change
+_files: dict[tuple[str, str], tuple] = {}        # (path, sha256 of the text) -> (the models it was scanned with, its scan)
+MODEL_VERSION = "18"                               # bump when the scan's translation units change
 _models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
 _last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read
-EMPTY = {"defs": [], "vars": [], "macros": [], "defines": [], "casts": [], "decls": [], "types": [], "dead": []}
+EMPTY = {"defs": [], "vars": [], "macros": [], "defines": [], "comments": [], "strings": [], "casts": [], "decls": [], "types": [], "dead": []}
 UNIT_FILE = re.compile(r"^src/[^/]+\.c$")
 
 
@@ -721,37 +513,16 @@ def project_files(root: Path) -> list[tuple[str, str]]:
     return files
 
 
-def _file_cache(root: Path) -> tuple[Path | None, dict]:
-    """The on-disk memo of per-file scans (build/cache/srcscan.pickle), {} when absent or of another version."""
-    import pickle
-    d = root / "build"
-    if not d.is_dir():
-        return None, {}
-    path = d / "cache" / "srcscan.pickle"
-    try:
-        version, data = pickle.loads(path.read_bytes())
-        return path, data if version == CACHE_VERSION else {}
-    except (OSError, ValueError, EOFError, pickle.UnpicklingError, TypeError, AttributeError, ImportError):   # another version's classes
-        return path, {}
-
-
-_disk_done: set[str] = set()                      # roots whose on-disk memo this process read (and wrote)
-
-
 def scan(root: Path, tree_hash: str | None = None) -> Scan:
     """Scan src/**/*.c, src/**/*.h and include/**/*.h of the project at root (memoised per tree hash), every
-    file as each target's compile sees it (models per target; L16). Each file's own scan is memoised by its
-    path, the hash of its text and of its models in the process, so an edit re-parses only the files it changed;
-    a process's first scan of a root also reads and writes them in build/cache/srcscan.pickle (a later edit of
-    a long-lived process, dcp serve, leaves the file alone: the next process rescans the few files changed)."""
-    import hashlib
-    import pickle
+    file as each target's compile sees it (models per target; L16). Each file's own scan is kept while its text
+    and its models are the same (the models() objects: a model stands while its parse does), so an edit scans
+    only the files it changed."""
     root = Path(root)
     if tree_hash is not None and (str(root), tree_hash) in _cache:
         return _cache[(str(root), tree_hash)]
     out = Scan()
-    path, disk = None, None                  # the on-disk memo, read on the first file this process has not scanned
-    used, changed = {}, False
+    used = {}
     files = project_files(root)
     targets = target_defines(root)
     default = targets[0][0]
@@ -762,18 +533,16 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
     for rel, p in files:
         m = ms.get(rel, EMPTY)
         views = {t: per_target[t].get(rel, EMPTY) for t, _ in targets} if default is not None else None
-        key = (rel, fsmemo.sha256(p), hashlib.sha256(repr(views or m).encode()).hexdigest())
-        piece = _files.get(key)
-        if piece is None and str(root) not in _disk_done:
-            if disk is None:
-                path, disk = _file_cache(root)
-            piece = disk.get(key)
-        if piece is None:
+        held = [m, *(views or {}).values()]
+        key = (str(root), rel, fsmemo.sha256(p))
+        hit = _files.get(key)
+        if hit is not None and len(hit[0]) == len(held) and all(a is b for a, b in zip(hit[0], held)):
+            piece = hit[1]
+        else:
             piece = Scan()
             with timing.phase("scan.file"):
                 scan_file(rel, fsmemo.read_text(p), piece, m, views)
-            changed = True
-        _files[key] = used[key] = piece
+        used[key] = (held, piece)
         out.files += 1
         out.functions += piece.functions
         out.data += piece.data
@@ -784,16 +553,9 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
         out.ptrcasts += piece.ptrcasts
         out.views += piece.views
         out.rawobj += piece.rawobj
-    if disk is not None:
-        _disk_done.add(str(root))
-    if path is not None and (changed or len(used) != len(disk)):      # (nothing new to this process: no write)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_bytes(pickle.dumps((CACHE_VERSION, used)))
-            tmp.replace(path)
-        except OSError:
-            pass
+    for k in [k for k in _files if k[0] == str(root)]:
+        del _files[k]
+    _files.update(used)
     if default is not None:
         out.errors += guards(out.functions, [t for t, _ in targets])
     if tree_hash is not None:

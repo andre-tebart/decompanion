@@ -1,0 +1,471 @@
+//! One file's part of the source scan (ledger/srcscan.py is its Python face, which documents the layout of the
+//! sources and the address comments). The front end's model of the file (source/cparse.py: model) gives the
+//! function definitions, the data declarators, the macro definitions, the casts, and the comments and literals
+//! (clang_tokenize); this module reads the address comments and the macros' bodies. Offsets are byte offsets of
+//! the file's text; the model's (line, column in characters) positions are mapped to them.
+
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyTuple};
+use regex::Regex;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::LazyLock;
+
+type Addrs = Vec<(Option<String>, u64)>;
+type Lc = (i64, i64);
+
+/// str.isspace: Unicode white space and the separators U+001C..U+001F.
+fn py_space(c: char) -> bool {
+    c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
+}
+
+fn py_strip(s: &str) -> &str {
+    s.trim_matches(py_space)
+}
+
+/// " ".join(s.split())
+fn py_words(s: &str) -> String {
+    s.split(py_space).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+const ADDR_ITEM: &str = r"(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+";
+static LEAD_ADDRS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"\A\s*({ADDR_ITEM})((?:\s*[,/]\s*{ADDR_ITEM})*)")).unwrap());
+static ONE_ADDR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:([A-Za-z][A-Za-z0-9_-]*):)?(0x[0-9a-fA-F]+)").unwrap());
+static UNLINKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\A\s*unlinked\b\s*,?\s*(.*)").unwrap());
+static DEEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@deep\b[ \t]*(.*?)[ \t]*(?:\*/|\n|\z)").unwrap());
+static STUCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@stuck\b[ \t]*(.*?)[ \t]*(?:\*/|\n|\z)").unwrap());
+static ROUGH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@rough\b").unwrap());
+static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@(?:deep|stuck|rough)\b").unwrap());
+static DESCRIBED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)\A\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)").unwrap());
+static MORE_ADDRS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\A(?:\s*[,/]\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+)*").unwrap());
+static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+").unwrap());
+const TYPEP: &str = r"[^()]*(?:\([^()]*\)[^()]*)*";
+const NUM: &str = r"(0[xX][0-9a-fA-F]+|\d+)[uUlL]*";
+static VIEW_BYTE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"\A\(\s*\*\s*\({TYPEP}\)\s*\(\s*\(\s*(?:unsigned\s+|signed\s+)?char\s*\*\s*\)\s*(&\s*)?([A-Za-z_]\w*)\s*\+\s*{NUM}\s*\)\s*\)\z"
+    ))
+    .unwrap()
+});
+static VIEW_WHOLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"\A\(\s*\*\s*\({TYPEP}\)\s*&\s*([A-Za-z_]\w*)\s*\)\z")).unwrap());
+static VIEW_ALIAS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A([A-Za-z_]\w*)\z").unwrap());
+static DEREF_OBJ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\s*\*\s*\(\s*[A-Za-z_]").unwrap());
+// srcscan.PTR_CAST; its lookahead after the literal is the consumed `[^\w.]|\z` after the group `all` (a search
+// goes on at the group's end), its lookbehind before the literal always holds (a `(`, `)` or a space is there)
+const TYPE: &str = r"(?:(?:const|volatile|unsigned|signed|struct|union|enum)\s+)*[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*";
+const CC: &str = r"(?:__cdecl|__stdcall|__fastcall|WINAPI|CALLBACK|APIENTRY|PASCAL)";
+static PTR_CAST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?P<all>\(\s*{TYPE}\s*(?:(?:\*\s*(?:(?:const|volatile)\b\s*)?)+|\**\s*\(\s*{CC}?\s*\*+\s*\)\s*\([^()]*\)\s*)\)(?:\s*\((?:\s*{TYPE}\s*\))?)*\s*(?P<lit>0[xX][0-9a-fA-F]+|\d+)[uUlL]*)(?:[^\w.]|\z)"
+    ))
+    .unwrap()
+});
+
+/// srcscan.lead_addrs: the addresses a comment starts with; and where they end.
+fn lead_addrs(body: &str) -> (Addrs, usize) {
+    match LEAD_ADDRS.find(body) {
+        None => (vec![], 0),
+        Some(m) => (
+            ONE_ADDR
+                .captures_iter(m.as_str())
+                .map(|c| (c.get(1).map(|t| t.as_str().to_string()), u64::from_str_radix(&c[2][2..], 16).unwrap_or(u64::MAX)))
+                .collect(),
+            m.end(),
+        ),
+    }
+}
+
+/// srcscan.literal_value: a C integer literal's digits (hex, octal with a leading 0, decimal).
+fn literal_value(s: &str) -> Option<u64> {
+    if s.starts_with("0x") || s.starts_with("0X") {
+        u64::from_str_radix(&s[2..], 16).ok()
+    } else if s.len() > 1 && s.starts_with('0') {
+        u64::from_str_radix(s, 8).ok()
+    } else {
+        s.parse().ok()
+    }
+}
+
+/// text before the first @deep / @stuck / @rough
+fn before_tags(s: &str) -> &str {
+    TAGS.find(s).map(|m| &s[..m.start()]).unwrap_or(s)
+}
+
+/// srcscan.assign: a comment's addresses over n declarators.
+fn assign(addrs: &Addrs, n: usize) -> Vec<Addrs> {
+    if n == 1 {
+        return vec![addrs.clone()];
+    }
+    let mut by: Vec<(Option<String>, Vec<u64>)> = vec![];
+    for (t, a) in addrs {
+        match by.iter_mut().find(|x| &x.0 == t) {
+            Some(x) => x.1.push(*a),
+            None => by.push((t.clone(), vec![*a])),
+        }
+    }
+    if by.iter().any(|x| x.1.len() != n) {
+        return vec![vec![]; n];
+    }
+    (0..n).map(|j| by.iter().map(|(t, v)| (t.clone(), v[j])).collect()).collect()
+}
+
+/// srcscan's placeholder: an identifier that spells an address (PLACEHOLDER_ADDR: a match is always a whole word;
+/// its three forms in the order the expression tries them, the shortest prefix first).
+fn placeholder(w: &str) -> Option<u64> {
+    let first = w.chars().next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    let hex = |s: &str, lower: bool, upper: bool| {
+        s.bytes().all(|c| c.is_ascii_digit() || (lower && (b'a'..=b'f').contains(&c)) || (upper && (b'A'..=b'F').contains(&c)))
+    };
+    let at = |pat: &'static str| w.match_indices(pat).map(|(i, _)| i).filter(|&i| i >= first.len_utf8()).collect::<Vec<_>>();
+    // Unk([0-9a-f]{5,8}|[0-9A-F]{5,8})(?:[A-Z][A-Za-z]*)?
+    for p in at("Unk") {
+        let h = &w[p + 3..];
+        for (lower, upper) in [(true, false), (false, true)] {
+            for n in (5..=8).rev() {
+                if h.len() >= n && h.is_char_boundary(n) && hex(&h[..n], lower, upper) {
+                    let rest = &h[n..];
+                    let suffix = rest.is_empty()
+                        || (rest.as_bytes()[0].is_ascii_uppercase() && rest.bytes().all(|c| c.is_ascii_alphabetic()));
+                    if suffix {
+                        return u64::from_str_radix(&h[..n], 16).ok();
+                    }
+                }
+            }
+        }
+    }
+    // (?:FUN_|DAT_|PTR_|LAB_)([0-9a-fA-F]{5,8})
+    let mut tagged: Vec<usize> = ["FUN_", "DAT_", "PTR_", "LAB_"].iter().flat_map(|t| at(t)).collect();
+    tagged.sort();
+    for p in tagged {
+        let h = &w[p + 4..];
+        if (5..=8).contains(&h.len()) && hex(h, true, true) {
+            return u64::from_str_radix(h, 16).ok();
+        }
+    }
+    // _((?=[0-9a-fA-F]*\d)[0-9a-fA-F]{6,8})
+    for p in at("_") {
+        let h = &w[p + 1..];
+        if (6..=8).contains(&h.len()) && hex(h, true, true) && h.bytes().any(|c| c.is_ascii_digit()) {
+            return u64::from_str_radix(h, 16).ok();
+        }
+    }
+    None
+}
+
+/// A file's text with its comments (the model's), its code (comments and literals blanked) and its lines.
+struct Src<'a> {
+    text: &'a str,
+    code: String,
+    starts: Vec<usize>,
+    comments: Vec<(usize, usize, &'a str)>, // start, end, body
+    cstarts: Vec<usize>,
+    own: HashMap<usize, usize>, // end -> index of every comment that starts its line
+}
+
+impl<'a> Src<'a> {
+    fn new(text: &'a str, comments: &[(i64, i64, i64, i64)], strings: &[(i64, i64, i64, i64)]) -> Self {
+        let starts: Vec<usize> = std::iter::once(0).chain(memchr::memchr_iter(b'\n', text.as_bytes()).map(|i| i + 1)).collect();
+        let mut s = Src { text, code: String::new(), starts, comments: vec![], cstarts: vec![], own: HashMap::new() };
+        let mut code = text.as_bytes().to_vec();
+        let mut blank = |a: usize, b: usize| {
+            for c in &mut code[a..b] {
+                if *c != b'\n' {
+                    *c = b' ';
+                }
+            }
+        };
+        for &(l, c, el, ec) in strings {
+            blank(s.offset(l, c), s.offset(el, ec));
+        }
+        for &(l, c, el, ec) in comments {
+            let (a, b) = (s.offset(l, c), s.offset(el, ec));
+            blank(a, b);
+            let t = &text[a..b];
+            let body = if t.starts_with("/*") { t.get(2..t.len().saturating_sub(2)).unwrap_or("") } else { t.get(2..).unwrap_or("") };
+            s.comments.push((a, b, body));
+        }
+        s.code = String::from_utf8(code).unwrap_or_default();
+        s.cstarts = s.comments.iter().map(|c| c.0).collect();
+        for (i, &(a, b, _)) in s.comments.iter().enumerate() {
+            let bol = text[..a].rfind('\n').map(|x| x + 1).unwrap_or(0);
+            if py_strip(&text[bol..a]).is_empty() {
+                s.own.insert(b, i);
+            }
+        }
+        s
+    }
+
+    /// The byte offset of a (line, column in characters) position, both from 1 (Source.offset).
+    fn offset(&self, line: i64, col: i64) -> usize {
+        let k = (line.min(self.starts.len() as i64) - 1).max(0) as usize;
+        let ls = self.starts[k];
+        let n = (col - 1).max(0) as usize;
+        self.text[ls..].char_indices().nth(n).map(|(i, _)| ls + i).unwrap_or(self.text.len())
+    }
+
+    fn line_of(&self, off: usize) -> i64 {
+        self.starts.partition_point(|&s| s <= off) as i64
+    }
+
+    /// The offset before the white space that ends at off (Source.end_before).
+    fn end_before(&self, off: usize) -> usize {
+        let t = &self.text[..off];
+        t.trim_end_matches(py_space).len()
+    }
+
+    fn char_at(&self, s: &str, i: usize) -> Option<char> {
+        s.get(i..).and_then(|x| x.chars().next())
+    }
+
+    /// Source._attach: the address comment of the statement s..i split over its n declarators, and `unlinked`.
+    fn attach(&self, s: usize, i: usize, n: usize, skip: &HashSet<usize>) -> (Vec<Addrs>, bool) {
+        let code = self.code.as_bytes();
+        let eol = memchr::memchr(b'\n', &code[s..]).map(|x| x + s);
+        let mut after = i;
+        while after < self.text.len() && matches!(self.text.as_bytes()[after], b' ' | b'\t') {
+            after += 1;
+        }
+        let (mut addrs, mut unlinked) = (vec![], false);
+        for ci in self.cstarts.partition_point(|&c| c < s)..self.cstarts.len() {
+            let cs = self.cstarts[ci];
+            let first_line = eol.is_none_or(|e| cs < e);
+            if !(first_line || (i <= cs && cs <= after)) {
+                if cs > after {
+                    break;
+                }
+                continue;
+            }
+            if skip.contains(&ci) {
+                continue;
+            }
+            if cs >= i && memchr::memchr(b';', &code[i..cs]).is_some() {
+                continue; // behind a later statement of this line: that one's comment
+            }
+            let body = self.comments[ci].2;
+            addrs = lead_addrs(body).0;
+            unlinked = unlinked || UNLINKED.is_match(body);
+            if !addrs.is_empty() {
+                break;
+            }
+        }
+        if addrs.is_empty() {
+            if let Some(&k) = self.own.get(&self.end_before(s)) {
+                if !skip.contains(&k) {
+                    let body = self.comments[k].2;
+                    addrs = lead_addrs(body).0;
+                    unlinked = unlinked || UNLINKED.is_match(body);
+                }
+            }
+        }
+        (assign(&addrs, n), unlinked)
+    }
+}
+
+// (file, line, unit, name, addrs, unlinked, what), (deep, stuck, rough, comment line, static, end line, targets)
+type FnRow = ((String, i64, String, String, Addrs, bool, String), (Option<String>, Option<String>, bool, i64, bool, i64, Vec<String>));
+type DataRow = (String, i64, String, String, String, Addrs, bool, bool);
+type ViewRow = (String, i64, String, String, String, u64, Addrs, bool);
+type ErrRow = (String, i64, String, String);
+
+fn item<'py>(m: &Bound<'py, PyDict>, k: &str) -> PyResult<Bound<'py, PyAny>> {
+    m.get_item(k)?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(k.to_string()))
+}
+
+/// srcscan.scan_file: one file's part of the scan from its text and its model (the default target's) and every
+/// target's view of it ((target or None, model)): (macros, described, functions, data, ptrcasts, views, rawobj,
+/// errors, placeholders), the rows of srcscan's dataclasses.
+#[pyfunction]
+pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py, PyDict>, views: Vec<(Option<String>, Bound<'py, PyDict>)>)
+                      -> PyResult<Bound<'py, PyTuple>> {
+    let comments: Vec<(i64, i64, i64, i64)> = item(model, "comments")?.extract()?;
+    let strings: Vec<(i64, i64, i64, i64)> = item(model, "strings")?.extract()?;
+    let sf = Src::new(text, &comments, &strings);
+    let defines: Vec<(String, bool, i64, i64, i64, i64)> = item(model, "defines")?.extract()?;
+    let defines: Vec<(String, bool, i64, usize, usize)> =
+        defines.into_iter().map(|(n, fl, l, c, el, ec)| { let s = sf.offset(l, c); (n, fl, l, s, sf.offset(el, ec)) }).collect();
+    let mut macros: Vec<(String, String)> = vec![];
+    for (name, fl, _, s, e) in &defines {
+        if *fl {
+            let rest = &text[(s + name.len()).min(*e)..*e];
+            let k = rest.find(')').map(|k| k + 1).unwrap_or(0);
+            macros.push((name.clone(), py_strip(&rest[k..]).to_string()));
+        }
+    }
+    let mut described: Vec<u64> = vec![];
+    for &(_, _, body) in &sf.comments {
+        if let Some(m) = DESCRIBED.captures(body) {
+            let rest = before_tags(m.get(2).unwrap().as_str());
+            let rest = &rest[MORE_ADDRS.find(rest).map(|x| x.end()).unwrap_or(0)..];
+            if !rest.trim_matches(|c| " \t\r\n,.-:;*/".contains(c)).is_empty() {
+                described.extend(lead_addrs(body).0.into_iter().map(|x| x.1));
+            }
+        }
+    }
+    let unit = std::path::Path::new(rel).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let in_src = rel.starts_with("src/");
+    let is_unit = in_src && rel.ends_with(".c") && !rel[4..].contains('/');
+    let mut errors: Vec<ErrRow> = vec![];
+    let err = |errors: &mut Vec<ErrRow>, line: i64, check: &str, msg: String| errors.push((rel.to_string(), line, check.to_string(), msg));
+    if in_src && rel.ends_with(".c") && !is_unit {
+        err(&mut errors, 1, "L.src", format!("unexpected source file {rel}: a unit is one file, src/<unit>.c"));
+    }
+    // the definitions of every target's view of the file, with the targets that hold each
+    let mut defs: BTreeMap<Lc, (String, bool, Option<Lc>, Vec<String>)> = BTreeMap::new();
+    let views = if views.is_empty() { vec![(None, model.clone())] } else { views };
+    for (t, m) in &views {
+        let mut ends: HashMap<Lc, Option<Lc>> = HashMap::new();
+        for d in item(m, "decls")?.extract::<Vec<Bound<PyTuple>>>()? {
+            if d.get_item(0)?.extract::<String>()? == "f" && !d.get_item(6)?.is_none() {
+                ends.insert(d.get_item(3)?.extract()?, d.get_item(5)?.extract()?);
+            }
+        }
+        for (line, col, name, stat) in item(m, "defs")?.extract::<Vec<(i64, i64, String, bool)>>()? {
+            let e = defs.entry((line, col)).or_insert_with(|| (name, stat, ends.get(&(line, col)).copied().flatten(), vec![]));
+            if let Some(t) = t {
+                e.3.push(t.clone());
+            }
+        }
+    }
+    let mut skip: HashSet<usize> = HashSet::new();
+    let mut functions: Vec<FnRow> = vec![];
+    for ((line, col), (fname, fstatic, end, ts)) in defs {
+        if !is_unit {
+            err(&mut errors, line, "L.src", format!("function {fname} defined outside a unit file (src/<unit>.c)"));
+            continue;
+        }
+        let k = sf.own.get(&sf.end_before(sf.offset(line, col))).copied();
+        let body = k.map(|k| sf.comments[k].2).unwrap_or("");
+        let (addrs, lead_end) = lead_addrs(body);
+        let um = UNLINKED.captures(body);
+        if addrs.is_empty() && um.is_none() {
+            err(&mut errors, line, "L.src", format!("function {fname}: no address comment (`/* 0x..., what */`, `/* unlinked, why */`) directly above its definition"));
+            continue;
+        }
+        let k = k.unwrap();
+        skip.insert(k);
+        let what = match &um {
+            Some(c) => c.get(1).unwrap().as_str(),
+            None => &body[lead_end..],
+        };
+        let what = py_strip(py_strip(what).trim_start_matches(','));
+        let what = py_strip(&SPACES.replace_all(before_tags(what), " ")).to_string();
+        let deep = DEEP.captures(body).map(|c| py_strip(&c[1]).to_string());
+        let stuck = STUCK.captures(body).map(|c| py_strip(&c[1]).to_string());
+        let unlinked = um.is_some() && addrs.is_empty();
+        functions.push(((rel.to_string(), line, unit.clone(), fname, addrs, unlinked, what),
+                        (deep, stuck, ROUGH.is_match(body), sf.line_of(sf.comments[k].0), fstatic, end.map(|e| e.0).unwrap_or(0), ts)));
+    }
+    // the data declarators, one address comment per statement (Source.model_data)
+    let vars: Vec<(i64, i64, i64, i64, String, String, bool)> = item(model, "vars")?.extract()?;
+    let mut stmts: Vec<(Lc, Vec<&(i64, i64, i64, i64, String, String, bool)>)> = vec![];
+    let mut at: HashMap<Lc, usize> = HashMap::new();
+    for v in &vars {
+        match at.get(&(v.0, v.1)) {
+            Some(&i) => stmts[i].1.push(v),
+            None => {
+                at.insert((v.0, v.1), stmts.len());
+                stmts.push(((v.0, v.1), vec![v]));
+            }
+        }
+    }
+    let mut data: Vec<DataRow> = vec![];
+    for ((line, col), ds) in &stmts {
+        let s = sf.offset(*line, *col);
+        let e = ds.iter().map(|d| sf.offset(d.2, d.3)).max().unwrap_or(s);
+        let mut j = e;
+        while let Some(c) = sf.char_at(&sf.code, j).filter(|&c| py_space(c)) {
+            j += c.len_utf8();
+        }
+        let i = if sf.code.as_bytes().get(j) == Some(&b';') { j + 1 } else { e };
+        let (per, unlinked) = sf.attach(s, i, ds.len(), &skip);
+        for (k, d) in ds.iter().enumerate() {
+            data.push((rel.to_string(), sf.line_of(s), unit.clone(), d.4.clone(), d.5.clone(), per[k].clone(), unlinked, d.6));
+        }
+    }
+    // the integer literals cast to a pointer type: the front end's in code, PTR_CAST over the macros' bodies
+    let mut ptrcasts: Vec<(String, i64, String, u64)> = vec![];
+    let close = |t: String| {
+        let n = t.matches('(').count() as i64 - t.matches(')').count() as i64;
+        t + &")".repeat(n.max(0) as usize)
+    };
+    for (line, col, el, ec, lit) in item(model, "casts")?.extract::<Vec<(i64, i64, i64, i64, String)>>()? {
+        if let Some(v) = literal_value(lit.trim_end_matches(['u', 'U', 'l', 'L'])) {
+            let t = py_words(&text[sf.offset(line, col)..sf.offset(el, ec).max(sf.offset(line, col))]);
+            ptrcasts.push((rel.to_string(), line, close(t), v));
+        }
+    }
+    for (_, _, _, s, e) in &defines {
+        let body = &sf.code[*s..(*e).max(*s)];
+        let mut pos = 0;
+        while let Some(c) = PTR_CAST.captures_at(body, pos) {
+            let all = c.name("all").unwrap();
+            pos = all.end();
+            if let Some(v) = literal_value(c.name("lit").unwrap().as_str()) {
+                ptrcasts.push((rel.to_string(), sf.line_of(s + all.start()), close(py_words(all.as_str())), v));
+            }
+        }
+    }
+    // the object-like one-line macros: views, raw dereferencing ones (srcscan.view_macros)
+    let mut vrows: Vec<ViewRow> = vec![];
+    let mut rawobj: Vec<String> = vec![];
+    for (name, fl, line, s, e) in &defines {
+        if *fl {
+            continue;
+        }
+        let body = py_strip(&sf.code[(s + name.len()).min(*e)..*e]);
+        if body.is_empty() || body.contains('\n') {
+            continue;
+        }
+        let bol = sf.offset(*line, 1);
+        let eol = memchr::memchr(b'\n', &text.as_bytes()[bol..]).map(|x| x + bol).unwrap_or(text.len());
+        let addrs = sf.comments.iter().filter(|c| bol <= c.0 && c.0 < eol).map(|c| lead_addrs(c.2).0).find(|a| !a.is_empty()).unwrap_or_default();
+        let view = if let Some(v) = VIEW_BYTE.captures(body) {
+            Some((v[2].to_string(), literal_value(&v[3]), false))
+        } else if let Some(v) = VIEW_WHOLE.captures(body) {
+            Some((v[1].to_string(), Some(0), false))
+        } else {
+            VIEW_ALIAS.captures(body).map(|v| (v[1].to_string(), Some(0), true))
+        };
+        match view {
+            Some((container, Some(offset), alias)) if !addrs.is_empty() => {
+                vrows.push((rel.to_string(), *line, unit.clone(), name.clone(), container, offset, addrs, alias));
+            }
+            _ if DEREF_OBJ.is_match(body) => {
+                rawobj.push(name.clone());
+                if !addrs.is_empty() {
+                    err(&mut errors, *line, "L15", format!("{name} has an address comment but is no view: write it (*(T *)((char *)&CONTAINER + OFFSET)) with a byte offset"));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut placeholders: Vec<(String, i64, String, u64)> = vec![];
+    for m in WORD.find_iter(&sf.code) {
+        let w = m.as_str();
+        if seen.contains(w) {
+            continue;
+        }
+        if let Some(v) = placeholder(w) {
+            seen.insert(w);
+            placeholders.push((rel.to_string(), sf.line_of(m.start()), w.to_string(), v));
+        }
+    }
+    PyTuple::new(py, [
+        macros.into_pyobject(py)?.into_any(),
+        described.into_pyobject(py)?.into_any(),
+        functions.into_pyobject(py)?.into_any(),
+        data.into_pyobject(py)?.into_any(),
+        ptrcasts.into_pyobject(py)?.into_any(),
+        vrows.into_pyobject(py)?.into_any(),
+        rawobj.into_pyobject(py)?.into_any(),
+        errors.into_pyobject(py)?.into_any(),
+        placeholders.into_pyobject(py)?.into_any(),
+    ])
+}

@@ -182,6 +182,8 @@ const SEV_WARNING: c_int = 2;
 const SEV_ERROR: c_int = 3;
 const SEV_FATAL: c_int = 4;
 const TOKEN_IDENTIFIER: c_int = 2;
+const TOKEN_LITERAL: c_int = 3;
+const TOKEN_COMMENT: c_int = 4;
 const CC_C: c_int = 1;
 const BREAK: c_int = 0;
 const CONTINUE: c_int = 1;
@@ -383,35 +385,6 @@ impl Unit {
         diagnostics(py, a, &t, root, text, presumed)
     }
 
-    /// (start, end) byte offsets of every comment of a file the unit read (clang_tokenize over the file).
-    fn comments(&self, fname: &str, size: usize) -> PyResult<Vec<(u32, u32)>> {
-        let a = api()?;
-        let t = lock(self);
-        let cf = cstr(fname)?;
-        let tu = t.tu;
-        let f = unsafe { (a.clang_getFile)(tu, cf.as_ptr()) };
-        let r = unsafe { (a.clang_getRange)((a.clang_getLocationForOffset)(tu, f, 0), (a.clang_getLocationForOffset)(tu, f, size as c_uint)) };
-        let (mut toks, mut n): (*mut CXToken, c_uint) = (std::ptr::null_mut(), 0);
-        unsafe { (a.clang_tokenize)(tu, r, &mut toks, &mut n) };
-        let off = |l: CXLoc| {
-            let (mut f, mut x, mut y, mut o): (P, c_uint, c_uint, c_uint) = (std::ptr::null_mut(), 0, 0, 0);
-            unsafe { (a.clang_getFileLocation)(l, &mut f, &mut x, &mut y, &mut o) };
-            o
-        };
-        let mut out = vec![];
-        for i in 0..n as usize {
-            let k = unsafe { *toks.add(i) };
-            if unsafe { (a.clang_getTokenKind)(k) } == 4 {
-                let e = unsafe { (a.clang_getTokenExtent)(tu, k) };
-                out.push((off(unsafe { (a.clang_getRangeStart)(e) }), off(unsafe { (a.clang_getRangeEnd)(e) })));
-            }
-        }
-        if !toks.is_null() {
-            unsafe { (a.clang_disposeTokens)(tu, toks, n) };
-        }
-        Ok(out)
-    }
-
     /// cparse.refs of the unit.
     fn refs(&self, root: &str, text: &str, names: Vec<String>) -> PyResult<Vec<(String, Vec<(usize, usize)>)>> {
         let a = api()?;
@@ -507,6 +480,8 @@ struct FileModel {
     macros: Vec<(i64, String, bool)>,
     defines: Vec<(String, bool, i64, i64, i64, i64)>,
     casts: Vec<(i64, i64, i64, i64, String)>,
+    comments: Vec<(i64, i64, i64, i64)>,
+    strings: Vec<(i64, i64, i64, i64)>,
     decls: Vec<Decl>,
     types: Vec<(i64, String)>,
     dead: Vec<(i64, i64)>,
@@ -593,6 +568,44 @@ fn casts_of(a: &Api, tu: P, f: P, data: &[u8]) -> Vec<(usize, usize, String)> {
         }
     }
     out
+}
+
+/// (comments, string and character literals) of a file the unit read, as (start, end) byte offsets of its text
+/// (data): clang_tokenize over the whole file, a dead branch too; a literal from its quote (an `L` before it is
+/// code).
+fn lex(a: &Api, tu: P, f: P, data: &[u8]) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    let (mut comments, mut strings) = (vec![], vec![]);
+    if f.is_null() {
+        return (comments, strings);
+    }
+    let r = unsafe { (a.clang_getRange)((a.clang_getLocationForOffset)(tu, f, 0), (a.clang_getLocationForOffset)(tu, f, data.len() as c_uint)) };
+    let (mut toks, mut n): (*mut CXToken, c_uint) = (std::ptr::null_mut(), 0);
+    unsafe { (a.clang_tokenize)(tu, r, &mut toks, &mut n) };
+    let off = |l: CXLoc| {
+        let (mut f, mut x, mut y, mut o): (P, c_uint, c_uint, c_uint) = (std::ptr::null_mut(), 0, 0, 0);
+        unsafe { (a.clang_getFileLocation)(l, &mut f, &mut x, &mut y, &mut o) };
+        (o as usize).min(data.len())
+    };
+    for i in 0..n as usize {
+        let k = unsafe { *toks.add(i) };
+        let kind = unsafe { (a.clang_getTokenKind)(k) };
+        if kind != TOKEN_COMMENT && kind != TOKEN_LITERAL {
+            continue;
+        }
+        let e = unsafe { (a.clang_getTokenExtent)(tu, k) };
+        let (s, end) = (off(unsafe { (a.clang_getRangeStart)(e) }), off(unsafe { (a.clang_getRangeEnd)(e) }));
+        if kind == TOKEN_COMMENT {
+            comments.push((s, end));
+        } else if let Some(q) = data[s..end].iter().position(|&c| c == b'"' || c == b'\'') {
+            if data[s..s + q].iter().all(|c| c.is_ascii_alphanumeric()) {
+                strings.push((s + q, end));
+            }
+        }
+    }
+    if !toks.is_null() {
+        unsafe { (a.clang_disposeTokens)(tu, toks, n) };
+    }
+    (comments, strings)
 }
 
 /// (line, column in characters) of byte offsets of a text, both from 1.
@@ -745,15 +758,21 @@ fn model<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str) -> PyRes
         let cf = cstr(fname)?;
         let f = unsafe { (a.clang_getFile)(tu, cf.as_ptr()) };
         let found = casts_of(a, tu, f, data);
-        if !found.is_empty() {
+        if let Some(r) = rel {
             let nl: Vec<usize> = memchr::memchr_iter(b'\n', data).collect();
+            let span = |(s, e): (usize, usize)| {
+                let (wl, wc) = line_col(data, &nl, s);
+                let (el, ec) = line_col(data, &nl, e);
+                (wl, wc, el, ec)
+            };
+            let (comments, strings) = lex(a, tu, f, data);
+            let m = out.entry(r);
             for (s, e, lit) in found {
-                if let Some(r) = rel {
-                    let (wl, wc) = line_col(data, &nl, s);
-                    let (el, ec) = line_col(data, &nl, e);
-                    out.entry(r).casts.push((wl, wc, el, ec, lit));
-                }
+                let (wl, wc, el, ec) = span((s, e));
+                m.casts.push((wl, wc, el, ec, lit));
             }
+            m.comments = comments.into_iter().map(span).collect();
+            m.strings = strings.into_iter().map(span).collect();
         }
         let list = unsafe { (a.clang_getSkippedRanges)(tu, f) };
         if !list.is_null() {
@@ -799,6 +818,8 @@ fn model<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str) -> PyRes
         e.set_item("macros", &m.macros)?;
         e.set_item("defines", &m.defines)?;
         e.set_item("casts", &m.casts)?;
+        e.set_item("comments", &m.comments)?;
+        e.set_item("strings", &m.strings)?;
         let decls = PyList::empty(py);
         for d in &m.decls {
             match d {

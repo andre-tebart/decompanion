@@ -364,12 +364,18 @@ def test_headers_conflicts_vc6(tiny):
     assert code == 1 and "write=refused" in out, out
 
 
+@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
 def test_placeholder_view_suffix_and_shared_comment():
-    """`ai_Unk7603a0B` is the view B of 0x7603a0 (an upper-case suffix after lower-case hex); a comment behind
-    the second statement of a line is that statement's, not the first's."""
-    S = srcscan.Source("src/u.c", "int x = ai_Unk7603a0B + ai_Unk430100C + FUN_0040100a + DAT_7603A0;\n")
-    vals = [srcscan.placeholder_value(m) for m in srcscan.PLACEHOLDER_ADDR.finditer(S.code)]
-    assert vals == [0x7603a0, 0x430100, 0x40100a, 0x7603a0], [hex(v) for v in vals]
-    S = srcscan.Source("src/u.c", "extern char *a; extern char *b;  /* 0x10002000 */\n")
-    decls = [(1, 1, 1, 15, "a", "extern", False), (1, 17, 1, 31, "b", "extern", False)]    # cparse.model's vars
-    assert [(d[1], d[3]) for d in S.model_data(decls)] == [("a", ()), ("b", ((None, 0x10002000),))]
+    """`ai_Unk7603a0B` is the view B of 0x7603a0 (an upper-case suffix after lower-case hex), in the scan and in
+    PLACEHOLDER_ADDR alike; a comment behind the second statement of a line is that statement's, not the
+    first's."""
+    text = "int x = ai_Unk7603a0B + ai_Unk430100C + FUN_0040100a + DAT_7603A0 + x_abcdef_123456 + y_abcdef;\n"
+    want = [0x7603a0, 0x430100, 0x40100a, 0x7603a0, 0x123456]
+    vals = [srcscan.placeholder_value(m) for m in srcscan.PLACEHOLDER_ADDR.finditer(srcscan.Source("src/u.c", text).code)]
+    assert vals == want, [hex(v) for v in vals]
+    sc = srcscan.Scan()
+    srcscan.scan_file("src/u.c", text, sc)
+    assert [p.value for p in sc.placeholders] == want, sc.placeholders
+    sc = srcscan.Scan()
+    srcscan.scan_file("src/u.c", "extern char *a; extern char *b;  /* 0x10002000 */\n", sc)
+    assert [(d.name, d.addrs) for d in sc.data] == [("a", ()), ("b", ((None, 0x10002000),))]

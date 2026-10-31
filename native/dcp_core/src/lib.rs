@@ -17,6 +17,7 @@ mod layout;
 mod pe;
 mod readability;
 mod rules;
+mod srcscan;
 mod store;
 mod x86;
 
@@ -652,5 +653,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clang::clang_parse, m)?)?;
     m.add_function(wrap_pyfunction!(clang::clang_function_headers, m)?)?;
     m.add_class::<clang::Unit>()?;
+    m.add_function(wrap_pyfunction!(srcscan::scan_file, m)?)?;
     Ok(())
 }

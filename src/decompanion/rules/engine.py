@@ -22,7 +22,9 @@ A rule is a function decorated with @rule:
   derived start): the engine cannot know which facts were premises and which were merely verified.
 - The run key is sha256(code of the function, version, out_hash of each needed run, hash of each input). A
   rule whose key matches a stored run is skipped; `dcp rules` shows which ran and how long they took.
-  `helpers` (functions or modules the rule calls) join the code hash, so editing a helper reruns the rule.
+  `helpers` (functions or modules the rule calls) join the code hash, so editing a helper reruns the rule; a
+  helper module with `NATIVE = True` (its work is the native core's) joins the core's source hash as a native
+  rule does.
 - An input may be absent until a human declares it (Project.waiting: `libs` until the archives are declared,
   `toolchain` until the compiler and linker builds are). A rule reading such an input waits: its criterion does
   not run, the engine records an empty run keyed by the obligations it waits on (obligations.py), so the rules
@@ -85,7 +87,7 @@ def rule(id: str, *, version: str, ceiling: Level, outputs: tuple[str, ...] = ()
         if id in RULES:
             raise RuntimeError(f"rule {id} registered twice")
         src = inspect.getsource(fn) + "".join(inspect.getsource(h) for h in helpers)
-        if native:
+        if native or any(getattr(h, "NATIVE", False) for h in helpers):
             from ..native import source_hash
             src += " native:" + source_hash() + (inspect.getsource(native_inputs) if native_inputs else "")
         if loader and Level(ceiling) > Level.declared:

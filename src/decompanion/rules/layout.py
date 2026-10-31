@@ -569,7 +569,7 @@ def placeholder(ctx: RuleContext):
 @rule("A1.addr.cast", version="1", ceiling=P, inputs=("src", "targets"), needs=("kind:name", "kind:symbol"),
       helpers=(srcscan,), native=True, native_inputs=scan_inputs)
 def addr_cast(ctx: RuleContext):
-    """A1: an integer literal cast to a pointer type in the sources (srcscan.PTR_CAST: `(void (*)(void))0x5de470`,
+    """A1: an integer literal cast to a pointer type in the sources (srcscan's PtrCast: `(void (*)(void))0x5de470`,
     `(char *)0x6f242c`, `(T *)(unsigned)0x...`; the cast's type spells its `*`, a typedef'd pointer name is not
     recognised; comments, strings and `#if 0` / `#else` text do not count, `#define` bodies do) whose value lies in
     the current target's image [base, end), on a line of the current target (line_targets: inside a function
