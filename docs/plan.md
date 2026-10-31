@@ -1045,3 +1045,7 @@ N1 in progress (2026-10-31):
   global swapped for another of its type, a float constant and a string literal changed): the three conflicts
   appear and the native out_hash equals Python's. 26 .. 28 ms per run (Python 70 .. 240 ms). The Python body and
   compare.aligned_sites are deleted; tests/test_match.py's aligned-sites cases run against the native function.
+- M.lint is native (the stored lint result read from the store's meta, the old-format check of Project.input,
+  srcscan.Spans, FILE_LINE); `native_inputs(project)` on a rule hands a native rule what only Python computes
+  (here the units' text hashes of the build plan) as Ctx.extra. Shadow equal over the tests (M5, M7), gildegold
+  (4698 M7) and a unit edited without a lint (the stale warning).

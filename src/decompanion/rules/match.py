@@ -16,10 +16,8 @@ from __future__ import annotations
 
 import bisect
 import json
-import re
 
 from ..build import compile as build_compile
-from ..ledger import srcscan
 from ..ledger.fact import Kind, Level, Severity
 from ..ledger.store import sha256
 from ..match import compare as C
@@ -274,40 +272,21 @@ def flags_proven(ctx: RuleContext):
 
 
 # ------------------------------------------------------------------------------------------------ M5 / M6 / M7
-FILE_LINE = re.compile(r"^(.*?):(\d+): ")             # a lint line's `file:line: ` (a drive letter is no line)
 
 
-@rule("M.lint", version="2", ceiling=P, needs=("L.src",), inputs=("lint", "src"), helpers=(build_compile.plan, srcscan.Spans))
+def lint_units(p) -> dict:
+    """What M.lint reads that only Python computes: {units: unit -> its text's hash today} (build_compile.plan)."""
+    return {"units": {a.unit: a.src_hash for a in build_compile.plan(p)}}
+
+
+@rule("M.lint", version="2", ceiling=P, needs=("L.src",), inputs=("lint", "src"), helpers=(build_compile.plan,),
+      native=True, native_inputs=lint_units)
 def lint_checks(ctx: RuleContext):
     """The last `dcp lint` (source/lint.py: clang as a C89 type checker with MS compatibility against the
     toolchain's headers; `@original why` / `@vc6 why` on a line exempt it): M6 an error inside one unit, M5 a
     declaration conflict across units (the all-declarations unit), both errors; M7 a call through a K&R
     declaration or without a declaration, a warning (readability rule Q7 counts it). Reported at the address
     of the function whose span holds the diagnostic's line (the image base when none does). A lint run whose units'
-    texts differ from today's units is stale: a warning (`dcp lint`; `dcp check` lints first)."""
-    res = ctx.input("lint")
-    if not res:
-        return
-    img = ctx.image
-    spans = srcscan.Spans((f.value["file"], f.value.get("comment", f.value["line"]), f.value.get("end", 0), f.lo)
-                          for f in ctx.facts(Kind.source) if f.value.get("what") == "func")
-
-    def where(file, line):
-        a = spans.at(file, line) if line is not None else None
-        a = img.base if a is None else a
-        return a, a + 1
-
-    def located(text):
-        m = FILE_LINE.match(text)
-        return where(m.group(1), int(m.group(2))) if m else where(None, None)
-    for e in res.get("errors", []):
-        yield ctx.conflict(Severity.error, "M6", *located(e), e)
-    for e in res.get("cross", []):
-        yield ctx.conflict(Severity.error, "M5", *located(e), e)
-    for f, calls in res.get("calls", {}).items():
-        for line, c in calls:
-            yield ctx.conflict(Severity.warn, "M7", *where(f, line), f"{f}: call without a prototype: {c}")
-    current = {a.unit: a.src_hash for a in build_compile.plan(ctx.project)}
-    stale = sorted(u for u, h in current.items() if res.get("units", {}).get(u) != h)
-    if stale:
-        yield ctx.conflict(Severity.warn, "M.lint", img.base, img.base + 1, f"the last lint did not parse today's text of: {', '.join(stale)} (dcp lint)")
+    texts differ from today's units is stale: a warning (`dcp lint`; `dcp check` lints first). Native:
+    native/dcp_core/src/rules.rs m_lint."""
+    return ()

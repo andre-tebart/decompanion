@@ -30,7 +30,8 @@ A rule is a function decorated with @rule:
   key, the rule runs, and everything downstream reruns as usual.
 - A `native` rule runs in the native core (native/dcp_core/src/rules.rs, docs/plan.md section 20) on the store
   directly: it reads its needed runs' facts, records its run with the same out_hash. Its code hash covers the
-  crate's sources. While a rule is being ported its Python function is the reference: DCP_SHADOW=<rule> runs
+  crate's sources; `native_inputs(project)` gives it what only Python computes (a JSON object, Ctx.extra). While
+  a rule is being ported its Python function is the reference: DCP_SHADOW=<rule> runs
   both, records Python's output and fails on a different out_hash.
 - A `loader` rule (L.decl, L.src, L.analyzer) turns typed state written by a human or an external tool (a
   declarations file, the sources, the analyzer's drafts) into facts. It is the only kind of rule that may
@@ -41,6 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -65,6 +67,7 @@ class Rule:
     phase: str = ""
     loader: bool = False
     native: bool = False
+    native_inputs: Callable | None = None
 
     @property
     def name(self):
@@ -75,7 +78,8 @@ RULES: dict[str, Rule] = {}
 
 
 def rule(id: str, *, version: str, ceiling: Level, outputs: tuple[str, ...] = (), needs: tuple[str, ...] = (),
-         inputs: tuple[str, ...] = (), phase: str = "", helpers: tuple = (), loader: bool = False, native: bool = False):
+         inputs: tuple[str, ...] = (), phase: str = "", helpers: tuple = (), loader: bool = False, native: bool = False,
+         native_inputs: Callable | None = None):
     def deco(fn):
         if id in RULES:
             raise RuntimeError(f"rule {id} registered twice")
@@ -87,7 +91,7 @@ def rule(id: str, *, version: str, ceiling: Level, outputs: tuple[str, ...] = ()
             raise RuntimeError(f"loader rule {id} with ceiling {Level(ceiling)}: loaders declare")
         RULES[id] = Rule(id, version, Level(ceiling), tuple(needs), tuple(outputs), tuple(inputs), fn,
                          inspect.getdoc(fn) or "", hashlib.sha256(src.encode()).hexdigest()[:16], phase or id.split(".")[0],
-                         loader, native)
+                         loader, native, native_inputs)
         return fn
     return deco
 
@@ -235,7 +239,8 @@ class Engine:
                 "needed": list(needed), "root": str(p.root), "image": str(p.image.path),
                 "fill_forms": [bytes(f) for f in p.toolchain.fill_forms], "record": record, "capstone": capstone_dll(),
                 "objects": {u: (row.get("obj_hash") or "", bool(row.get("ok"))) for u, row in objs.items()},
-                "shortcuts": not os.environ.get("DCP_NO_SHORTCUTS")}
+                "shortcuts": not os.environ.get("DCP_NO_SHORTCUTS"),
+                "extra": json.dumps(r.native_inputs(p) if r.native_inputs else {})}
 
     def waiting(self, r: Rule) -> tuple[str, ...]:
         """The obligations a rule waits on: those of its inputs that are absent until a human declares them

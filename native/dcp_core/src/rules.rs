@@ -8,7 +8,7 @@ use crate::{image, run_hash, with_conn, with_db, write_run};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use rusqlite::Connection;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -29,6 +29,7 @@ pub struct Ctx {
     pub capstone: String,                           // the capstone library the Python package loaded
     pub record: bool,
     pub shortcuts: bool,
+    pub extra: String, // native_inputs(project): what only Python computes, a JSON object
 }
 
 // ------------------------------------------------------------------------------------------------ compiled functions
@@ -403,6 +404,126 @@ fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     Ok(())
 }
 
+// ------------------------------------------------------------------------------------------------ M.lint
+
+/// srcscan.Spans: (file, line) -> the function whose span holds the line (address comment to the end of its
+/// definition; an end of 0: to the next span).
+struct Spans {
+    by: HashMap<String, Vec<(i64, i64, i64)>>, // file -> (first, last, address), sorted by first (stable)
+}
+
+impl Spans {
+    fn at(&self, file: &str, line: i64) -> Option<i64> {
+        let xs = self.by.get(file)?;
+        let k = xs.partition_point(|x| x.0 <= line);
+        if k == 0 {
+            return None;
+        }
+        let (_, hi, a) = xs[k - 1];
+        if hi != 0 && line > hi {
+            return None;
+        }
+        Some(a)
+    }
+}
+
+/// FILE_LINE (`^(.*?):(\d+): `): the file and line a lint line starts with.
+fn file_line(text: &str) -> Option<(&str, i64)> {
+    let first = text.split('\n').next().unwrap_or("");
+    let b = first.as_bytes();
+    for i in 0..b.len() {
+        if b[i] != b':' {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > i + 1 && j + 1 < b.len() + 1 && b.get(j) == Some(&b':') && b.get(j + 1) == Some(&b' ') {
+            return Some((&first[..i], first[i + 1..j].parse().ok()?));
+        }
+    }
+    None
+}
+
+/// M5 / M6 / M7 and a stale lint (M.lint), from the last `dcp lint`.
+fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+    let meta: Option<String> = db
+        .query_row("SELECT value FROM meta WHERE key='lint'", [], |r| r.get(0))
+        .map(Some)
+        .or_else(|e| if matches!(e, rusqlite::Error::QueryReturnedNoRows) { Ok(None) } else { Err(e) })
+        .map_err(err)?;
+    let res: Value = meta.and_then(|m| serde_json::from_str(&m).ok()).unwrap_or(Value::Null);
+    // a lint of an older decompanion (calls without their lines) counts as none, as Project.input("lint")
+    let old = res.get("calls").and_then(|c| c.as_object()).map(|m| m.values().any(|cs| {
+        cs.as_array().map(|a| a.iter().any(|c| c.is_string())).unwrap_or(false)
+    })).unwrap_or(false);
+    let empty = match &res {
+        Value::Null => true,
+        Value::Object(m) => m.is_empty(),
+        _ => false,
+    };
+    if empty || old {
+        return Ok(());
+    }
+    let img = image(&ctx.image)?;
+    let base = img.base as i64;
+    let mut by: HashMap<String, Vec<(i64, i64, i64)>> = HashMap::new();
+    for f in store::facts(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func")).map_err(err)?.iter() {
+        let file = f.s("file").unwrap_or("").to_string();
+        let first = f.value.get("comment").or_else(|| f.value.get("line")).and_then(|v| v.as_i64()).unwrap_or(0);
+        let last = f.value.get("end").and_then(|v| v.as_i64()).unwrap_or(0);
+        by.entry(file).or_default().push((first, last, f.lo));
+    }
+    for xs in by.values_mut() {
+        xs.sort_by_key(|x| x.0);
+    }
+    let spans = Spans { by };
+    let at = |file: Option<&str>, line: Option<i64>| -> i64 {
+        match (file, line) {
+            (Some(f), Some(l)) => spans.at(f, l).unwrap_or(base),
+            _ => base,
+        }
+    };
+    let strs = |k: &str| -> Vec<String> {
+        res.get(k).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
+    };
+    for (key, check) in [("errors", "M6"), ("cross", "M5")] {
+        for e in strs(key) {
+            let a = match file_line(&e) {
+                Some((f, l)) => at(Some(f), Some(l)),
+                None => base,
+            };
+            out.conflict("error", check, a, a + 1, e, "");
+        }
+    }
+    if let Some(calls) = res.get("calls").and_then(|c| c.as_object()) {
+        for (f, cs) in calls {
+            for c in cs.as_array().into_iter().flatten() {
+                let line = c.get(0).and_then(|v| v.as_i64());
+                let text = c.get(1).and_then(|v| v.as_str()).unwrap_or("");
+                let a = at(Some(f), line);
+                out.conflict("warn", "M7", a, a + 1, format!("{f}: call without a prototype: {text}"), "");
+            }
+        }
+    }
+    let extra: Value = serde_json::from_str(&ctx.extra).unwrap_or(Value::Null);
+    let parsed = res.get("units").and_then(|u| u.as_object());
+    let mut stale: Vec<&String> = extra
+        .get("units")
+        .and_then(|u| u.as_object())
+        .map(|m| m.iter().filter(|(u, h)| parsed.and_then(|p| p.get(*u)) != Some(*h)).map(|(u, _)| u).collect())
+        .unwrap_or_default();
+    stale.sort();
+    if !stale.is_empty() {
+        let names: Vec<&str> = stale.iter().map(|s| s.as_str()).collect();
+        out.conflict("warn", "M.lint", base, base + 1,
+                     format!("the last lint did not parse today's text of: {} (dcp lint)", names.join(", ")), "");
+    }
+    Ok(())
+}
+
 /// Run a native rule: (facts, conflicts, out_hash); recorded unless ctx.record is false (shadow).
 #[pyfunction]
 pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
@@ -412,6 +533,7 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         "M.draft" => m_draft(&ctx, db, &mut out),
         "M.match" => m_match(&ctx, db, &mut out),
         "M8.reloc" => m8_reloc(&ctx, db, &mut out),
+        "M.lint" => m_lint(&ctx, db, &mut out),
         other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
     })?;
     let ms = t0.elapsed().as_millis() as i64;
