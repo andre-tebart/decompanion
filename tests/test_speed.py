@@ -1,5 +1,6 @@
-"""The speed machinery keeps every answer the same: the persisted file hashes (fsmemo), a rule run recorded again
-with the same output, the plans memoised per process, and the daemon (`dcp serve`) against the in-process run."""
+"""The speed machinery keeps every answer the same: a rule run recorded again with the same output, the plans
+memoised per process, and the daemon (`dcp serve`) against the in-process run. (The persisted file hashes are
+tested in the core: fsmemo.rs.)"""
 from __future__ import annotations
 
 import os
@@ -12,66 +13,8 @@ import pytest
 
 from conftest import dcp
 
-from decompanion import fsmemo
 from decompanion.ledger.fact import Conflict, Fact, Kind, Level, Severity
 from decompanion.ledger.store import Store
-
-
-def _age(path: Path, seconds: int):
-    t = time.time() - seconds
-    os.utime(path, (t, t))
-
-
-def test_persisted_hash_trusted_only_for_an_old_unchanged_stamp(tmp_path, monkeypatch):
-    monkeypatch.delenv("DCP_NO_STAMPS", raising=False)
-    monkeypatch.delenv("DCP_NO_SHORTCUTS", raising=False)
-    root = tmp_path / "proj"
-    f = root / "src" / "a.c"
-    f.parent.mkdir(parents=True)
-    f.write_bytes(b"int a;\n")
-    _age(f, 60)
-    fsmemo.attach(root)
-    h1 = fsmemo.sha256(f)
-    fsmemo.flush()
-    # a new process: the memo is gone, the persisted hash answers without a read
-    fsmemo.forget_all()
-    fsmemo._disk_path = None
-    fsmemo.attach(root)
-    reads = []
-    monkeypatch.setattr(fsmemo, "read_bytes", lambda p: reads.append(p) or Path(p).read_bytes())
-    assert fsmemo.sha256(f) == h1 and not reads
-    # same size, other content, other modification time: hashed again
-    f.write_bytes(b"int b;\n")
-    _age(f, 30)
-    fsmemo.new_epoch()
-    assert fsmemo.sha256(f) != h1 and reads
-
-
-def test_racy_entry_is_hashed_again(tmp_path, monkeypatch):
-    monkeypatch.delenv("DCP_NO_STAMPS", raising=False)
-    monkeypatch.delenv("DCP_NO_SHORTCUTS", raising=False)
-    root = tmp_path / "proj"
-    f = root / "src" / "a.c"
-    f.parent.mkdir(parents=True)
-    f.write_bytes(b"int a;\n")                     # modified just now: the stamp could hide a second write
-    fsmemo._disk_path = None
-    fsmemo.attach(root)
-    fsmemo.sha256(f)
-    fsmemo._sha.clear()
-    fsmemo.new_epoch()
-    reads = []
-    monkeypatch.setattr(fsmemo, "read_bytes", lambda p: reads.append(p) or Path(p).read_bytes())
-    fsmemo.sha256(f)
-    assert reads
-
-
-def test_walk_lists_like_rglob(tmp_path):
-    for rel in ("b/z.c", "a/y.h", "a/x.c", "A2/w.C", "c.txt"):
-        p = tmp_path / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x")
-    got = [r for r, _ in fsmemo.walk(tmp_path, ("*.c", "*.h"))]
-    assert got == ["a/x.c", "A2/w.C", "b/z.c", "a/y.h"]
 
 
 def _facts(n=3, tag="x"):

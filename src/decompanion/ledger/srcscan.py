@@ -273,7 +273,7 @@ def model_of(root: Path, rel: str, text: str) -> dict | None:
     p = Path(root) / rel
     if not p.exists() or fsmemo.read_text(p) != text:
         return None
-    key = (str(root), fsmemo.epoch)                # the tree's digest once per file epoch (a write starts a new one)
+    key = (str(root), fsmemo.epoch())                # the tree's digest once per file epoch (a write starts a new one)
     tree = _trees.get(key)
     if tree is None:
         tree = hashlib.sha256("\0".join(f"{r}={fsmemo.sha256(q)}" for r, q in project_files(Path(root))).encode()).hexdigest()

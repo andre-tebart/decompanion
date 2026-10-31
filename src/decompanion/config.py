@@ -429,16 +429,7 @@ class Project:
 
     @staticmethod
     def tree_hash(dirs: list[Path], patterns: tuple[str, ...]) -> str:
-        h = hashlib.sha256()
-        for d in dirs:
-            if not d.exists():
-                continue
-            h.update(d.name.encode() + b"\1")
-            for rel, p in fsmemo.walk(d, patterns):
-                h.update(rel.encode())
-                h.update(b"\0")
-                h.update(bytes.fromhex(fsmemo.sha256(p)))
-        return h.hexdigest()
+        return fsmemo.tree_hash(dirs, patterns)
 
     def input(self, name: str):
         if name == "image":

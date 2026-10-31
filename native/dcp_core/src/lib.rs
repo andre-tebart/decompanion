@@ -13,6 +13,7 @@ mod compare;
 mod cs;
 mod diffclass;
 mod difflib;
+mod fsmemo;
 mod grade;
 mod lint;
 mod layout;
@@ -616,6 +617,17 @@ fn compare_functions(
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_new_epoch, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_epoch, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_exists, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_walk, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_read_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_read_text, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_sha256, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_tree_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_attach, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_flush, m)?)?;
+    m.add_function(wrap_pyfunction!(fsmemo::fs_forget_all, m)?)?;
     m.add_function(wrap_pyfunction!(out_hash, m)?)?;
     m.add_function(wrap_pyfunction!(record_run, m)?)?;
     m.add_function(wrap_pyfunction!(compare_functions, m)?)?;
