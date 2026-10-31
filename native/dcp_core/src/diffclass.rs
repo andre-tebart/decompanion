@@ -415,7 +415,7 @@ impl Walk<'_> {
         }
         let mut cur = a;
         while self.in_code(cur) {
-            let Some(ins) = self.dec.at(cur as u32)? else { return Ok(false) };
+            let Some(ins) = self.dec.at(cur as u32)?.cloned() else { return Ok(false) };
             if ins.addr as i64 >= t {
                 return Ok(ins.addr as i64 == t);
             }
@@ -437,7 +437,7 @@ impl Walk<'_> {
             let mut recent: Vec<x86::WIns> = vec![];
             let mut cur = start;
             while self.in_code(cur) {
-                let Some(ins) = self.dec.at(cur as u32)? else { break };
+                let Some(ins) = self.dec.at(cur as u32)?.cloned() else { break };
                 let ia = ins.addr as i64;
                 if self.kind[(ia - lo) as usize] == 1 {
                     break;

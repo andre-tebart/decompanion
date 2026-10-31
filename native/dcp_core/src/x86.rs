@@ -1,6 +1,6 @@
 //! isa/x86.py's instruction diff side: the normalised listing (Isa.listing), the explanations of a differing
 //! hunk (explain, frame_delta, stack_mask, frame_explain, one_renaming), and the decoder the walk of an
-//! original's slot reads (X86Decoder, from capstone's text: the flow by mnemonic, as capstone's groups give it).
+//! original's slot and S.codewalk read (X86Decoder, from capstone's operand details).
 
 use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
@@ -562,171 +562,128 @@ pub const CJUMP: u8 = 3;
 pub const IJUMP: u8 = 4;
 pub const RET: u8 = 5;
 
-/// isa/base.Ins, the fields the walk of an original's slot reads.
+/// isa/base.Ins: one instruction as the walks read it, from capstone's operand details.
 #[derive(Clone)]
 pub struct WIns {
     pub addr: u32,
     pub size: u32,
     pub mn: String,
-    pub ops: String,
     pub flow: u8,
     pub target: Option<i64>,
+    pub mem: Vec<(u32, u8)>, // (displacement, operand size) of every memory operand pointing into the image
+    pub imms: Vec<i64>,
     pub table: Option<u32>,
     pub fill: bool,
+    pub ops: Vec<crate::cs::Op>,
 }
 
-/// capstone's group of a mnemonic (a `bnd` / `notrack` / `repz` prefix keeps it): 1 call, 2 jump, 3 ret, 0 none.
-fn group(mn: &str) -> u8 {
-    let last = mn.rsplit(' ').next().unwrap_or(mn);
-    match last {
-        "call" | "lcall" => 1,
-        "ret" | "retf" => 3,
-        "ljmp" | "xbegin" => 2,
-        _ if last.starts_with('j') => 2,
-        _ => 0,
-    }
-}
-
-/// A memory operand's text `size ptr seg:[base + index*scale + disp]`: (size, base, index, scale, disp & M32).
-pub struct Mem {
-    pub size: u32,
-    pub base: bool,
-    pub index: bool,
-    pub scale: u32,
-    pub disp: u64,
-}
-
-pub fn parse_mem(op: &str) -> Option<Mem> {
-    let open = op.find('[')?;
-    let close = op.rfind(']')?;
-    let size = match op[..open].split(' ').next().unwrap_or("") {
-        "byte" => 1,
-        "word" => 2,
-        "dword" => 4,
-        "qword" => 8,
-        "tbyte" => 10,
-        "xmmword" => 16,
-        _ => 0,
-    };
-    let inner = &op[open + 1..close];
-    let (mut base, mut index, mut scale, mut disp) = (false, false, 1u32, 0i64);
-    let mut sign = 1i64;
-    for tok in inner.split(' ') {
-        match tok {
-            "+" => sign = 1,
-            "-" => sign = -1,
-            "" => {}
-            t if t.starts_with("0x") || t.chars().all(|c| c.is_ascii_digit()) => disp += sign * py_int0(t),
-            t if t.contains('*') => {
-                index = true;
-                scale = t.split('*').nth(1).and_then(|s| s.parse().ok()).unwrap_or(1);
-            }
-            _ => base = true,
-        }
-    }
-    Some(Mem { size, base, index, scale, disp: (disp as u64) & M32 })
-}
-
-/// X86Decoder over [lo, hi) of an image: the instruction at an address (memoised for one walk).
+/// X86Decoder over [lo, hi) of an image: the instruction at an address, decoded once (capstone with details, in
+/// batches of 0x400 bytes).
 pub struct Decoder<'a> {
     pub dll: &'a str,
     pub lo: u32,
     pub hi: u32,
     pub code: Vec<u8>,
     pub fills: &'a HashSet<Vec<u8>>,
-    cache: HashMap<u32, Option<WIns>>,
+    ibase: u32,
+    iend: u32,
+    cache: HashMap<u32, WIns>,
 }
 
 impl<'a> Decoder<'a> {
     pub fn new(dll: &'a str, img: &crate::pe::Image, lo: u32, hi: u32, fills: &'a HashSet<Vec<u8>>) -> Decoder<'a> {
-        Decoder { dll, lo, hi, code: img.read(lo, (hi - lo) as usize), fills, cache: HashMap::new() }
+        Decoder { dll, lo, hi, code: img.read(lo, (hi - lo) as usize), fills, ibase: img.base, iend: img.end(), cache: HashMap::new() }
     }
 
-    pub fn at(&mut self, a: u32) -> Result<Option<WIns>, String> {
+    fn in_image(&self, v: u32) -> bool {
+        self.ibase <= v && v < self.iend
+    }
+
+    fn record(&self, d: crate::cs::DIns) -> WIns {
+        use crate::cs::{GRP_CALL, GRP_JUMP, GRP_RET, OP_IMM, OP_MEM};
+        let g = if d.groups.contains(&GRP_CALL) {
+            GRP_CALL
+        } else if d.groups.contains(&GRP_JUMP) {
+            GRP_JUMP
+        } else if d.groups.contains(&GRP_RET) {
+            GRP_RET
+        } else {
+            0
+        };
+        let target = match d.ops.first() {
+            Some(o) if (g == GRP_CALL || g == GRP_JUMP) && o.typ == OP_IMM => Some(o.imm),
+            _ => None,
+        };
+        let flow = match g {
+            GRP_CALL => CALL,
+            GRP_JUMP => match target {
+                None => IJUMP,
+                Some(_) if d.mnemonic == "jmp" => JUMP,
+                Some(_) => CJUMP,
+            },
+            GRP_RET => RET,
+            _ => OTHER,
+        };
+        let mem = d.ops.iter()
+            .filter(|o| o.typ == OP_MEM && o.disp != 0 && self.in_image(o.disp as u32))
+            .map(|o| (o.disp as u32, o.size))
+            .collect();
+        let imms = d.ops.iter().filter(|o| o.typ == OP_IMM).map(|o| o.imm).collect();
+        let table = match d.ops.first() {
+            Some(o) if d.mnemonic == "jmp" && o.typ == OP_MEM && o.base == 0 && o.index != 0 && o.scale == 4 => Some(o.disp as u32),
+            _ => None,
+        };
+        let fill = self.fills.contains(&d.bytes);
+        WIns { addr: d.addr, size: d.size, mn: d.mnemonic, flow, target, mem, imms, table, fill, ops: d.ops }
+    }
+
+    /// The instruction at a (None outside [lo, hi) or where the bytes do not decode).
+    pub fn at(&mut self, a: u32) -> Result<Option<&WIns>, String> {
         if !(self.lo <= a && a < self.hi) {
             return Ok(None);
         }
-        if let Some(x) = self.cache.get(&a) {
-            return Ok(x.clone());
-        }
-        let o = (a - self.lo) as usize;
-        let got = crate::cs::first(self.dll, &self.code[o..], a)?.map(|ins| {
-            let g = group(&ins.mnemonic);
-            let target = if g == 1 || g == 2 {
-                if number_re().is_match(&ins.op_str) {
-                    Some(py_int0(&ins.op_str))
-                } else {
-                    // the first operand when it is an immediate (capstone's operand details)
-                    let first = ins.op_str.split(", ").next().unwrap_or("");
-                    if number_re().is_match(first) { Some(py_int0(first)) } else { None }
-                }
-            } else {
-                None
-            };
-            let flow = match g {
-                1 => CALL,
-                2 => match target {
-                    None => IJUMP,
-                    Some(_) if ins.mnemonic == "jmp" => JUMP,
-                    Some(_) => CJUMP,
-                },
-                3 => RET,
-                _ => OTHER,
-            };
-            let mut table = None;
-            if ins.mnemonic == "jmp" {
-                if let Some(m) = parse_mem(&ins.op_str) {
-                    if !m.base && m.index && m.scale == 4 {
-                        table = Some(m.disp as u32);
-                    }
+        if !self.cache.contains_key(&a) {
+            let o = (a - self.lo) as usize;
+            let end = (o + 0x400).min(self.code.len());
+            for d in crate::cs::disasm_detail(self.dll, &self.code[o..end], a)? {
+                if !self.cache.contains_key(&d.addr) {
+                    let r = self.record(d);
+                    self.cache.insert(r.addr, r);
                 }
             }
-            let bytes = &self.code[o..o + ins.size as usize];
-            WIns { addr: ins.addr, size: ins.size, mn: ins.mnemonic, ops: ins.op_str, flow, target, table, fill: self.fills.contains(bytes) }
-        });
-        self.cache.insert(a, got.clone());
-        Ok(got)
+        }
+        Ok(self.cache.get(&a))
     }
 
     /// X86Decoder.table_shape: (bound, byte index table) from the instructions before the jump.
     pub fn table_shape(&self, recent: &[WIns]) -> (Option<i64>, Option<u32>) {
+        use crate::cs::{OP_IMM, OP_MEM, OP_REG};
         let (mut bound, mut byte_tbl) = (None, None);
         for r in recent[..recent.len() - 1].iter().rev() {
-            if !matches!(r.mn.as_str(), "cmp" | "movzx" | "mov") {
+            if !matches!(r.mn.as_str(), "cmp" | "movzx" | "mov") || r.ops.len() != 2 {
                 continue;
             }
-            let ops: Vec<&str> = r.ops.split(", ").collect();
-            if ops.len() != 2 {
-                continue;
+            let (a, b) = (&r.ops[0], &r.ops[1]);
+            if r.mn == "cmp" && b.typ == OP_IMM && a.typ == OP_REG && bound.is_none() && (0..0x400).contains(&b.imm) {
+                bound = Some(b.imm + 1);
             }
-            if r.mn == "cmp" && bound.is_none() && is_reg(ops[0]) && is_imm(ops[1]) {
-                let v = py_int0(ops[1]);
-                if (0..0x400).contains(&v) {
-                    bound = Some(v + 1);
-                }
-            }
-            if (r.mn == "movzx" || r.mn == "mov") && byte_tbl.is_none() {
-                if let Some(m) = parse_mem(ops[1]) {
-                    if m.size == 1 && (m.index || m.base) && self.lo as u64 <= m.disp && m.disp < self.hi as u64 {
-                        byte_tbl = Some(m.disp as u32);
-                    }
+            if r.mn != "cmp" && b.typ == OP_MEM && b.size == 1 && (b.index != 0 || b.base != 0) && byte_tbl.is_none() {
+                let disp = b.disp as u32;
+                if self.lo <= disp && disp < self.hi {
+                    byte_tbl = Some(disp);
                 }
             }
         }
         (bound, byte_tbl)
     }
 
+    /// X86Decoder.field_starts: where a 4-byte immediate or displacement field may start inside ins.
+    pub fn field_starts(ins: &WIns) -> std::ops::Range<u32> {
+        ins.addr + 1..(ins.addr + ins.size).saturating_sub(3).max(ins.addr + 1)
+    }
+
     pub fn read_entry(&self, a: u32) -> u32 {
         let o = (a - self.lo) as usize;
         u32::from_le_bytes([self.code[o], self.code[o + 1], self.code[o + 2], self.code[o + 3]])
     }
-}
-
-fn is_imm(op: &str) -> bool {
-    let t = op.strip_prefix('-').unwrap_or(op);
-    number_re().is_match(t)
-}
-
-fn is_reg(op: &str) -> bool {
-    !op.is_empty() && !op.contains('[') && !op.contains(' ') && !is_imm(op)
 }

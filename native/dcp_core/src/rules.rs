@@ -227,7 +227,7 @@ fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms:
             k += 1;
         }
     }
-    let lines = crate::lde::lengths(&ctx.capstone, &data, va).map_err(PyRuntimeError::new_err)?;
+    let lines = crate::cs::lengths(&ctx.capstone, &data, va).map_err(PyRuntimeError::new_err)?;
     let fill = |&(addr, size): &(u32, u32)| {
         let o = (addr - va) as usize;
         let b = &code[o..(o + size as usize).min(code.len())];
@@ -315,8 +315,8 @@ pub fn aligned_sites(dll: &str, ours: &[u8], mask: &[u8], orig: &[u8], va: u32, 
     if matched {
         return Ok(sites.iter().map(|s| s.0).collect());
     }
-    let lines = crate::lde::lengths(dll, ours, va)?;
-    let theirs: HashMap<u32, u32> = crate::lde::lengths(dll, orig, va)?.into_iter().map(|(a, n)| (a - va, n)).collect();
+    let lines = crate::cs::lengths(dll, ours, va)?;
+    let theirs: HashMap<u32, u32> = crate::cs::lengths(dll, orig, va)?.into_iter().map(|(a, n)| (a - va, n)).collect();
     let starts: Vec<u32> = lines.iter().map(|l| l.0 - va).collect();
     let mut out = std::collections::HashSet::new();
     for &(off, width) in sites {
