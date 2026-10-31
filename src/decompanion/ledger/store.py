@@ -372,6 +372,17 @@ class Store:
             out[d["unit"]] = d
         return out
 
+    TU_KEYS = ("unit", "amalg", "src_hash", "flags_hash", "include_hash", "obj_hash", "ok")
+
+    def tu_keys(self) -> dict[str, dict]:
+        """unit -> its tu row's keys and outcome only (TU_KEYS: no log, flags or diagnostics)."""
+        out = {}
+        for row in self.db.execute(f"SELECT {', '.join(self.TU_KEYS)} FROM tu ORDER BY unit"):
+            d = dict(zip(self.TU_KEYS, row))
+            d["ok"] = bool(d["ok"])
+            out[d["unit"]] = d
+        return out
+
     def put_tu(self, row: dict):
         vals = dict(row)
         vals["flags"] = canonical(list(vals["flags"]))

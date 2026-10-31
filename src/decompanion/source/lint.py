@@ -442,9 +442,7 @@ def private_violations(root: Path, private: dict[str, set[str]]) -> list[str]:
     files = [("src/" + rel, p) for rel, p in fsmemo.walk(root / "src", ("*.c",))] if (root / "src").exists() else []
     files += [(f"include/{h.name}", h) for h in sorted((root / "include").glob("*.h"))] if (root / "include").exists() else []
     for rel, p in files:
-        text = fsmemo.read_text(p)
-        for m in INCLUDE_LINE.finditer(text):
-            h = Path(m.group(1)).name
+        for h, line in quoted_includes(rel, p):
             units = private.get(h)
             if units is None:
                 continue
@@ -453,9 +451,23 @@ def private_violations(root: Path, private: dict[str, set[str]]) -> list[str]:
             else:
                 ok = Path(rel).name == h or private.get(Path(rel).name, {None}) <= units
             if not ok:
-                line = text.count("\n", 0, m.start()) + 1
                 out.append(f"{rel}:{line}: includes {h}, private to {','.join(sorted(units))} (@private in the header)")
     return out
+
+
+_quoted: dict[tuple, list] = {}         # (file, its text's hash) -> its `#include "..."` (header name, line)
+
+
+def quoted_includes(rel: str, p: Path) -> list[tuple[str, int]]:
+    """The `#include "..."` of a file: (the header's name, the line), kept while the file's text stands."""
+    key = (rel, fsmemo.sha256(p))
+    hit = _quoted.get(key)
+    if hit is None:
+        if len(_quoted) > 5000:
+            _quoted.clear()
+        text = fsmemo.read_text(p)
+        hit = _quoted[key] = [(Path(m.group(1)).name, text.count("\n", 0, m.start()) + 1) for m in INCLUDE_LINE.finditer(text)]
+    return hit
 
 
 COPY, CHECK = "@dcp-copy", "@dcp-check"       # the pseudo files of the renamed copies and the type comparisons
@@ -834,7 +846,7 @@ def stale(project) -> list[str] | None:
         return None
     m = json.loads(m)
     units, includes = m.get("units", {}), m.get("includes", {})
-    tus = project.store.tus()
+    tus = project.store.tu_keys()
     changed = {u for u, row in tus.items() if units.get(u) != row["src_hash"] or includes.get(u) != row["include_hash"]}
     return sorted(changed | (set(units) - set(tus)))
 
@@ -849,7 +861,7 @@ def lint(project, log=None) -> dict:
     clang = (cparse.VERSION, cparse.version(), canonical(cparse.ARGS), canonical([str(d) for d in sysdirs]))
     units_ = B.plan(project)
     defines = [srcscan.target_macro(project.target_name)]
-    tus = st.tus()
+    tus = st.tu_keys()
     jobs, keys, results = [], [], {}
     for a in units_:
         inc = (tus.get(a.unit) or {}).get("include_hash", "")

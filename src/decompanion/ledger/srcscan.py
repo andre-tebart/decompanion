@@ -725,11 +725,15 @@ def _file_cache(root: Path) -> tuple[Path | None, dict]:
         return path, {}
 
 
+_disk_done: set[str] = set()                      # roots whose on-disk memo this process read (and wrote)
+
+
 def scan(root: Path, tree_hash: str | None = None) -> Scan:
     """Scan src/**/*.c, src/**/*.h and include/**/*.h of the project at root (memoised per tree hash), every
     file as each target's compile sees it (models per target; L16). Each file's own scan is memoised by its
-    path, the hash of its text and of its models, in the process and in build/cache/srcscan.pickle, so an edit
-    re-parses only the files it changed."""
+    path, the hash of its text and of its models in the process, so an edit re-parses only the files it changed;
+    a process's first scan of a root also reads and writes them in build/cache/srcscan.pickle (a later edit of
+    a long-lived process, dcp serve, leaves the file alone: the next process rescans the few files changed)."""
     import hashlib
     import pickle
     root = Path(root)
@@ -750,7 +754,7 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
         views = {t: per_target[t].get(rel, EMPTY) for t, _ in targets} if default is not None else None
         key = (rel, fsmemo.sha256(p), hashlib.sha256(repr(views or m).encode()).hexdigest())
         piece = _files.get(key)
-        if piece is None:
+        if piece is None and str(root) not in _disk_done:
             if disk is None:
                 path, disk = _file_cache(root)
             piece = disk.get(key)
@@ -770,6 +774,8 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
         out.ptrcasts += piece.ptrcasts
         out.views += piece.views
         out.rawobj += piece.rawobj
+    if disk is not None:
+        _disk_done.add(str(root))
     if path is not None and (changed or len(used) != len(disk)):      # (nothing new to this process: no write)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

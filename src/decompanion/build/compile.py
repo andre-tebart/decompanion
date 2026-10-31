@@ -187,7 +187,7 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
         if log:
             log(f"build: the toolchain is not available (root {tc.root}): {len(units_)} units not compiled")
         return rep
-    rows = st.tus()
+    rows = st.tu_keys()
     hasher = Hasher()
     todo_pre, work = [], {}
     t_keys = time.perf_counter()
