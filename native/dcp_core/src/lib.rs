@@ -8,6 +8,7 @@
 mod analyzers;
 mod asmcmd;
 mod clang;
+mod clicmd;
 mod cliread;
 mod coff;
 mod decl;
@@ -692,6 +693,22 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(frontend::clang_library, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_auto_clear, m)?)?;
     m.add_function(wrap_pyfunction!(queues::level_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::report_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::why_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::facts_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::conflicts_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::map_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::rules_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::build_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::check_conflicts, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::fn_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::target_list, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::decl_add, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::decl_conflicts, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::layout_next, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::layout_units, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::propose_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::propose_verdict, m)?)?;
     m.add_function(wrap_pyfunction!(matchcmd::grade_command, m)?)?;
     m.add_function(wrap_pyfunction!(matchcmd::next_command, m)?)?;
     m.add_function(wrap_pyfunction!(matchcmd::asmdiff_command, m)?)?;
@@ -723,7 +740,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(session::session_overview, m)?)?;
     m.add_function(wrap_pyfunction!(session::session_report, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_state, m)?)?;
-    m.add_function(wrap_pyfunction!(analyzers::analyzer_run, m)?)?;
+    m.add_function(wrap_pyfunction!(analyzers::analyzer_step, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_available, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_default, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_keys, m)?)?;
@@ -756,7 +773,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(queues::grades_regressions, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_commit_of, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_baseline_at, m)?)?;
-    m.add_class::<layoutview::View>()?;
     m.add_function(wrap_pyfunction!(engine::engine_run, m)?)?;
     m.add_function(wrap_pyfunction!(engine::engine_order, m)?)?;
     m.add_function(wrap_pyfunction!(engine::engine_code_hash, m)?)?;

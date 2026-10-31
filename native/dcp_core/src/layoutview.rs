@@ -5,11 +5,9 @@
 //! layout.rs's pure functions (run again on the units as a proposal would make them).
 
 use crate::layout::{self, Bound as Boundary, Issue, Leak, Lit, Unit};
-use crate::pystore::{json_py, level_obj, object};
 use crate::store::{self, SFact, OPEN};
 use crate::with_db;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -17,7 +15,6 @@ use std::rc::Rc;
 const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 /// The layout-relevant facts of one store, indexed.
-#[pyclass(unsendable)]
 pub struct View {
     pub(crate) image: String,
     pub(crate) syms: Vec<Rc<SFact>>,
@@ -34,20 +31,6 @@ pub struct View {
     pub(crate) bounds: Vec<Boundary>,
     pub(crate) refs: Vec<Rc<SFact>>,
     pub(crate) drafted: HashSet<i64>,
-    pub(crate) made: HashMap<&'static str, Py<PyAny>>, // the Python objects of the attributes, made once
-}
-
-fn py_layout(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
-    py.import("decompanion.rules.layout")
-}
-
-fn unit_py<'py>(py: Python<'py>, u: &Unit) -> PyResult<Bound<'py, PyAny>> {
-    py_layout(py)?.getattr("UnitX")?.call1((u.tu.clone(), u.lo, u.hi, level_obj(py, u.start_level)?, level_obj(py, u.end_level)?,
-                                             u.start_by.clone(), u.end_by.clone(), u.named_by.clone()))
-}
-
-fn issue_py<'py>(py: Python<'py>, i: &Issue) -> PyResult<Bound<'py, PyAny>> {
-    py_layout(py)?.getattr("Issue")?.call1((i.0.clone(), i.1, i.2, i.3.clone(), i.4.clone(), i.5.clone()))
 }
 
 impl View {
@@ -76,7 +59,6 @@ impl View {
         Ok(View {
             image: image.to_string(), game, funcs, starts, sources, units, lits: layout::lits_of(&ev), leaks: layout::leaks_of(&ev), fills,
             bounds: layout::bounds_of(&all("boundary")?), refs: all("ref")?, drafted, syms, unit_facts, src_facts,
-            made: HashMap::new(),
         })
     }
 
@@ -203,172 +185,66 @@ impl View {
     }
 }
 
-#[pymethods]
 impl View {
-    #[new]
-    fn new(db: &str, main: &str, image: &str) -> PyResult<View> {
-        View::load(db, main, image)
-    }
-
-    /// (lo, hi, level of hi) of the game code.
-    #[getter]
-    fn game(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(o) = self.made.get("game") {
-            return Ok(o.clone_ref(py));
-        }
-        let o = self.make_game(py)?.into_any().unbind();
-        self.made.insert("game", o.clone_ref(py));
-        Ok(o)
-    }
-
-    fn make_game<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
-        PyTuple::new(py, [self.game.0.into_pyobject(py)?.into_any(), self.game.1.into_pyobject(py)?.into_any(), level_obj(py, self.game.2)?.into_bound(py)])
-    }
-
-    /// [(lo, hi, fact)] of the function symbols above open.
-    #[getter]
-    fn funcs(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(o) = self.made.get("funcs") {
-            return Ok(o.clone_ref(py));
-        }
-        let o = self.make_funcs(py)?.into_any().unbind();
-        self.made.insert("funcs", o.clone_ref(py));
-        Ok(o)
-    }
-
-    fn make_funcs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let l = PyList::empty(py);
-        for f in &self.funcs {
-            l.append((f.lo, f.hi, object(py, "symbol", f)?))?;
-        }
-        Ok(l)
-    }
-
-    /// The symbol facts (not the match phase's).
-    #[getter]
-    fn syms(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(o) = self.made.get("syms") {
-            return Ok(o.clone_ref(py));
-        }
-        let o = self.make_syms(py)?.into_any().unbind();
-        self.made.insert("syms", o.clone_ref(py));
-        Ok(o)
-    }
-
-    fn make_syms<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        PyList::new(py, self.syms.iter().map(|f| object(py, "symbol", f)).collect::<PyResult<Vec<_>>>()?)
-    }
-
-    /// addr -> its start facts.
-    #[getter]
-    fn starts(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(o) = self.made.get("starts") {
-            return Ok(o.clone_ref(py));
-        }
-        let o = self.make_starts(py)?.into_any().unbind();
-        self.made.insert("starts", o.clone_ref(py));
-        Ok(o)
-    }
-
-    fn make_starts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let d = PyDict::new(py);
-        for (a, fs) in &self.starts {
-            d.set_item(a, PyList::new(py, fs.iter().map(|f| object(py, "start", f)).collect::<PyResult<Vec<_>>>()?)?)?;
-        }
-        Ok(d)
-    }
-
-    /// addr -> the source fact of the function there.
-    #[getter]
-    fn sources(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(o) = self.made.get("sources") {
-            return Ok(o.clone_ref(py));
-        }
-        let o = self.make_sources(py)?.into_any().unbind();
-        self.made.insert("sources", o.clone_ref(py));
-        Ok(o)
-    }
-
-    fn make_sources<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let d = PyDict::new(py);
-        for (a, f) in &self.sources {
-            d.set_item(a, object(py, "source", f)?)?;
-        }
-        Ok(d)
-    }
-
-    /// The game units (layout.UnitX), by address.
-    #[getter]
-    fn units(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(o) = self.made.get("units") {
-            return Ok(o.clone_ref(py));
-        }
-        let o = self.make_units(py)?.into_any().unbind();
-        self.made.insert("units", o.clone_ref(py));
-        Ok(o)
-    }
-
-    fn make_units<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        PyList::new(py, self.units.iter().map(|u| unit_py(py, u)).collect::<PyResult<Vec<_>>>()?)
-    }
-
-    /// start -> its fill evidence value.
-    #[getter]
-    fn fills(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(o) = self.made.get("fills") {
-            return Ok(o.clone_ref(py));
-        }
-        let o = self.make_fills(py)?.into_any().unbind();
-        self.made.insert("fills", o.clone_ref(py));
-        Ok(o)
-    }
-
-    fn make_fills<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let d = PyDict::new(py);
-        for (a, v) in &self.fills {
-            d.set_item(a, json_py(py, v)?)?;
-        }
-        Ok(d)
-    }
-
-    /// The declared boundaries (layout.Bound).
-    #[getter]
-    fn bounds(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Some(o) = self.made.get("bounds") {
-            return Ok(o.clone_ref(py));
-        }
-        let o = self.make_bounds(py)?.into_any().unbind();
-        self.made.insert("bounds", o.clone_ref(py));
-        Ok(o)
-    }
-
-    fn make_bounds<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let cls = py_layout(py)?.getattr("Bound")?;
-        PyList::new(py, self.bounds.iter().map(|b| cls.call1((b.0, b.1.clone(), b.2.clone(), b.3.clone(), b.4.clone()))).collect::<PyResult<Vec<_>>>()?)
-    }
-
     /// The skind of the first symbol (not the match phase's) that starts at a, or None.
     pub(crate) fn symbol_kind(&self, a: i64) -> Option<String> {
         self.syms.iter().find(|f| f.lo == a).and_then(|f| f.s("skind")).map(|s| s.to_string())
     }
+}
 
-    /// The game unit holding a (layout.UnitX), else None.
-    fn unit_at<'py>(&self, py: Python<'py>, a: i64) -> PyResult<Option<Bound<'py, PyAny>>> {
-        self.unit_index(a).map(|i| unit_py(py, &self.units[i])).transpose()
-    }
+/// A value of a layout record (clicmd.rs prints it as a token or writes it as JSON).
+pub enum LVal {
+    Null,
+    B(bool),
+    I(i64),
+    S(String),
+    R(i64, i64),
+    L(Vec<String>),
+    V(Value),
+}
 
-    fn items<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let l = PyList::empty(py);
-        for (lo, hi, what, f) in self.items_of() {
-            l.append((lo, hi, what, object(py, "symbol", &f)?))?;
-        }
-        Ok(l)
-    }
+fn ls(x: Option<&str>) -> LVal {
+    x.map(|s| LVal::S(s.to_string())).unwrap_or(LVal::Null)
+}
 
-    /// The first `count` open items of the game code from `start`: a function without a source, a declared start
-    /// in unknown code, or unknown code no start explains. One record per item (a dict), with its evidence lines.
-    #[pyo3(signature = (count=1, start=None))]
-    fn next_records<'py>(&self, py: Python<'py>, count: usize, start: Option<i64>) -> PyResult<Bound<'py, PyList>> {
+/// One open item of the game code with its evidence lines.
+pub struct NextItem {
+    pub addr: i64,
+    pub kind: &'static str,
+    pub size: i64,
+    pub next_start: i64,
+    pub unit: Option<String>,
+    pub unit_status: Option<String>,
+    pub analyzed: bool,
+    pub extent: Option<(i64, i64)>,
+    pub lines: Vec<(&'static str, Vec<(&'static str, LVal)>)>,
+}
+
+/// One function of a unit proposal.
+pub struct PropRow {
+    pub lo: i64,
+    pub size: i64,
+    pub fill: Option<Value>,
+    pub drafted: bool,
+    pub lits: i64,
+    pub first_lit: Option<i64>,
+    pub leaks: Vec<String>,
+}
+
+/// A unit proposal evaluated: its range, the decl lines to write (addr, side), the evidence per function, the issues
+/// the current state does not have.
+pub struct Proposal {
+    pub lo: i64,
+    pub end: i64,
+    pub lines: Vec<(i64, &'static str)>,
+    pub table: Vec<PropRow>,
+    pub new: Vec<Issue>,
+}
+
+impl View {
+    /// The first `count` open items of the game code from `start`: a function without a source, a declared start in
+    /// unknown code, or unknown code no start explains, each with its evidence lines.
+    pub(crate) fn next_items(&self, count: usize, start: Option<i64>) -> PyResult<Vec<NextItem>> {
         let img = crate::image(&self.image)?;
         let items = self.items_of();
         let mut starts_sorted: Vec<i64> = items.iter().filter(|t| t.2 == "func" || t.2 == "start").map(|t| t.0).collect();
@@ -376,7 +252,7 @@ impl View {
         starts_sorted.sort();
         starts_sorted.dedup();
         let blocks = self.lit_blocks();
-        let out = PyList::empty(py);
+        let mut out = vec![];
         for (lo, hi, what, f) in &items {
             if start.is_some_and(|s| *lo < s) {
                 continue;
@@ -388,69 +264,36 @@ impl View {
             let u = ui.map(|i| &self.units[i]);
             let k = starts_sorted.partition_point(|x| x <= lo);
             let nxt = starts_sorted.get(k).copied().unwrap_or(self.game.1);
-            let rec = PyDict::new(py);
-            rec.set_item("addr", lo)?;
-            rec.set_item("kind", what)?;
-            rec.set_item("size", if *what != "unknown" { nxt - lo } else { hi - lo })?;
-            rec.set_item("next_start", nxt)?;
-            rec.set_item("unit", u.map(|u| u.tu.clone()))?;
-            let status = match u {
-                Some(u) => self.unit_fact(u).and_then(|f| f.s("status")).map(|s| s.to_string()),
-                None => None,
-            };
-            rec.set_item("unit_status", status)?;
-            rec.set_item("analyzed", self.drafted.contains(lo))?;
-            let lines = PyList::empty(py);
-            if *what == "func" {
-                rec.set_item("extent", (f.lo, f.hi))?;
-            }
+            let mut lines: Vec<(&'static str, Vec<(&'static str, LVal)>)> = vec![];
             for s in self.starts.get(lo).into_iter().flatten() {
-                let d = PyDict::new(py);
-                d.set_item("how", s.s("how"))?;
-                d.set_item("level", LEVEL_NAMES[s.level as usize])?;
-                d.set_item("by", &s.by)?;
-                lines.append(("start", d))?;
+                lines.push(("start", vec![("how", ls(s.s("how"))), ("level", LVal::S(LEVEL_NAMES[s.level as usize].into())), ("by", LVal::S(s.by.clone()))]));
             }
             for (site, rk, fnx) in self.callers_of(*lo) {
-                let d = PyDict::new(py);
-                d.set_item("site", site)?;
-                d.set_item("rkind", rk)?;
-                d.set_item("fn", fnx)?;
-                d.set_item("unit", fnx.and_then(|a| self.unit_index(a)).map(|i| self.units[i].tu.clone()))?;
-                lines.append(("caller", d))?;
+                lines.push(("caller", vec![("site", LVal::I(site)), ("rkind", LVal::S(rk)), ("fn", fnx.map(LVal::I).unwrap_or(LVal::Null)),
+                                           ("unit", ls(fnx.and_then(|a| self.unit_index(a)).map(|i| self.units[i].tu.as_str())))]));
             }
             if let Some(fl) = self.fills.get(lo) {
-                let d = PyDict::new(py);
-                d.set_item("before", json_py(py, &fl["pre"])?)?;
-                d.set_item("run", json_py(py, &fl["run"])?)?;
-                lines.append(("fill", d))?;
+                lines.push(("fill", vec![("before", LVal::V(fl["pre"].clone())), ("run", LVal::V(fl["run"].clone()))]));
             }
             for l in self.first_lits(*lo) {
                 let inblk: Vec<&str> = blocks.iter().filter(|((i, sec), (blo, bhi))| {
                     *sec == l.section && *blo <= l.lo && l.lo < *bhi && Some(*i) != ui && self.units[*i].lo < *lo
                 }).map(|((i, _), _)| self.units[*i].tu.as_str()).collect();
-                let d = PyDict::new(py);
-                d.set_item("range", (l.lo, l.hi))?;
-                d.set_item("section", &l.section)?;
-                d.set_item("data_refs", l.data_refs)?;
-                d.set_item("earlier_unit_block", inblk.first().copied())?;
-                d.set_item("text", img.cstr(l.lo as u32).iter().take(48).map(|&c| c as char).collect::<String>())?;
-                lines.append(("literal", d))?;
+                lines.push(("literal", vec![("range", LVal::R(l.lo, l.hi)), ("section", LVal::S(l.section.clone())), ("data_refs", LVal::I(l.data_refs)),
+                                            ("earlier_unit_block", ls(inblk.first().copied())),
+                                            ("text", LVal::S(img.cstr(l.lo as u32).iter().take(48).map(|&c| c as char).collect()))]));
             }
             for (sec, j) in self.lit_jump(*lo) {
-                let d = PyDict::new(py);
-                d.set_item("section", sec)?;
-                d.set_item("jump", j)?;
-                lines.append(("literal_jump", d))?;
+                lines.push(("literal_jump", vec![("section", LVal::S(sec)), ("jump", j.map(LVal::I).unwrap_or(LVal::Null))]));
             }
             for l in self.leaks.iter().filter(|l| l.func == *lo) {
-                let d = PyDict::new(py);
-                d.set_item("path", &l.path)?;
-                d.set_item("header", l.header)?;
-                lines.append(("leak", d))?;
+                lines.push(("leak", vec![("path", LVal::S(l.path.clone())), ("header", LVal::B(l.header))]));
             }
-            rec.set_item("lines", lines)?;
-            out.append(rec)?;
+            out.push(NextItem {
+                addr: *lo, kind: what, size: if *what != "unknown" { nxt - lo } else { hi - lo }, next_start: nxt, unit: u.map(|u| u.tu.clone()),
+                unit_status: u.and_then(|u| self.unit_fact(u)).and_then(|f| f.s("status")).map(|s| s.to_string()),
+                analyzed: self.drafted.contains(lo), extent: (*what == "func").then_some((f.lo, f.hi)), lines,
+            });
             if out.len() >= count {
                 break;
             }
@@ -459,47 +302,32 @@ impl View {
     }
 
     /// L2: function starts inside game units without a source (informational).
-    fn undrafted(&self) -> Vec<i64> {
+    pub(crate) fn undrafted_items(&self) -> Vec<i64> {
         self.items_of().into_iter().filter(|(lo, _, what, _)| {
             (*what == "func" || *what == "start") && !self.sources.contains_key(lo) && self.unit_index(*lo).is_some()
         }).map(|t| t.0).collect()
     }
 
-    fn unit_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let out = PyList::empty(py);
+    /// The unit table: one row per game unit (L.unit.extent's facts), by address.
+    pub(crate) fn unit_table(&self) -> Vec<Vec<(&'static str, LVal)>> {
         let mut ufs: Vec<&Rc<SFact>> = self.unit_facts.iter().collect();
         ufs.sort_by_key(|f| f.lo);
-        for f in ufs {
+        ufs.into_iter().map(|f| {
             let v = &f.value;
             let leaks: BTreeSet<&str> = self.leaks.iter().filter(|l| f.lo <= l.func && l.func < f.hi && !l.header).map(|l| l.path.as_str()).collect();
-            let d = PyDict::new(py);
-            let g = |k: &str| json_py(py, v.get(k).unwrap_or(&Value::Null));
-            d.set_item("unit", g("tu")?)?;
-            d.set_item("range", (f.lo, f.hi))?;
-            for (k, src) in [("status", "status"), ("start", "start_level"), ("end", "end_level"), ("named_by", "named_by"),
-                             ("open_bytes", "open_bytes"), ("functions", "functions"), ("sourced", "sourced")] {
-                d.set_item(k, g(src)?)?;
-            }
+            let g = |k: &str| LVal::V(v.get(k).cloned().unwrap_or(Value::Null));
             let n = |k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
-            d.set_item("undrafted", n("functions") - n("sourced"))?;
-            d.set_item("dead_bytes", n("dead_bytes"))?;
-            d.set_item("walk_conflicts", n("walk_conflicts"))?;
-            d.set_item("start_by", g("start_by")?)?;
-            d.set_item("end_by", g("end_by")?)?;
-            d.set_item("leaks", PyList::new(py, leaks)?)?;
-            d.set_item("level", LEVEL_NAMES[f.level as usize])?;
-            out.append(d)?;
-        }
-        Ok(out)
+            vec![("unit", g("tu")), ("range", LVal::R(f.lo, f.hi)), ("status", g("status")), ("start", g("start_level")), ("end", g("end_level")),
+                 ("named_by", g("named_by")), ("open_bytes", g("open_bytes")), ("functions", g("functions")), ("sourced", g("sourced")),
+                 ("undrafted", LVal::I(n("functions") - n("sourced"))), ("dead_bytes", LVal::I(n("dead_bytes"))), ("walk_conflicts", LVal::I(n("walk_conflicts"))),
+                 ("start_by", g("start_by")), ("end_by", g("end_by")), ("leaks", LVal::L(leaks.into_iter().map(|x| x.to_string()).collect())),
+                 ("level", LVal::S(LEVEL_NAMES[f.level as usize].into()))]
+        }).collect()
     }
 
-    /// Evaluate a unit lo..hi named `name` against the current units: the units with the proposed boundaries
-    /// added, L3 / L4 / L7 / L8 on them, the issues the current state does not have. (lo, end, name, decl lines
-    /// [(addr, side)], evidence rows per function, new issues, current issues).
-    #[pyo3(signature = (lo, hi, name))]
-    #[allow(clippy::type_complexity)]
-    fn propose<'py>(&self, py: Python<'py>, lo: i64, hi: Option<i64>, name: &str)
-        -> PyResult<(i64, i64, String, Vec<(i64, &'static str)>, Bound<'py, PyList>, Bound<'py, PyList>, Bound<'py, PyList>)> {
+    /// Evaluate a unit lo..hi named `name` against the current units: the units with the proposed boundaries added,
+    /// L3 / L4 / L7 / L8 on them, the issues the current state does not have.
+    pub(crate) fn proposal(&self, lo: i64, hi: Option<i64>, name: &str) -> Proposal {
         let (glo, ghi, _) = self.game;
         let srcs: Vec<layout::SrcFn> = self.src_facts.iter().filter(|f| f.s("what") == Some("func")).map(|f| {
             (f.lo, f.s("unit").unwrap_or("").to_string(), f.s("symbol").unwrap_or("").to_string(), f.by.clone())
@@ -522,24 +350,14 @@ impl View {
         let mut hyp = l7;
         hyp.extend(self.all_issues(&units, &new_bounds));
         let seen: HashSet<(&str, &str)> = cur.iter().map(|i| (i.0.as_str(), i.3.as_str())).collect();
-        let new: Vec<&Issue> = hyp.iter().filter(|i| !seen.contains(&(i.0.as_str(), i.3.as_str()))).collect();
+        let new: Vec<Issue> = hyp.iter().filter(|i| !seen.contains(&(i.0.as_str(), i.3.as_str()))).cloned().collect();
         let end = units.iter().find(|u| u.tu == name).map(|u| u.hi).unwrap_or(hi.unwrap_or(lo + 1));
-        let table = PyList::empty(py);
-        for f in self.funcs.iter().filter(|f| lo <= f.lo && f.lo < end) {
+        let table = self.funcs.iter().filter(|f| lo <= f.lo && f.lo < end).map(|f| {
             let lits = self.first_lits(f.lo);
-            let d = PyDict::new(py);
-            d.set_item("fn", f.lo)?;
-            d.set_item("size", f.hi - f.lo)?;
-            d.set_item("fill", match self.fills.get(&f.lo).and_then(|v| v.get("pre")) { Some(v) => Some(json_py(py, v)?), None => None })?;
-            d.set_item("drafted", self.sources.contains_key(&f.lo))?;
-            d.set_item("lits", lits.len())?;
-            d.set_item("first_lit", lits.first().map(|l| l.lo))?;
-            let leaks: BTreeSet<&str> = self.leaks.iter().filter(|l| l.func == f.lo).map(|l| l.path.as_str()).collect();
-            d.set_item("leaks", PyList::new(py, leaks)?)?;
-            table.append(d)?;
-        }
-        let new_py = PyList::new(py, new.iter().map(|i| issue_py(py, i)).collect::<PyResult<Vec<_>>>()?)?;
-        let cur_py = PyList::new(py, cur.iter().map(|i| issue_py(py, i)).collect::<PyResult<Vec<_>>>()?)?;
-        Ok((lo, end, name.to_string(), lines, table, new_py, cur_py))
+            PropRow { lo: f.lo, size: f.hi - f.lo, fill: self.fills.get(&f.lo).and_then(|v| v.get("pre")).cloned(), drafted: self.sources.contains_key(&f.lo),
+                      lits: lits.len() as i64, first_lit: lits.first().map(|l| l.lo),
+                      leaks: self.leaks.iter().filter(|l| l.func == f.lo).map(|l| l.path.clone()).collect::<BTreeSet<_>>().into_iter().collect() }
+        }).collect();
+        Proposal { lo, end, lines, table, new }
     }
 }

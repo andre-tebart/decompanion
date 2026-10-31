@@ -1,44 +1,21 @@
 """dcp: the command line. Every command refreshes the rule engine first (nothing changed: nothing runs), then
 answers from the store. Output: one record per line, key=value tokens, addresses 0x%08x, intervals lo..hi
 (hi exclusive), sorted by address, counts before lists; --json gives the same records as JSON lines.
-Every command takes --target NAME (default: the first [[target]] of decompanion.toml).
+Every command takes --target NAME (default: the first [[target]] of decompanion.toml). The answers are the core's
+(native/dcp_core/src/clicmd.rs and the modules it names); this module parses the arguments, refreshes and prints.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
-from collections import Counter
 from pathlib import Path
 
-from . import rules  # noqa: F401  (registers every rule)
 from . import fsmemo, native, timing
 from .config import ConfigError, Project
-from .ledger import query
-from .ledger.fact import Kind, Level, canonical
 from .rules.engine import Engine, RuleError
 
-
-def fmt_addr(a):
-    return f"{a:#010x}"
-
-
-def fmt_range(lo, hi):
-    return f"{lo:#010x}..{hi:#010x}" if hi > lo + 1 else f"{lo:#010x}"
-
-
-def parse_addr(s: str) -> int:
-    s = s.strip()
-    return int(s, 16) if s.lower().startswith("0x") else int(s, 0)
-
-
-def parse_range(s: str) -> tuple[int, int]:
-    if ".." in s:
-        a, b = s.split("..", 1)
-        return parse_addr(a), parse_addr(b)
-    a = parse_addr(s)
-    return a, a + 1
+_core = native.core()
 
 
 def tok(v):
@@ -48,11 +25,7 @@ def tok(v):
     if isinstance(v, bool):
         return "yes" if v else "no"
     if isinstance(v, int):
-        return fmt_addr(v) if v >= 0x100000 else str(v)      # an address, else a count or size (decimal)
-    if isinstance(v, tuple) and len(v) == 2:
-        return f"{fmt_addr(v[0])}..{fmt_addr(v[1])}"
-    if isinstance(v, (list, tuple)):
-        return ",".join(tok(x) for x in v) or "-"
+        return f"{v:#010x}" if v >= 0x100000 else str(v)      # an address, else a count or size (decimal)
     s = str(v)
     return repr(s) if (" " in s or not s) else s
 
@@ -61,12 +34,13 @@ def record(**kv) -> str:
     return "  ".join(f"{k}={tok(v)}" for k, v in kv.items())
 
 
-def jsonable(v):
-    if isinstance(v, dict):
-        return {k: jsonable(x) for k, x in v.items()}
-    if isinstance(v, (list, tuple)):
-        return [jsonable(x) for x in v]
-    return v
+def report(cmd: str, lines, error=None, code: int = 0) -> int:
+    """Print a command's lines; its error to stderr as `dcp CMD: error`; the exit code."""
+    for line in lines:
+        print(line)
+    if error:
+        print(f"dcp {cmd}: {error}", file=sys.stderr)
+    return code
 
 
 def open_project(args, target: str | None = None) -> tuple[Project, Engine]:
@@ -88,8 +62,13 @@ def refresh(p: Project, e: Engine, verbose=False, force=False, only=None):
     ran = [r for r in res if r.ran]
     if verbose or ran:
         print(f"rules: {len(ran)} ran of {len(res)}, {int((time.perf_counter() - t0) * 1000)} ms (target {p.target_name})", file=sys.stderr)
-    # the byte map is built when a command reads it (Store.bytemap_at / bytemap_rows), not after every refresh
     return res
+
+
+def refreshed(args, name=None) -> Project:
+    p, e = open_project(args, name)
+    refresh(p, e)
+    return p
 
 
 # ------------------------------------------------------------------------------------------------- setup and queries
@@ -101,6 +80,13 @@ def target_names(args) -> list[str | None]:
         p = Project(Path(args.root) if getattr(args, "root", None) else None)
         return [t.name for t in p.targets]
     return [getattr(args, "target", None)]
+
+
+def every_target(args) -> list[str]:
+    """--target NAME, else every target in config order."""
+    if getattr(args, "target", None):
+        return [args.target]
+    return [t.name for t in Project(Path(args.root) if getattr(args, "root", None) else None).targets]
 
 
 def cmd_setup(args):
@@ -115,210 +101,72 @@ def cmd_setup(args):
         p, e = open_project(args, name)
         refresh(p, e, verbose=args.verbose, force=args.force)
         if not args.no_analyzer:
-            failed = not run_analyzer(p, e, args) or failed
-        view = cmd_report(args, p, e)
+            out, errs, ok, exported = _core.analyzer_step(p.core, bool(args.analyzer_force))
+            report("setup", out)
+            for line in errs:
+                print(line, file=sys.stderr)
+            if exported:
+                refresh(p, e, verbose=args.verbose)
+            failed = failed or not ok
+        report("setup", _core.report_command(p.core, bool(args.verbose)))
         from .cli_decide import status_tail
-        status_tail(p, view)
+        status_tail(p)
     return 1 if failed else 0
 
 
-def run_analyzer(p, e, args) -> bool:
-    """The analyzer step of `dcp setup` (the core's analyzers.rs); False when the export failed."""
-    o = native.core().analyzer_run(p.core, bool(args.analyzer_force))
-    if o["status"] == "unavailable":
-        print(f"analyzer={o['analyzer']} unavailable: {o['reason']}", file=sys.stderr)
-    elif o["status"] == "failed":
-        print(f"analyzer={o['analyzer']} failed: {o['reason']}", file=sys.stderr)
-        return False
-    elif o["status"] == "exported":
-        out = Path(o["out"]) if o["out"] else None
-        out = out.relative_to(p.root).as_posix() if out is not None and out.is_relative_to(p.root) else None
-        print(record(analyzer=o["analyzer"], exported=o["stored"], failed=len(o["failed"]), ms=o["ms"], where=o["where"], out=out))
-        for f in o["failed"][:20]:
-            print("  failed  " + f)
-        refresh(p, e, verbose=args.verbose)
-    if o["note"]:
-        print(f"analyzer={o['analyzer']}: {o['note']}", file=sys.stderr)
-    return True
-
-
-def cmd_report(args, p=None, e=None):
-    if p is None:
-        for i, name in enumerate(target_names(args)):
-            if i:
-                print()
-            p, e = open_project(args, name)
-            refresh(p, e)
-            cmd_report(args, p, e)
-        return
-    st = p.store
-    img = p.image
-    print(f"target={p.target_name}  file={p.image_path.name}  sha256={img.sha256[:16]}  base={fmt_addr(img.base)}  entry={fmt_addr(img.entry)}  "
-          f"{'dll' if img.is_dll else 'exe'}  linker={img.linker_version[0]}.{img.linker_version[1]}  sections={len(img.sections)}")
-    decl = p.toolchain_decl
-    tcf = next(iter(st.facts(Kind.toolchain, rules=("S.rich",))), None)
-    rich = (f"  rich: compilers={len(tcf.value.get('compilers') or [])} linkers={len(tcf.value.get('linkers') or [])} "
-            f"(dcp toolchain)") if tcf else "  rich: none"
-    print(f"toolchain: compiler={decl.get('compiler') or '-'!r} linker={decl.get('linker') or '-'!r} "
-          f"cflags={' '.join(decl.get('cflags') or []) or '-'!r} root={decl.get('root') or '-'!r}{rich}")
-    s = query.summary(st)
-    for name in s["by_section"]:
-        classes = "  ".join(f"{k}={v:#x}" for k, v in sorted(s["by_section"][name].items(), key=lambda kv: -kv[1]))
-        levels = "  ".join(f"{k}={v:#x}" for k, v in sorted(s["by_level"][name].items(), key=lambda kv: -Level[kv[0]]))
-        print(f"section {name}: {levels}")
-        print(f"  {classes}")
-    lib_units = {(f.value.get("lib", ""), f.value["tu"]) for f in st.facts(Kind.unit) if "lib" in f.value}
-    units = {tu for _, tu in lib_units}
-    libs = Counter(lib for lib, _ in sorted(lib_units))
-    funcs = [f for f in st.facts(Kind.symbol) if f.value.get("skind") == "func" and not f.run.startswith("M.")]
-    print(f"functions: {len(funcs)} (proven {sum(1 for f in funcs if f.level == Level.proven)}, "
-          f"derived {sum(1 for f in funcs if f.level == Level.derived)}); library members placed: {len(units)} "
-          + "  ".join(f"{k}={v}" for k, v in libs.items()))
-    names = [f for f in st.facts(Kind.name) if f.value.get("origin") in ("export", "entry")]
-    for f in names:
-        print(f"  {f.value['origin']} {f.value['name']} at {fmt_addr(f.lo)}")
-    game = [f for f in st.facts(Kind.unit) if "status" in f.value]
-    if game:
-        c = Counter(f.value["status"] for f in game)
-        print(f"units: {len(game)}  " + "  ".join(f"{k}={v}" for k, v in sorted(c.items())) + "  (dcp layout units)")
-    from .cli_layout import print_analyzer
-    view = print_analyzer(p, getattr(args, "verbose", False))
-    waiting = {r.id: w for r in e.order() if (w := e.waiting(r))}
-    if waiting:
-        print(record(waiting=len(waiting), rules=",".join(sorted(waiting)),
-                     on=",".join(dict.fromkeys(x for w in waiting.values() for x in w))) + "  (their facts are missing until declared)")
-    conf = st.conflicts()
-    c = Counter(x.severity.value for x in conf)
-    print("conflicts: " + ("  ".join(f"{k}={v}" for k, v in sorted(c.items())) if conf else "0"))
-    return view
+def cmd_report(args):
+    for i, name in enumerate(target_names(args)):
+        if i:
+            print()
+        report("report", _core.report_command(refreshed(args, name).core, bool(getattr(args, "verbose", False))))
 
 
 def cmd_why(args):
-    p, e = open_project(args)
-    refresh(p, e)
-    st = p.store
-    from .cli_read import resolve
-    missing = 0
-    for s in args.addr:
-        try:
-            a = parse_addr(s)
-        except ValueError:                           # a function or data name (as dcp disasm / dump resolve it)
-            a = resolve(p, s)
-            if a is None:
-                print(f"name={s}  target={p.target_name}  unknown (no address or name the ledger knows)")
-                missing += 1
-                continue
-        w = query.why(st, a)
-        row = w["row"]
-        if row is None:
-            print(f"addr={fmt_addr(a)}  target={p.target_name}  not in the image")
-            continue
-        lo, hi, cls, level, *_ = row
-        sec = p.image.section_of(a)
-        off = f"  section={sec.name}  off=+{a - sec.va:#x}" if sec else "  (headers)"
-        print(f"addr={fmt_addr(a)}  target={p.target_name}{off}  cls={cls}  level={Level(level)}  owner={fmt_range(lo, hi)}")
-        probed = [f for f in w["facts"] if f.kind is Kind.toolchain and "flag" in f.value]
-        if probed:
-            print(f"  {fmt_range(probed[0].lo, probed[0].hi)}  toolchain probe  "
-                  + " ".join(f"{f.value['flag']}={f.level}" for f in sorted(probed, key=lambda f: f.value["group"]))
-                  + f"  (dcp toolchain)  by={probed[0].by}")
-        for f in w["facts"]:
-            if f.kind is Kind.toolchain and "flag" in f.value:
-                continue
-            if f.kind is Kind.toolchain and "compilers" in f.value:   # spans the image: one line, `dcp toolchain` has the rest
-                print(f"  {fmt_range(f.lo, f.hi)}  toolchain  compilers={len(f.value.get('compilers') or [])}  "
-                      f"linkers={len(f.value.get('linkers') or [])}  (dcp toolchain)  {f.level}  by={f.by}")
-                continue
-            print("  " + f.line())
-        if args.refs:
-            for f in w["refs_to"]:
-                print(f"  ref->  {f.value['rkind']} from={fmt_addr(f.lo)} to={fmt_addr(f.value['to'])}  by={f.by}")
-            for f in w["refs_from"]:
-                print(f"  ref<-  {f.value['rkind']} at={fmt_addr(f.lo)} to={fmt_addr(f.value['to'])}  by={f.by}")
-        else:
-            print(f"  refs: to={len(w['refs_to'])} from={len(w['refs_from'])}  (--refs lists them)")
-    return 1 if missing else 0
+    return report("why", *_core.why_command(refreshed(args).core, args.addr, bool(args.refs)))
 
 
 def cmd_facts(args):
-    p, e = open_project(args)
-    refresh(p, e)
-    lo, hi = parse_range(args.range)
-    facts = p.store.facts(args.kind, lo, hi)
-    if args.json:
-        for f in facts:
-            print(canonical({"lo": f.lo, "hi": f.hi, "kind": f.kind.value, "value": f.value, "level": f.level.name, "by": f.by, "reason": f.reason}))
-        return
-    print(f"target={p.target_name}  facts={len(facts)}  range={fmt_range(lo, hi)}" + (f"  kind={args.kind}" if args.kind else ""))
-    for f in facts:
-        print(f.line())
+    report("facts", _core.facts_command(refreshed(args).core, args.range, args.kind, bool(args.json)))
 
 
 def cmd_conflicts(args):
-    p, e = open_project(args)
-    refresh(p, e)
-    conf = p.store.conflicts(args.severity)
-    if args.json:
-        for x in conf:
-            print(canonical({"severity": x.severity.value, "check": x.check, "lo": x.lo, "hi": x.hi, "message": x.message, "a": x.a, "b": x.b}))
-        return
-    c = Counter(x.severity.value for x in conf)
-    print(f"target={p.target_name}  conflicts={len(conf)}" + ("  " + "  ".join(f"{k}={v}" for k, v in sorted(c.items())) if conf else ""))
-    for x in conf:
-        print(x.line())
+    report("conflicts", _core.conflicts_command(refreshed(args).core, args.severity, bool(args.json)))
 
 
 def cmd_check(args):
     """The gate, per target (every target unless --target): the stale units compile (dcp build), every rule
     ran (the loaders included), no bug / error conflicts (M.compile, M.gen, M1, M8.. among them), no open
-    toolchain or libs obligation (decide.rs), and, once
-    the target has a source, the full link resolves every external. --against REV: no function grade fell
-    against ledger/grades.tsv at that git revision. Each target ends with its verdict line (`gate=ok` or
-    `gate=FAIL` and the failing parts), the same verdict `dcp session wrap` prints. Exit 1 otherwise."""
-    from .ledger import grades as G
+    toolchain or libs obligation (decide.rs), and, once the target has a source, the full link resolves every
+    external. --against REV: no function grade fell against ledger/grades.tsv at that git revision. Each target ends
+    with its verdict line (`gate=ok` or `gate=FAIL` and the failing parts), the same verdict `dcp session wrap`
+    prints. Exit 1 otherwise."""
     p0 = Project(Path(args.root) if args.root else None, getattr(args, "target", None))
-    names = [args.target] if getattr(args, "target", None) else [t.name for t in p0.targets]
     failed = False
-    against = G.baseline_at(p0.root, args.against) if getattr(args, "against", None) else None
-    for name in names:
+    against = _core.grades_baseline_at(str(p0.root), args.against) if getattr(args, "against", None) else None
+    for name in every_target(args):
         p, e, rep = build_target(args, name, quiet=True)
-        if p.store.facts(Kind.build) and native.core().lint_available(p.core):
-            native.core().lint_command(p.core)
+        built = bool(p.store.facts("build"))
+        if built and _core.lint_available(p.core):
+            _core.lint_command(p.core)
             refresh(p, e)
-        conf = p.store.conflicts()
-        c = Counter(x.severity.value for x in conf)
-        bad = [x for x in conf if x.severity.value in ("bug", "error")]
-        print(f"check target={name}: " + ("  ".join(f"{k}={v}" for k, v in sorted(c.items())) if conf else "no conflicts"))
-        for x in bad:
-            print(x.line())
-        reasons = []
-        if bad:
-            reasons.append(f"errors={len(bad)}")
-        if args.strict:
-            for x in conf:
-                if x.severity.value == "warn":
-                    print(x.line())
-            if conf and not bad:
-                reasons.append(f"strict={len(conf)}")
-        if p.store.facts(Kind.build) and p.core.toolchain_available():
-            lines, ok, why, _, _ = native.core().link_command(p.core)
-            for line in lines:
-                print(line)
+        lines, reasons = _core.check_conflicts(p.core, bool(args.strict))
+        report("check", lines)
+        if built and p.core.toolchain_available():
+            lines, ok, why, _, _ = _core.link_command(p.core)
+            report("check", lines)
             if not ok:
                 reasons.append(why)
-        elif p.store.facts(Kind.build):
+        elif built:
             print(record(link=name, skipped="the toolchain is not available"))
         from .cli_decide import gate_failures
         open_ = gate_failures(p)            # after the link: libs.archives reads the link's `library` class
-        for o in open_:
-            print(o)
+        report("check", open_)
         if open_:
             reasons.insert(0, f"obligations={len(open_)}")
         if against is not None:
-            falls = G.regressions(p, against)
+            falls = _core.grades_regressions(p.target_name, str(p.store_path()), against)
             print(record(against=args.against, target=name, falls=len(falls)))
-            for line in falls:
-                print("  fell: " + line)
+            report("check", ["  fell: " + line for line in falls])
             if falls:
                 reasons.append(f"falls={len(falls)}")
         print(record(gate="FAIL" if reasons else "ok", target=name, **({"why": ";".join(reasons)} if reasons else {})))
@@ -327,36 +175,11 @@ def cmd_check(args):
 
 
 def cmd_rules(args):
-    p, e = open_project(args)
-    refresh(p, e)
-    rows = e.status()
-    print(record(target=p.target_name, rules=len(rows), current=sum(1 for _, cur, _, _, w in rows if cur and not w),
-                 waiting=sum(1 for *_, w in rows if w)))
-    for r, cur, ms, n, waits in rows:
-        state = "waiting" if waits else ("current" if cur else "missing")
-        print(f"{r.id:<18} v{r.version:<3} {r.ceiling.name:<9} {state:<8} {ms:>6} ms {n:>6} facts  "
-              f"needs={','.join(e.resolve_needs(r)) or '-'}  inputs={','.join(r.inputs) or '-'}" + ("  loader" if r.loader else ""))
-        if waits:
-            print(f"    waiting: {', '.join(waits)}  (dcp status)")
-        if args.verbose:
-            for line in r.doc.splitlines():
-                print("    " + line)
+    report("rules", _core.rules_command(refreshed(args).core, bool(args.verbose)))
 
 
 def cmd_map(args):
-    p, e = open_project(args)
-    refresh(p, e)
-    st = p.store
-    lo, hi = parse_range(args.range) if args.range else (p.image.base, p.image.end)
-    rows = st.bytemap_rows(lo, hi)
-    print(f"target={p.target_name}  rows={len(rows)}  range={fmt_range(lo, hi)}")
-    for rlo, rhi, cls, level, sym, unit, src, sec in rows:
-        f = st.fact(sym)
-        name = f.value.get("name", "") if f else ""
-        u = st.fact(unit) if unit else None
-        extra = f"  text={f.value['text']!r}" if f and "text" in f.value else ""
-        ut = f"  unit={u.value['tu']}" if u else ""
-        print(f"{fmt_range(rlo, rhi)}  {rhi - rlo:>7}  {cls:<14} {Level(level).name:<9} {name}{ut}{extra}")
+    report("map", _core.map_command(refreshed(args).core, args.range))
 
 
 # ------------------------------------------------------------------------------------------------- match phase
@@ -373,9 +196,9 @@ def build_target(args, name, quiet=False):
 def lint_built(p):
     """A project that lints (a `dcp lint` ran before, libclang is there): lint the units that changed since, before the
     refresh, so the one refresh of a build sees the objects and the lint together (grade / next find it current)."""
-    if native.core().lint_plan(p.core)[0] == "lint":
+    if _core.lint_plan(p.core)[0] == "lint":
         with timing.phase("lint"):
-            native.core().lint_command(p.core)
+            _core.lint_command(p.core)
 
 
 def cmd_build(args):
@@ -387,25 +210,11 @@ def cmd_build(args):
         if i:
             print()
         p, e, rep = build_target(args, name)
-        builds = sorted(p.store.facts(Kind.build), key=lambda f: f.value["tu"])
-        bad = [f for f in builds if not f.value["ok"]]
-        print(record(target=p.target_name, units=rep.units, compiled=len(rep.compiled), failed=len(bad),
-                     fresh=rep.units - len(rep.compiled), removed=len(rep.removed), ms=rep.ms))
-        for f in builds if getattr(args, "units", False) else bad:
-            v = f.value
-            print("  " + record(tu=v["tu"], at=f.lo, ok=v["ok"], obj=v.get("obj"), functions=v.get("functions"),
-                                warnings=v.get("warnings", 0), errors=len(v.get("errors") or []), flags=v.get("flags")))
-            for x in (v.get("errors") or [])[:10]:
-                print("    " + x)
-        failed = failed or bool(bad)
-        from .ledger import grades as G
-        rows = G.function_grades(p.store)
-        if rows:
-            c = Counter((r["code"], r["readability"]) for r in rows)
-            print("  grades: " + "  ".join(f"{k[0]}+{k[1]}={v}" for k, v in sorted(c.items())))
-        cleared = native.core().grades_auto_clear(p.core)
-        for line in cleared:
-            print("  " + line)
+        lines, bad = _core.build_summary(p.core, (rep.units, len(rep.compiled), len(rep.removed), rep.ms), bool(getattr(args, "units", False)))
+        report("build", lines)
+        failed = failed or bad
+        cleared = _core.grades_auto_clear(p.core)
+        report("build", ["  " + line for line in cleared])
         if cleared:
             p, e, rep = build_target(args, name, quiet=True)
     return 1 if failed else 0
@@ -414,235 +223,60 @@ def cmd_build(args):
 def cmd_fn(args):
     """Print one function of the sources: a record with its file and lines (its address comment to the end of
     its definition), then that text. KEY is a function name or an address of the target."""
-    from .ledger import srcscan
     p, e = open_project(args)
-    sc = srcscan.scan(p.root, p.input_hash("src"))
-    try:
-        a = parse_addr(args.key) if args.key.lower().startswith("0x") else None
-    except ValueError:
-        a = None
-    hits = [f for f in sc.functions if f.name == args.key
-            or a is not None and srcscan.address_for(f.addrs, p.target_name, p.default_target) == a]
-    if not hits:
-        print(f"dcp fn: no function {args.key} in the sources (target {p.target_name})", file=sys.stderr)
-        return 1
-    for f in hits:
-        lines = (p.root / f.file).read_text(errors="replace").split("\n")
-        last = f.end_line or len(lines)
-        print(record(fn=srcscan.address_for(f.addrs, p.target_name, p.default_target), name=f.name, unit=f.unit,
-                     at=f"{f.file}:{f.comment_line}-{last}"))
-        sys.stdout.write("\n".join(lines[f.comment_line - 1:last]) + "\n")
-    return 0
+    return report("fn", *_core.fn_command(p.core, args.key))
 
 
 def cmd_init(args):
     """Create the project: the [[target]] computed from the binary, nothing declared (the core's init.rs)."""
     from .cli_session import DCP_ROOT
-    lines, error = native.core().init_project(args.dir, args.target_path, args.name, args.target_name, str(DCP_ROOT))
+    lines, error = _core.init_project(args.dir, args.target_path, args.name, args.target_name, str(DCP_ROOT))
     if error:
         raise SystemExit(error)
-    for line in lines:
-        print(line)
+    report("init", lines)
 
 
 # ------------------------------------------------------------------------------------------------- targets
 def cmd_target_list(args):
-    p = Project(Path(args.root) if args.root else None)
-    rows = []
-
-    def machine_isa(t):
-        try:
-            return f"{p.image_of(t.name).default_isa}(machine)"
-        except ConfigError:                     # missing file or sha256 mismatch: the list still prints
-            return "-"
-
-    for i, t in enumerate(p.targets):
-        sp = p.store_path(t.name)
-        rows.append({"target": t.name, "default": i == 0, "path": t.path.as_posix(), "sha256": t.sha256[:16], "image": t.image,
-                     "isa": t.isa or machine_isa(t), "exists": t.path.exists(), "store": sp.relative_to(p.root).as_posix(), "store_exists": sp.exists(),
-                     "form": "legacy" if t.legacy else "list"})
-    if args.json:
-        for r in rows:
-            print(canonical(r))
-        return
-    print(f"targets={len(rows)}  default={p.default_target}")
-    for r in rows:
-        print(record(**r))
+    report("target list", _core.target_list(Project(Path(args.root) if args.root else None).core, bool(args.json)))
 
 
 def cmd_target_add(args):
     p = Project(Path(args.root) if args.root else None)
-    lines, error = native.core().target_add(str(p.root), args.name, args.path)
+    lines, error = _core.target_add(str(p.root), args.name, args.path)
     if error:
         raise SystemExit(error)
-    for line in lines:
-        print(line)
+    report("target add", lines)
 
 
 # ------------------------------------------------------------------------------------------------- declarations
 def cmd_decl_add(args):
-    from .ledger import decl as D
     p, e = open_project(args)
-    targets = [t.name for t in p.targets]
-    try:
-        d = D.parse_line(args.line.strip())
-    except D.DeclError as ex:
-        print(f"dcp decl add: {ex}", file=sys.stderr)
-        return 1
-    if d.target is None and p.target_name != p.default_target:
-        d = D.Decl(d.lo, d.hi, d.kind, d.words, d.keys, d.reason, p.target_name)
-    tname = d.target or p.default_target
-    if tname not in targets:
-        print(f"dcp decl add: unknown target {tname!r} (targets: {', '.join(targets)})", file=sys.stderr)
-        return 1
-    tp = p if tname == p.target_name else Project(p.root, tname)
-    img = tp.image
-    sec = img.section_of(d.lo)
-    if sec is None:
-        print(f"dcp decl add: {d.lo:#x} is not in a section of {tname}", file=sys.stderr)
-        return 1
-    if d.target == p.default_target:
-        d = D.Decl(d.lo, d.hi, d.kind, d.words, d.keys, d.reason, None)      # a bare address is the default target
-    fname = "text.dcl" if (sec.code or sec.executable) else "data.dcl"
-    path = p.root / "decl" / fname
-    existing, errors = D.load(sorted((p.root / "decl").glob("*.dcl")) if (p.root / "decl").exists() else [], p.root, targets)
-    k = d.key(p.default_target)
-    dup = next((x for x in existing if x.key(p.default_target) == k), None)
-    if dup is not None:
-        print(f"dcp decl add: duplicate of {dup.file}:{dup.line}: {dup.text()}", file=sys.stderr)
-        return 1
-    n = D.insert(path, d, targets)
-    rel = path.relative_to(p.root).as_posix()
-    print(f"added {rel}:{n}  {d.text()}")
-    tp, te = open_project(args, tname)
-    refresh(tp, te)
-    by = f"decl:{rel}:{n}"
-    mine = [x for x in tp.store.conflicts() if by in (x.a, x.b)]
-    for x in mine:
-        print(x.line())
-    return 1 if any(x.severity.value in ("bug", "error") for x in mine) else 0
+    lines, error, code, made = _core.decl_add(p.core, args.line)
+    report("decl add", lines, error)
+    if made is None:
+        return code
+    target, by = made
+    lines, code = _core.decl_conflicts(refreshed(args, target).core, by)
+    return report("decl add", lines, None, code)
 
 
 # ------------------------------------------------------------------------------------------------- layout
 def cmd_layout_next(args):
-    from .ledger import layoutview as LV
-    p, e = open_project(args)
-    refresh(p, e)
-    v = LV.View.load(p, p.store)
-    recs = LV.next_records(v, args.n, parse_addr(args.start) if args.start else None)
-    und = LV.undrafted(v)
-    if args.json:
-        for r in recs:
-            print(json.dumps(jsonable(r)))
-        return
-    c = native.core().session_clock(str(p.root))
-    if c is not None:
-        print(c[0] + ("  (session over: finish or revert the function in progress, then wrap up)" if c[1] else ""))
-    print(record(target=p.target_name, game=v.game[:2], units=len(v.units), undrafted_in_units=len(und), shown=len(recs)))
-    if not recs:
-        print("nothing open: every function of the game code has a source")
-        return
-    for r in recs:
-        print(record(next=r["addr"], kind=r["kind"], size=r["size"], next_start=r["next_start"], unit=r["unit"],
-                     unit_status=r["unit_status"], analyzed=r["analyzed"]))
-        for what, kv in r["lines"]:
-            print("  " + what + "  " + record(**kv))
+    report("layout next", _core.layout_next(refreshed(args).core, args.n, args.start, bool(args.json)))
 
 
 def cmd_layout_units(args):
-    from .ledger import layoutview as LV
-    p, e = open_project(args)
-    refresh(p, e)
-    v = LV.View.load(p, p.store)
-    rows = LV.unit_rows(v)
-    if args.json:
-        for r in rows:
-            print(json.dumps(jsonable(r)))
-        return
-    glo, ghi, glevel = v.game
-    covered = sum(r["range"][1] - r["range"][0] for r in rows)
-    if args.verbose:
-        from .ledger import srcscan
-        und = LV.undrafted(v)
-        conf = p.store.conflicts()
-        sc = srcscan.scan(p.root, p.input_hash("src"))
-    c = Counter(r["status"] for r in rows)
-    lib = len({f.value["tu"] for f in p.store.facts(Kind.unit) if "lib" in f.value})
-    print(record(target=p.target_name, units=len(rows), separated=c.get("separated", 0), open=c.get("open", 0), game=(glo, ghi),
-                 game_end=glevel.name, unassigned=(ghi - glo) - covered, library_members=lib))
-    for r in rows:
-        print(record(unit=r["unit"], range=r["range"], status=r["status"], start=r["start"], end=r["end"], named_by=r["named_by"],
-                     open_bytes=r["open_bytes"], functions=r["functions"], sourced=r["sourced"], undrafted=r["undrafted"],
-                     leaks=r["leaks"] or None))
-        if args.verbose:
-            print("  " + record(start_by=r["start_by"], end_by=r["end_by"], dead_bytes=r["dead_bytes"], walk_conflicts=r["walk_conflicts"]))
-            lo, hi = r["range"]
-            mine = [a for a in und if lo <= a < hi]
-            for a in mine[:8]:
-                print("  " + record(undrafted=a) + "  (L2)")
-            if len(mine) > 8:
-                print(f"  ... {len(mine) - 8} more undrafted (L2): dcp layout next --start {mine[8]:#010x} -n N")
-            for x in conf:
-                if x.check in ("L10", "C.walk", "M.bytes.declared") and lo <= x.lo < hi:
-                    print("  " + x.line())
-            for f in sc.functions:
-                if f.unlinked and f.unit == r["unit"]:
-                    print("  " + record(unlinked=f.name, file=f.file, why=f.what or None))
+    report("layout units", _core.layout_units(refreshed(args).core, bool(args.verbose), bool(args.json)))
 
 
 def cmd_layout_propose(args):
-    from .ledger import decl as D
-    from .ledger import layoutview as LV
-    p, e = open_project(args)
-    refresh(p, e)
-    if ".." in args.range:
-        lo, hi = parse_range(args.range)
-    else:
-        lo, hi = parse_addr(args.range), None
-    if not D.UNIT.match(args.name):
-        print(f"dcp layout unit propose: {args.name!r} is not a unit name", file=sys.stderr)
-        return 1
-    v = LV.View.load(p, p.store)
-    have = next((b for b in v.bounds if b.tu == args.name and b.side == "start"), None)
-    if have is not None:
-        print(f"dcp layout unit propose: unit {args.name} already starts at {have.addr:#x} ({have.by})", file=sys.stderr)
-        return 1
-    pr = LV.propose(v, lo, hi, args.name)
-    print(record(proposal=args.name, range=(pr.lo, pr.hi), functions=len(pr.table), drafted=sum(1 for t in pr.table if t["drafted"]),
-                 new_issues=len(pr.new_issues), by=args.by, why=args.why))
-    for t in pr.table:
-        print("  " + record(fn=t["fn"], size=t["size"], fill=t["fill"], drafted=t["drafted"], literals=t["lits"], first_literal=t["first_lit"],
-                            leaks=t["leaks"] or None))
-    for i in pr.new_issues:
-        print(f"  issue  {i.severity}  {i.check}  {fmt_range(i.lo, i.hi)}  {i.message}")
-    errors = [i for i in pr.new_issues if i.severity in ("error", "bug")]
-    if errors:
-        print(f"refused: {len(errors)} error(s); nothing written")
-        return 1
-    if args.dry_run:
-        print("dry run: nothing written")
-        return 0
-    targets = [t.name for t in p.targets]
-    prefix = None if p.target_name == p.default_target else p.target_name
-    path = p.root / "decl" / "text.dcl"
-    for addr, side in pr.lines:
-        keys = {"tu": args.name}
-        if args.by and side == "start":
-            keys["by"] = args.by
-        d = D.Decl(addr, addr + 1, "boundary", (side,), keys, args.why, prefix)
-        n = D.insert(path, d, targets)
-        print(f"added {path.relative_to(p.root).as_posix()}:{n}  {d.text()}")
-    p2, e2 = open_project(args)
-    refresh(p2, e2)
-    rel = path.relative_to(p.root).as_posix()
-    bys = {f"decl:{rel}:{i}" for i, line in enumerate(path.read_text().splitlines(), 1) if f"tu={args.name} " in line + " "}
-    bad = [x for x in p2.store.conflicts() if x.severity.value in ("bug", "error")]
-    mine = [x for x in bad if x.a in bys or x.b in bys]
-    print(record(proposal="ok" if not mine else "FAIL", proposal_errors=len(mine), other_errors=len(bad) - len(mine))
-          + ("  (the other errors are not the proposal's: dcp check lists them)" if len(bad) > len(mine) else ""))
-    for x in mine:
-        print(x.line())
-    return 1 if mine else 0
+    p = refreshed(args)
+    lines, error, code, written = _core.propose_command(p.core, args.range, args.name, args.why, args.by, bool(args.dry_run))
+    report("layout unit propose", lines, error)
+    if not written:
+        return code
+    return report("layout unit propose", *_core.propose_verdict(refreshed(args).core, args.name))
 
 
 # ------------------------------------------------------------------------------------------------- worktrees

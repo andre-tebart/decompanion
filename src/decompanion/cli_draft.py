@@ -17,12 +17,6 @@ def err(cmd: str, msg: str) -> int:
     return 1
 
 
-def view_of(p, e):
-    from .ledger import layoutview as LV
-    refresh(p, e)
-    return LV.View.load(p, p.store)
-
-
 def rebuilt(args, p=None, e=None):
     """The project after an edit of the sources: the stale units compiled (when the toolchain is installed: the
     objects must define the new names, M.gen) and the rules refreshed. A project the command opened already is

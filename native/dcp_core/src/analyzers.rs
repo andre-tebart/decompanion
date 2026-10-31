@@ -321,7 +321,11 @@ fn sha_of(p: &Project) -> PyResult<String> {
 /// up-to-date | stale | none (never exported).
 #[pyfunction]
 pub fn analyzer_state(project: PyRef<'_, crate::project::PyProject>) -> PyResult<String> {
-    let p = &project.p;
+    state(&project.p)
+}
+
+/// up-to-date | stale | none (never exported).
+pub fn state(p: &Project) -> PyResult<String> {
     let db = p.store_path();
     let Some(have) = crate::pystore::st_meta(&db, EXPORT)? else { return Ok("none".into()) };
     let az = Analyzer::of(p).map_err(crate::project::cfg_err)?;
@@ -333,16 +337,14 @@ pub fn analyzer_state(project: PyRef<'_, crate::project::PyProject>) -> PyResult
 /// `dcp setup`'s analyzer step: export when the configured analyzer is available and its key is stale (or forced);
 /// store the entries. {analyzer, status (unavailable | up-to-date | exported | failed), reason, where, stored, note,
 /// failed, skipped, ms, out}.
-#[pyfunction]
-pub fn analyzer_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, force: bool) -> PyResult<Bound<'py, PyAny>> {
-    let p = &project.p;
+fn run(py: Python<'_>, p: &Project, force: bool) -> PyResult<Value> {
     let az = Analyzer::of(p).map_err(crate::project::cfg_err)?;
     let inst = az.available();
     let mut o = json!({"analyzer": az.key, "status": "", "reason": "", "where": "", "stored": 0, "note": "", "failed": [], "ms": 0, "out": null});
     if !inst.ok() {
         o["status"] = json!("unavailable");
         o["reason"] = json!(inst.reason);
-        return crate::pystore::json_py(py, &o);
+        return Ok(o);
     }
     let db = p.store_path();
     let target = p.target(None).map_err(err)?.clone();
@@ -354,7 +356,7 @@ pub fn analyzer_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::Py
     if !force && crate::pystore::st_meta(&db, EXPORT)?.as_deref() == Some(key.as_str()) {
         o["status"] = json!("up-to-date");
         o["note"] = json!(inst.note);
-        return crate::pystore::json_py(py, &o);
+        return Ok(o);
     }
     let prev = crate::pystore::st_meta(&db, STARTS)?;
     let fresh = prev.is_some_and(|prev| {
@@ -368,7 +370,7 @@ pub fn analyzer_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::Py
         Err(e) => {
             o["status"] = json!("failed");
             o["reason"] = json!(e);
-            return crate::pystore::json_py(py, &o);
+            return Ok(o);
         }
     };
     o["failed"] = json!(ex.failed);
@@ -377,7 +379,7 @@ pub fn analyzer_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::Py
     if !ex.digest.is_empty() && ex.digest != sha {
         o["status"] = json!("failed");
         o["reason"] = json!(format!("{} analysed sha256 {}, target {} is {}", az.key, &ex.digest[..16.min(ex.digest.len())], p.target_name, &sha[..16]));
-        return crate::pystore::json_py(py, &o);
+        return Ok(o);
     }
     let n = replace(&db, &sha, &ex.entries)?;
     crate::pystore::st_set_meta(&db, EXPORT, &key)?;
@@ -386,7 +388,37 @@ pub fn analyzer_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::Py
     o["status"] = json!("exported");
     o["stored"] = json!(n);
     o["note"] = json!(inst.note);
-    crate::pystore::json_py(py, &o)
+    Ok(o)
+}
+
+/// `dcp setup`'s analyzer step, printed: (stdout lines, stderr lines, ok (False: the export failed), exported (the
+/// caller refreshes the rules)).
+#[pyfunction]
+pub fn analyzer_step(py: Python<'_>, project: PyRef<'_, crate::project::PyProject>, force: bool) -> PyResult<(Vec<String>, Vec<String>, bool, bool)> {
+    use crate::cliread::{record, Tok};
+    let p = &project.p;
+    let o = run(py, p, force)?;
+    let st = |k: &str| o[k].as_str().unwrap_or("").to_string();
+    let (a, reason) = (st("analyzer"), st("reason"));
+    let (mut out, mut errs) = (vec![], vec![]);
+    match st("status").as_str() {
+        "unavailable" => errs.push(format!("analyzer={a} unavailable: {reason}")),
+        "failed" => return Ok((out, vec![format!("analyzer={a} failed: {reason}")], false, false)),
+        "exported" => {
+            let root = posix(&p.root.to_string_lossy());
+            let rel = o["out"].as_str().map(posix).and_then(|x| x.strip_prefix(&format!("{root}/")).map(|r| r.to_string()));
+            let failed: Vec<String> = o["failed"].as_array().map(|f| f.iter().filter_map(|x| x.as_str().map(|x| x.to_string())).collect()).unwrap_or_default();
+            out.push(record(&[("analyzer", Tok::S(a.clone())), ("exported", Tok::I(o["stored"].as_i64().unwrap_or(0))), ("failed", Tok::I(failed.len() as i64)),
+                              ("ms", Tok::I(o["ms"].as_i64().unwrap_or(0))), ("where", Tok::S(st("where"))), ("out", rel.map(Tok::S).unwrap_or(Tok::No))]));
+            out.extend(failed.iter().take(20).map(|f| format!("  failed  {f}")));
+        }
+        _ => {}
+    }
+    let note = st("note");
+    if !note.is_empty() {
+        errs.push(format!("analyzer={a}: {note}"));
+    }
+    Ok((out, errs, true, st("status") == "exported"))
 }
 
 /// The analyzer of a project and what `available()` found: {key, ok, where, reason, note, root, java_home}.
