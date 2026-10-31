@@ -7,6 +7,7 @@
 
 mod coff;
 mod compare;
+mod cs;
 mod pe;
 mod rules;
 mod store;

@@ -1022,3 +1022,14 @@ N1 in progress (2026-10-31):
   56 rules; its Python body deleted). Alone it is no gain (26 .. 62 ms native, 28 .. 68 ms Python, which shared
   compiled_functions' memo with five other rules): the gain comes with M.match, M8.reloc, M.lint, G.grade and
   the data rules in Rust, sharing one compare.
+- User decision (2026-10-31): no special caching in the port ("we see how far we come without"). The memos of
+  decoded facts, merged lists, images and objects went; reading everything per run cost a native M.draft 156 ms,
+  SQLite selecting the facts 84 ms. Then option 2 (user decision): the core holds the current runs' facts in
+  memory by run identity, SQLite stays the store of record (31 ms); a compiled object (build/obj/<content
+  hash>.obj) and the target's binary (sha256-checked on open) are held the same way, by identity (11 .. 12 ms:
+  fact reads ~1 ms, the compare of all 4668 functions ~5.6 ms, output ~2.5 ms).
+- cs.rs: capstone through its C API, the very library the Python package `capstone` loaded (5.0.x as
+  isa/x86.py uses it: lengths and texts cannot differ). M.match is native (shadow equal over the tests, a forced
+  recompute and both edits on gildegold; its Python body and the _code_end memo deleted): 53 ms per run, of which
+  capstone ~35 ms (it formats every instruction's text; M.match decodes the ~2700 matched functions on every
+  run, Python decoded each once and kept the end).

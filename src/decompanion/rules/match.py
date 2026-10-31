@@ -181,11 +181,7 @@ def compile_facts(ctx: RuleContext):
 
 
 # ------------------------------------------------------------------------------------------------ M.match / M.draft
-_code_end: dict[tuple, int] = {}         # the end of a matched function's last instruction that is no fill (0: none)
-
-
-@rule("M.match", version="1", ceiling=P, outputs=("symbol", "source"), needs=("L.src", *WALK), inputs=("objects",),
-      helpers=(compiled_functions, starts_of, C))
+@rule("M.match", version="1", ceiling=P, outputs=("symbol", "source"), needs=("L.src", *WALK), inputs=("objects",), native=True)
 def match(ctx: RuleContext):
     """R1. A sourced function of the current target (an L.src `source` fact: a candidate, its declared level
     does not propagate) whose unit's object defines its function is a byte match when (match/compare.py):
@@ -199,32 +195,8 @@ def match(ctx: RuleContext):
     section with fill up to the next function's alignment: the fill keeps its own symbol), or to the first jump
     or index table the walk found for it inside the section (VC6 places a switch's tables in the function's
     section; the tables keep their own symbols); and a `source` fact (what: match) over the whole section,
-    proven."""
-    funcs, _ = compiled_functions(ctx)
-    img, isa, tc = ctx.image, ctx.project.isa, ctx.project.toolchain
-    tables = sorted((f.lo, f.value.get("fn")) for f in ctx.facts(Kind.symbol) if f.value.get("skind") in ("jumptable", "idxtable"))
-    world = (ctx.project.input_hash("image"), ctx.project.input_hash("plugins"))
-    if len(_code_end) > PER_FN_MAX:
-        _code_end.clear()
-    for s, obj, sym, code, c in funcs:
-        if not c.matched:
-            continue
-        a, end = s.lo, s.lo + c.size
-        code_end = next((lo for lo, fn in tables if fn == a and a < lo < end), end)
-        lk = (*world, a, bytes(code.data[:code_end - a]), bytes(code.mask[:code_end - a]))
-        last = _code_end.get(lk)
-        if last is None:
-            lines = isa.listing(code.data[:code_end - a], a, code.mask[:code_end - a], (img.base, img.end), tc.fill_forms)
-            while lines and lines[-1].fill:
-                lines.pop()
-            last = _code_end[lk] = lines[-1].addr + lines[-1].size if lines else 0
-        if last:
-            code_end = min(code_end, last)
-        v = {"skind": "func", "extent": "matched", "name": s.value["symbol"], "unit": s.value["unit"], "file": s.value["file"],
-             "relocs": c.aid}
-        yield ctx.fact(a, code_end, Kind.symbol, v, P)
-        yield ctx.fact(a, end, Kind.source, {"file": s.value["file"], "unit": s.value["unit"], "symbol": s.value["symbol"],
-                                            "what": "match", "relocs": c.aid}, P)
+    proven. Native: native/dcp_core/src/rules.rs m_match."""
+    return ()
 
 
 @rule("M.draft", version="1", ceiling=D, outputs=("source",), needs=("L.src", *WALK), inputs=("objects",), native=True)
