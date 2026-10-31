@@ -1,6 +1,5 @@
 """The rule engine is the core's (native/dcp_core/src/engine.rs: order, run keys, waiting, the runs; registry.rs:
-every rule with its needs, outputs, inputs, ceiling and criterion). This module is its face, and the front end
-the engine calls back for what the core does not compute yet (Front): the last lint, the units' text hashes.
+every rule with its needs, outputs, inputs, ceiling and criterion). This module is its face.
 
 - A `loader` rule (L.decl, L.src, L.analyzer) turns typed state written by a human or an external tool (a
   declarations file, the sources, the analyzer's drafts) into facts. It is the only kind of rule that may
@@ -57,24 +56,6 @@ class RunResult:
     waiting: tuple = ()      # the obligations the rule waits on (it did not run its criterion)
 
 
-class Front:
-    """What the core's engine asks the front end for (engine.rs module docstring)."""
-
-    def __init__(self, engine: Engine):
-        self.p = engine.project
-
-    def front_inputs(self, rule_id: str) -> dict:
-        """M.lint: the units' text hashes today; G.grade: the last lint's calls and the units whose text it parsed."""
-        from ..build import compile as build_compile
-        if rule_id == "M.lint":
-            return {"units": {a.unit: a.src_hash for a in build_compile.plan(self.p)}}
-        lint = self.p.input("lint")
-        current = {a.unit: a.src_hash for a in build_compile.plan(self.p)} if lint else {}
-        calls = lint.get("calls") if lint else None
-        return {"lint_calls": None if calls is None else {f: [tuple(c) for c in cs] for f, cs in calls.items()},
-                "linted": sorted(u for u, h in (lint or {}).get("units", {}).items() if current.get(u) == h)}
-
-
 class Engine:
     def __init__(self, project, store):
         self.project = project
@@ -92,8 +73,7 @@ class Engine:
         return self.project.waiting_for(r.inputs)
 
     def run(self, ids: Iterable[str] | None = None, force: bool = False, log=None) -> list[RunResult]:
-        res = _core.engine_run(self.project.core, native.source_hash(), capstone_dll(), Front(self),
-                               None if ids is None else list(ids), force)
+        res = _core.engine_run(self.project.core, native.source_hash(), capstone_dll(), None if ids is None else list(ids), force)
         out = []
         for rid, ran, ms, nf, nc, waits, ms_run, ms_rec in res:
             out.append(RunResult(rid, ran, ms, nf, nc, tuple(waits)))

@@ -11,8 +11,6 @@
 //! - A native rule's output is checked against its declaration: only its declared outputs, no level above its
 //!   ceiling, declared producers (decl: / src:) only from a loader.
 //!
-//! The front end (Python) is reached through a hook object for what the core does not compute yet: the last lint
-//! and the units' text hashes.
 
 use crate::project::{sha256_parts, Project};
 use crate::registry::{RuleDef, RULES};
@@ -149,18 +147,13 @@ pub struct Engine<'a> {
     pub main: String,
     pub core_hash: String,
     pub capstone: String,
-    pub hook: Option<Bound<'a, PyAny>>,
     base: Option<Rc<Inputs>>,
     scans: Vec<Rc<crate::frontend::Scan>>, // the scans whose pieces the rules of this run read
 }
 
 impl<'a> Engine<'a> {
-    pub fn new(project: &'a Project, core_hash: &str, capstone: &str, hook: Option<Bound<'a, PyAny>>) -> Engine<'a> {
-        Engine { project, db: project.store_path(), main: project.main_uri(), core_hash: core_hash.into(), capstone: capstone.into(), hook, base: None, scans: vec![] }
-    }
-
-    fn hook(&self) -> PyResult<&Bound<'a, PyAny>> {
-        self.hook.as_ref().ok_or_else(|| rule_err("the engine has no front end".into()))
+    pub fn new(project: &'a Project, core_hash: &str, capstone: &str) -> Engine<'a> {
+        Engine { project, db: project.store_path(), main: project.main_uri(), core_hash: core_hash.into(), capstone: capstone.into(), base: None, scans: vec![] }
     }
 
     pub fn code_hash(&self, r: &RuleDef) -> PyResult<String> {
@@ -168,10 +161,7 @@ impl<'a> Engine<'a> {
     }
 
     pub fn input_hash_of(&self, name: &str) -> PyResult<String> {
-        match self.project.input_hash(name).map_err(crate::project::ConfigError::new_err)? {
-            Some(h) => Ok(h),
-            None => self.hook()?.call_method1("input_hash", (name,))?.extract(),
-        }
+        Ok(self.project.input_hash(name).map_err(crate::project::ConfigError::new_err)?.unwrap_or_default())
     }
 
     fn run_key(&self, r: &RuleDef, code: &str, needed: &[&str]) -> PyResult<String> {
@@ -241,19 +231,21 @@ impl<'a> Engine<'a> {
             }
             self.scans.push(s);
         }
-        if r.id != "G.grade" && r.id != "M.lint" {
-            return Ok(Rc::new(x));
-        }
-        let got = self.hook()?.call_method1("front_inputs", (r.id,))?;
-        let d = got.cast::<PyDict>()?;
-        if let Some(v) = d.get_item("lint_calls")? {
-            x.lint_calls = v.extract()?;
-        }
-        if let Some(v) = d.get_item("linted")? {
-            x.linted = v.extract()?;
-        }
-        if let Some(v) = d.get_item("units")? {
-            x.units = v.extract()?;
+        if r.id == "M.lint" || r.id == "G.grade" {
+            let units = crate::plan::plan(self.project).map_err(rule_err)?;
+            let lint = with_db(&self.db, |c| Ok(crate::lintrun::last(c)))?;
+            if r.id == "M.lint" {
+                x.units = units.iter().map(|a| (a.unit.clone(), a.src_hash.clone())).collect();
+            } else if let Some(l) = lint {
+                let current: HashMap<&str, &str> = units.iter().map(|a| (a.unit.as_str(), a.src_hash.as_str())).collect();
+                x.lint_calls = l["calls"].as_object().map(|cs| cs.iter().map(|(f, xs)| {
+                    (f.clone(), xs.as_array().into_iter().flatten().map(|c| (c[0].as_i64().unwrap_or(0), c[1].as_str().unwrap_or("").to_string())).collect())
+                }).collect());
+                let mut linted: Vec<String> = l["units"].as_object().into_iter().flatten()
+                    .filter(|(u, h)| current.get(u.as_str()).copied() == h.as_str()).map(|(u, _)| u.clone()).collect();
+                linted.sort();
+                x.linted = linted;
+            }
         }
         Ok(Rc::new(x))
     }
@@ -324,12 +316,12 @@ fn results_py<'py>(py: Python<'py>, res: Vec<Result_>) -> PyResult<Bound<'py, Py
 }
 
 /// Refresh the rules (all, or `ids` and what they need) of a project's current target: [(rule, ran, ms, facts,
-/// conflicts, waiting, ms computing, ms recording)]. `hook` is the front end (module docstring).
+/// conflicts, waiting, ms computing, ms recording)].
 #[pyfunction]
-#[pyo3(signature = (project, core_hash, capstone, hook, ids=None, force=false))]
-pub fn engine_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, core_hash: &str, capstone: &str, hook: Bound<'py, PyAny>,
+#[pyo3(signature = (project, core_hash, capstone, ids=None, force=false))]
+pub fn engine_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, core_hash: &str, capstone: &str,
                        ids: Option<Vec<String>>, force: bool) -> PyResult<Bound<'py, PyList>> {
-    let mut e = Engine::new(&project.p, core_hash, capstone, Some(hook));
+    let mut e = Engine::new(&project.p, core_hash, capstone);
     let res = e.run(ids.as_deref(), force)?;
     results_py(py, res)
 }
@@ -386,13 +378,13 @@ mod tests {
         std::fs::write(d.join("net.dll"), crate::pe::testpe::build(None)).unwrap();
         std::fs::write(d.join("decompanion.toml"), "[[target]]\nname = \"net\"\npath = \"net.dll\"\n").unwrap();
         let p = Project::open(&d, None, "core").unwrap();
-        let mut e = Engine::new(&p, "core", "", None);
+        let mut e = Engine::new(&p, "core", "");
         let ids = ["S.sections".to_string()];
         let ran = |res: Vec<Result_>| res.iter().filter(|r| r.ran).map(|r| r.rule).collect::<Vec<_>>();
         assert_eq!(ran(e.run(Some(&ids), false).unwrap()), ["S.sections"]);
         assert!(ran(e.run(Some(&ids), false).unwrap()).is_empty()); // the same inputs: made current, not run
         assert_eq!(ran(e.run(Some(&ids), true).unwrap()), ["S.sections"]);
-        let mut e2 = Engine::new(&p, "core2", "", None); // another core: another code hash, another key
+        let mut e2 = Engine::new(&p, "core2", ""); // another core: another code hash, another key
         assert_eq!(ran(e2.run(Some(&ids), false).unwrap()), ["S.sections"]);
         let path = p.store_path();
         let n = with_db(&path, |db| crate::store::facts_of(db, &path, "section", None, |_| true)).unwrap().len();

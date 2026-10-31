@@ -6,11 +6,8 @@ from __future__ import annotations
 
 import sys
 from collections import Counter
-from pathlib import Path
 
-from .cli import fmt_addr, open_project, parse_addr, parse_range, record, refresh
-from .config import ConfigError, Project
-from .ledger.fact import Kind, Level
+from .cli import record
 
 
 def err(cmd: str, msg: str) -> int:

@@ -24,7 +24,7 @@ bytes); both facts stay in the store, `dcp conflicts` lists them, `dcp check` fa
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import Any
 

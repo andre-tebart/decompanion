@@ -492,7 +492,6 @@ def cmd_layout_starts(args):
     from .ledger import drafts as G
     from .ledger import layoutview as LV
     from .ledger.names import Names
-    from .rules import layout as L
     p, e = open_project(args)
     refresh(p, e)
     v = LV.View.load(p, p.store)

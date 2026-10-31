@@ -30,10 +30,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from .. import native
-from ..build import tu as build_tu
-from ..ledger import decl as decl_mod
-from ..ledger import srcscan
-from ..source import cparse
 from ..ledger.fact import Level, Severity, min_level
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open

@@ -20,7 +20,6 @@ object of its unit (ObjectFormat data_symbols: data / rdata / bss / common).
 from __future__ import annotations
 
 from ..ledger.fact import Level
-from .match import WALK
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
 

@@ -504,7 +504,6 @@ class Trial:
 
     def matches(self, unit: str, texts: dict[str, str]) -> tuple[set | None, str]:
         """(the addresses of the unit that byte-match with these texts, '') or (None, the compiler's first error)."""
-        import itertools
         from pathlib import Path as P
         a = self.units[unit]
         text = texts.get(a.file)

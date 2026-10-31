@@ -44,16 +44,12 @@ once go to cparse's worker processes; a unit alone stays live (cparse.parse: the
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import fsmemo, native, timing
-from ..build import compile as B
+from .. import native
 from ..ledger import srcscan
-from ..ledger.fact import canonical
-from ..ledger.store import sha256
 
 EXEMPT = re.compile(r"@(original|vc6)\b")        # headers.py; lint.rs reads the same
 VERSION = "7"
@@ -171,140 +167,21 @@ def file_scope_decls(rel: str, text: str, m: dict | None = None) -> list[Decl]:
     return [Decl(*r) for r in native.core().lint_file_decls(rel, text, m)]
 
 
-PRIVATE = re.compile(r"@private[ \t]+([A-Za-z_][\w]*(?:[ \t]*,[ \t]*[A-Za-z_]\w*)*)")
-INCLUDE_LINE = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"([^"]+)"', re.M)
-
-
 def private_headers(root: Path) -> dict[str, set[str]]:
-    """header name -> the units it is private to (`@private UNIT[,UNIT..]` in its first 20 lines): a header
-    the original only ever included into those units (zlib's deflate.h, infutil.h define one struct tag
-    each), left out of the all-declarations unit."""
-    out = {}
-    inc = Path(root) / "include"
-    for h in sorted(inc.glob("*.h")) if inc.exists() else []:
-        m = PRIVATE.search("\n".join(fsmemo.read_text(h).split("\n")[:20]))
-        if m:
-            out[h.name] = {u.strip() for u in m.group(1).split(",")}
-    return out
-
-
-def private_violations(root: Path, private: dict[str, set[str]]) -> list[str]:
-    """M5 lines: a file outside a private header's units that includes it (a header including it counts only
-    when it is private to a subset of those units)."""
-    out = []
-    if not private:
-        return out
-    root = Path(root)
-    files = [("src/" + rel, p) for rel, p in fsmemo.walk(root / "src", ("*.c",))] if (root / "src").exists() else []
-    files += [(f"include/{h.name}", h) for h in sorted((root / "include").glob("*.h"))] if (root / "include").exists() else []
-    for rel, p in files:
-        for h, line in quoted_includes(rel, p):
-            units = private.get(h)
-            if units is None:
-                continue
-            if rel.startswith("src/"):
-                ok = Path(rel).stem in units
-            else:
-                ok = Path(rel).name == h or private.get(Path(rel).name, {None}) <= units
-            if not ok:
-                out.append(f"{rel}:{line}: includes {h}, private to {','.join(sorted(units))} (@private in the header)")
-    return out
-
-
-_quoted: dict[tuple, list] = {}         # (file, its text's hash) -> its `#include "..."` (header name, line)
-
-
-def quoted_includes(rel: str, p: Path) -> list[tuple[str, int]]:
-    """The `#include "..."` of a file: (the header's name, the line), kept while the file's text stands."""
-    key = (rel, fsmemo.sha256(p))
-    hit = _quoted.get(key)
-    if hit is None:
-        if len(_quoted) > 5000:
-            _quoted.clear()
-        text = fsmemo.read_text(p)
-        hit = _quoted[key] = [(Path(m.group(1)).name, text.count("\n", 0, m.start()) + 1) for m in INCLUDE_LINE.finditer(text)]
-    return hit
-
-
-def native_alldecls(root: Path, sc, target: str | None):
-    """The all-declarations unit of a target (module docstring, M5) built by the core from the scan's pieces
-    (native/dcp_core/src/lint.rs): every header of include/ that is not private, the sources src/**/*.c."""
-    root = Path(root)
-    inc, src = root / "include", root / "src"
-    private = private_headers(root)
-    headers = [f"include/{h.name}" for h in sorted(inc.glob("*.h")) if h.name not in private] if inc.exists() else []
-    srcs = ["src/" + rel for rel, _ in fsmemo.walk(src, ("*.c",))] if src.exists() else []
-    return native.core().lint_alldecls(list(sc.piece_ids), target, headers, srcs)
+    """header name -> the units it is private to (`@private UNIT[,UNIT..]` in its first 20 lines)."""
+    return native.core().lint_private_headers(str(root))
 
 
 def stale(project) -> list[str] | None:
     """The units whose source or include set changed since the last lint (by the compile's hashes), None when
     there was no lint run: the lint result (Q7, M5..M7) is current exactly when this is empty."""
-    m = project.store.meta("lint")
-    if m is None:
-        return None
-    m = json.loads(m)
-    units, includes = m.get("units", {}), m.get("includes", {})
-    tus = project.store.tu_keys()
-    changed = {u for u, row in tus.items() if units.get(u) != row["src_hash"] or includes.get(u) != row["include_hash"]}
-    return sorted(changed | (set(units) - set(tus)))
+    return native.core().lint_stale(project.core)
 
 
 def lint(project, log=None) -> dict:
     """Lint every unit of the current target and the all-declarations unit; store and return the result
-    {units: {unit: text hash}, errors: [M6 lines], cross: [M5 lines], calls: {file: [[line, callee (kind)]]}}."""
-    from . import cparse
-    root, st = project.root, project.store
-    setup(project)
-    sysdirs = sysdirs_of(project)
-    clang = (cparse.VERSION, cparse.version(), canonical(cparse.ARGS), canonical([str(d) for d in sysdirs]))
-    units_ = B.plan(project)
-    defines = [srcscan.target_macro(project.target_name)]
-    tus = st.tu_keys()
-    jobs, keys, results = [], [], {}
-    for a in units_:
-        inc = (tus.get(a.unit) or {}).get("include_hash", "")
-        key = sha256("lint", VERSION, *clang, a.src_hash, inc, *defines)
-        hit = st.blob(key)                      # the unit's diagnostics as JSON text (the core reads them)
-        if hit is None:
-            # kept live: the scan's parse of the same text, the next lint of the unit alone (an edit of it) a reparse
-            jobs.append((Path(a.path), root, sysdirs, [Path(root) / d for d in B.include_dirs(a.unit)], defines, False, True))
-            keys.append((a.unit, key))
-        else:
-            results[a.unit] = hit.decode()
-    with timing.phase("lint.alldecls"):
-        ad = native_alldecls(root, srcscan.scan(root, project.input_hash("src")), project.target_name)
-    text = ad.text
-    akey = sha256("alldecls", VERSION, *clang, text, *defines,
-                  *(fsmemo.sha256(p) for p in sorted((Path(root) / "include").glob("*.h"))) if (Path(root) / "include").exists() else "")
-    cross = st.blob(akey)                       # its diagnostics as JSON text (the core reads them)
-    if cross is None:
-        out = Path(root) / "build" / "lint" / project.target_name / "alldecls.c"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text, newline="\n")
-        jobs.append((out.relative_to(root), root, sysdirs, [Path(root) / "include"], defines, True, None))
-        keys.append((None, akey))
-    with timing.phase("lint.parse"):
-        parsed = cparse.many(jobs) if jobs else []
-    timing.add("lint.jobs", len(jobs))
-    for (unit, key), diags in zip(keys, parsed):
-        st.put_blob_json(key, "lint", diags)
-        if unit is None:
-            cross = canonical(diags).encode()
-        else:
-            results[unit] = canonical(diags)
-    jobs = [k for k in keys if k[0] is not None]
-    errors, calls = [], {}
-    found, at = native.core().lint_units([results.get(a.unit, "[]") for a in units_], str(root))
-    errors += found
-    for file, line, text in at:
-        calls.setdefault(file, []).append((line, text))
-    with timing.phase("lint.cross"):
-        conflicts = native.core().lint_cross(ad, cross.decode(), str(root))
-    conflicts += private_violations(root, private_headers(root))
-    res = {"units": {a.unit: a.src_hash for a in units_},
-           "includes": {a.unit: (tus.get(a.unit) or {}).get("include_hash", "") for a in units_}, "errors": sorted(set(errors)), "cross": sorted(set(conflicts)),
-           "calls": {k: [list(c) for c in sorted(set(v))] for k, v in sorted(calls.items())}}
-    st.set_meta("lint", canonical(res))
+    {units: {unit: text hash}, errors: [M6 lines], cross: [M5 lines], calls: {file: [[line, callee (kind)]]}}
+    with `parsed` and `cached` (the core's: native/dcp_core/src/lintrun.rs)."""
+    res = native.core().lint_run(project.core)
     project.forget_input("lint")
-    return dict(res, parsed=len(jobs), cached=len(units_) - len(jobs))
+    return res

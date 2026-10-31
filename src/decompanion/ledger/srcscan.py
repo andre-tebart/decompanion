@@ -52,10 +52,9 @@ descriptions) and what the macros' bodies hold (views, casts) the scan reads: pe
 from __future__ import annotations
 
 import bisect
-import functools
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from .. import fsmemo
 

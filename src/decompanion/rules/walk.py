@@ -46,7 +46,7 @@ import bisect
 from collections import defaultdict
 
 from ..isa.base import CALL, CJUMP, IJUMP, JUMP, JUMPS, RET, Decoder
-from ..ledger.fact import Kind, Level, Severity
+from ..ledger.fact import Level
 
 D = Level.derived
 

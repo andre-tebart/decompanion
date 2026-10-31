@@ -61,6 +61,8 @@ ARGS = re.compile(r"too (few|many) arguments to function call, expected (?:at le
 CONFLICT = re.compile(r"^(?:conflicting types for|redefinition of|redeclaration of|typedef redefinition with "
                       r"different types|non-static declaration of|static declaration of)\b")
 
+INCLUDE_LINE = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"([^"]+)"', re.M)      # a quoted include
+
 
 @dataclass
 class Item:
@@ -491,7 +493,7 @@ def header_closure(root: Path, unit: str, headers: list[str]) -> list[str]:
                 rel = p.relative_to(root).as_posix()
                 if rel not in out:
                     out.append(rel)
-                    todo += [m.group(1) for m in L.INCLUDE_LINE.finditer(fsmemo.read_text(p))]
+                    todo += [m.group(1) for m in INCLUDE_LINE.finditer(fsmemo.read_text(p))]
                 break
     return out
 
@@ -500,7 +502,7 @@ def declaration_set(root: Path, a, head: str, headers: list[str], hdr_names: dic
     """What the includes do to the unit's declaration set: the names the headers add (declared nowhere in the
     unit or its current headers) and the head declarations --write drops as duplicates."""
     have = set(declared_names(a.file, fsmemo.read_text(Path(root) / a.file), root=root))
-    current = [m.group(1) for m in L.INCLUDE_LINE.finditer(fsmemo.read_text(Path(root) / head))]
+    current = [m.group(1) for m in INCLUDE_LINE.finditer(fsmemo.read_text(Path(root) / head))]
     for rel in header_closure(root, a.unit, current):
         have |= set(declared_names(rel, fsmemo.read_text(Path(root) / rel), root=root))
     return {"added": len(set(hdr_names) - have)}

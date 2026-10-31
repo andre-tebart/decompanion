@@ -19,6 +19,7 @@ mod fsmemo;
 mod frontend;
 mod grade;
 mod lint;
+mod lintrun;
 mod mrules;
 mod names;
 mod layout;
@@ -630,6 +631,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
+    m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
+    m.add_function(wrap_pyfunction!(lintrun::lint_stale, m)?)?;
+    m.add_function(wrap_pyfunction!(lintrun::lint_private_headers, m)?)?;
     m.add_function(wrap_pyfunction!(mrules::probe_analyse, m)?)?;
     m.add_function(wrap_pyfunction!(compile::compile_ensure, m)?)?;
     m.add_function(wrap_pyfunction!(plan::plan_units, m)?)?;
@@ -731,8 +735,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<srcscan::ScanPiece>()?;
     m.add_function(wrap_pyfunction!(lint::lint_file_decls, m)?)?;
     m.add_function(wrap_pyfunction!(lint::lint_alldecls, m)?)?;
-    m.add_function(wrap_pyfunction!(lint::lint_cross, m)?)?;
-    m.add_function(wrap_pyfunction!(lint::lint_units, m)?)?;
     m.add_class::<lint::AllDecls>()?;
     m.add_function(wrap_pyfunction!(decl::decl_parse_line, m)?)?;
     m.add_function(wrap_pyfunction!(decl::decl_load, m)?)?;

@@ -433,6 +433,12 @@ pub struct AllDecls {
     macros: HashMap<String, String>,     // macro name -> file:line of the header that defines it (first)
 }
 
+impl AllDecls {
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+}
+
 /// lint.header_order: the headers in an order that defines a name before the headers that use it.
 fn header_order(headers: &[String], info: &HashMap<&str, &FileLint>) -> Vec<String> {
     let empty = FileLint::default();
@@ -626,17 +632,7 @@ pub fn lint_alldecls(ids: Vec<u64>, target: Option<String>, headers: Vec<String>
 
 // ------------------------------------------------------------------------------------------------ M5
 
-#[derive(serde::Deserialize, Clone)]
-struct Diag {
-    file: String,
-    line: i64,
-    kind: String,
-    msg: String,
-    #[serde(default)]
-    flag: String,
-    #[serde(default)]
-    name: Option<String>,
-}
+use crate::clang::CDiag as Diag;
 
 fn fmt_group(g: &[Diag]) -> String {
     let d = &g[0];
@@ -748,9 +744,7 @@ fn cast_view(d: &Decl) -> Option<String> {
 
 /// lint.cross_conflicts: the M5 lines of one run of clang over the all-declarations unit (diags: its
 /// diagnostics as JSON text; root: the project, for the exemptions).
-#[pyfunction]
-pub fn lint_cross(ad: &AllDecls, diags: &str, root: &str) -> PyResult<Vec<String>> {
-    let diags: Vec<Diag> = serde_json::from_str(diags).map_err(|e| PyRuntimeError::new_err(format!("lint: diagnostics: {e}")))?;
+pub fn lint_cross(ad: &AllDecls, diags: Vec<Diag>, root: &str) -> PyResult<Vec<String>> {
     let mut lines = Lines { root: std::path::PathBuf::from(root), memo: HashMap::new() };
     let mut groups: Vec<Vec<Diag>> = vec![];
     for d in diags {
@@ -1002,12 +996,10 @@ pub fn lint_cross(ad: &AllDecls, diags: &str, root: &str) -> PyResult<Vec<String
 /// The M6 lines (a unit's errors) and M7 calls (file, line, `callee() at line N` / `callee (undeclared) at
 /// line N`) of the units' diagnostics (each unit's list as JSON text), a group with an exempt line left out
 /// (lint.lint's loop; lint.call_of).
-#[pyfunction]
-pub fn lint_units(diags: Vec<String>, root: &str) -> PyResult<(Vec<String>, Vec<(String, i64, String)>)> {
+pub fn lint_units(diags: Vec<Vec<Diag>>, root: &str) -> PyResult<(Vec<String>, Vec<(String, i64, String)>)> {
     let mut lines = Lines { root: std::path::PathBuf::from(root), memo: HashMap::new() };
     let (mut errors, mut calls) = (vec![], vec![]);
-    for text in &diags {
-        let ds: Vec<Diag> = serde_json::from_str(text).map_err(|e| PyRuntimeError::new_err(format!("lint: diagnostics: {e}")))?;
+    for ds in diags {
         let mut groups: Vec<Vec<Diag>> = vec![];
         for d in ds {
             if d.kind == "note" && !groups.is_empty() {

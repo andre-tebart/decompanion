@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-from ..ledger.fact import Level
 
 
 def declared_build(decl: str) -> int | None:

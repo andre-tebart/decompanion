@@ -12,7 +12,7 @@ read_ptr) and the instruction set its machine type implies (default_isa).
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 

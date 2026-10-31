@@ -5,7 +5,6 @@ addresses 0x%08x, counts before lists.
 from __future__ import annotations
 
 import difflib
-import json
 import sys
 from collections import Counter
 from pathlib import Path

@@ -372,6 +372,11 @@ impl Unit {
     pub(crate) fn model_out(&self, root: &str, text: &str) -> PyResult<ModelOut> {
         model_rs(api()?, &lock(self), root, text)
     }
+
+    /// The diagnostics of the unit (cparse.diagnostics).
+    pub(crate) fn diags(&self, root: &str, text: &str, presumed: bool) -> PyResult<Vec<CDiag>> {
+        diagnostics_rs(api()?, &lock(self), root, text, presumed)
+    }
 }
 
 fn lock(u: &Unit) -> std::sync::MutexGuard<'_, Tu> {
@@ -993,13 +998,42 @@ fn locate(lmap: &(Vec<usize>, Vec<(String, usize)>), line: usize) -> (String, i6
     (f.clone(), *n as i64 + line as i64 - lmap.0[k] as i64 - 1)
 }
 
+/// One diagnostic of a parse (cparse.diagnostics' dict): its file (relative to root when inside it), line, kind
+/// (error / warning / note), message, warning option and the name it is about.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct CDiag {
+    pub file: String,
+    pub line: i64,
+    pub kind: String,
+    pub msg: String,
+    #[serde(default)]
+    pub flag: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 fn diagnostics<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str, presumed: bool) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    for d in diagnostics_rs(a, t, root, text, presumed)? {
+        let x = PyDict::new(py);
+        x.set_item("file", d.file)?;
+        x.set_item("line", d.line)?;
+        x.set_item("kind", d.kind)?;
+        x.set_item("msg", d.msg)?;
+        x.set_item("flag", d.flag)?;
+        x.set_item("name", d.name)?;
+        out.append(x)?;
+    }
+    Ok(out)
+}
+
+fn diagnostics_rs(a: &Api, t: &Tu, root: &str, text: &str, presumed: bool) -> PyResult<Vec<CDiag>> {
     let tu = t.tu;
     let rootr = resolve(root);
     let main = resolve(&t.path_s);
     let lmap = presumed.then(|| line_map(text, &t.path_s));
     let mut files: HashMap<String, (bool, String)> = HashMap::new();
-    let out = PyList::empty(py);
+    let mut out: Vec<CDiag> = vec![];
     let mut one = |d: P, kind: &str| -> PyResult<bool> {
         let loc = unsafe { (a.clang_getDiagnosticLocation)(d) };
         let (f, line, _) = expand(a, loc);
@@ -1016,14 +1050,7 @@ fn diagnostics<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str, pr
         let msg = take(a, unsafe { (a.clang_getDiagnosticSpelling)(d) });
         let flag = take(a, unsafe { (a.clang_getDiagnosticOption)(d, std::ptr::null_mut()) });
         let name = name_of(a, tu, &msg, loc);
-        let x = PyDict::new(py);
-        x.set_item("file", fr)?;
-        x.set_item("line", line)?;
-        x.set_item("kind", kind)?;
-        x.set_item("msg", msg)?;
-        x.set_item("flag", flag)?;
-        x.set_item("name", name)?;
-        out.append(x)?;
+        out.push(CDiag { file: fr, line, kind: kind.to_string(), msg, flag, name });
         Ok(true)
     };
     let diags = diag_list(a, tu);

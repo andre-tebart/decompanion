@@ -184,9 +184,14 @@ fn model_keep(root: &str, key: &str, m: &ModelOut, files: &Files) {
 /// One parse's model; `keep`: the unit stays live (its next parse with the same arguments while the files it read
 /// are unchanged reparses it over its preamble).
 pub fn parse_model(root: &str, path: &str, args: &[String], text: &str, keep: bool) -> Result<ModelOut, String> {
+    with_parse(path, args, text, keep, |u| u.model_out(root, text).map_err(|e| e.to_string()))
+}
+
+/// f of a parse of the text; `keep`: the parse is (or becomes) a live unit (parse_model).
+pub fn with_parse<R>(path: &str, args: &[String], text: &str, keep: bool, f: impl FnOnce(&Unit) -> Result<R, String>) -> Result<R, String> {
     if !keep {
         let u = clang::parse(path, args, text, false)?;
-        return u.model_out(root, text).map_err(|e| e.to_string());
+        return f(&u);
     }
     let key = (path.to_lowercase(), args.to_vec());
     let hit = {
@@ -208,7 +213,7 @@ pub fn parse_model(root: &str, path: &str, args: &[String], text: &str, keep: bo
             LiveUnit { key, text: text.to_string(), deps, unit }
         }
     };
-    let m = lu.unit.model_out(root, text).map_err(|e| e.to_string());
+    let m = f(&lu.unit);
     let mut live = LIVE_UNITS.lock().unwrap();
     lu.text = text.to_string();
     live.push_back(lu);
