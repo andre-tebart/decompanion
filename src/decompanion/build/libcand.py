@@ -51,9 +51,9 @@ def conflicts(results: list[dict]) -> list[dict]:
 def candidates(p, force: bool = False, log=None) -> dict:
     """Place every candidate archive (cached per image and archive contents); store and return the summary
     {root, archives: [...] sorted by placed bytes, conflicts: [...], ms, cached}."""
-    from ..rules.engine import RULES
+    from .. import native
     t0 = time.perf_counter()
-    code = RULES["S.crt.code"].code_hash
+    code = native.core().engine_code_hash("S.crt.code", native.source_hash())
     st, img = p.store, p.image
     results, cached = [], 0
     for archive in p.toolchain.library_candidates():

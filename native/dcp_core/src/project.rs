@@ -402,6 +402,12 @@ impl Project {
         Value::Array(self.targets.iter().map(|t| json!({"name": t.name, "path": posix(&t.path), "sha256": t.sha256, "image": t.image})).collect())
     }
 
+    /// The toolchain's root, expanded (None when [toolchain] names none).
+    pub fn toolchain_root(&self) -> Option<String> {
+        let r = self.tc_str("root");
+        (!r.is_empty()).then(|| self.expand(&r))
+    }
+
     /// The toolchain's tools are installed (VC6: VC98/Bin/CL.EXE under the root).
     pub fn toolchain_available(&self) -> bool {
         let root = self.tc_str("root");

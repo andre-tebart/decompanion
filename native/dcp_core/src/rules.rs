@@ -12,9 +12,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// What the engine hands a native rule (RuleContext's view, as plain data).
-#[derive(FromPyObject)]
-#[pyo3(from_item_all)]
+/// What the engine hands a native rule: the store, its needed runs, the project's paths and inputs.
 pub struct Ctx {
     pub rule: String,
     pub version: String,
@@ -29,7 +27,39 @@ pub struct Ctx {
     pub capstone: String,                           // the capstone library the Python package loaded
     pub record: bool,
     pub shortcuts: bool,
-    pub extra: String, // native_inputs(project): what only Python computes, a JSON object
+    pub inputs: Rc<Inputs>,
+}
+
+/// What a rule reads of the project besides the store and the image: the configuration's (project.rs) and, for the
+/// rules of the sources, what the front end computes (the source scan's pieces, the tree's raw macros and described
+/// addresses, the last lint).
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct Inputs {
+    pub toolchain: String,
+    pub root: Option<String>,   // the toolchain's root, expanded
+    pub archives: Vec<String>,  // the target's library archives (none while `libs` waits)
+    pub libs: Vec<String>,      // the target's library archives
+    pub decl: Value,            // the target's toolchain declaration
+    pub target: String,
+    pub targets: Vec<String>,   // the default first
+    pub images: HashMap<String, String>,
+    pub function_alignment: i64,
+    pub code_rank: HashMap<String, i64>,
+    pub scan: crate::layout::ScanRef,
+    pub raw: Vec<String>,
+    pub described: Vec<i64>,
+    pub lint_calls: Option<HashMap<String, Vec<(i64, String)>>>,
+    pub linted: Vec<String>,
+    pub units: HashMap<String, String>, // unit -> its text's hash today (M.lint)
+}
+
+#[cfg(test)]
+impl Inputs {
+    /// A test's inputs from a JSON object ('' for none).
+    pub fn of(json: &str) -> Inputs {
+        if json.is_empty() { Inputs::default() } else { serde_json::from_str(json).unwrap() }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ compiled functions
@@ -527,13 +557,9 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
             }
         }
     }
-    let extra: Value = serde_json::from_str(&ctx.extra).unwrap_or(Value::Null);
     let parsed = res.get("units").and_then(|u| u.as_object());
-    let mut stale: Vec<&String> = extra
-        .get("units")
-        .and_then(|u| u.as_object())
-        .map(|m| m.iter().filter(|(u, h)| parsed.and_then(|p| p.get(*u)) != Some(*h)).map(|(u, _)| u).collect())
-        .unwrap_or_default();
+    let mut stale: Vec<&String> = ctx.inputs.units.iter()
+        .filter(|(u, h)| parsed.and_then(|p| p.get(*u)).and_then(|v| v.as_str()) != Some(h.as_str())).map(|(u, _)| u).collect();
     stale.sort();
     if !stale.is_empty() {
         let names: Vec<&str> = stale.iter().map(|s| s.as_str()).collect();
@@ -1011,26 +1037,6 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
     Ok(out)
 }
 
-/// Run a native rule: (facts, conflicts, out_hash, ms computing, ms recording); recorded unless ctx.record is
-/// false (shadow).
-#[pyfunction]
-pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String, f64, f64)> {
-    let t0 = std::time::Instant::now();
-    let out = dispatch(&ctx)?;
-    let ms = t0.elapsed().as_millis() as i64;
-    let computed = t0.elapsed().as_secs_f64() * 1000.0;
-    let t1 = std::time::Instant::now();
-    let (rows, confl) = out.sorted();
-    let (nf, nc) = (rows.len(), confl.len());
-    if !ctx.record {
-        return Ok((nf, nc, run_hash(&rows, &confl), computed, t1.elapsed().as_secs_f64() * 1000.0));
-    }
-    let (_, h) = with_db(&ctx.db, |db| {
-        write_run(db, &ctx.db, &ctx.rule, &ctx.version, &ctx.code_hash, &ctx.input_hash, &rows, &confl, ms, ctx.shortcuts)
-    })?;
-    Ok((nf, nc, h, computed, t1.elapsed().as_secs_f64() * 1000.0))
-}
-
 // ------------------------------------------------------------------------------------------------ test kit
 
 #[cfg(test)]
@@ -1041,6 +1047,13 @@ pub(crate) mod testkit {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static N: AtomicUsize = AtomicUsize::new(0);
+
+    /// The declaration a test's toy rule name runs under (every output, any level).
+    pub static TEST_RULE: crate::registry::RuleDef = crate::registry::RuleDef {
+        id: "T", version: "1", ceiling: 3, phase: "T", loader: true, python: false, needs: &[], outputs: &[
+            "section", "region", "symbol", "start", "name", "source", "unit", "boundary", "toolchain", "ref", "grade", "build", "evidence"],
+        inputs: &[], doc: "",
+    };
 
     pub struct Kit {
         pub dir: std::path::PathBuf,
@@ -1064,7 +1077,7 @@ pub(crate) mod testkit {
             Ctx { rule: rule.into(), version: "1".into(), code_hash: "test".into(), input_hash: format!("test:{rule}"), db: self.db.clone(),
                   main: String::new(), needed: needed.iter().map(|s| s.to_string()).collect(), root: self.dir.to_string_lossy().into_owned(),
                   image: self.image.clone(), fill_forms: vec![vec![0x90], vec![0xcc], vec![0x8b, 0xff], vec![0x8d, 0x49, 0x00]],
-                  capstone: String::new(), record: true, shortcuts: true, extra: extra.into() }
+                  capstone: String::new(), record: true, shortcuts: true, inputs: Rc::new(Inputs::of(extra)) }
         }
 
         /// A rule's output, sorted as recorded.
@@ -1074,7 +1087,7 @@ pub(crate) mod testkit {
 
         /// Run and record a rule (the rules that need it read its facts).
         pub fn record(&self, rule: &str, needed: &[&str], extra: &str) {
-            run_rule(self.ctx(rule, needed, extra)).unwrap();
+            crate::engine::run_native(crate::engine::rule(rule).unwrap_or(&TEST_RULE), &self.ctx(rule, needed, extra)).unwrap();
         }
 
         /// Record a run of these facts (lo, hi, kind, value, level) under a rule's name, `by` its producer.

@@ -25,9 +25,8 @@ WALK = ("S.sections", "S.relocs", "S.codewalk", "S.crt.code", "S.thunk", "S.expo
 
 
 # ------------------------------------------------------------------------------------------------ M.compile
-@rule("M.compile", version="2", ceiling=P, outputs=("build",), inputs=("objects", "src", "decl", "targets", "config", "toolchain"),
-      needs=("S.sections",), helpers=(build_compile.plan, build_compile.flags_for, build_compile.compile_flags,
-                                      build_compile.unit_overrides))
+@rule("M.compile", helpers=(build_compile.plan, build_compile.flags_for, build_compile.compile_flags,
+                            build_compile.unit_overrides))
 def compile_facts(ctx: RuleContext):
     """One `build` fact per translation unit of the current target (build/tu.py: a unit with at least one
     function of the target), at its least function address (the image base when it has none): tu, ok, the
@@ -98,60 +97,12 @@ def compile_facts(ctx: RuleContext):
 
 
 # ------------------------------------------------------------------------------------------------ M.match / M.draft
-@rule("M.match", version="1", ceiling=P, outputs=("symbol", "source"), needs=("L.src", *WALK), inputs=("objects",), native=True)
-def match(ctx: RuleContext):
-    """R1. A sourced function of the current target (an L.src `source` fact: a candidate, its declared level
-    does not propagate) whose unit's object defines its function is a byte match when (match/compare.py):
-    every byte of the function's section (from its symbol to the next named symbol or the section end) equals
-    the image's byte at the source's address, relocated fields masked; the original does not continue after
-    our last byte (the bytes up to the next known start are toolchain fill, or none); and, when the image
-    carries base relocations (a dll: the complete list of its absolute fields), every absolute relocation site
-    of ours is a base-relocation site and the extent holds as many base relocations as we have absolute
-    relocations (`relocs 7/7`). A match owns its bytes: a `symbol` func proven (value: name, unit, file,
-    relocs) from its address to the end of its last instruction that is no alignment fill (CL pads a function's
-    section with fill up to the next function's alignment: the fill keeps its own symbol), or to the first jump
-    or index table the walk found for it inside the section (VC6 places a switch's tables in the function's
-    section; the tables keep their own symbols); and a `source` fact (what: match) over the whole section,
-    proven. Native: native/dcp_core/src/rules.rs m_match."""
-    return ()
-
-
-@rule("M.draft", version="1", ceiling=D, outputs=("source",), needs=("L.src", *WALK), inputs=("objects",), native=True)
-def draft(ctx: RuleContext):
-    """R2. A sourced function of the current target whose compiled function is no byte match (M.match's
-    criterion fails) owns the bytes the code walk gives its start: a `source` fact (what: draft) over the walk's
-    function extent (S.codewalk, derived), with why it is no match (differing bytes, the original continuing,
-    the relocation aid). Its level is the lower of the walk's and the address comment's (declared). A function
-    whose start the walk does not know owns nothing. Native: native/dcp_core/src/rules.rs m_draft."""
-    return ()
-
-
 # ------------------------------------------------------------------------------------------------ M8 / M9 / M10
-@rule("M8.reloc", version="2", ceiling=P, needs=("L.src", *WALK, "kind:name"), inputs=("objects",), native=True)
-def reloc_checks(ctx: RuleContext):
-    """For every compiled function that is a byte match, or whose bytes differ while the DLL aid holds (every
-    absolute site of ours is a base-relocation site and the counts agree), each absolute or relative
-    relocation of ours whose site lines up with the original's code (rules.rs aligned_sites: the same
-    instruction at the same offset, equal outside our relocated fields; the aid alone says nothing about
-    relative sites, and a function without absolute sites passes it trivially) is resolved against the image
-    (the address the original's site refers to, Reloc.resolve with our addend). A site that does not line up
-    says nothing: the difference is the function's draft diff (M.draft), not a contradiction.
-    M8: the symbol we reference has a registered address (a name fact: export, import slot, library, source,
-    declaration) and the original's site refers to another address: our object references X where the original
-    holds the address registered to Y (severity from the two levels).
-    M9: we reference a string literal and the original's bytes at the resolved address differ from our
-    literal's bytes (text or terminator).
-    M10: we reference a floating constant and the original's bytes there differ from its bits. Native:
-    native/dcp_core/src/rules.rs m8_reloc."""
-    return ()
-
-
 # ------------------------------------------------------------------------------------------------ M.flags.proven
 from ..build import probe as probe_mod  # noqa: E402
 
 
-@rule("M.flags.proven", version="1", ceiling=P, outputs=("toolchain",), inputs=("probe", "toolchain"),
-      helpers=(probe_mod.analyse,))
+@rule("M.flags.proven", helpers=(probe_mod.analyse,))
 def flags_proven(ctx: RuleContext):
     """From the last `dcp toolchain probe` (build/probe.py): one `toolchain` fact per flag group of the probe
     grid, over the image, naming the best combination's flag, the user anchors that distinguish it (they match
@@ -176,20 +127,3 @@ def flags_proven(ctx: RuleContext):
 
 # ------------------------------------------------------------------------------------------------ M5 / M6 / M7
 
-
-def lint_units(p) -> dict:
-    """What M.lint reads that only Python computes: {units: unit -> its text's hash today} (build_compile.plan)."""
-    return {"units": {a.unit: a.src_hash for a in build_compile.plan(p)}}
-
-
-@rule("M.lint", version="2", ceiling=P, needs=("L.src",), inputs=("lint", "src"), helpers=(build_compile.plan,),
-      native=True, native_inputs=lint_units)
-def lint_checks(ctx: RuleContext):
-    """The last `dcp lint` (source/lint.py: clang as a C89 type checker with MS compatibility against the
-    toolchain's headers; `@original why` / `@vc6 why` on a line exempt it): M6 an error inside one unit, M5 a
-    declaration conflict across units (the all-declarations unit), both errors; M7 a call through a K&R
-    declaration or without a declaration, a warning (readability rule Q7 counts it). Reported at the address
-    of the function whose span holds the diagnostic's line (the image base when none does). A lint run whose units'
-    texts differ from today's units is stale: a warning (`dcp lint`; `dcp check` lints first). Native:
-    native/dcp_core/src/rules.rs m_lint."""
-    return ()

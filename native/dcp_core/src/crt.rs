@@ -20,12 +20,12 @@ fn err(e: rusqlite::Error) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
-fn inputs(ctx: &Ctx) -> PyResult<Value> {
-    serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("{}: native inputs: {e}", ctx.rule)))
+fn inputs(ctx: &Ctx) -> PyResult<&crate::rules::Inputs> {
+    Ok(&ctx.inputs)
 }
 
-fn toolchain(x: &Value) -> PyResult<Box<dyn crate::toolchain::Toolchain>> {
-    crate::toolchain::of(x["toolchain"].as_str().unwrap_or("")).ok_or_else(|| PyRuntimeError::new_err("no such toolchain"))
+fn toolchain(x: &crate::rules::Inputs) -> PyResult<Box<dyn crate::toolchain::Toolchain>> {
+    crate::toolchain::of(&x.toolchain).ok_or_else(|| PyRuntimeError::new_err("no such toolchain"))
 }
 
 fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> PyResult<Vec<Rc<SFact>>> {
@@ -33,9 +33,9 @@ fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> PyResult<Vec<Rc<SFact>>> {
 }
 
 /// (archive file name, its objects) of the archives an input lists.
-fn archives(x: &Value, key: &str) -> PyResult<Vec<(String, Vec<Obj>)>> {
+fn archives(x: &crate::rules::Inputs, key: &str) -> PyResult<Vec<(String, Vec<Obj>)>> {
     let mut out = vec![];
-    for p in x[key].as_array().into_iter().flatten().filter_map(|p| p.as_str()) {
+    for p in if key == "libs" { &x.libs } else { &x.archives } {
         let b = std::fs::read(p).map_err(|e| PyRuntimeError::new_err(format!("{p}: {e}")))?;
         let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         out.push((name, coff::archive_objects(&b).map_err(|e| PyRuntimeError::new_err(format!("{p}: {e}")))?));
@@ -59,8 +59,8 @@ pub fn s_rich(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
         return Ok(());
     }
     let x = inputs(ctx)?;
-    let tc = toolchain(&x)?;
-    let libs = archives(&x, "archives")?;
+    let tc = toolchain(x)?;
+    let libs = archives(x, "archives")?;
     let stamps = coff::comp_ids(libs.iter().flat_map(|(_, os)| os.iter()));
     let tools = tc.archive_tools(&stamps);
     out.fact(img.base as i64, img.end() as i64, "toolchain", tc.rich_candidates(&entries, &tools), DERIVED);
@@ -216,7 +216,7 @@ fn reloc_sites(ctx: &Ctx, db: &Connection) -> PyResult<BTreeSet<i64>> {
 pub fn s_crt_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
-    let libs = archives(&x, "libs")?;
+    let libs = archives(x, "libs")?;
     for p in place_members(&img, &libs, &reloc_sites(ctx, db)?) {
         match p {
             Placed::Issue(what, lo, hi, msg) => out.conflict("warn", &format!("S.crt.{what}"), lo, hi, msg, ""),
@@ -270,7 +270,7 @@ pub fn s_crt_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let (placed, units) = placed_funcs(ctx, db)?;
     let mut resolved: BTreeMap<String, BTreeMap<i64, i64>> = BTreeMap::new();
     let mut functions: HashSet<String> = HashSet::new();
-    for (lib, objs) in archives(&x, "libs")? {
+    for (lib, objs) in archives(x, "libs")? {
         for o in &objs {
             let unit = format!("lib:{lib}/{}", o.name);
             if !units.contains(&unit) {
@@ -323,7 +323,7 @@ pub fn s_crt_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let x = inputs(ctx)?;
     let (placed, _) = placed_funcs(ctx, db)?;
     let mut done: Vec<(i64, i64)> = vec![];
-    for (lib, objs) in archives(&x, "libs")? {
+    for (lib, objs) in archives(x, "libs")? {
         for o in &objs {
             let unit = format!("lib:{lib}/{}", o.name);
             let mut bases: BTreeMap<usize, BTreeMap<i64, i64>> = BTreeMap::new();
@@ -388,7 +388,7 @@ pub fn s_lib_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let mut seen: HashMap<(i64, Vec<u8>), usize> = HashMap::new();
     // (lo, hi, value, unit, lib, named symbols (offset, name))
     let mut pending: Vec<(i64, i64, Value, String, String, Vec<(u32, String)>)> = vec![];
-    for (lib, objs) in archives(&x, "libs")? {
+    for (lib, objs) in archives(x, "libs")? {
         for o in &objs {
             if !o.code_sections().is_empty() {
                 continue;
@@ -451,7 +451,7 @@ pub fn s_lib_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 /// layout makes it a library contribution.
 pub fn s_thunk(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
-    let tc = toolchain(&inputs(ctx)?)?;
+    let tc = toolchain(inputs(ctx)?)?;
     let size = tc.import_stub_size() as i64;
     let packed = size < tc.function_alignment() as i64;
     let syms = facts(ctx, db, "symbol")?;
@@ -525,9 +525,9 @@ fn truthy(v: &Value) -> bool {
 pub fn c_toolchain(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
-    let tc = toolchain(&x)?;
-    let decl = &x["decl"];
-    let t = x["target"].as_str().unwrap_or("");
+    let tc = toolchain(x)?;
+    let decl = &x.decl;
+    let t = x.target.as_str();
     let by = format!("decl:decompanion.toml:{t}");
     let base = img.base as i64;
     for key in ["compiler", "linker", "cflags"] {
@@ -565,7 +565,7 @@ pub fn s2_rich_members(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
     let Some(rich) = facts(ctx, db, "toolchain")?.into_iter().next() else { return Ok(()) };
-    let Some(b) = declared_build(x["decl"]["compiler"].as_str().unwrap_or("")) else { return Ok(()) };
+    let Some(b) = declared_build(x.decl["compiler"].as_str().unwrap_or("")) else { return Ok(()) };
     let members: HashSet<String> = facts(ctx, db, "unit")?.iter().filter_map(|f| f.s("tu").map(|s| s.to_string())).collect();
     let counted: i64 = rich.value["compilers"].as_array().into_iter().flatten().filter(|c| c["build"].as_i64() != Some(b)).filter_map(|c| c["count"].as_i64()).sum();
     if counted != 0 && (members.len() as i64) < counted {

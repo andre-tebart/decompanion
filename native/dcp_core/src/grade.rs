@@ -18,22 +18,10 @@ fn err(e: rusqlite::Error) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
-const CODE: [&str; 3] = ["draft", "shape", "byte"];
+pub(crate) const CODE: [&str; 3] = ["draft", "shape", "byte"];
 
 fn rank(c: &str) -> usize {
     CODE.iter().position(|x| *x == c).unwrap_or(0)
-}
-
-/// What G.grade reads that only Python computes (grade_inputs in rules/grade.py).
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct Inputs {
-    raw: Vec<String>,
-    described: Vec<i64>,
-    scan: crate::layout::ScanRef,
-    lint_calls: Option<HashMap<String, Vec<(i64, String)>>>,
-    linted: Vec<String>,
-    function_alignment: i64,
 }
 
 /// One function's code grade row: (code, why, hunks, dist).
@@ -150,7 +138,7 @@ fn compute_all(env: &Env, todo: &[Task], align: i64) -> Vec<(usize, Computed)> {
 
 pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
-    let x: Inputs = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("G.grade: native inputs: {e}")))?;
+    let x = &ctx.inputs;
     let scan_defs = crate::srcscan::defs(&x.scan)?;
     let (funcs, missing) = compiled_functions(ctx, db)?;
     let symbols = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;

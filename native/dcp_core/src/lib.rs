@@ -13,6 +13,7 @@ mod compare;
 mod cs;
 mod diffclass;
 mod difflib;
+mod engine;
 mod fsmemo;
 mod grade;
 mod lint;
@@ -21,6 +22,7 @@ mod pe;
 mod project;
 mod pystore;
 mod readability;
+mod registry;
 mod rules;
 mod setup;
 mod srcscan;
@@ -177,7 +179,7 @@ pub(crate) struct ConflictRow {
     pub b: String,
 }
 
-fn rows_of(facts: &Bound<'_, PyList>) -> PyResult<Vec<Row>> {
+pub(crate) fn rows_of(facts: &Bound<'_, PyList>) -> PyResult<Vec<Row>> {
     let mut rows = Vec::with_capacity(facts.len());
     for f in facts.iter() {
         let mut value = String::new();
@@ -197,7 +199,7 @@ fn rows_of(facts: &Bound<'_, PyList>) -> PyResult<Vec<Row>> {
     Ok(rows)
 }
 
-fn conflicts_of(conflicts: &Bound<'_, PyList>) -> PyResult<Vec<ConflictRow>> {
+pub(crate) fn conflicts_of(conflicts: &Bound<'_, PyList>) -> PyResult<Vec<ConflictRow>> {
     let mut rows = Vec::with_capacity(conflicts.len());
     for c in conflicts.iter() {
         rows.push(ConflictRow {
@@ -619,6 +621,10 @@ fn compare_functions(
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
+    m.add_function(wrap_pyfunction!(engine::engine_run, m)?)?;
+    m.add_function(wrap_pyfunction!(engine::engine_order, m)?)?;
+    m.add_function(wrap_pyfunction!(engine::engine_code_hash, m)?)?;
+    m.add("RuleError", m.py().get_type::<engine::RuleError>())?;
     m.add_function(wrap_pyfunction!(project::config_targets, m)?)?;
     m.add_function(wrap_pyfunction!(project::config_target_name_of, m)?)?;
     m.add_function(wrap_pyfunction!(project::config_is_target_name, m)?)?;
@@ -670,7 +676,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(out_hash, m)?)?;
     m.add_function(wrap_pyfunction!(record_run, m)?)?;
     m.add_function(wrap_pyfunction!(compare_functions, m)?)?;
-    m.add_function(wrap_pyfunction!(rules::run_rule, m)?)?;
     m.add_function(wrap_pyfunction!(store::store_schema, m)?)?;
     m.add_function(wrap_pyfunction!(rules::py_aligned_sites, m)?)?;
     m.add_function(wrap_pyfunction!(rules::py_least_size, m)?)?;

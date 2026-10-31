@@ -466,9 +466,7 @@ pub fn decl_insert(path: &str, r: (i64, i64, String, Vec<String>, Vec<(String, B
 // ------------------------------------------------------------------------------------------------ the rules
 
 fn inputs(ctx: &Ctx) -> PyResult<(Vec<String>, String)> {
-    let x: Value = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("{}: native inputs: {e}", ctx.rule)))?;
-    let targets: Vec<String> = x["targets"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(|s| s.to_string())).collect();
-    Ok((targets, x["target"].as_str().unwrap_or("").to_string()))
+    Ok((ctx.inputs.targets.clone(), ctx.inputs.target.clone()))
 }
 
 /// The declarations of the project (decl.load over decl/*.dcl).

@@ -48,7 +48,6 @@ from collections import defaultdict
 from ..isa.base import CALL, CJUMP, IJUMP, JUMP, JUMPS, RET, Decoder
 from ..ledger.fact import Kind, Level, Severity
 from .engine import RuleContext, rule
-from .layout import toolchain_key
 
 D = Level.derived
 
@@ -323,18 +322,3 @@ class Walker:
                     table += n
         return code, table
 
-
-@rule("S.codewalk", version="6", ceiling=D, outputs=("symbol", "start", "ref"),
-      needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs", "L.decl.start"),
-      native=True, native_inputs=toolchain_key)
-def codewalk(ctx: RuleContext):
-    """Recursive descent over the code sections from every known start (exports, the entry point, the symbols
-    of placed library sections, the entry the CRT calls), adding the starts the walk reveals (conventions
-    W1..W5 in rules/walk.py: call targets, tail-call targets, code immediates at relocation sites, code
-    pointers stored in data sections) and repeating until the set of starts is stable. A walked
-    function owns [start, last byte it reached + 1) as a `func` symbol of derived extent (bytes inside it
-    the walk did not reach are counted as holes); its jump tables and byte index tables are `jumptable` /
-    `idxtable` symbols; calls (over the call instruction), tail calls, immediates and memory operands pointing
-    into the image are `ref` facts. A walk that runs into bytes another function owns is a conflict (C.walk).
-    Instructions come from the target's instruction-set plugin (isa/), fill forms from the toolchain."""
-    return ()  # native: native/dcp_core/src/walk.rs

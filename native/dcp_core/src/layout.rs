@@ -172,8 +172,7 @@ fn py_bisect_right(a: &[i64], x: i64) -> usize {
 /// L.src.extent: a sourced function no other function covers owns its code up to the next stop, less the fill.
 pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
-    let extra: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
-    let align = extra["function_alignment"].as_i64().unwrap_or(1).max(1);
+    let align = ctx.inputs.function_alignment.max(1);
     let forms = crate::compare::fill_order(&ctx.fill_forms);
     let code: Vec<(i64, i64)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va as i64, s.end() as i64)).collect();
     let in_code = |a: i64| code.iter().any(|&(lo, hi)| lo <= a && a < hi);
@@ -290,16 +289,6 @@ pub(crate) struct ScanRef {
     pub(crate) errors: Vec<(String, String, i64, String)>,
 }
 
-/// What the scan rules get from Python: the targets (the default first), the current one, the images' paths.
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct RawInputs {
-    targets: Vec<String>,
-    target: String,
-    images: HashMap<String, String>,
-    scan: ScanRef,
-}
-
 struct ScanInputs {
     targets: Vec<String>,
     target: String,
@@ -309,17 +298,18 @@ struct ScanInputs {
 
 thread_local! {
     // the latest scan inputs as parsed, by their text (L5, A1 and L13 of one refresh get the same text)
-    static SCAN: std::cell::RefCell<Option<(String, std::rc::Rc<ScanInputs>)>> = const { std::cell::RefCell::new(None) };
+    static SCAN: std::cell::RefCell<Option<((Vec<u64>, String), std::rc::Rc<ScanInputs>)>> = const { std::cell::RefCell::new(None) };
 }
 
 fn scan_inputs(ctx: &Ctx) -> PyResult<std::rc::Rc<ScanInputs>> {
-    if let Some(x) = SCAN.with(|s| s.borrow().as_ref().filter(|(t, _)| *t == ctx.extra).map(|(_, x)| x.clone())) {
+    let i = &ctx.inputs;
+    let key = (i.scan.pieces.clone(), i.target.clone());
+    if let Some(x) = SCAN.with(|s| s.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, x)| x.clone())) {
         return Ok(x);
     }
-    let r: RawInputs = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("{}: native inputs: {e}", ctx.rule)))?;
-    let scan = crate::srcscan::view(&r.scan)?;
-    let x = std::rc::Rc::new(ScanInputs { targets: r.targets, target: r.target, images: r.images, scan });
-    SCAN.with(|s| *s.borrow_mut() = Some((ctx.extra.clone(), x.clone())));
+    let scan = crate::srcscan::view(&i.scan)?;
+    let x = std::rc::Rc::new(ScanInputs { targets: i.targets.clone(), target: i.target.clone(), images: i.images.clone(), scan });
+    SCAN.with(|s| *s.borrow_mut() = Some((key, x.clone())));
     Ok(x)
 }
 
@@ -784,9 +774,8 @@ pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> 
 /// M1.baseline: every function of the current target in ledger/grades.tsv keeps its grades.
 pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
-    let extra: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
-    let target = extra["target"].as_str().unwrap_or("");
-    let rank = |c: &str| extra["code_rank"].get(c).and_then(|r| r.as_i64());
+    let target = ctx.inputs.target.as_str();
+    let rank = |c: &str| ctx.inputs.code_rank.get(c).copied();
     let path = std::path::Path::new(&ctx.root).join("ledger").join("grades.tsv");
     let text = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     // parse_baseline: the last line of an address wins
@@ -1492,8 +1481,7 @@ static LEAK: std::sync::LazyLock<fancy_regex::Regex> =
 pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     use crate::store::{DERIVED, PROVEN};
     let img = image(&ctx.image)?;
-    let x: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
-    let tc = crate::toolchain::of(x["toolchain"].as_str().unwrap_or("")).ok_or_else(|| PyRuntimeError::new_err("L.analyze: no toolchain"))?;
+    let tc = crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| PyRuntimeError::new_err("L.analyze: no toolchain"))?;
     let fs = |kind: &str| store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
     let secs: Vec<(i64, i64, String)> = fs("section")?.iter().map(|f| (f.lo, f.hi, f.s("name").unwrap_or("").to_string())).collect();
     let code = code_ranges(&img);

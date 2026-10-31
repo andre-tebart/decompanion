@@ -129,14 +129,14 @@ pub fn s7_entry_section(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<(
 /// (native_inputs: the toolchain's key and root, the target's archives).
 pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
-    let x: serde_json::Value = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("S4: native inputs: {e}")))?;
-    let tc = crate::toolchain::of(x["toolchain"].as_str().unwrap_or("")).ok_or_else(|| PyRuntimeError::new_err("S4: no such toolchain"))?;
+    let x = &ctx.inputs;
+    let tc = crate::toolchain::of(&x.toolchain).ok_or_else(|| PyRuntimeError::new_err("S4: no such toolchain"))?;
     let name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let mut have: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if let Some(root) = x["root"].as_str() {
+    if let Some(root) = x.root.as_deref() {
         have.extend(tc.library_archives(std::path::Path::new(root)).iter().map(|p| name(p)));
     }
-    have.extend(x["libs"].as_array().into_iter().flatten().filter_map(|p| p.as_str()).map(|p| name(std::path::Path::new(p))));
+    have.extend(x.libs.iter().map(|p| name(std::path::Path::new(p))));
     let dlls: std::collections::BTreeSet<String> = img.imports().into_iter().map(|i| i.dll).collect();
     for dll in dlls {
         if !have.contains(&tc.import_library_name(&dll).to_lowercase()) {
@@ -177,8 +177,7 @@ pub(crate) fn py_str(v: Option<&serde_json::Value>) -> String {
 
 /// The toolchain native_inputs name ({"toolchain": key}).
 pub(crate) fn toolchain_of(ctx: &Ctx) -> PyResult<Box<dyn crate::toolchain::Toolchain>> {
-    let x: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
-    crate::toolchain::of(x["toolchain"].as_str().unwrap_or("")).ok_or_else(|| PyRuntimeError::new_err(format!("{}: no toolchain in its inputs", ctx.rule)))
+    crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| PyRuntimeError::new_err(format!("{}: no toolchain in its inputs", ctx.rule)))
 }
 
 /// C.overlap: two symbol or region facts that overlap contradict each other.

@@ -623,13 +623,11 @@ class Spans:
         return xs[k][2]
 
 
-def native_view(sc: Scan) -> str:
-    """The scan as the native rules read it (L.src, L5, A1, L13, G.grade in native/dcp_core/src), as JSON text: its
-    files' pieces in the core by id (they hold every item the rules read: native/dcp_core/src/srcscan.rs Piece),
-    the errors of the whole scan (L16). The scan holds its pieces, so they stand while it does."""
-    import json
-    return json.dumps({"pieces": [x.id for x in sc.native],
-                       "errors": [(e.check, e.file, e.line, e.message) for e in sc.own_errors]}, separators=(",", ":"))
+def native_pieces(sc: Scan) -> tuple[list[int], list[tuple]]:
+    """The scan as the native rules read it (L.src, L5, A1, L13, G.grade): its files' pieces in the core by id (they
+    hold every item the rules read: native/dcp_core/src/srcscan.rs Piece), the errors of the whole scan (L16). The
+    scan holds its pieces, so they stand while it does."""
+    return [x.id for x in sc.native], [(e.check, e.file, e.line, e.message) for e in sc.own_errors]
 
 
 def function_spans(sc: Scan, target: str, default: str) -> Spans:

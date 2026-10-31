@@ -7,9 +7,6 @@ fallback: a missing cargo or a failed build is an error.
 
 DCP_NATIVE_PROFILE picks the cargo profile: `dev` (the default; opt-level 1, incremental: a change builds in a few
 seconds, for iterating and the tests) or `release` (thin LTO, one codegen unit: ~45 s a build, for timing).
-
-DCP_SHADOW names what runs twice and is compared while it is being ported (a comma-separated list; `all` for
-everything in shadow): the Python version is the reference and is deleted once the two agree on gildegold.
 """
 from __future__ import annotations
 
@@ -85,9 +82,3 @@ def core():
         loader.exec_module(mod)
         _core = mod
     return _core
-
-
-def shadow(what: str) -> bool:
-    """Whether DCP_SHADOW asks for `what` to be computed twice and compared."""
-    s = {x.strip() for x in os.environ.get("DCP_SHADOW", "").split(",") if x.strip()}
-    return what in s or "all" in s

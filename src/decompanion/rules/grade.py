@@ -86,36 +86,6 @@ def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
     return frozenset(raw), frozenset(described)
 
 
-def grade_inputs(p) -> str:
-    """What G.grade reads that only Python computes, as JSON text: the raw macros and described addresses of the
-    tree (context), the last lint's calls and the units whose text it parsed, the function alignment, the source
-    scan's items (srcscan.native_view: the definitions' extents)."""
-    tree = p.input_hash("src")
-    raw, described = context(str(p.root), tree)
-    lint = p.input("lint")
-    current = {a.unit: a.src_hash for a in build_compile.plan(p)} if lint else {}
-    linted = sorted(u for u, h in (lint or {}).get("units", {}).items() if current.get(u) == h)
-    head = json.dumps({"raw": sorted(raw), "described": sorted(described), "lint_calls": lint.get("calls") if lint else None,
-                       "linted": linted, "function_alignment": p.toolchain.function_alignment})
-    return head[:-1] + ',"scan":' + srcscan.native_view(srcscan.scan(p.root, tree)) + "}"
-
-
-@rule("G.grade", version="5", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
-      inputs=("objects", "src", "lint"), helpers=(srcscan, context), native=True, native_inputs=grade_inputs)
-def grade(ctx: RuleContext):
-    """The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8
-    and the unit grades of rules/grade.py's module docstring), as `grade` facts: a function's at its address
-    {of: function, name, unit, file, code, readability, level (deep / stuck from the address comment's tag, ''
-    for base), failing (the failing rules with evidence), dist (differing instructions, differing bytes, our
-    size, the original's code size without its switch tables, the extent and the slot the diff read: a report,
-    not a gate; `dcp asmdiff` / `dcp diffclass` read the same extent and slot), hunks}; a unit's over its extent {of: unit, code,
-    readability, functions, named_by}. A function's grade fact is proven when its code is byte (M.match), else
-    declared (its address comment is the premise). Q7 is evaluated only for the units whose text the
-    last `dcp lint` parsed (the store meta `lint`). Native:
-    native/dcp_core/src/grade.rs (diffclass.rs, readability.rs, x86.rs)."""
-    return ()
-
-
 # ------------------------------------------------------------------------------------------------ M1
 def parse_baseline(text: str) -> dict[tuple[str, int], dict]:
     """(target, address) -> {name, unit, code, readability, level, accepted} of a ledger/grades.tsv text (a
@@ -146,14 +116,3 @@ def falls(base: dict, now: dict | None) -> list[str]:
         out.append("readability readable -> draft")
     return out
 
-
-@rule("M1.baseline", version="1", ceiling=P, needs=("G.grade",), inputs=("baseline",), native=True,
-      native_inputs=lambda p: {"target": p.target_name, "code_rank": CODE_RANK})
-def baseline_check(ctx: RuleContext):
-    """M1: every function of the current target in the grade baseline (ledger/grades.tsv, written only by `dcp
-    promote`, lowered for one function only by `dcp accept`) keeps its grades: code byte -> shape / draft and
-    shape -> draft are falls, readable -> draft is a fall, and a function the baseline grades that has no
-    grade now fell too. Each fall is an error. A function the baseline does not list cannot fall; an accepted
-    fall holds the function at the accepted grade. Native:
-    native/dcp_core/src/layout.rs."""
-    return ()

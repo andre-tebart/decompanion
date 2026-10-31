@@ -1,59 +1,28 @@
-"""The rule engine: every computed fact comes from a registered rule, every rule run is memoised by the hash of
-its inputs, and the code of the rule itself is part of that hash.
+"""The rule engine is the core's (native/dcp_core/src/engine.rs: order, run keys, waiting, the runs; registry.rs:
+every rule with its needs, outputs, inputs, ceiling and criterion). This module is its face, and the front end
+the engine calls back for what the core does not compute yet (Front): the source scan's digest and pieces, the
+tree's raw macros and described addresses, the last lint, the units' text hashes, and the rules whose code is still
+Python (registered here with @rule: M.compile, M.flags.proven).
 
-A rule is a function decorated with @rule:
+A rule (any kind) yields facts and conflicts and nothing else; a Python rule sees the project only through its
+RuleContext: the facts of the rules it needs, the named external inputs it declares.
 
-    @rule("S.fill", version="1", ceiling=Level.derived, needs=("S.sections", "kind:symbol"), outputs=("symbol",),
-          inputs=())
-    def fill(ctx: RuleContext):
-        '''<the exact criterion, as prose; `dcp rules` prints it>'''
-        ...
-        yield Fact(...)
-
-- `needs` are the rules whose current facts this rule may read (`ctx.facts(kind)` returns only facts of those
-  runs). `kind:symbol` stands for every registered rule that lists `symbol` in its outputs, so a rule that
-  closes a kind (the catch-all, the byte map) needs no list of producers. Dependencies by rule, not by kind,
-  keep the graph acyclic by construction: a rule cannot read the kind it produces.
-- `inputs` are named external inputs the project provides (image, config, libs, decl, src, ...). The image and
-  the plugins (the code behind the image, toolchain, object-format and instruction-set seams, and which of
-  them the target selects) are inputs of every rule.
-- `ceiling` is the best level the criterion can justify; a yielded fact above it is a programming error. The
-  rule lowers the level itself with min_level() when it rests on a premise fact (a declared boundary, a
-  derived start): the engine cannot know which facts were premises and which were merely verified.
-- The run key is sha256(code of the function, version, out_hash of each needed run, hash of each input). A
-  rule whose key matches a stored run is skipped; `dcp rules` shows which ran and how long they took.
-  `helpers` (functions or modules the rule calls) join the code hash, so editing a helper reruns the rule; a
-  helper module with `NATIVE = True` (its work is the native core's) joins the core's source hash as a native
-  rule does.
-- An input may be absent until a human declares it (Project.waiting: `libs` until the archives are declared,
-  `toolchain` until the compiler and linker builds are). A rule reading such an input waits: its criterion does
-  not run, the engine records an empty run keyed by the obligations it waits on (obligations.py), so the rules
-  that need it run on nothing from it; `dcp rules` shows `waiting: <obligation>`. The declaration changes the
-  key, the rule runs, and everything downstream reruns as usual.
-- A `native` rule runs in the native core (native/dcp_core/src/rules.rs, docs/plan.md section 20) on the store
-  directly: it reads its needed runs' facts, records its run with the same out_hash. Its code hash covers the
-  crate's sources; `native_inputs(project)` gives it what only Python computes (a JSON object, Ctx.extra). While
-  a rule is being ported its Python function is the reference: DCP_SHADOW=<rule> runs
-  both, records Python's output and fails on a different out_hash.
 - A `loader` rule (L.decl, L.src, L.analyzer) turns typed state written by a human or an external tool (a
   declarations file, the sources, the analyzer's drafts) into facts. It is the only kind of rule that may
-  emit facts whose producer is a file line (`decl:<file>:<line>`, `src:<file>:<line>`) instead of the rule:
-  ctx.declared() stamps them at level declared and refuses a missing reason.
+  emit facts whose producer is a file line (`decl:<file>:<line>`, `src:<file>:<line>`).
 """
 from __future__ import annotations
 
 import hashlib
 import inspect
-import json
-import os
-import time
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Callable, Iterable
 
 from .. import native, timing
 from ..ledger.fact import Conflict, Fact, Kind, Level
-from ..ledger.store import Store, sha256
+
+_core = native.core()
+RuleError = _core.RuleError
 
 
 @dataclass
@@ -61,40 +30,35 @@ class Rule:
     id: str
     version: str
     ceiling: Level
-    needs: tuple[str, ...]
+    phase: str
+    loader: bool
+    python: bool
+    needs: tuple[str, ...]          # resolved: `kind:` needs expanded
     outputs: tuple[str, ...]
     inputs: tuple[str, ...]
-    fn: Callable
     doc: str
-    code_hash: str
-    phase: str = ""
-    loader: bool = False
-    native: bool = False
-    native_inputs: Callable | None = None
 
     @property
     def name(self):
         return f"rule:{self.id}@{self.version}"
 
 
-RULES: dict[str, Rule] = {}
+def _rules(ids=None) -> list[Rule]:
+    return [Rule(i, v, Level(c), ph, ld, py, tuple(n), tuple(o), tuple(ins), doc)
+            for i, v, c, ph, ld, py, n, o, ins, doc in _core.engine_order(None if ids is None else list(ids))]
 
 
-def rule(id: str, *, version: str, ceiling: Level, outputs: tuple[str, ...] = (), needs: tuple[str, ...] = (),
-         inputs: tuple[str, ...] = (), phase: str = "", helpers: tuple = (), loader: bool = False, native: bool = False,
-         native_inputs: Callable | None = None):
+RULES: dict[str, Rule] = {r.id: r for r in _rules()}
+PY_RULES: dict[str, tuple[Callable, str]] = {}          # id -> (function, code hash) of the rules still in Python
+
+
+def rule(id: str, *, helpers: tuple = ()):
+    """Register the Python code of a rule the registry marks `python` (its code hash: its source and helpers')."""
     def deco(fn):
-        if id in RULES:
-            raise RuntimeError(f"rule {id} registered twice")
+        if id not in RULES or not RULES[id].python:
+            raise RuntimeError(f"rule {id} is not a Python rule of the registry")
         src = inspect.getsource(fn) + "".join(inspect.getsource(h) for h in helpers)
-        if native or any(getattr(h, "NATIVE", False) for h in helpers):
-            from ..native import source_hash
-            src += " native:" + source_hash() + (inspect.getsource(native_inputs) if native_inputs else "")
-        if loader and Level(ceiling) > Level.declared:
-            raise RuntimeError(f"loader rule {id} with ceiling {Level(ceiling)}: loaders declare")
-        RULES[id] = Rule(id, version, Level(ceiling), tuple(needs), tuple(outputs), tuple(inputs), fn,
-                         inspect.getdoc(fn) or "", hashlib.sha256(src.encode()).hexdigest()[:16], phase or id.split(".")[0],
-                         loader, native, native_inputs)
+        PY_RULES[id] = (fn, hashlib.sha256(src.encode()).hexdigest()[:16])
         return fn
     return deco
 
@@ -105,12 +69,8 @@ def capstone_dll() -> str:
     return capstone._cs._name
 
 
-class RuleError(RuntimeError):
-    pass
-
-
 class RuleContext:
-    """What a rule may see: the project, the image, the facts of the rules it needs, its external inputs."""
+    """What a Python rule may see: the project, the image, the facts of the rules it needs, its external inputs."""
 
     def __init__(self, engine: Engine, rule_: Rule, needed: tuple[str, ...]):
         self.engine = engine
@@ -127,12 +87,6 @@ class RuleContext:
             raise RuleError(f"{self.rule.id} reads facts but needs no rule")
         return self.store.facts(kind, lo, hi, rules=self._needed)
 
-    def conflicts(self, check: str | None = None) -> list[Conflict]:
-        """Current conflicts of the needed rules (their runs' out_hash covers them), optionally of one check."""
-        if not self._needed:
-            raise RuleError(f"{self.rule.id} reads conflicts but needs no rule")
-        return [c for c in self.store.conflicts(rules=self._needed) if check is None or c.check == check]
-
     def input(self, name: str):
         """The object of a named external input (declared in `inputs`)."""
         if name not in self.rule.inputs:
@@ -148,27 +102,8 @@ class RuleContext:
             raise RuleError(f"{self.rule.id} emits {kind} at {lo:#x} as {level} above its ceiling {self.rule.ceiling}")
         return Fact(lo, hi, kind, value, level, self.rule.name, reason)
 
-    def declared(self, lo: int, hi: int, kind: Kind | str, value: dict, by: str, reason: str) -> Fact:
-        """A declared fact whose producer is a line of typed state (only loader rules may emit these)."""
-        kind = Kind(kind)
-        if not self.rule.loader:
-            raise RuleError(f"{self.rule.id} is not a loader: it may not emit {by} facts")
-        if kind not in self._kinds_ok:
-            raise RuleError(f"{self.rule.id} emits {kind} but lists outputs {self.rule.outputs}")
-        if not by.startswith(("decl:", "src:")):
-            raise RuleError(f"{self.rule.id}: a declared fact's producer must be decl:<file>:<line> or src:<file>:<line>, not {by!r}")
-        if not reason or not reason.strip():
-            raise RuleError(f"{self.rule.id}: declared {kind} at {lo:#x} ({by}) without a reason")
-        return Fact(lo, hi, kind, value, Level.declared, by, reason)
-
     def conflict(self, severity, check: str, lo: int, hi: int, message: str, a: str = "", b: str = "") -> Conflict:
         return Conflict(severity, check, lo, hi, message, a, b)
-
-    def blob(self, hash_: str):
-        return self.store.blob(hash_)
-
-    def put_blob(self, hash_: str, kind: str, data: bytes):
-        self.store.put_blob(hash_, kind, data)
 
 
 @dataclass
@@ -181,157 +116,86 @@ class RunResult:
     waiting: tuple = ()      # the obligations the rule waits on (it did not run its criterion)
 
 
+class Front:
+    """What the core's engine asks the front end for (engine.rs module docstring)."""
+
+    def __init__(self, engine: Engine):
+        self.engine = engine
+        self.p = engine.project
+
+    def code_hash(self, rule_id: str) -> str:
+        return PY_RULES[rule_id][1]
+
+    def input_hash(self, name: str) -> str:
+        return self.p.input_hash(name)
+
+    def front_inputs(self, rule_id: str) -> dict:
+        from ..build import compile as build_compile
+        from ..ledger import srcscan
+        if rule_id == "M.lint":
+            return {"units": {a.unit: a.src_hash for a in build_compile.plan(self.p)}}
+        tree = self.p.input_hash("src")
+        out = {"scan": srcscan.native_pieces(srcscan.scan(self.p.root, tree))}
+        if rule_id == "G.grade":
+            from .grade import context
+            raw, described = context(str(self.p.root), tree)
+            lint = self.p.input("lint")
+            current = {a.unit: a.src_hash for a in build_compile.plan(self.p)} if lint else {}
+            calls = lint.get("calls") if lint else None
+            out.update(raw=sorted(raw), described=sorted(described),
+                       lint_calls=None if calls is None else {f: [tuple(c) for c in cs] for f, cs in calls.items()},
+                       linted=sorted(u for u, h in (lint or {}).get("units", {}).items() if current.get(u) == h))
+        return out
+
+    def run_python(self, rule_id: str, needed: list[str]):
+        ctx = RuleContext(self.engine, RULES[rule_id], tuple(needed))
+        facts, conflicts = [], []
+        for item in PY_RULES[rule_id][0](ctx) or ():
+            if isinstance(item, Fact):
+                facts.append(item)
+            elif isinstance(item, Conflict):
+                conflicts.append(item)
+            else:
+                raise RuleError(f"{rule_id} yielded {type(item).__name__}")
+        return facts, conflicts
+
+
 class Engine:
-    def __init__(self, project, store: Store):
+    def __init__(self, project, store):
         self.project = project
         self.store = store
 
-    # ------------------------------------------------------------------ graph
     def resolve_needs(self, r: Rule) -> tuple[str, ...]:
-        out = []
-        for n in r.needs:
-            if n.startswith("kind:"):
-                k = n[5:]
-                out.extend(x.id for x in RULES.values() if k in x.outputs and x.id != r.id)
-            else:
-                if n not in RULES:
-                    raise RuleError(f"{r.id} needs unknown rule {n}")
-                out.append(n)
-        return tuple(dict.fromkeys(out))
+        return r.needs
 
     def order(self, ids: Iterable[str] | None = None) -> list[Rule]:
-        """Rules in dependency order (Kahn), restricted to `ids` and everything they need."""
-        wanted = set(RULES) if ids is None else set()
-        if ids is not None:
-            stack = list(ids)
-            while stack:
-                i = stack.pop()
-                if i in wanted:
-                    continue
-                wanted.add(i)
-                stack.extend(self.resolve_needs(RULES[i]))
-        deps = {i: set(self.resolve_needs(RULES[i])) & wanted for i in wanted}
-        done, out = set(), []
-        while deps:
-            ready = sorted(i for i, d in deps.items() if d <= done)
-            if not ready:
-                raise RuleError("cycle among rules: " + ", ".join(sorted(deps)))
-            for i in ready:
-                out.append(RULES[i])
-                done.add(i)
-                del deps[i]
-        return out
-
-    # ------------------------------------------------------------------ running
-    def input_hash(self, r: Rule, needed: tuple[str, ...]) -> str:
-        parts = [r.code_hash, r.version, self.project.input_hash("image"), self.project.input_hash("plugins")]
-        for n in needed:
-            cur = self.store.current_run(n)
-            if cur is None:
-                raise RuleError(f"{r.id} needs {n}, which has no current run")
-            parts.append(f"{n}={cur[2]}")
-        for name in r.inputs:
-            parts.append(f"{name}={self.project.input_hash(name)}")
-        return sha256(*parts)
-
-    def native_ctx(self, r: Rule, needed: tuple[str, ...], ih: str, record: bool) -> dict:
-        """What a native rule reads (rules.rs Ctx): the store, its needed runs, the project's paths and inputs."""
-        p = self.project
-        return {"rule": r.id, "version": r.version, "code_hash": r.code_hash, "input_hash": ih, "db": str(self.store.path),
-                "main": Path(self.store.main).resolve().as_uri() + "?mode=ro" if self.store.main else "",
-                "needed": list(needed), "root": str(p.root), "image": str(p.image.path),
-                "fill_forms": [bytes(f) for f in p.toolchain.fill_forms], "record": record, "capstone": capstone_dll(),
-                "shortcuts": not os.environ.get("DCP_NO_SHORTCUTS"),
-                "extra": extra if isinstance(extra := r.native_inputs(p) if r.native_inputs else {}, str) else json.dumps(extra)}
+        """Rules in dependency order, restricted to `ids` and everything they need."""
+        return [RULES[r.id] for r in _rules(ids)]
 
     def waiting(self, r: Rule) -> tuple[str, ...]:
-        """The obligations a rule waits on: those of its inputs that are absent until a human declares them
-        (Project.waiting; obligations.py names them)."""
-        w = getattr(self.project, "waiting_for", None)      # a project without declarations waits on nothing
-        return w(r.inputs) if w is not None else ()
+        """The obligations a rule waits on: those of its inputs that are absent until a human declares them."""
+        return self.project.waiting_for(r.inputs)
 
     def run(self, ids: Iterable[str] | None = None, force: bool = False, log=None) -> list[RunResult]:
-        results = []
-        for r in self.order(ids):
-            needed = self.resolve_needs(r)
-            waits = self.waiting(r)
-            if waits:
-                # an empty run keyed by what it waits on: the rules that need it run on its (empty) output, and
-                # the declaration that ends the wait changes the key
-                ih = sha256(r.code_hash, r.version, "waiting", *waits)
-                found = self.store.find_run(r.id, ih)
-                if found is not None:
-                    where, run_id, _ = found
-                    cur = self.store.current_run(r.id)
-                    if cur is None or cur[0] != run_id or where != "main":
-                        self.store.make_current(r.id, where, run_id)
-                    results.append(RunResult(r.id, False, 0, 0, 0, waits))
-                    continue
-                self.store.record_run(r.id, r.version, r.code_hash, ih, [], [], 0)
-                results.append(RunResult(r.id, True, 0, 0, 0, waits))
-                if log:
-                    log(f"waiting {r.id}: {', '.join(waits)}")
-                continue
-            ih = self.input_hash(r, needed)
-            found = None if force else self.store.find_run(r.id, ih)
-            if found is not None:
-                where, run_id, _ = found
-                cur = self.store.current_run(r.id)
-                if cur is None or cur[0] != run_id or where != "main":
-                    self.store.make_current(r.id, where, run_id)
-                results.append(RunResult(r.id, False, 0, 0, 0))
-                continue
-            t0 = time.perf_counter()
-            if r.native and not native.shadow(r.id):
-                ctx = self.native_ctx(r, needed, ih, record=True)
-                t_ctx = time.perf_counter()
-                nf, nc, _, ms_run, ms_rec = native.core().run_rule(ctx)
-                ms = int((time.perf_counter() - t0) * 1000)
-                timing.add(f"rule.{r.id}.inputs", (t_ctx - t0) * 1000)        # native_inputs and the context
-                timing.add(f"rule.{r.id}.run", ms_run)
-                timing.add(f"rule.{r.id}.record", ms_rec)
+        res = _core.engine_run(self.project.core, native.source_hash(), capstone_dll(), Front(self),
+                               None if ids is None else list(ids), force)
+        out = []
+        for rid, ran, ms, nf, nc, waits, ms_run, ms_rec in res:
+            out.append(RunResult(rid, ran, ms, nf, nc, tuple(waits)))
+            if ran and not waits:
                 timing.add("refresh.rules", ms)
-                timing.add(f"rule.{r.id}", ms)
-                results.append(RunResult(r.id, True, ms, nf, nc))
-                if log:
-                    log(f"ran {r.id} (native): {nf} facts, {nc} conflicts, {ms} ms")
-                continue
-            ctx = RuleContext(self, r, needed)
-            facts, conflicts = [], []
-            for item in r.fn(ctx) or ():
-                if isinstance(item, Fact):
-                    facts.append(item)
-                elif isinstance(item, Conflict):
-                    conflicts.append(item)
-                else:
-                    raise RuleError(f"{r.id} yielded {type(item).__name__}")
-            ms = int((time.perf_counter() - t0) * 1000)
-            if r.native:                               # shadow: Python is the reference, the native run must agree
-                ref = native.core().out_hash(facts, conflicts)
-                nf, nc, got, _, _ = native.core().run_rule(self.native_ctx(r, needed, ih, record=False))
-                if got != ref:
-                    raise RuleError(f"shadow {r.id}: the native rule's output differs from Python's ({nf} facts, "
-                                    f"{nc} conflicts native; {len(facts)}, {len(conflicts)} Python)")
-            t1 = time.perf_counter()
-            self.store.record_run(r.id, r.version, r.code_hash, ih, facts, conflicts, ms)
-            rec = (time.perf_counter() - t1) * 1000
-            timing.add("refresh.rules", ms)
-            timing.add("refresh.record", rec)
-            timing.add(f"rule.{r.id}", ms)
-            timing.add(f"record.{r.id}", rec)
-            results.append(RunResult(r.id, True, ms, len(facts), len(conflicts)))
-            if log:
-                log(f"ran {r.id}: {len(facts)} facts, {len(conflicts)} conflicts, {ms} ms")
-        return results
+                timing.add(f"rule.{rid}", ms)
+                timing.add(f"rule.{rid}.run", ms_run)
+                timing.add(f"rule.{rid}.record", ms_rec)
+            if log and ran:
+                log(f"waiting {rid}: {', '.join(waits)}" if waits else f"ran {rid}: {nf} facts, {nc} conflicts, {ms} ms")
+        return out
 
     def status(self):
         """[(rule, current run?, ms, facts, waiting obligations)] for `dcp rules`."""
         rows = []
         for r in self.order():
             cur = self.store.current_run(r.id)
-            n = 0
-            ms = 0
-            if cur:
-                n, ms = self.store.run_stats(cur[0])
+            n, ms = self.store.run_stats(cur[0]) if cur else (0, 0)
             rows.append((r, cur is not None, ms, n, self.waiting(r)))
         return rows
