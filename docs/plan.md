@@ -1033,3 +1033,9 @@ N1 in progress (2026-10-31):
   recompute and both edits on gildegold; its Python body and the _code_end memo deleted): 53 ms per run, of which
   capstone ~35 ms (it formats every instruction's text; M.match decodes the ~2700 matched functions on every
   run, Python decoded each once and kept the end).
+- lde.rs (user decision: our own length decoder for the rules that read only lengths): the integer and x87
+  instructions compilers of the era emit from tables, every other instruction (SSE / MMX, far pointers, 16-bit
+  addressing, LOCK, rep on non-string instructions, wait, rare x87 register forms) through capstone one at a time,
+  so a result is capstone's. Checked: 20M random byte strings (the tables answer 92 %, no mismatch: the first runs
+  found segment registers 6 / 7, `mov cs`, DC D0..DF and F3 66 90) and every function of gildegold decoded whole
+  from our objects and from the image (9336 blobs, equal). M.match 53 ms -> 20 ms per run.

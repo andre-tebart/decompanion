@@ -83,6 +83,20 @@ pub fn lengths(dll: &str, code: &[u8], va: u32) -> Result<Vec<(u32, u32)>, Strin
     })
 }
 
+/// The size of the first instruction of `code` at `va`, None when it does not decode.
+pub fn one(dll: &str, code: &[u8], va: u32) -> Result<Option<usize>, String> {
+    with_engine(dll, |eng| {
+        let mut insn: *mut CsInsn = std::ptr::null_mut();
+        let len = code.len().min(16);
+        let n = unsafe { (eng.disasm)(eng.handle, code.as_ptr(), len, va as u64, 1, &mut insn) };
+        let out = if n > 0 { Some(unsafe { (*insn).size as usize }) } else { None };
+        if n > 0 {
+            unsafe { (eng.free)(insn, n) };
+        }
+        Ok(out)
+    })
+}
+
 fn with_engine<T>(dll: &str, f: impl FnOnce(&Engine) -> Result<T, String>) -> Result<T, String> {
     ENGINE.with(|e| {
         let mut e = e.borrow_mut();

@@ -8,6 +8,7 @@
 mod coff;
 mod compare;
 mod cs;
+mod lde;
 mod pe;
 mod rules;
 mod store;
@@ -440,6 +441,48 @@ fn compare_functions(
     Ok(out)
 }
 
+/// The length decoder against capstone: `random` random byte strings (a fixed seed; the fast path must give
+/// capstone's length wherever it answers, and must not answer where capstone does not decode), then each blob of
+/// `blobs` decoded whole both ways. (random checked, fast answers, mismatches with examples, blobs differing).
+#[pyfunction]
+fn lde_selftest(dll: &str, random: usize, blobs: Vec<Vec<u8>>) -> PyResult<(usize, usize, Vec<String>, usize)> {
+    let mut state: u64 = 0x9e3779b97f4a7c15;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let (mut fast, mut bad) = (0usize, Vec::new());
+    for _ in 0..random {
+        let mut b = [0u8; 16];
+        for x in b.iter_mut() {
+            *x = next() as u8;
+        }
+        if let Some(n) = lde::length(&b) {
+            fast += 1;
+            let c = cs::one(dll, &b, 0x401000).map_err(PyRuntimeError::new_err)?;
+            if c != Some(n) {
+                bad.push(format!("{:02x?}: tables {n}, capstone {c:?}", &b[..n.max(c.unwrap_or(0)).min(16)]));
+            }
+        }
+    }
+    let mut differ = 0;
+    for blob in &blobs {
+        let a = lde::lengths(dll, blob, 0x401000).map_err(PyRuntimeError::new_err)?;
+        let c = cs::lengths(dll, blob, 0x401000).map_err(PyRuntimeError::new_err)?;
+        if a != c {
+            differ += 1;
+            let k = a.iter().zip(c.iter()).position(|(x, y)| x != y).unwrap_or(a.len().min(c.len()));
+            let at = a.get(k).or(c.get(k)).map(|x| (x.0 - 0x401000) as usize).unwrap_or(0);
+            bad.push(format!("blob: tables {:?} capstone {:?} at +{:#x}: {:02x?}", a.get(k), c.get(k), at,
+                             &blob[at..(at + 12).min(blob.len())]));
+        }
+    }
+    bad.truncate(20);
+    Ok((random, fast, bad, differ))
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
@@ -447,5 +490,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(record_run, m)?)?;
     m.add_function(wrap_pyfunction!(compare_functions, m)?)?;
     m.add_function(wrap_pyfunction!(rules::run_rule, m)?)?;
+    m.add_function(wrap_pyfunction!(lde_selftest, m)?)?;
     Ok(())
 }

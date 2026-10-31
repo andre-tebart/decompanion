@@ -190,7 +190,7 @@ fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms:
             k += 1;
         }
     }
-    let lines = crate::cs::lengths(&ctx.capstone, &data, va).map_err(PyRuntimeError::new_err)?;
+    let lines = crate::lde::lengths(&ctx.capstone, &data, va).map_err(PyRuntimeError::new_err)?;
     let fill = |&(addr, size): &(u32, u32)| {
         let o = (addr - va) as usize;
         let b = &code[o..(o + size as usize).min(code.len())];
