@@ -9,6 +9,7 @@ mod coff;
 mod compare;
 mod cs;
 mod lde;
+mod layout;
 mod pe;
 mod rules;
 mod store;

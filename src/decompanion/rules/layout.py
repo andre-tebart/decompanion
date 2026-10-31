@@ -1037,21 +1037,9 @@ def leak_unit(ctx: RuleContext):
 
 
 # ------------------------------------------------------------------------------------------------ L9 / L10 / R5
-def our_starts(ctx) -> tuple[dict, set]:
-    """({start: how} of every start fact of the needed rules and every function / thunk symbol above open,
-    {inner labels of walked functions})."""
-    ours = {f.lo: f.value.get("how", "") for f in ctx.facts(Kind.start)}
-    inner = set()
-    for f in ctx.facts(Kind.symbol):
-        if f.value.get("skind") in ("func", "thunk") and f.level > O:
-            ours.setdefault(f.lo, "symbol")
-            inner.update(f.value.get("inner", ()))
-    return ours, inner
-
-
 @rule("L9.analyzer.span", version="2", ceiling=DE, inputs=("drafts",),
       needs=("L.decl", "L.src", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.codewalk", "S.thunk"),
-      helpers=(our_starts, game_range, lib_starts_of))
+      native=True)
 def analyzer_span(ctx: RuleContext):
     """L9 (warning): an analyzer's function of the game code (its entry before the first library byte) whose
     body (its address ranges, when the analyzer reports them: Ghidra's export does) holds one of our function
@@ -1060,27 +1048,9 @@ def analyzer_span(ctx: RuleContext):
     not count. The analyzer merged two functions (typically across a call that does not return): its
     pseudocode holds both, and a draft from it must stop at our start. A warning, not an error: the body is an
     external tool's analysis (a declaration), our starts rest on the bytes and stated conventions. Library code
-    is placed by its own members' bytes; the analyzer's view of it is no layout question and is not checked."""
-    ours, inner = our_starts(ctx)
-    keys = sorted(a for a in ours if a not in inner)
-    glo, ghi, _ = game_range(ctx.image, lib_starts_of(ctx.facts(Kind.symbol)))
-    for e in ctx.input("drafts"):
-        if not (glo <= e.start < ghi):
-            continue
-        hits = []
-        for lo, hi in e.ranges:
-            i = bisect.bisect_left(keys, lo)
-            while i < len(keys) and keys[i] < hi:
-                if keys[i] != e.start:
-                    hits.append(keys[i])
-                i += 1
-        if hits:
-            hits.sort()
-            yield ctx.conflict(Severity.warn, "L9", e.start, max(hi for _, hi in e.ranges),
-                               f"{e.analyzer}'s function {e.start:#x} ({e.name or '-'}, {e.size} bytes) spans our start"
-                               f"{'s' if len(hits) > 1 else ''} " + ", ".join(f"{a:#x} ({ours[a]})" for a in hits[:6])
-                               + (f" (+{len(hits) - 6} more)" if len(hits) > 6 else "") + ": its draft holds more than one function",
-                               a=f"decl:analyzer:{e.analyzer}:{e.source}")
+    is placed by its own members' bytes; the analyzer's view of it is no layout question and is not checked. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 @rule("L.src.extent", version="1", ceiling=DE, outputs=("symbol",),

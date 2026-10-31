@@ -46,6 +46,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Iterable
 
 from .. import native, timing
@@ -236,6 +237,7 @@ class Engine:
         p = self.project
         objs = p.input("objects") if "objects" in r.inputs else {}
         return {"rule": r.id, "version": r.version, "code_hash": r.code_hash, "input_hash": ih, "db": str(self.store.path),
+                "main": Path(self.store.main).resolve().as_uri() + "?mode=ro" if self.store.main else "",
                 "needed": list(needed), "root": str(p.root), "image": str(p.image.path),
                 "fill_forms": [bytes(f) for f in p.toolchain.fill_forms], "record": record, "capstone": capstone_dll(),
                 "objects": {u: (row.get("obj_hash") or "", bool(row.get("ok"))) for u, row in objs.items()},

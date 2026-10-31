@@ -21,6 +21,7 @@ pub struct Ctx {
     pub code_hash: String,
     pub input_hash: String,
     pub db: String,
+    pub main: String, // a worktree's main store (a read-only file: URI), '' outside one
     pub needed: Vec<String>,
     pub root: String,
     pub image: String,
@@ -927,6 +928,7 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         "M.data.content" => m_data_content(&ctx, db, &mut out),
         "M.data.draft" => m_data_draft(&ctx, db, &mut out),
         "D.data" => d_data(&ctx, db, &mut out),
+        "L9.analyzer.span" => crate::layout::l9_analyzer_span(&ctx, db, &mut out),
         other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
     })?;
     let ms = t0.elapsed().as_millis() as i64;
