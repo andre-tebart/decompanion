@@ -5,6 +5,12 @@
 //! `canonical` and `out_hash` are fact.canonical and the run hash, byte for byte: the shadow mode of the engine
 //! compares them with Python's for every rule's output.
 
+mod coff;
+mod compare;
+mod pe;
+mod rules;
+mod store;
+
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
@@ -18,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // ------------------------------------------------------------------------------------------------ canonical
 
 /// A string as json.dumps(ensure_ascii=True) spells it, quotes included.
-fn put_str(out: &mut String, s: &str) {
+pub(crate) fn put_str(out: &mut String, s: &str) {
     out.push('"');
     for ch in s.chars() {
         match ch {
@@ -122,24 +128,24 @@ fn canonical(v: &Bound<'_, PyAny>) -> PyResult<String> {
 // ------------------------------------------------------------------------------------------------ runs
 
 /// One fact of a run as record_run writes it.
-struct Row {
-    lo: i64,
-    hi: i64,
-    kind: String,
-    value: String, // canonical(value)
-    level: i64,
-    by: String,
-    reason: Option<String>,
+pub(crate) struct Row {
+    pub lo: i64,
+    pub hi: i64,
+    pub kind: String,
+    pub value: String, // canonical(value)
+    pub level: i64,
+    pub by: String,
+    pub reason: Option<String>,
 }
 
-struct ConflictRow {
-    severity: String,
-    check: String,
-    lo: i64,
-    hi: i64,
-    message: String,
-    a: String,
-    b: String,
+pub(crate) struct ConflictRow {
+    pub severity: String,
+    pub check: String,
+    pub lo: i64,
+    pub hi: i64,
+    pub message: String,
+    pub a: String,
+    pub b: String,
 }
 
 fn rows_of(facts: &Bound<'_, PyList>) -> PyResult<Vec<Row>> {
@@ -196,7 +202,7 @@ fn hash_parts<'a>(parts: impl Iterator<Item = String>) -> String {
 
 /// The out_hash of a run: sha256 over canonical(key + (level, by, reason)) of each fact in key order, then
 /// canonical((lo, hi, check, severity, message)) of each conflict in (lo, hi, check, message) order.
-fn run_hash(rows: &[Row], conflicts: &[ConflictRow]) -> String {
+pub(crate) fn run_hash(rows: &[Row], conflicts: &[ConflictRow]) -> String {
     let facts = rows.iter().map(|r| {
         let mut s = String::from("[");
         let _ = write!(s, "{},{},", r.lo, r.hi);
@@ -233,7 +239,7 @@ thread_local! {
     static CONNS: RefCell<HashMap<String, Connection>> = RefCell::new(HashMap::new());
 }
 
-fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>) -> PyResult<T> {
+pub(crate) fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>) -> PyResult<T> {
     CONNS.with(|c| {
         let mut map = c.borrow_mut();
         if !map.contains_key(path) {
@@ -247,6 +253,78 @@ fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>
         let db = map.get_mut(path).unwrap();
         f(db).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))
     })
+}
+
+/// The store's native connection for code that reports Python errors itself (a native rule).
+pub(crate) fn with_conn<T>(path: &str, f: impl FnOnce(&mut Connection) -> PyResult<T>) -> PyResult<T> {
+    with_db(path, |_| Ok(()))?;
+    CONNS.with(|c| f(c.borrow_mut().get_mut(path).unwrap()))
+}
+
+/// A run written as Store.record_run writes it, on the store's native connection: (run id, out_hash). `rows` and
+/// `confl` must be in record order (sort_rows / sort_conflicts). `shortcuts` false is DCP_NO_SHORTCUTS.
+pub(crate) fn write_run(
+    db: &mut Connection,
+    rule: &str,
+    version: &str,
+    code_hash: &str,
+    input_hash: &str,
+    rows: &[Row],
+    confl: &[ConflictRow],
+    ms: i64,
+    shortcuts: bool,
+) -> rusqlite::Result<(i64, String)> {
+    let out = run_hash(rows, confl);
+    let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    let tx = db.transaction()?;
+    let same: Option<i64> = if shortcuts {
+        tx.query_row("SELECT id FROM run WHERE rule=? AND current=1 AND out_hash=?", params![rule, out], |r| r.get(0)).ok()
+    } else {
+        None
+    };
+    let run_id;
+    if let Some(id) = same {
+        run_id = id;
+        let old: Vec<i64> = {
+            let mut st = tx.prepare("SELECT id FROM run WHERE rule=? AND id<>?")?;
+            st.query_map(params![rule, run_id], |r| r.get(0))?.collect::<Result<_, _>>()?
+        };
+        for oid in old {
+            tx.execute("DELETE FROM fact WHERE run_id=?", [oid])?;
+            tx.execute("DELETE FROM conflict WHERE run_id=?", [oid])?;
+            tx.execute("DELETE FROM run WHERE id=?", [oid])?;
+        }
+        tx.execute("UPDATE run SET version=?, code_hash=?, input_hash=?, ms=? WHERE id=?",
+                   params![version, code_hash, input_hash, ms, run_id])?;
+        tx.execute("DELETE FROM conflict WHERE run_id=?", [run_id])?;
+    } else {
+        let old: Vec<i64> = {
+            let mut st = tx.prepare("SELECT id FROM run WHERE rule=?")?;
+            st.query_map([rule], |r| r.get(0))?.collect::<Result<_, _>>()?
+        };
+        for oid in old {
+            tx.execute("DELETE FROM fact WHERE run_id=?", [oid])?;
+            tx.execute("DELETE FROM conflict WHERE run_id=?", [oid])?;
+            tx.execute("DELETE FROM run WHERE id=?", [oid])?;
+        }
+        tx.execute(
+            "INSERT INTO run (rule, version, code_hash, input_hash, out_hash, current, ms, at) VALUES (?,?,?,?,?,1,?,?)",
+            params![rule, version, code_hash, input_hash, out, ms, at],
+        )?;
+        run_id = tx.last_insert_rowid();
+        let mut st = tx.prepare("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
+        for r in rows {
+            st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
+        }
+    }
+    {
+        let mut st = tx.prepare("INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
+        for c in confl {
+            st.execute(params![run_id, c.severity, c.check, c.lo, c.hi, c.message, c.a, c.b])?;
+        }
+    }
+    tx.commit()?;
+    Ok((run_id, out))
 }
 
 /// Store.record_run in native code: (run id, out_hash). `shortcuts` false is DCP_NO_SHORTCUTS (always write).
@@ -266,74 +344,76 @@ fn record_run(
 ) -> PyResult<(i64, String)> {
     let rows = rows_of(facts)?;
     let confl = conflicts_of(conflicts)?;
-    py.detach(|| {
-        let out = run_hash(&rows, &confl);
-        let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-        with_db(db_path, |db| {
-            let tx = db.transaction()?;
-            let same: Option<i64> = if shortcuts {
-                tx.query_row(
-                    "SELECT id FROM run WHERE rule=? AND current=1 AND out_hash=?",
-                    params![rule, out],
-                    |r| r.get(0),
-                )
-                .ok()
-            } else {
-                None
-            };
-            let run_id;
-            if let Some(id) = same {
-                run_id = id;
-                let old: Vec<i64> = {
-                    let mut st = tx.prepare("SELECT id FROM run WHERE rule=? AND id<>?")?;
-                    st.query_map(params![rule, run_id], |r| r.get(0))?.collect::<Result<_, _>>()?
-                };
-                for oid in old {
-                    tx.execute("DELETE FROM fact WHERE run_id=?", [oid])?;
-                    tx.execute("DELETE FROM conflict WHERE run_id=?", [oid])?;
-                    tx.execute("DELETE FROM run WHERE id=?", [oid])?;
-                }
-                tx.execute(
-                    "UPDATE run SET version=?, code_hash=?, input_hash=?, ms=? WHERE id=?",
-                    params![version, code_hash, input_hash, ms, run_id],
-                )?;
-                tx.execute("DELETE FROM conflict WHERE run_id=?", [run_id])?;
-            } else {
-                let old: Vec<i64> = {
-                    let mut st = tx.prepare("SELECT id FROM run WHERE rule=?")?;
-                    st.query_map([rule], |r| r.get(0))?.collect::<Result<_, _>>()?
-                };
-                for oid in old {
-                    tx.execute("DELETE FROM fact WHERE run_id=?", [oid])?;
-                    tx.execute("DELETE FROM conflict WHERE run_id=?", [oid])?;
-                    tx.execute("DELETE FROM run WHERE id=?", [oid])?;
-                }
-                tx.execute(
-                    "INSERT INTO run (rule, version, code_hash, input_hash, out_hash, current, ms, at) VALUES (?,?,?,?,?,1,?,?)",
-                    params![rule, version, code_hash, input_hash, out, ms, at],
-                )?;
-                run_id = tx.last_insert_rowid();
-                {
-                    let mut st = tx.prepare(
-                        "INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)",
-                    )?;
-                    for r in &rows {
-                        st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
-                    }
-                }
-            }
-            {
-                let mut st = tx.prepare(
-                    "INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)",
-                )?;
-                for c in &confl {
-                    st.execute(params![run_id, c.severity, c.check, c.lo, c.hi, c.message, c.a, c.b])?;
-                }
-            }
-            tx.commit()?;
-            Ok((run_id, out))
-        })
+    py.detach(|| with_db(db_path, |db| write_run(db, rule, version, code_hash, input_hash, &rows, &confl, ms, shortcuts)))
+}
+
+// ------------------------------------------------------------------------------------------------ objects, image
+
+thread_local! {
+    static IMAGES: RefCell<HashMap<String, std::rc::Rc<pe::Image>>> = RefCell::new(HashMap::new());
+    static OBJS: RefCell<HashMap<String, std::rc::Rc<(coff::Obj, HashMap<String, usize>)>>> = RefCell::new(HashMap::new());
+}
+
+/// The image at path, read once per process (the path names a target binary that never changes in place: its
+/// sha256 is checked by the project).
+pub(crate) fn image(path: &str) -> PyResult<std::rc::Rc<pe::Image>> {
+    IMAGES.with(|m| {
+        if let Some(i) = m.borrow().get(path) {
+            return Ok(i.clone());
+        }
+        let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+        let img = std::rc::Rc::new(pe::Image::parse(data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?);
+        m.borrow_mut().insert(path.to_string(), img.clone());
+        Ok(img)
     })
+}
+
+/// The object at path with its function index, read once per process (build/obj/<content hash>.obj).
+pub(crate) fn object(path: &str) -> PyResult<std::rc::Rc<(coff::Obj, HashMap<String, usize>)>> {
+    OBJS.with(|m| {
+        if let Some(o) = m.borrow().get(path) {
+            return Ok(o.clone());
+        }
+        let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+        let obj = coff::Obj::parse(&data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+        let idx = obj.function_index();
+        let rc = std::rc::Rc::new((obj, idx));
+        let mut mm = m.borrow_mut();
+        if mm.len() > 400 {
+            mm.clear();
+        }
+        mm.insert(path.to_string(), rc.clone());
+        Ok(rc)
+    })
+}
+
+/// The shadow of match.compiled_functions' compares: for each (object path, C name, address, next start) the
+/// compare of that function, or None when the object defines no function of that name: (size, diffs, tail_ok,
+/// tail, abs_ours, abs_image, sites_ok, missing_sites, code_len, the relocated offsets with their kinds).
+#[pyfunction]
+fn compare_functions(
+    py: Python<'_>,
+    image_path: &str,
+    fill_forms: Vec<Vec<u8>>,
+    use_relocs: bool,
+    items: Vec<(String, String, u32, u32)>,
+) -> PyResult<Vec<Py<PyAny>>> {
+    let img = image(image_path)?;
+    let sites = if use_relocs { Some(img.relocations()) } else { None };
+    let mut out = Vec::with_capacity(items.len());
+    for (path, name, addr, next) in items {
+        let o = object(&path)?;
+        let Some(&k) = o.1.get(&name) else {
+            out.push(py.None());
+            continue;
+        };
+        let code = o.0.function_code(k);
+        let c = compare::compare(&img, &code, addr, sites.as_deref(), next, &fill_forms);
+        let relocs: Vec<(u32, u8, u32)> = code.relocs.iter().map(|(off, r)| (*off, r.kind_width().0, r.kind_width().1)).collect();
+        let t = (c.size, c.diffs, c.tail_ok, c.tail, c.abs_ours, c.abs_image, c.sites_ok, c.missing_sites, code.code_len, relocs);
+        out.push(t.into_pyobject(py)?.into_any().unbind());
+    }
+    Ok(out)
 }
 
 #[pymodule]
@@ -341,5 +421,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_function(wrap_pyfunction!(out_hash, m)?)?;
     m.add_function(wrap_pyfunction!(record_run, m)?)?;
+    m.add_function(wrap_pyfunction!(compare_functions, m)?)?;
+    m.add_function(wrap_pyfunction!(rules::run_rule, m)?)?;
     Ok(())
 }

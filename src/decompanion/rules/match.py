@@ -20,7 +20,7 @@ import re
 
 from ..build import compile as build_compile
 from ..ledger import srcscan
-from ..ledger.fact import Kind, Level, Severity, min_level, severity_of
+from ..ledger.fact import Kind, Level, Severity, severity_of
 from ..ledger.store import sha256
 from ..match import compare as C
 from ..objfmt.base import ABSOLUTE, RELATIVE
@@ -227,24 +227,14 @@ def match(ctx: RuleContext):
                                             "what": "match", "relocs": c.aid}, P)
 
 
-@rule("M.draft", version="1", ceiling=D, outputs=("source",), needs=("L.src", *WALK), inputs=("objects",),
-      helpers=(compiled_functions, starts_of, C))
+@rule("M.draft", version="1", ceiling=D, outputs=("source",), needs=("L.src", *WALK), inputs=("objects",), native=True)
 def draft(ctx: RuleContext):
     """R2. A sourced function of the current target whose compiled function is no byte match (M.match's
     criterion fails) owns the bytes the code walk gives its start: a `source` fact (what: draft) over the walk's
     function extent (S.codewalk, derived), with why it is no match (differing bytes, the original continuing,
     the relocation aid). Its level is the lower of the walk's and the address comment's (declared). A function
-    whose start the walk does not know owns nothing."""
-    funcs, _ = compiled_functions(ctx)
-    walk = {f.lo: f for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "func" and f.run == "S.codewalk"}
-    for s, obj, sym, code, c in funcs:
-        if c.matched:
-            continue
-        w = walk.get(s.lo)
-        if w is None:
-            continue
-        yield ctx.fact(s.lo, w.hi, Kind.source, {"file": s.value["file"], "unit": s.value["unit"], "symbol": s.value["symbol"],
-                                                 "what": "draft", "why": c.why()}, min_level(w.level, s.level, ceiling=D))
+    whose start the walk does not know owns nothing. Native: native/dcp_core/src/rules.rs m_draft."""
+    return ()
 
 
 # ------------------------------------------------------------------------------------------------ M8 / M9 / M10

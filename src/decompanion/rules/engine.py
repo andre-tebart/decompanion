@@ -28,6 +28,10 @@ A rule is a function decorated with @rule:
   not run, the engine records an empty run keyed by the obligations it waits on (obligations.py), so the rules
   that need it run on nothing from it; `dcp rules` shows `waiting: <obligation>`. The declaration changes the
   key, the rule runs, and everything downstream reruns as usual.
+- A `native` rule runs in the native core (native/dcp_core/src/rules.rs, docs/plan.md section 20) on the store
+  directly: it reads its needed runs' facts, records its run with the same out_hash. Its code hash covers the
+  crate's sources. While a rule is being ported its Python function is the reference: DCP_SHADOW=<rule> runs
+  both, records Python's output and fails on a different out_hash.
 - A `loader` rule (L.decl, L.src, L.analyzer) turns typed state written by a human or an external tool (a
   declarations file, the sources, the analyzer's drafts) into facts. It is the only kind of rule that may
   emit facts whose producer is a file line (`decl:<file>:<line>`, `src:<file>:<line>`) instead of the rule:
@@ -37,11 +41,12 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
-from .. import timing
+from .. import native, timing
 from ..ledger.fact import Conflict, Fact, Kind, Level
 from ..ledger.store import Store, sha256
 
@@ -59,6 +64,7 @@ class Rule:
     code_hash: str
     phase: str = ""
     loader: bool = False
+    native: bool = False
 
     @property
     def name(self):
@@ -69,16 +75,19 @@ RULES: dict[str, Rule] = {}
 
 
 def rule(id: str, *, version: str, ceiling: Level, outputs: tuple[str, ...] = (), needs: tuple[str, ...] = (),
-         inputs: tuple[str, ...] = (), phase: str = "", helpers: tuple = (), loader: bool = False):
+         inputs: tuple[str, ...] = (), phase: str = "", helpers: tuple = (), loader: bool = False, native: bool = False):
     def deco(fn):
         if id in RULES:
             raise RuntimeError(f"rule {id} registered twice")
         src = inspect.getsource(fn) + "".join(inspect.getsource(h) for h in helpers)
+        if native:
+            from ..native import source_hash
+            src += " native:" + source_hash()
         if loader and Level(ceiling) > Level.declared:
             raise RuntimeError(f"loader rule {id} with ceiling {Level(ceiling)}: loaders declare")
         RULES[id] = Rule(id, version, Level(ceiling), tuple(needs), tuple(outputs), tuple(inputs), fn,
                          inspect.getdoc(fn) or "", hashlib.sha256(src.encode()).hexdigest()[:16], phase or id.split(".")[0],
-                         loader)
+                         loader, native)
         return fn
     return deco
 
@@ -212,6 +221,16 @@ class Engine:
             parts.append(f"{name}={self.project.input_hash(name)}")
         return sha256(*parts)
 
+    def native_ctx(self, r: Rule, needed: tuple[str, ...], ih: str, record: bool) -> dict:
+        """What a native rule reads (rules.rs Ctx): the store, its needed runs, the project's paths and inputs."""
+        p = self.project
+        objs = p.input("objects") if "objects" in r.inputs else {}
+        return {"rule": r.id, "version": r.version, "code_hash": r.code_hash, "input_hash": ih, "db": str(self.store.path),
+                "needed": list(needed), "root": str(p.root), "image": str(p.image.path),
+                "fill_forms": [bytes(f) for f in p.toolchain.fill_forms], "record": record,
+                "objects": {u: (row.get("obj_hash") or "", bool(row.get("ok"))) for u, row in objs.items()},
+                "shortcuts": not os.environ.get("DCP_NO_SHORTCUTS")}
+
     def waiting(self, r: Rule) -> tuple[str, ...]:
         """The obligations a rule waits on: those of its inputs that are absent until a human declares them
         (Project.waiting; obligations.py names them)."""
@@ -250,6 +269,15 @@ class Engine:
                 results.append(RunResult(r.id, False, 0, 0, 0))
                 continue
             t0 = time.perf_counter()
+            if r.native and not native.shadow(r.id):
+                nf, nc, _ = native.core().run_rule(self.native_ctx(r, needed, ih, record=True))
+                ms = int((time.perf_counter() - t0) * 1000)
+                timing.add("refresh.rules", ms)
+                timing.add(f"rule.{r.id}", ms)
+                results.append(RunResult(r.id, True, ms, nf, nc))
+                if log:
+                    log(f"ran {r.id} (native): {nf} facts, {nc} conflicts, {ms} ms")
+                continue
             ctx = RuleContext(self, r, needed)
             facts, conflicts = [], []
             for item in r.fn(ctx) or ():
@@ -260,6 +288,12 @@ class Engine:
                 else:
                     raise RuleError(f"{r.id} yielded {type(item).__name__}")
             ms = int((time.perf_counter() - t0) * 1000)
+            if r.native:                               # shadow: Python is the reference, the native run must agree
+                ref = native.core().out_hash(facts, conflicts)
+                nf, nc, got = native.core().run_rule(self.native_ctx(r, needed, ih, record=False))
+                if got != ref:
+                    raise RuleError(f"shadow {r.id}: the native rule's output differs from Python's ({nf} facts, "
+                                    f"{nc} conflicts native; {len(facts)}, {len(conflicts)} Python)")
             t1 = time.perf_counter()
             self.store.record_run(r.id, r.version, r.code_hash, ih, facts, conflicts, ms)
             rec = (time.perf_counter() - t1) * 1000

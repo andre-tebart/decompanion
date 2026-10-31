@@ -1007,3 +1007,18 @@ The lesson for N1 .. N3: a fact that is a Python object costs nearly as much to 
 a dict walked through the C API) as Python's own record did; the gain comes when a rule's facts are made and
 recorded natively, and when the rules that read them read the store natively too, so producers and consumers
 move together.
+
+N1 in progress (2026-10-31):
+- pe.rs / coff.rs / compare.rs: the image, COFF objects (function index with VC6's undecorate, function code,
+  relocation mask) and the compare. Shadow: all 4668 functions of gildegold equal to Python's compare (diffs,
+  tail, relocation aid, code length, relocation kinds); 0.043 s for all of them (Python, cold: 0.67 s).
+  gildegold's exe has no base relocations: the dll aid is covered by the tests' synthetic dll only.
+- store.rs: the current runs' facts for native rules (serde_json values, decoded once per run, the merged list
+  per selection of runs kept, Store.facts' order); canonical of a JSON value with Python's float repr; Out, a
+  rule's facts and conflicts in record order. rules.rs: compiled_functions and the dispatcher; the engine runs
+  a `native=True` rule through dcp_core.run_rule (DCP_SHADOW=<rule>: Python's output recorded, the native
+  out_hash must equal it).
+- M.draft is native (shadow equal over the test suite, gildegold's bench scenarios and a forced recompute of all
+  56 rules; its Python body deleted). Alone it is no gain (26 .. 62 ms native, 28 .. 68 ms Python, which shared
+  compiled_functions' memo with five other rules): the gain comes with M.match, M8.reloc, M.lint, G.grade and
+  the data rules in Rust, sharing one compare.
