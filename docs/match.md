@@ -12,7 +12,7 @@ uv run dcp fn NAME|0xADDR         # one function: its file, lines (its span) and
 ```
 
 One translation unit per unit file: `src/<unit>.c`, compiled as it stands, with the target's define
-`DCP_TARGET_<name>` (Toolchain.define_flag; build/tu.py): a function of some targets only stands under `#if` on
+`DCP_TARGET_<name>` (plan.rs): a function of some targets only stands under `#if` on
 their macros. A function belongs to the targets its address comment lists (a bare address: the default
 target), an unlinked one to every target; a unit without a function of the target is no unit of it. The
 compiler's diagnostics name the unit's file and its physical line (a `#line` name or pin of the file mapped
@@ -64,7 +64,7 @@ A data extent claims only the bytes the definition certainly owns (`least_size`)
 declarations in address order with section, size, room up to the next symbol, level and conflicts.
 
 `dcp data fix [--check D5,D1,D4] [--unit U] [--write]` answers the data checks with source rewrites
-(source/datafix.py): D5 `T x;` -> `= 0` / `= {0}` at the end of the declarator; D1 shrinks an array's first
+(the core's datafix.rs): D5 `T x;` -> `= 0` / `= {0}` at the end of the declarator; D1 shrinks an array's first
 dimension to the room before the next symbol (externs with the old dimension follow), only for D1 errors and
 only when it shrinks; D4 keeps the longest run of a unit's definitions already in address order and moves
 every other one in front of its successor by address (a non-static one moving down leaves `extern T x;` for
@@ -80,7 +80,7 @@ whole if a byte match was still lost). gildegold, 2026-10-30: 616 data errors ->
 
 ## Grades
 
-Two grades per (function, target), computed by `G.grade` (rules/grade.py) into `grade` facts:
+Two grades per (function, target), computed by `G.grade` (the core's grade.rs, readability.rs) into `grade` facts:
 
 **code** `draft → shape → byte`
 - B1 byte: M.match holds.
@@ -92,7 +92,7 @@ Two grades per (function, target), computed by `G.grade` (rules/grade.py) into `
   the switch tables, when both sides have them, are equal.
 - B3 draft: otherwise, or no compiled object.
 
-What the diff compares (match/diffclass.py `compare_function`, the one reading `G.grade`, `dcp asmdiff` and
+What the diff compares (the core's diffclass.rs, the one reading `G.grade`, `dcp asmdiff` and
 `dcp diffclass` share): our instructions up to the first compiler label after the code (CL's switch tables),
 and the original over the function's extent (the code walk's, else the source extent `L.src.extent`) cut at
 its first switch table. A walk of the function's slot (up to the next known start) finds the jump tables its
@@ -206,7 +206,7 @@ the library's flags and prove nothing about the user's units.
 
 ## Lint (`dcp lint`)
 
-clang, in process through the LLVM installation's libclang (source/cparse.py; `[lint] libclang = ...`, else the
+clang, in process through the LLVM installation's libclang (the core's clang.rs; `[lint] libclang = ...`, else the
 libclang.dll beside `clang` on PATH, else `C:/Program Files/LLVM/bin/libclang.dll`), parses each unit's file (the target's define set) as
 C89 with MS compatibility against the toolchain's headers: M6 / M7 and Q7. The units one lint parses go to
 worker processes; a unit relinted alone (after an edit of it) is parsed in process and kept live, so the next
@@ -238,7 +238,7 @@ first 20 lines: it is left out of the all-declarations unit, and a file outside 
 an M5 error. Per-unit results are cached by the unit's text, the clang arguments, libclang's version and the unit's include
 hash. `dcp check` lints when libclang is installed.
 
-`dcp headers conflicts UNIT HEADER..` (source/headers.py) answers "what would including these headers into
+`dcp headers conflicts UNIT HEADER..` (the core's headers.rs) answers "what would including these headers into
 the unit's head collide with" before the include is made: the unit is parsed twice the way lint parses it,
 as it is and with the includes after its last one (or before the first file-scope statement using a name
 the headers declare, when that comes first: a head that uses a duplicate above its last include; `--at LINE`

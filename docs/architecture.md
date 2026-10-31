@@ -1,157 +1,108 @@
-# decompanion: the plugin seams
+# decompanion: the core and its seams
 
-The rules (`rules/*.py`) and the ledger (`ledger/*.py`) are generic. Everything that depends on the container,
-the object format, the toolchain, the instruction set or the third-party analyzer lives behind one of five seams,
-each a package with a registry (`FORMATS` / `TOOLCHAINS` / `ISAS` / `ANALYZERS` and a `register` decorator in its
-`__init__.py`; the package imports its plugins, each plugin module registers itself, so adding a plugin touches
-only its own package). VC6 / PE32 / COFF / x86-32 are the only implementations of the first four so far; the
-analyzers are Ghidra and none (the core's analyzers.rs).
+Every computation is the native core's (`native/dcp_core`, Rust, loaded by `native.py` as `decompanion._core`).
+Python is the frontend: argument parsing (`cli*.py`), the daemon / client transport (`daemon.py`, `client.py`),
+printing what the core returns, and locating the external libraries the core loads (capstone through its Python
+package, libclang through the LLVM installation). A command is: parse the arguments, refresh the rules (the core's
+engine), one core call, print its lines.
+
+The rules and the ledger are generic. Everything that depends on the container, the object format, the toolchain,
+the instruction set or the third-party analyzer lives behind one of five seams. VC6 / PE32 / COFF / x86-32 are the
+only implementations of the first four so far; the analyzers are Ghidra and none.
 
 ## The five seams
 
-| seam | package | selected by | implementation |
+| seam | in the core | selected by | implementation |
 |---|---|---|---|
-| Image | `image/base.py` | `[[target]] image =` (default: the only registered format; `dcp init` opens the binary with each) | `image/pe32.py` |
-| ObjectFormat | `objfmt/base.py` | `Toolchain.object_format` | `objfmt/coff.py` |
-| Toolchain | the core's `toolchain.rs` (trait `Toolchain`) | `[toolchain] plugin =` (default: the only registered one) | `vc6` (`toolchain.rs`, `vc6.rs`) |
-| Isa | `isa/base.py` | `[[target]] isa =` (default: `Image.default_isa`, the machine type's) | `isa/x86.py` (capstone) |
-| Analyzer | `analyzers/__init__.py` (the core's `analyzers.rs`) | `[analyzer] plugin =` (default: `ghidra`; `dcp init` writes the installation it finds, else `none`) | `ghidra`, `none` |
+| Image | `pe.rs` (`Image`), `pyimage.rs` (its Python face) | `[[target]] image =` (default: the only format; `dcp init` opens the binary with it) | PE32 |
+| ObjectFormat | `coff.rs` (`Obj`, `FunctionCode`, archives) | the toolchain | COFF |
+| Toolchain | `toolchain.rs` (trait `Toolchain`), `vc6.rs` (the tools) | `[toolchain] plugin =` (default: the only one) | `vc6` |
+| Isa | `cs.rs` (capstone's C API), `x86.rs` (decoder, listing, explanations) | `[[target]] isa =` (default: the image's machine type) | x86 |
+| Analyzer | `analyzers.rs`, `dialect.rs` | `[analyzer] plugin =` (default: `ghidra`; `dcp init` writes the installation it finds, else `none`) | `ghidra`, `none` |
 
-`Project.image`, `Project.objfmt`, `Project.toolchain` and `Project.isa` hand the selected plugins to the rules.
-The source of every plugin package of the first four and the selection are an input of every rule run
-(`plugins`, next to the image), so editing a plugin reruns the rules that read it. `Project.analyzer` is no
-input of any rule: no rule runs the tool or asks the plugin. `dcp setup` runs the export (build/analyzer.py) and
-stores its entries (ledger/drafts.py); the rules read the stored entries through the input `drafts`.
+The selection and the core's source hash are the input `plugins` of every rule run (next to the image), so a
+change of the core reruns every rule. The analyzer is no input of any rule: no rule runs the tool. `dcp setup` runs
+its export (`analyzers.rs`) and stores the entries as blobs of kind `drafts`; the rules read them through the input
+`drafts`.
 
-### Image (image/base.py)
+### Image (pe.rs)
 
-- `sections` (Section: `va`, `vsize`, `raw_off`, `raw_size`, `chars`; `code`, `executable`, `writable`,
-  `uninitialized` from the format's characteristic bits; `holds_code` = code or executable; `end`)
-- `base`, `end`, `entry`, `is_dll`, `machine`, `read(va, n)`, `read_ptr(va)`, `ptr_size`, `section_of(va)`,
-  `section_data(section)`, `in_image(va)`, `cstr(va)`
-- `imports()` (DLL, name / ordinal, iat slot), `exports()`, `relocations()` (absolute relocation sites), `rich()`
-- `header_regions()`, `directory_regions()`, `import_regions()`, `export_regions()`: (what, lo, hi) region
-  triples in the format's own vocabulary (`pe.header`, `pe.rich`, `pe.reloc`, `pe.iat`, ...)
-- `default_isa`: the Isa key the machine type implies (PE32: i386 -> `x86`)
-- `kind`: what the start-up code calls: `dll`, `gui`, `console` (PE32: the DLL characteristic, subsystem 2 / 3)
+- sections (`va`, `vsize`, `raw_off`, `raw_size`, `chars`; `code`, `executable`, `holds_code`, `end`), `base`,
+  `end`, `entry`, `is_dll`, `machine`, `timestamp`, `linker_version`, `read(va, n)`, `section_of(va)`,
+  `section_data`, `cstr(va)`
+- imports (DLL, name / ordinal, iat slot, hint), exports (with forwarders), relocations, the Rich entries
+- the regions of its own machinery as (what, lo, hi) in the format's vocabulary (`pe.header`, `pe.rich`,
+  `pe.reloc`, `pe.iat`, ...): header, directory, import and export regions
+- `default_isa` (i386 -> `x86`), `kind` (`dll`, `gui`, `console`)
 
-### ObjectFormat (objfmt/base.py)
+### ObjectFormat (coff.rs)
 
-- `archive_objects(path)`: the objects of a library archive (Obj: `name`, `sections`, `code_sections`,
-  `symbols`)
-- Section: `data`, `size`, `relocs`, `syms`, `code`, `discard`, `mask()` (1 for every byte a relocation
-  rewrites), `addend(reloc)` (what the object holds at the site)
-- Reloc: `offset`, `symbol_index`, `kind` (`absolute` / `relative` / `absolute-rva` / None), `width`,
-  `resolve(site_va, site_bytes, addend)` -> the address the linked site refers to
-- Symbol: `name`, `value`, `section`, `defined`, `external`, `function`, `named` (external or file-static),
-  `unresolved` (defined elsewhere), `dllimport` (a reference through an import slot)
-- `tool_stamps(paths)`: raw tool stamp -> objects (COFF: the `@comp.id` symbol)
-- Milestone 3: `read_object(path)`; Obj `functions()`, `function_code(symbol)` -> FunctionCode (`data`, `mask`,
-  `relocs` as (offset, Reloc, Symbol), from the symbol to the next named symbol of its section or the section
-  end), `data_symbols()` -> (symbol, `data` / `rdata` / `bss` / `common`, size); Symbol `constant` (`string` /
-  `float`: a compiler literal), `common`, `imported` (the linker symbol a dllimport reference imports);
-  `import_symbols(lib)`; `alias_object(path, [(alias, canonical)])` (COFF: weak externals, search alias)
+- library archives: members, the first linker member's symbol table, import members; `@comp.id` tool stamps
+- objects: sections (data, relocations, mask of the bytes a relocation rewrites), symbols (external, unresolved,
+  dllimport, constants), `function_index`, `function_code` (a function's bytes, mask and relocations to the next
+  named symbol), data symbols; relocations as absolute / relative / absolute-rva with a width and `resolve`
+- the writers the link needs: alias objects (weak externals), import libraries
 
-### Toolchain (the core's toolchain.rs)
+### Toolchain (toolchain.rs, vc6.rs)
 
-- `object_format`: the ObjectFormat key of its objects
-- `fill_forms`: the alignment fill byte forms; `fill_origin(run)`: names a fill run (VC6: `cc` / `nop` / `mixed`)
-- `function_alignment`: the boundary every compiled function starts at
-- `import_stubs(section bytes)` -> (offset, slot) candidates; `import_stub_size`; `stub_placement` (the linker's
-  layout convention, prose cited by S.thunk)
-- `user_entry_names()`: decorated user entry -> C name; `crt_entry_symbols()`, `crt_user_entry(symbol)`
-- `archive_tools(stamps)`: tool stamps decoded to Rich (prodid, build)
-- `rich_product`, `rich_candidates`, `declare`, `build_name`: the Rich header vocabulary (nothing is picked)
-- `library_archives()`, `import_library_name(dll)`
-- The guided decisions (milestone 6; evidence only, the plugin never declares): `installs()` (the installations
-  found on this machine: Install `root`, `versions`, `compiler_build`, `linker_build`, `ok`; VC6: `$VC6_ROOT`,
-  `C:/Tools/*`, Program Files `Microsoft Visual Studio`, each holding `VC98/Bin/CL.EXE`), `install(root)` (VC6:
-  the version resources of CL.EXE, C1.DLL, C2.DLL and LINK.EXE; the compiler build is C2's, the back end's,
-  which is what a Rich compiler entry records: CL.EXE reports 12.00.8804 in SP5 + PP and SP6 alike),
-  `crt_strings(image)` (VC6: `Microsoft Visual C++ Runtime Library`, `__MSVCRT_HEAP_SELECT`, `runtime error `),
-  `library_candidates()` (VC6: LIBC, LIBCD, LIBCMT, LIBCMTD, MSVCRT(D), the C++ libraries, OLDNAMES present
-  under `VC98/Lib`), `archive_spec(name)` (`LIBCMT` -> `{toolchain.root}/VC98/Lib/LIBCMT.LIB`),
-  `wizard_cflags()` (VC6: `/O2 /Gy`, the release wizard's)
-- Milestone 3, the tools themselves:
-  - `available()`: the compiler is installed (else nothing compiles and the match rules warn)
-  - `compile(src, obj, flags, include_dirs, cwd)` -> CompileResult (`ok`, `log`, `diagnostics` as Diagnostic
-    file / line / severity / code / message, `refused_flags`): one compiler process for one unit (VC6:
-    `CL.EXE /nologo /c <flags> /I.. /Fo<obj> <src>`)
-  - `includes(src, flags, include_dirs, cwd)` -> (the files the preprocessor read, log) (VC6: `CL /E`, the `/P`
-    listing on stdout, its `#line` directives; VC6 has no /showIncludes)
-  - `include_search_dirs(dirs)`: every directory an include may resolve to (their listing keys the include-set
-    cache); `library_search_dirs()`
-  - `undecorate(symbol)` (`_f@12` -> `f`), `data_symbol(cname)` (`f` -> `_f`)
-  - `link(LinkJob)` -> LinkResult (`ok`, `log`, `unresolved`, `errors`, `args`): one linker process (VC6:
-    `LINK.EXE @response file`, the core's vc6.rs)
-  - `default_libraries(kind)`, `entry_object(kind, dir, user_entry)` (a generated stub when the sources name
-    the user entry otherwise), `module_definition(name, exports)` (the .def text with ordinals)
-  - `probe_grid()` -> [(group, alternatives)], `probe_defaults()` (the tie-break)
-- Milestone 4, drafting: `declaring_header(name)` (the system header that declares a C library function; VC6:
-  the first header of VC98/Include declaring it `__cdecl`, the C89 headers first), `import_header(dll)` (VC6:
-  `windows.h` for every system DLL); the language beyond standard C that a draft is spelled in: `keywords`
-  (VC6: `__cdecl __stdcall __fastcall __thiscall __int64 __declspec __asm`), `default_convention` (the
-  skeleton's prototype; VC6: `__cdecl`), `sized_conventions` (the conventions whose decorated name carries the
-  parameters' size, so a declaration needs the whole prototype; VC6: `__stdcall __fastcall __thiscall`)
+- fill forms and `fill_origin`, `function_alignment`, import stubs (`FF 25 <slot>`, 6 bytes) and their placement
+- the Rich vocabulary: `rich_product`, `rich_candidates`, `declare`, `build_name`, `archive_tools`
+- the CRT entries and the user entries they call; `library_archives`, `import_library_name`, `crt_strings`
+- the language beyond C a draft is spelled in: `keywords`, `default_convention`, `sized_conventions`,
+  `import_header`, `standard_headers`
+- the evidence of the guided decisions (the plugin never declares): `installs()` (VC6: `$VC6_ROOT`, `C:/Tools/*`,
+  Program Files `Microsoft Visual Studio`, each holding `VC98/Bin/CL.EXE`), `install(root)` (the version resources
+  of CL.EXE, C1.DLL, C2.DLL and LINK.EXE; the compiler build is C2's, which is what a Rich compiler entry records),
+  `archive_spec(name)` (`LIBCMT` -> `{toolchain.root}/VC98/Lib/LIBCMT.LIB`), `wizard_cflags()` (`/O2 /Gy`)
+- the tools (vc6.rs): CL per unit (`/c`, `/E` for the include set), LINK with a response file, LIB, their
+  diagnostics; the plan of the units and their flags (plan.rs), the compile (compile.rs), the link and its classes
+  (link.rs), the flag probe (probe.rs, its analysis mrules.rs)
 
-### Isa (isa/base.py)
+### Isa (cs.rs, x86.rs)
 
-- `decoder(image, lo, hi, fill_forms)` -> Decoder over a code range:
-  - `decode(addr)`: Ins records in address order (memoised per rule run): `addr`, `size`, `mn`, `flow`
-    (OTHER, CALL, JUMP, CJUMP, IJUMP, RET), `target` (direct), `mem` (displacements into the image with operand
-    size), `imms`, `table` (the table an indirect jump reads), `fill` (one of the toolchain's fill forms)
-  - `table_shape(jump, recent)` -> TableShape (`entry_size`, `bound`, `index_table`, `index_size`)
-  - `field_starts(ins)`: where a relocated address field may start inside the instruction
-  - `read_entry(addr, size)`: a table entry
-- `ptr_size`, `byteorder`
-- Milestone 3, the instruction diff: `listing(code, va, mask, image_range, fill_forms)` -> [Line(addr, size,
-  text, fill)] (numbers inside the image and our relocated fields read `X`); `explain(xa, xb, context)` -> the
-  ISA's hunk class (`regs` / `slots` / `order` after a renaming / `sib` / `fpu`) or None; `one_renaming(a, b)`;
-  `rename_registers(lines, mapping)` (x86: ported from the first attempt's diffclass onto capstone's spelling)
-- Milestone 4, reading: `disasm(code, va, fill_forms)` -> [Line] in the disassembler's own text (`dcp disasm`,
-  the skeleton of `dcp draft`); `numbers(text)` -> (start, end, value) of every number in such a text (where
-  `dcp disasm` puts the ledger's name of an address)
+- capstone through its C API, the very library the Python package loaded
+- the walk's decoder (flow kinds, direct targets, memory displacements with their sizes, immediates, switch-table
+  shapes, the fields a relocation may start in), the listing of the instruction diff (numbers inside the image and
+  our relocated fields read `X`), the hunk explanations (`regs`, `slots`, `order`, `sib`, `fpu`), register renaming
 
-### Analyzer (analyzers/base.py)
+### Analyzer (analyzers.rs, dialect.rs)
 
 A third-party tool that reads the image and hands back opinions: function starts, names, a pseudocode body per
-function. Neither a toolchain nor a language property; its answers are declarations (level declared, reason
-`<key> analysis`), never derived or proven. Constructed like a Toolchain with its table (`[analyzer]`) and the
-project's path expansion.
+function. Its answers are declarations (level declared, reason `<key> analysis`), never derived or proven.
 
 - `key`: `ghidra` | `none`: the `[analyzer] plugin` value, the `how` of its start facts, the
   `decl:analyzer:<key>:<file>` producer of L.analyzer's facts, the origin `analyzer` of its names
-- `available()` -> Install (`where`, `detail`; `ok`, else `reason`): Ghidra looks for its installation and the
-  JDK (`[analyzer] root` / `java_home`, `$GHIDRA_INSTALL_DIR` / `$JAVA_HOME`, the newest `C:/Tools/ghidra_*` /
-  JDK 21); none is always there
-- `script_hash()`: what makes the export besides the image and our starts (Ghidra: the post-script
-  `data/ghidra/DcpExport.java`); part of the export key
-- `export(install, image, isa_key, starts, out_dir, fresh)` -> Export: `entries` (Entry: `start`, `end`, `ranges`,
-  `size`, `name`, `body` (the pseudocode), `seeded` (made at one of our starts on our request: no claim of the
-  tool's), `requested`, `source`, `analyzer`), `failed` (one message per item), `digest` (the analysed binary's
-  sha256), `ms`, `out`. Ghidra: `analyzeHeadless` with the
-  post-script, the language from the instruction set (`LANGUAGES`: `x86` -> `x86:LE:32:default`), project and
-  log in `out_dir` = `build/ghidra/<target>/`; none: nothing
-- The dialect, what `dcp draft` reads (source/draft.py composes it with the toolchain's language out):
-  `is_placeholder(name)` (names the ledger never adopts; Ghidra: `FUN_` / `LAB_` / `SUB_` / `DAT_` / `PTR_` /
-  `thunk_FUN_` + hex), `rewrite(body, own, names, labels)` (its labels to our names: `own` = the drafted
-  function's (theirs, ours), `names` = how a draft spells a function / datum at an address, `labels` = the
-  tool's name -> address of every function it named), `data_labels(body)` -> {address: C type} (Ghidra: by the
-  label prefix, `PTR_` `undefined *`, `s_` / `u_` `char []`, ...), `unknown_data_type` (Ghidra: `undefined4`),
-  `types_header` (the shipped header of its type names; Ghidra: `data/dcp_ghidra.h`; none: None)
-- `analyzers.dialect(key)`: the plugin without configuration, for reading stored entries of any analyzer
-  (the core's dialect.rs, names.rs, draft.rs)
+- `available()`: Ghidra looks for its installation and the JDK (`[analyzer] root` / `java_home`,
+  `$GHIDRA_INSTALL_DIR` / `$JAVA_HOME`, the newest `C:/Tools/ghidra_*` / JDK 21); none is always there
+- the export: `analyzeHeadless` with the post-script `data/ghidra/DcpExport.java` (embedded in the core and written
+  beside the project; its hash is part of the export key), the language from the instruction set, project and log
+  in `build/ghidra/<target>/`; the entries replace the store's drafts when the export key sha256(key, image,
+  script, our starts) differs from the store's meta `drafts.export` (or `--analyzer-force`); a start the last
+  export was seeded with that is no longer ours makes the export fresh
+- the dialect `dcp draft` reads (dialect.rs): the placeholder names the ledger never adopts (`FUN_` / `LAB_` /
+  `DAT_` / `PTR_` ... + hex), the rewrite of its labels to our names, the C type of a data label, its types header
+  (`data/dcp_ghidra.h`)
 
-The run (`build/analyzer.py`, inside `dcp setup` after the rules): when `available()` and the export key
-sha256(key, image sha256, `script_hash()`, our starts) differs from the store's meta `drafts.export` (or
-`--analyzer-force`), `export` and `ledger/drafts.py replace` (the store's drafts become exactly the export's
-entries: blobs of kind `drafts` keyed by image and start, meta `drafts` their hash = the input `drafts`), then
-the rules again: L.analyzer (its starts) and L9 read the input, the rules that need every start (L4, L5) follow.
-When a start the last export was seeded with is no longer ours (meta `drafts.starts`; the typical case is the
-first `dcp setup`, which runs before the library archives are declared), the export is `fresh`: Ghidra imports
-and analyses again instead of reusing its project, so no function seeded at a stale start stays in it and the
-drafts do not depend on the order of the declarations (milestone 6).
-Our starts are every start fact but L.analyzer's and every walked or placed function, inner labels excluded.
+## Where things live in the core
+
+- the configuration, the targets, the declarations' reading and the input hashes: project.rs; the toml line editor
+  that writes declarations: tomledit.rs; `dcp init`, `target add`, `skills install`: init.rs
+- the store (schema, connection, facts, runs, blobs, the byte map): store.rs, pystore.rs; the file memo: fsmemo.rs
+- the engine (order, run keys, waiting, the output checks): engine.rs; the registry of every rule with its needs,
+  outputs, inputs, ceiling and criterion: registry.rs; the rules: rules.rs, setup.rs, walk.rs, crt.rs, layout.rs,
+  decl.rs (the `.dcl` grammar and L.decl), mrules.rs, grade.rs, readability.rs
+- the C front end: clang.rs (libclang in process), frontend.rs (the scan of a tree, memoised per file content),
+  srcscan.rs (one file's scan); lint: lint.rs, lintrun.rs
+- the source tools: draft.rs, edit.rs, units.rs, rename.rs, datafix.rs, headers.rs, names.rs
+- the read side and the commands' bodies: cliread.rs (disasm, dump, refs, layout literals / fptrs / starts),
+  clicmd.rs (report, why, facts, conflicts, rules, map, build, check, fn, target list, decl add, layout next /
+  units / propose, the session gate), matchcmd.rs (grade, next, asmdiff, diffclass, promote, accept, link, probe,
+  lint), asmcmd.rs, compare.rs, diffclass.rs, difflib.rs, queues.rs (queues, shards, baseline, level ladder),
+  layoutview.rs, decide.rs (the obligations, `dcp status`, the declarations), session.rs, libcand.rs, wt.rs
+
+Tests of the core's code are Rust's (`cargo test`, a run fails past 2 s: a watchdog in lib.rs, DCP_TEST_BUDGET_MS);
+the Python tests drive the CLI (`tests/`, the default run in-memory and under 2 s, `-m e2e` for the commands on
+the synthetic dll and the installed binaries).
 
 ## The obligation model (milestone 6: guided decisions)
 
@@ -184,7 +135,7 @@ obligations are a gate: `dcp session start` and `dcp check` fail on them.
 
 How a declaration feeds the rules: an external input may be absent until declared (`Project.waiting`): `libs`
 waits for `libs.archives` (and for `toolchain.root` when the archives are spelled under it), `toolchain` for
-`toolchain.compiler` and `toolchain.linker`. A rule reading a waiting input waits (rules/engine.py): its
+`toolchain.compiler` and `toolchain.linker`. A rule reading a waiting input waits (engine.rs): its
 criterion does not run, the engine records an empty run keyed by the obligations, the rules that need it run
 on nothing from it, and `dcp rules` prints `waiting: <obligation>`. So setup runs in two stages around the
 toolchain obligation: the first `dcp setup` runs every rule that needs no declaration (headers, sections, data
@@ -212,7 +163,7 @@ to the end of its section's raw data (a Section's own fields).
 
 ## The conventions the walk and the thunk rule rest on (VC6 / LINK / x86-32)
 
-Walk (rules/walk.py, derived level):
+Walk (walk.rs, derived level):
 - W1 a function's code is contiguous between its start and the next start, its jump tables follow its code;
   a direct jump crossing a start is a tail call (VC6: `pop ..; jmp f` for `return f(args)`); a table entry
   never points past the next start.
@@ -222,7 +173,7 @@ Walk (rules/walk.py, derived level):
 - W4 a function ends at a return, an unconditional jump, and at alignment fill reached by fall-through
   (VC6 fill: `90`, `CC`, `8B FF`, `8D 49 00`); and at a known start directly after a call (the callee does not
   return: VC6 emits nothing after a call to `_exit` / `_endthread`; S.codewalk v3, milestone 3).
-- Switch tables (isa/x86.py): `cmp r, N` ... [`mov(zx) r, byte [r + index table]`] ... `jmp dword [r*4 +
+- Switch tables (x86.rs): `cmp r, N` ... [`mov(zx) r, byte [r + index table]`] ... `jmp dword [r*4 +
   table]`; the bound is the first `cmp reg, imm` (0 <= imm < 0x400) found scanning back at most 11 instructions,
   the index table the first byte load with a base or index register whose displacement lies in the code.
 
@@ -247,16 +198,3 @@ last non-fill instruction); the switch tables of a function lie in its section; 
 the C, stdcall and fastcall spellings of `f`; the probe grid `/O1 /O2 /Ox` x `/G3 /G4 /G5 /G6 /GB` x `/Oy /Oy-`
 x `/Gy` x `/GF /Gf` x `/Ob0 /Ob1 /Ob2` with the defaults `/GB /Oy /GF /Ob1`; LINK's `.def` syntax
 `LIBRARY name` / `EXPORTS f @ordinal`.
-
-Where the layout tooling lives (milestone 4): `analyzers/` (the Analyzer seam; Ghidra's post-script
-`data/ghidra/DcpExport.java` and types header `data/dcp_ghidra.h` are referenced only from
-`analyzers/ghidra.py`), `build/analyzer.py` (the export inside `dcp setup`), `ledger/drafts.py` (the stored
-entries), `ledger/names.py` (one C name per address by a fixed order of origins),
-`source/draft.py` / `source/units.py` / `source/edit.py` (the files `dcp draft`, `dcp unit new|join|rename` and
-`dcp rename` write; names.log), `repo/session.py` (the session gate's record and the computed report),
-`cli_read.py` / `cli_draft.py` / `cli_layout.py` / `cli_session.py` (the commands), `skills/` (the agent skills).
-
-Where the match phase lives: `build/` (amalg, compile, link, probe: they run the tools; no rule runs a tool),
-`match/` (compare, diffclass: pure functions over objects and listings), `rules/match.py` / `match_data.py` /
-`grade.py` (the rules; they read objects through the store's `tu` table, input `objects`), `ledger/grades.py`
-(queues, baseline, the level ladder), `source/cparse.py` (libclang: the C front end), `source/lint.py` (the declaration checker), `cli_match.py` (the commands).

@@ -12,7 +12,7 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
 
 ## The model
 
-- **Fact** (`ledger/fact.py`): one statement about an interval `[lo, hi)` of the image: `kind` (section,
+- **Fact** (the core's `store.rs`): one statement about an interval `[lo, hi)` of the image: `kind` (section,
   region, symbol, start, name, source, unit, boundary, toolchain, ref, evidence, grade, build), a `value`, a
   `level`, and `by` = the producer (`rule:S.crt.code@1`, `decl:decl/text.dcl:17`, `src:src/net/f_10001000.c:1`).
 - **Levels**, combined by `min`: `proven` (forced by bytes) > `derived` (a deterministic rule resting on a
@@ -21,17 +21,17 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
   reason, or it is open.
 - **Conflicts** are records, not levels: two facts that contradict each other both stay; `dcp conflicts`
   lists them, `dcp check` fails on errors and bugs (proven vs proven = a rule is wrong).
-- **Rules** (`rules/*.py`): `@rule(id, version, ceiling, needs, outputs, inputs)` on a function whose
-  docstring is the exact criterion. The engine (`rules/engine.py`) memoises each run by the hash of the
-  rule's code (and of the helpers it names), its version, the output of every rule it needs and every
-  external input it declares; a rule cannot read what it did not declare. `dcp rules -v` prints the graph
+- **Rules** (the core's `registry.rs`: id, version, ceiling, needs, outputs, inputs and the exact criterion of
+  each): the engine (`engine.rs`) memoises each run by the hash of the core's code, the rule's version, the
+  output of every rule it needs and every external input it declares; a rule cannot read what it did not
+  declare. `dcp rules -v` prints the graph
   with every criterion.
 - **Loaders** (`L.decl`, `L.src`, `L.analyzer`) are the only rules that turn typed state into facts: they emit
   `declared` facts whose producer is a file line, and refuse a missing reason. Declared facts are re-checked
   by the computed rules on every run, never trusted.
 - **Targets** (`decompanion.toml [[target]]`): one project may hold several binaries of one codebase; the
   first is the default, every command takes `--target NAME`. Each target has its own **store**
-  (`ledger/store.py`), `build/<target>.sqlite`, holding runs, facts, conflicts, blobs and the materialised
+  (`store.rs`), `build/<target>.sqlite`, holding runs, facts, conflicts, blobs and the materialised
   byte map. A store is a cache: delete it and the next command recomputes. A worktree (`dcp wt new`) overlays
   main's store of the same target. Each target declares its own toolchain (`compiler`, `linker`, `cflags`,
   `archives`, each with `reason.<key>`; `[toolchain]` holds the plugin, the root and defaults a target
@@ -43,16 +43,15 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
   toolchain declare`, `dcp libs declare`, `dcp analyzer declare`) needs `--why`, is level declared, and the
   rules raise it. Rules whose input is not declared yet wait (`dcp rules`: `waiting: toolchain.root`).
 
-- **Seams** (docs/architecture.md): the rules (`rules/`, `ledger/`) know no container, object format,
-  toolchain, instruction set or analyzer. They ask five plugin kinds, each a package with a registry its
-  plugins register into: `image/` (Image: sections, imports, exports, relocations, its own region vocabulary;
-  PE32), `objfmt/` (ObjectFormat: archive objects, relocations as absolute / relative / absolute-rva with a
-  width and `resolve`; COFF), `toolchains/` (Toolchain: fill forms, import stubs and their placement,
-  function alignment, user entry names, Rich vocabulary, installs and their versions, run-time archives;
-  VC6), `isa/` (Isa: a decoder of
-  compact instruction records with flow kinds, table shapes; x86-32 through capstone) and `analyzers/`
-  (Analyzer: a third-party tool's opinions, function starts, names and pseudocode per function, and the
-  dialect of that pseudocode; Ghidra headless, saved REA files, none). A target selects `image` and `isa` in
+- **Seams** (docs/architecture.md): the rules know no container, object format, toolchain, instruction set or
+  analyzer. They ask five kinds of plugin, all in the core: Image (`pe.rs`: sections, imports, exports,
+  relocations, its own region vocabulary; PE32), ObjectFormat (`coff.rs`: archive objects, relocations as
+  absolute / relative / absolute-rva with a width and `resolve`; COFF), Toolchain (`toolchain.rs`, `vc6.rs`:
+  fill forms, import stubs and their placement, function alignment, user entry names, Rich vocabulary, installs
+  and their versions, run-time archives, the tools; VC6), Isa (`cs.rs`, `x86.rs`: a decoder of compact
+  instruction records with flow kinds, table shapes; x86-32 through capstone) and Analyzer (`analyzers.rs`,
+  `dialect.rs`: a third-party tool's opinions, function starts, names and pseudocode per function, and the
+  dialect of that pseudocode; Ghidra headless, none). A target selects `image` and `isa` in
   its table (the ISA defaults to the image's machine type), the project its toolchain and its analyzer
   (`[analyzer] plugin`, default `ghidra`).
 
@@ -64,7 +63,7 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
    names those members' relocations prove (`S.crt.refs`: the user's `DllMain`, CRT data), import thunks
    (`S.thunk`: only where LINK's layout makes `jmp [iat]` an import-library contribution; elsewhere it is a
    compiled tail call), strings, a recursive-descent code walk with tail-call and inner-label handling
-   (`rules/walk.py`), fill, and a total byte map (`S.unknown` closes it). Then the configured analyzer's
+   (`walk.rs`), fill, and a total byte map (`S.unknown` closes it). Then the configured analyzer's
    export when its key (analyzer, image, script, our starts) changed: Ghidra headless decompiles every
    function, seeded at our starts; its starts become declared facts (`L.analyzer`), its pseudocode the drafts
    of `dcp draft` (`--no-analyzer` skips it, `--analyzer-force` exports again). Setup runs in two stages
@@ -72,10 +71,10 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
    `S.crt.*`, `S4`, `C.toolchain`, `S2`, `M.compile`, `M.flags.proven`), so the first `dcp setup` runs the
    rest and prints the obligations; `dcp toolchain declare` and `dcp libs declare` end the waits and rerun the
    rules at once (docs/architecture.md, the obligation model).
-2. **layout** (`dcp layout ...`): declarations (`decl/*.dcl`, `ledger/decl.py`), address comments in one
-   file per function (`ledger/srcscan.py`), the analyzer's drafts (`ledger/drafts.py`), boundary evidence
+2. **layout** (`dcp layout ...`): declarations (`decl/*.dcl`, `decl.rs`), address comments in one
+   file per unit (`frontend.rs`, `srcscan.rs`), the analyzer's drafts (`analyzers.rs`), boundary evidence
    (`L.analyze`: literal first users, fill before a start, leaked source paths), unit extents and status
-   (`L.unit.extent`), and the checks L1, L3..L10, L13..L16 (`rules/layout.py`). The layout tooling (milestone 4): a
+   (`L.unit.extent`), and the checks L1, L3..L10, L13..L16 (`layout.rs`). The layout tooling (milestone 4): a
    draft for every function from the analyzer (`dcp setup`, `dcp report`), the reading commands (`dcp disasm`, `dump`, `refs`,
    `layout literals`, `layout starts`, `layout fptrs`), drafting (`dcp unit new|join|rename`, `dcp draft`, `dcp rename`,
    `names.log`), the session protocol (`dcp session start|status|wrap`; the wrap report lists the grade changes
@@ -418,22 +417,14 @@ Output is one record per line, `key=value` tokens, addresses `0x%08x`, intervals
 ## Repository
 
 ```
+native/dcp_core/src/                 # the core: every computation (docs/architecture.md lists the modules)
 src/decompanion/
-  cli.py cli_match.py cli_read.py cli_draft.py cli_layout.py cli_session.py cli_decide.py config.py init.py
-  obligations.py tomledit.py         # the guided decisions: obligations, dcp status; declarations into decompanion.toml
-  ledger/   fact.py store.py query.py decl.py srcscan.py drafts.py layoutview.py grades.py names.py
-  rules/    engine.py setup.py walk.py checks.py layout.py match.py match_data.py grade.py   # generic: the seams only
-  build/    amalg.py compile.py link.py probe.py analyzer.py libcand.py   # the tools run here (one process per unit), never in a rule
-  data/     ghidra/DcpExport.java dcp_ghidra.h   # the Ghidra post-script, Ghidra's type names (analyzers/ghidra.py)
-  match/    compare.py diffclass.py              # masked compare, instruction diff and hunk classes
-  repo/     wt.py session.py         # worktrees and seed; the session record and report
-  source/   cparse.py lint.py draft.py units.py edit.py   # libclang (the C front end); the files dcp draft / unit / rename write
-  image/    __init__ (registry) base.py pe32.py         # Image seam: sections, directories, regions, relocations
-  objfmt/   __init__ (registry) base.py coff.py         # ObjectFormat seam: archives, objects, relocation view
-  toolchains/ __init__ (registry) base.py vc6/          # Toolchain seam: fill, stubs, entries, Rich, defaults
-  isa/      __init__ (registry) base.py x86.py          # Isa seam: instruction records, flow kinds, table shapes
-  analyzers/ __init__ (registry) base.py ghidra.py rea.py none.py   # Analyzer seam: starts, names, pseudocode, dialect
-tests/                               # a synthetic PE32 dll (conftest.py); server.dll / VC6 / libclang tests when installed; `-m ghidra` adds the 30 s Ghidra export
+  cli.py cli_*.py                    # argument parsing; each command refreshes, calls the core once, prints its lines
+  client.py daemon.py                # `dcp serve`: the transport (named pipe, per-request environment, restart on a code change)
+  native.py                          # builds and loads the core (dev profile; DCP_NATIVE_PROFILE=release)
+  config.py ledger/ rules/engine.py build/compile.py analyzers/ fsmemo.py timing.py   # thin faces of the core
+  data/     ghidra/DcpExport.java dcp_ghidra.h   # the Ghidra post-script and Ghidra's type names (embedded in the core)
+tests/                               # the CLI on a synthetic PE32 dll (conftest.py); server.dll / VC6 / libclang when installed; `-m ghidra` adds the Ghidra export
 docs/                                # plan.md, layout.md, match.md, architecture.md
 skills/                              # dcp-layout/, dcp-match-base/ SKILL.md (installed into a project's .claude/skills/)
 ```

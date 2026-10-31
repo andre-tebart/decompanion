@@ -158,14 +158,14 @@ Checks added in milestone 4 (warnings: `dcp check --strict` fails on them, `dcp 
   start, or only fill) owns no bytes, its code stays open; (b) a byte-matched function whose walk runs past its
   compiled section (rare: R1's tail check).
 
-Checks of source decisions the byte match and the link let pass (errors, rules/layout.py):
+Checks of source decisions the byte match and the link let pass (errors, the core's layout.rs):
 
 | check | rule | criterion |
 |---|---|---|
 | **A1** | `A1.addr.cast` | an integer literal cast to a pointer type (`(void (*)(void))0x5de470`, `(char *)0x6f242c`, `(T *)(unsigned)0x...`; the cast spells its `*`, a typedef'd pointer name is not recognised) whose value lies in the target's image, in a file of the target; comments, strings and `#if 0` / `#else` text do not count, `#define` bodies do. The relinked image places that object elsewhere. The message names what the facts know there (its name, the symbol containing it, or nothing) and asks for the symbol by name. `(unsigned)&x`, `(char *)&x` take a symbol's address and are not reported |
 | **L13** | `L13.data.code` | a data definition or `extern` with an address comment whose address is a known function start (a `start` fact or `func` symbol above declared) or lies inside a known function's extent (walked, placed, byte-matched), unless a jump table, index table or declared fptr range covers it. The message names the function there |
 | **L14** | `L14.unit.outside` | a sourced function outside the game code (in the library code) whose unit has a declared boundary and an extent lies outside that extent (inside the game code L7 checks the same) |
-| **L15** | `L.src` | a view (a one-line macro naming part of a data object: `#define NAME (*(T *)((char *)&CONTAINER + OFFSET))  /* 0xADDR */`, `(*(T *)&CONTAINER)` or an alias `#define NAME CONTAINER`, with the address comment on its line; ledger/srcscan.py) whose address is not its container's plus the offset, whose container has no data declaration with an address, or a dereferencing cast macro with an address comment in no view form. A view gives a `name` fact {view: container}; it is no object (no D1 overlap with its container) |
+| **L15** | `L.src` | a view (a one-line macro naming part of a data object: `#define NAME (*(T *)((char *)&CONTAINER + OFFSET))  /* 0xADDR */`, `(*(T *)&CONTAINER)` or an alias `#define NAME CONTAINER`, with the address comment on its line; srcscan.rs) whose address is not its container's plus the offset, whose container has no data declaration with an address, or a dereferencing cast macro with an address comment in no view form. A view gives a `name` fact {view: container}; it is no object (no D1 overlap with its container) |
 
 ## The layout tooling (milestone 4)
 
@@ -249,7 +249,7 @@ uv run dcp rename OLD NEW [OLD NEW ...] --why "..."  # identifiers (OLD: a name,
 `dcp unit new` = `dcp layout unit propose` (refuses its own L3 / L4 / L7 / L8 errors) + `src/<unit>.c` (its head),
 `include/<unit>.h` (with its guard) and `notes/units/<unit>.md` (Open work first, then findings).
 
-`dcp draft` inserts the function into `src/<unit>.c` (source/draft.py) before the address comment of the unit's
+`dcp draft` inserts the function into `src/<unit>.c` (the core's draft.rs) before the address comment of the unit's
 next function of the target (else at the end; another target than the default: under its `#if`): the address
 comment `/* 0x10001000, <name> */` directly above the definition, the name the
 ledger registers for the address (a declaration, an export, the user entry) else the placeholder

@@ -1127,3 +1127,22 @@ binary or spawns a process (88, `uv run pytest -m "e2e and not ghidra"`); native
 (opt-level 1, ~2 s a change; DCP_NATIVE_PROFILE=release for timing). Each later step replaces the e2e coverage of
 what it moves with in-memory tests (Rust `cargo test` for the core's code); the e2e tier shrinks to one test at
 most.
+
+As built (2026-10-31): every step done; each piece was compared with the Python it replaced (the rules through
+DCP_SHADOW and a forced setup of gildegold; the commands by their output and the files they write on gildegold
+and a fresh server.dll project) and then deleted.
+- The core (`native/dcp_core`, ~31,000 lines of Rust) holds the rules and the engine, the store, the image, the
+  archives and the toolchain, the C front end and lint, the build (plan, compile, link, probe), the source tools
+  (draft, rename, units, data fix, headers), the analyzers (Ghidra's export, none; REA was dropped on the way),
+  the guided decisions (decide.rs, tomledit.rs, init.rs) and the body of every command (cliread.rs, clicmd.rs,
+  matchcmd.rs, session.rs, wt.rs). docs/architecture.md lists the modules.
+- Python (~2,500 lines) is the frontend: `cli*.py` (argparse; each command refreshes, makes one core call and
+  prints its lines), `client.py` / `daemon.py` (the transport), `native.py` (builds and loads the core) and thin
+  faces the commands and the tests read the core through (config.Project, ledger/store.py, ledger/fact.py's
+  names, rules/engine.py, build/compile.py, analyzers/, fsmemo.py, timing.py). No `re`, `struct`, `sqlite3`,
+  `difflib` or `concurrent.futures` remains; `hashlib` only in the transport (the daemon's code-change check) and
+  in native.py (the core's source hash).
+- Tests: the core's logic is tested in Rust (`cargo test`, ~100 tests in ~0.3 s; a run past 2 s fails: a watchdog
+  started before the harness's main, DCP_TEST_BUDGET_MS, the `--ignored` tier of real installations exempt); the
+  default `pytest` run is in memory and under 2 s; the CLI on the synthetic dll and the installed binaries is the
+  `-m "e2e and not ghidra"` tier, Ghidra's export `-m ghidra`.
