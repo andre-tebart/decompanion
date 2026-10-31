@@ -6,6 +6,7 @@
 
 use crate::srcscan::{py_space, py_strip, py_words, Src};
 use pyo3::exceptions::PyRuntimeError;
+use crate::clang::FileModel;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use regex::Regex;
@@ -52,19 +53,18 @@ pub(crate) struct MDecl {
     init: bool,   // a datum's initialiser (a function's: K&R parameters, as Python's truth of the list)
 }
 
-pub(crate) fn mdecls(decls: &[Bound<'_, PyTuple>]) -> PyResult<Vec<MDecl>> {
+pub(crate) fn mdecls(decls: &[crate::clang::Decl]) -> Vec<MDecl> {
+    use crate::clang::Decl;
     decls
         .iter()
-        .map(|d| {
-            let f = d.get_item(0)?.extract::<String>()? == "f";
-            let (body, knr, kind, init) = if f {
-                let knr: Option<Vec<(String, Option<String>)>> = d.get_item(7)?.extract()?;
-                (d.get_item(6)?.extract()?, knr.clone(), String::new(), knr.is_some_and(|k| !k.is_empty()))
-            } else {
-                (None, None, d.get_item(6)?.extract()?, d.get_item(7)?.extract()?)
-            };
-            Ok(MDecl { f, name: d.get_item(1)?.extract()?, stat: d.get_item(2)?.extract()?, start: d.get_item(3)?.extract()?,
-                       npos: d.get_item(4)?.extract()?, body, knr, kind, init })
+        .map(|d| match d {
+            Decl::F(name, stat, ws, n, _, body, knr) => MDecl {
+                f: true, name: name.clone(), stat: *stat, start: *ws, npos: *n, body: *body, knr: knr.clone(), kind: String::new(),
+                init: knr.as_ref().is_some_and(|k| !k.is_empty()),
+            },
+            Decl::V(name, stat, ws, n, _, kind, init, _) => MDecl {
+                f: false, name: name.clone(), stat: *stat, start: *ws, npos: *n, body: None, knr: None, kind: kind.clone(), init: *init,
+            },
         })
         .collect()
 }
@@ -370,10 +370,9 @@ pub(crate) struct FileLint {
 
 /// One file's FileLint from its text, its model's declarations, macro definitions (name, line, start, end
 /// offsets), types, macros and dead ranges.
-pub(crate) fn file_lint(rel: &str, src: &Src, m: &Bound<'_, PyDict>) -> PyResult<FileLint> {
-    let item = |k: &str| m.get_item(k)?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(k.to_string()));
-    let decls = mdecls(&item("decls")?.extract::<Vec<Bound<PyTuple>>>()?)?;
-    let defines: Vec<(String, bool, i64, i64, i64, i64)> = item("defines")?.extract()?;
+pub(crate) fn file_lint(rel: &str, src: &Src, m: &FileModel) -> PyResult<FileLint> {
+    let decls = mdecls(&m.decls);
+    let defines = &m.defines;
     let code = src.code.as_str();
     let macros = defines
         .iter()
@@ -383,10 +382,8 @@ pub(crate) fn file_lint(rel: &str, src: &Src, m: &Bound<'_, PyDict>) -> PyResult
             (n.clone(), *l, format!("#define {n}{}", rest.replace("\\\n", " ")))
         })
         .collect();
-    let types: Vec<(i64, String)> = item("types")?.extract()?;
-    let mnames: Vec<(i64, String, bool)> = item("macros")?.extract()?;
-    let defined: HashSet<String> = types.into_iter().map(|t| t.1).chain(mnames.into_iter().map(|m| m.1)).collect();
-    let dead: Vec<(i64, i64)> = item("dead")?.extract()?;
+    let defined: HashSet<String> = m.types.iter().map(|t| t.1.clone()).chain(m.macros.iter().map(|m| m.1.clone())).collect();
+    let dead = &m.dead;
     let dead: HashSet<i64> = dead.iter().flat_map(|&(a, b)| a..=b).collect();
     // srcscan.live_code: directives and skipped ranges blanked
     let mut live = String::with_capacity(code.len());
@@ -416,9 +413,9 @@ pub(crate) fn system_includes(text: &str) -> Vec<String> {
 /// lint.file_scope_decls for Python (headers.py): the rows of lint.Decl.
 #[pyfunction]
 pub fn lint_file_decls(rel: &str, text: &str, model: &Bound<'_, PyDict>) -> PyResult<Vec<(String, i64, i64, String, String, String, i64, bool, String)>> {
-    let item = |k: &str| model.get_item(k)?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(k.to_string()));
-    let src = Src::new(text, &item("comments")?.extract::<Vec<_>>()?, &item("strings")?.extract::<Vec<_>>()?);
-    let decls = mdecls(&item("decls")?.extract::<Vec<Bound<PyTuple>>>()?)?;
+    let m = crate::clang::file_model_of(model)?;
+    let src = Src::new(text, &m.comments, &m.strings);
+    let decls = mdecls(&m.decls);
     Ok(file_decls(rel, &src, &decls).iter().map(|d| d.row()).collect())
 }
 

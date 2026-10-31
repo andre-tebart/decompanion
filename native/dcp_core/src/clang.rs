@@ -375,7 +375,7 @@ impl Unit {
     fn model<'py>(&self, py: Python<'py>, root: &str, text: &str) -> PyResult<Bound<'py, PyDict>> {
         let a = api()?;
         let t = lock(self);
-        model(py, a, &t, root, text)
+        model_py(py, &model_rs(a, &t, root, text)?)
     }
 
     /// cparse.diagnostics of the unit.
@@ -473,23 +473,36 @@ impl<'a> Where<'a> {
     }
 }
 
-#[derive(Default)]
-struct FileModel {
-    defs: Vec<(i64, i64, String, bool)>,
-    vars: Vec<(i64, i64, i64, i64, String, String, bool)>,
-    macros: Vec<(i64, String, bool)>,
-    defines: Vec<(String, bool, i64, i64, i64, i64)>,
-    casts: Vec<(i64, i64, i64, i64, String)>,
-    comments: Vec<(i64, i64, i64, i64)>,
-    strings: Vec<(i64, i64, i64, i64)>,
-    decls: Vec<Decl>,
-    types: Vec<(i64, String)>,
-    dead: Vec<(i64, i64)>,
+/// What the scan reads of one project file of a parse (Unit.model's entry; the fields as its docstring says).
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileModel {
+    pub defs: Vec<(i64, i64, String, bool)>,
+    pub vars: Vec<(i64, i64, i64, i64, String, String, bool)>,
+    pub macros: Vec<(i64, String, bool)>,
+    pub defines: Vec<(String, bool, i64, i64, i64, i64)>,
+    pub casts: Vec<(i64, i64, i64, i64, String)>,
+    pub comments: Vec<(i64, i64, i64, i64)>,
+    pub strings: Vec<(i64, i64, i64, i64)>,
+    pub decls: Vec<Decl>,
+    pub types: Vec<(i64, String)>,
+    pub dead: Vec<(i64, i64)>,
 }
 
-type Lc = (i64, i64);
+/// A parse's model: every project file it holds (in the order the parse met them), the files it read, whether an
+/// include was not found.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ModelOut {
+    pub files: Vec<(String, FileModel)>,
+    pub deps: Vec<String>,
+    pub missing: bool,
+}
 
-enum Decl {
+pub type Lc = (i64, i64);
+
+/// ("f", name, static, start, name position, end, body start, K&R parameters) / ("v", name, static, start, name
+/// position, end, kind, initialised, aggregate).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub enum Decl {
     F(String, bool, Lc, Lc, Option<Lc>, Option<Lc>, Option<Vec<(String, Option<String>)>>),
     V(String, bool, Lc, Lc, Lc, String, bool, Option<bool>),
 }
@@ -615,7 +628,7 @@ fn line_col(data: &[u8], nl: &[usize], off: usize) -> Lc {
     (line as i64, (chars_of(&data[bol..off]) + 1) as i64)
 }
 
-fn model<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str) -> PyResult<Bound<'py, PyDict>> {
+fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> PyResult<ModelOut> {
     let tu = t.tu;
     let mut w = Where::new(root, &t.path_s, text);
     let mut out = Files { order: vec![], by: HashMap::new() };
@@ -809,33 +822,63 @@ fn model<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str) -> PyRes
     let missing = diags.iter().any(|&d| unsafe { (a.clang_getDiagnosticSeverity)(d) } == SEV_FATAL
         && take(a, unsafe { (a.clang_getDiagnosticSpelling)(d) }).contains("not found"));
     dispose_diags(a, diags);
-    let files = PyDict::new(py);
-    for rel in &out.order {
-        let m = &out.by[rel];
-        let e = PyDict::new(py);
-        e.set_item("defs", &m.defs)?;
-        e.set_item("vars", &m.vars)?;
-        e.set_item("macros", &m.macros)?;
-        e.set_item("defines", &m.defines)?;
-        e.set_item("casts", &m.casts)?;
-        e.set_item("comments", &m.comments)?;
-        e.set_item("strings", &m.strings)?;
-        let decls = PyList::empty(py);
-        for d in &m.decls {
-            match d {
-                Decl::F(name, stat, ws, n, e, b, knr) => decls.append(("f", name, stat, ws, n, e, b, knr))?,
-                Decl::V(name, stat, ws, n, e, kind, init, agg) => decls.append(("v", name, stat, ws, n, e, kind, init, agg))?,
-            }
+    let files = out.order.iter().map(|r| (r.clone(), out.by.remove(r).unwrap_or_default())).collect();
+    Ok(ModelOut { files, deps, missing })
+}
+
+/// One file's model as Python reads it (a dict of lists of tuples).
+pub fn file_model_py<'py>(py: Python<'py>, m: &FileModel) -> PyResult<Bound<'py, PyDict>> {
+    let e = PyDict::new(py);
+    e.set_item("defs", &m.defs)?;
+    e.set_item("vars", &m.vars)?;
+    e.set_item("macros", &m.macros)?;
+    e.set_item("defines", &m.defines)?;
+    e.set_item("casts", &m.casts)?;
+    e.set_item("comments", &m.comments)?;
+    e.set_item("strings", &m.strings)?;
+    let decls = PyList::empty(py);
+    for d in &m.decls {
+        match d {
+            Decl::F(name, stat, ws, n, e, b, knr) => decls.append(("f", name, stat, ws, n, e, b, knr))?,
+            Decl::V(name, stat, ws, n, e, kind, init, agg) => decls.append(("v", name, stat, ws, n, e, kind, init, agg))?,
         }
-        e.set_item("decls", decls)?;
-        e.set_item("types", &m.types)?;
-        e.set_item("dead", &m.dead)?;
-        files.set_item(rel, e)?;
+    }
+    e.set_item("decls", decls)?;
+    e.set_item("types", &m.types)?;
+    e.set_item("dead", &m.dead)?;
+    Ok(e)
+}
+
+/// A file's model from Python's dict (file_model_py's form).
+pub fn file_model_of(d: &Bound<'_, PyDict>) -> PyResult<FileModel> {
+    let item = |k: &str| d.get_item(k)?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(k.to_string()));
+    let mut decls = vec![];
+    for x in item("decls")?.extract::<Vec<Bound<'_, pyo3::types::PyTuple>>>()? {
+        decls.push(if x.get_item(0)?.extract::<String>()? == "f" {
+            Decl::F(x.get_item(1)?.extract()?, x.get_item(2)?.extract()?, x.get_item(3)?.extract()?, x.get_item(4)?.extract()?,
+                    x.get_item(5)?.extract()?, x.get_item(6)?.extract()?, x.get_item(7)?.extract()?)
+        } else {
+            Decl::V(x.get_item(1)?.extract()?, x.get_item(2)?.extract()?, x.get_item(3)?.extract()?, x.get_item(4)?.extract()?,
+                    x.get_item(5)?.extract()?, x.get_item(6)?.extract()?, x.get_item(7)?.extract()?, x.get_item(8)?.extract()?)
+        });
+    }
+    Ok(FileModel {
+        defs: item("defs")?.extract()?, vars: item("vars")?.extract()?, macros: item("macros")?.extract()?, defines: item("defines")?.extract()?,
+        casts: item("casts")?.extract()?, comments: item("comments")?.extract()?, strings: item("strings")?.extract()?, decls,
+        types: item("types")?.extract()?, dead: item("dead")?.extract()?,
+    })
+}
+
+/// A parse's model as Python reads it: {files: {rel: model}, deps, missing}.
+pub fn model_py<'py>(py: Python<'py>, m: &ModelOut) -> PyResult<Bound<'py, PyDict>> {
+    let files = PyDict::new(py);
+    for (rel, f) in &m.files {
+        files.set_item(rel, file_model_py(py, f)?)?;
     }
     let res = PyDict::new(py);
     res.set_item("files", files)?;
-    res.set_item("deps", deps)?;
-    res.set_item("missing", missing)?;
+    res.set_item("deps", &m.deps)?;
+    res.set_item("missing", m.missing)?;
     Ok(res)
 }
 

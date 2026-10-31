@@ -6,6 +6,7 @@
 
 use crate::layout::{ScanRef, ScanView};
 use pyo3::exceptions::PyRuntimeError;
+use crate::clang::FileModel;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use regex::Regex;
@@ -352,13 +353,24 @@ pub(crate) fn defs(r: &ScanRef) -> PyResult<HashMap<String, Defs>> {
     Ok(pieces(&r.pieces)?.iter().map(|p| (p.rel.clone(), p.defs.clone())).collect())
 }
 
-type FnRow = ((String, i64, String, String, Addrs, bool, String), (Option<String>, Option<String>, bool, i64, bool, i64, Vec<String>));
-type DataRow = (String, i64, String, String, String, Addrs, bool, bool);
-type ViewRow = (String, i64, String, String, String, u64, Addrs, bool);
-type ErrRow = (String, i64, String, String);
+pub(crate) type FnRow = ((String, i64, String, String, Addrs, bool, String), (Option<String>, Option<String>, bool, i64, bool, i64, Vec<String>));
+pub(crate) type DataRow = (String, i64, String, String, String, Addrs, bool, bool);
+pub(crate) type ViewRow = (String, i64, String, String, String, u64, Addrs, bool);
+pub(crate) type ErrRow = (String, i64, String, String);
 
-fn item<'py>(m: &Bound<'py, PyDict>, k: &str) -> PyResult<Bound<'py, PyAny>> {
-    m.get_item(k)?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(k.to_string()))
+/// One file's part of the scan: the rows of srcscan's dataclasses (macros, described, functions, data, ptrcasts,
+/// views, rawobj, errors, placeholders) and the file's piece.
+pub(crate) struct FilePart {
+    pub macros: Vec<(String, String)>,
+    pub described: Vec<u64>,
+    pub functions: Vec<FnRow>,
+    pub data: Vec<DataRow>,
+    pub ptrcasts: Vec<(String, i64, String, u64)>,
+    pub views: Vec<ViewRow>,
+    pub rawobj: Vec<String>,
+    pub errors: Vec<ErrRow>,
+    pub placeholders: Vec<(String, i64, String, u64)>,
+    pub piece: ScanPiece,
 }
 
 /// srcscan.scan_file: one file's part of the scan from its text and its model (the default target's) and every
@@ -367,12 +379,29 @@ fn item<'py>(m: &Bound<'py, PyDict>, k: &str) -> PyResult<Bound<'py, PyAny>> {
 #[pyfunction]
 pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py, PyDict>, views: Vec<(Option<String>, Bound<'py, PyDict>)>)
                       -> PyResult<Bound<'py, PyTuple>> {
-    let comments: Vec<(i64, i64, i64, i64)> = item(model, "comments")?.extract()?;
-    let strings: Vec<(i64, i64, i64, i64)> = item(model, "strings")?.extract()?;
-    let sf = Src::new(text, &comments, &strings);
-    let defines: Vec<(String, bool, i64, i64, i64, i64)> = item(model, "defines")?.extract()?;
+    let model = crate::clang::file_model_of(model)?;
+    let views: Vec<(Option<String>, FileModel)> = views.into_iter().map(|(t, m)| Ok((t, crate::clang::file_model_of(&m)?))).collect::<PyResult<_>>()?;
+    let views: Vec<(Option<String>, &FileModel)> = views.iter().map(|(t, m)| (t.clone(), m)).collect();
+    let x = scan_file_rs(rel, text, &model, &views)?;
+    PyTuple::new(py, [
+        x.macros.into_pyobject(py)?.into_any(),
+        x.described.into_pyobject(py)?.into_any(),
+        x.functions.into_pyobject(py)?.into_any(),
+        x.data.into_pyobject(py)?.into_any(),
+        x.ptrcasts.into_pyobject(py)?.into_any(),
+        x.views.into_pyobject(py)?.into_any(),
+        x.rawobj.into_pyobject(py)?.into_any(),
+        x.errors.into_pyobject(py)?.into_any(),
+        x.placeholders.into_pyobject(py)?.into_any(),
+        Bound::new(py, x.piece)?.into_any(),
+    ])
+}
+
+/// scan_file of a model: views as (target or None, its model of the file); none: the model is the only view.
+pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(Option<String>, &FileModel)]) -> PyResult<FilePart> {
+    let sf = Src::new(text, &model.comments, &model.strings);
     let defines: Vec<(String, bool, i64, usize, usize)> =
-        defines.into_iter().map(|(n, fl, l, c, el, ec)| { let s = sf.offset(l, c); (n, fl, l, s, sf.offset(el, ec)) }).collect();
+        model.defines.iter().map(|(n, fl, l, c, el, ec)| { let s = sf.offset(*l, *c); (n.clone(), *fl, *l, s, sf.offset(*el, *ec)) }).collect();
     let mut macros: Vec<(String, String)> = vec![];
     for (name, fl, _, s, e) in &defines {
         if *fl {
@@ -401,15 +430,15 @@ pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py,
     }
     // the definitions of every target's view of the file, with the targets that hold each
     let mut defs: BTreeMap<Lc, (String, bool, Option<Lc>, Vec<String>)> = BTreeMap::new();
-    let views = if views.is_empty() { vec![(None, model.clone())] } else { views };
+    let views: Vec<(Option<String>, &FileModel)> = if views.is_empty() { vec![(None, model)] } else { views.to_vec() };
     for (t, m) in &views {
         let mut ends: HashMap<Lc, Option<Lc>> = HashMap::new();
-        for d in item(m, "decls")?.extract::<Vec<Bound<PyTuple>>>()? {
-            if d.get_item(0)?.extract::<String>()? == "f" && !d.get_item(6)?.is_none() {
-                ends.insert(d.get_item(3)?.extract()?, d.get_item(5)?.extract()?);
+        for d in &m.decls {
+            if let crate::clang::Decl::F(_, _, ws, _, e, Some(_), _) = d {
+                ends.insert(*ws, *e);
             }
         }
-        for (line, col, name, stat) in item(m, "defs")?.extract::<Vec<(i64, i64, String, bool)>>()? {
+        for (line, col, name, stat) in m.defs.iter().cloned() {
             let e = defs.entry((line, col)).or_insert_with(|| (name, stat, ends.get(&(line, col)).copied().flatten(), vec![]));
             if let Some(t) = t {
                 e.3.push(t.clone());
@@ -446,10 +475,10 @@ pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py,
                         (deep, stuck, ROUGH.is_match(body), sf.line_of(sf.comments[k].0), fstatic, end.map(|e| e.0).unwrap_or(0), ts)));
     }
     // the data declarators, one address comment per statement (Source.model_data)
-    let vars: Vec<(i64, i64, i64, i64, String, String, bool)> = item(model, "vars")?.extract()?;
+    let vars = &model.vars;
     let mut stmts: Vec<(Lc, Vec<&(i64, i64, i64, i64, String, String, bool)>)> = vec![];
     let mut at: HashMap<Lc, usize> = HashMap::new();
-    for v in &vars {
+    for v in vars {
         match at.get(&(v.0, v.1)) {
             Some(&i) => stmts[i].1.push(v),
             None => {
@@ -478,7 +507,7 @@ pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py,
         let n = t.matches('(').count() as i64 - t.matches(')').count() as i64;
         t + &")".repeat(n.max(0) as usize)
     };
-    for (line, col, el, ec, lit) in item(model, "casts")?.extract::<Vec<(i64, i64, i64, i64, String)>>()? {
+    for (line, col, el, ec, lit) in model.casts.iter().cloned() {
         if let Some(v) = literal_value(lit.trim_end_matches(['u', 'U', 'l', 'L'])) {
             let t = py_words(&text[sf.offset(line, col)..sf.offset(el, ec).max(sf.offset(line, col))]);
             ptrcasts.push((rel.to_string(), line, close(t), v));
@@ -543,11 +572,9 @@ pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py,
     }
     let ad = |a: &Addrs| a.iter().map(|(t, x)| (t.clone(), *x as i64)).collect::<Vec<_>>();
     let mut defs_of: Defs = HashMap::new();
-    for d in item(model, "decls")?.extract::<Vec<Bound<PyTuple>>>()? {
-        if d.get_item(0)?.extract::<String>()? == "f" && !d.get_item(6)?.is_none() {
-            let (l, c): Lc = d.get_item(3)?.extract()?;
-            let e: Option<Lc> = d.get_item(5)?.extract()?;
-            defs_of.insert(d.get_item(1)?.extract()?, (l, c, e.map(|e| e.0), e.map(|e| e.1)));
+    for d in &model.decls {
+        if let crate::clang::Decl::F(name, _, (l, c), _, e, Some(_), _) = d {
+            defs_of.insert(name.clone(), (*l, *c, e.map(|e| e.0), e.map(|e| e.1)));
         }
     }
     let view = ScanView {
@@ -564,16 +591,5 @@ pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py,
     };
     let lint = views.iter().map(|(t, m)| Ok((t.clone(), crate::lint::file_lint(rel, &sf, m)?))).collect::<PyResult<Vec<_>>>()?;
     let piece = hold(Piece { view, rel: rel.to_string(), defs: defs_of, lint, sysinc: crate::lint::system_includes(text) });
-    PyTuple::new(py, [
-        macros.into_pyobject(py)?.into_any(),
-        described.into_pyobject(py)?.into_any(),
-        functions.into_pyobject(py)?.into_any(),
-        data.into_pyobject(py)?.into_any(),
-        ptrcasts.into_pyobject(py)?.into_any(),
-        vrows.into_pyobject(py)?.into_any(),
-        rawobj.into_pyobject(py)?.into_any(),
-        errors.into_pyobject(py)?.into_any(),
-        placeholders.into_pyobject(py)?.into_any(),
-        Bound::new(py, piece)?.into_any(),
-    ])
+    Ok(FilePart { macros, described, functions, data, ptrcasts, views: vrows, rawobj, errors, placeholders, piece })
 }
