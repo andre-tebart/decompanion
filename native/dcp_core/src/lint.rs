@@ -999,3 +999,42 @@ pub fn lint_cross(ad: &AllDecls, diags: &str, root: &str) -> PyResult<Vec<String
     }
     Ok(out)
 }
+
+// ------------------------------------------------------------------------------------------------ M6, M7
+
+/// The M6 lines (a unit's errors) and M7 calls (file, line, `callee() at line N` / `callee (undeclared) at
+/// line N`) of the units' diagnostics (each unit's list as JSON text), a group with an exempt line left out
+/// (lint.lint's loop; lint.call_of).
+#[pyfunction]
+pub fn lint_units(diags: Vec<String>, root: &str) -> PyResult<(Vec<String>, Vec<(String, i64, String)>)> {
+    let mut lines = Lines { root: std::path::PathBuf::from(root), memo: HashMap::new() };
+    let (mut errors, mut calls) = (vec![], vec![]);
+    for text in &diags {
+        let ds: Vec<Diag> = serde_json::from_str(text).map_err(|e| PyRuntimeError::new_err(format!("lint: diagnostics: {e}")))?;
+        let mut groups: Vec<Vec<Diag>> = vec![];
+        for d in ds {
+            if d.kind == "note" && !groups.is_empty() {
+                groups.last_mut().unwrap().push(d);
+            } else {
+                groups.push(vec![d]);
+            }
+        }
+        for g in &groups {
+            if g.iter().any(|x| lines.exempt(&x.file, x.line)) {
+                continue;
+            }
+            let d = &g[0];
+            if d.kind == "error" {
+                errors.push(fmt_group(g));
+            } else if d.kind == "warning" {
+                let callee = d.name.as_deref().filter(|n| !n.is_empty()).unwrap_or("?");
+                if d.flag == "-Wdeprecated-non-prototype" && d.msg.starts_with("passing arguments") {
+                    calls.push((d.file.clone(), d.line, format!("{callee}() at line {}", d.line)));
+                } else if d.flag == "-Wimplicit-function-declaration" {
+                    calls.push((d.file.clone(), d.line, format!("{callee} (undeclared) at line {}", d.line)));
+                }
+            }
+        }
+    }
+    Ok((errors, calls))
+}

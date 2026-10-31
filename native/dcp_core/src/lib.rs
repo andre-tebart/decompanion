@@ -659,6 +659,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lint::lint_file_decls, m)?)?;
     m.add_function(wrap_pyfunction!(lint::lint_alldecls, m)?)?;
     m.add_function(wrap_pyfunction!(lint::lint_cross, m)?)?;
+    m.add_function(wrap_pyfunction!(lint::lint_units, m)?)?;
     m.add_class::<lint::AllDecls>()?;
     Ok(())
 }

@@ -55,7 +55,7 @@ from ..ledger import srcscan
 from ..ledger.fact import canonical
 from ..ledger.store import sha256
 
-EXEMPT = re.compile(r"@(original|vc6)\b")
+EXEMPT = re.compile(r"@(original|vc6)\b")        # headers.py; lint.rs reads the same
 VERSION = "7"
 
 
@@ -101,18 +101,6 @@ def grouped(diags):
         else:
             groups.append([d])
     return groups
-
-
-class Lines:
-    def __init__(self, root):
-        self.root, self.memo = Path(root), {}
-
-    def exempt(self, file: str, line: int) -> bool:
-        if file not in self.memo:
-            p = self.root / file
-            self.memo[file] = p.read_text(errors="replace").split("\n") if p.exists() and p.is_relative_to(self.root) else []
-        ls = self.memo[file]
-        return 0 < line <= len(ls) and bool(EXEMPT.search(ls[line - 1]))
 
 
 def fmt_group(g) -> str:
@@ -277,13 +265,13 @@ def lint(project, log=None) -> dict:
     for a in units_:
         inc = (tus.get(a.unit) or {}).get("include_hash", "")
         key = sha256("lint", VERSION, *clang, a.src_hash, inc, *defines)
-        hit = st.blob_json(key)
+        hit = st.blob(key)                      # the unit's diagnostics as JSON text (the core reads them)
         if hit is None:
             # kept live: the scan's parse of the same text, the next lint of the unit alone (an edit of it) a reparse
             jobs.append((Path(a.path), root, sysdirs, [Path(root) / d for d in B.include_dirs(a.unit)], defines, False, True))
             keys.append((a.unit, key))
         else:
-            results[a.unit] = hit
+            results[a.unit] = hit.decode()
     with timing.phase("lint.alldecls"):
         ad = native_alldecls(root, srcscan.scan(root, project.input_hash("src")), project.target_name)
     text = ad.text
@@ -304,21 +292,13 @@ def lint(project, log=None) -> dict:
         if unit is None:
             cross = canonical(diags).encode()
         else:
-            results[unit] = diags
+            results[unit] = canonical(diags)
     jobs = [k for k in keys if k[0] is not None]
-    lines = Lines(root)
     errors, calls = [], {}
-    for a in units_:
-        for g in grouped(results.get(a.unit, [])):
-            d = g[0]
-            if any(lines.exempt(x["file"], x["line"]) for x in g):
-                continue
-            if d["kind"] == "error":
-                errors.append(fmt_group(g))
-            elif c := call_of(d):
-                callee, how = c
-                calls.setdefault(d["file"], []).append((d["line"], f"{callee}() at line {d['line']}" if how == "proto" else
-                                                                     f"{callee} (undeclared) at line {d['line']}"))
+    found, at = native.core().lint_units([results.get(a.unit, "[]") for a in units_], str(root))
+    errors += found
+    for file, line, text in at:
+        calls.setdefault(file, []).append((line, text))
     with timing.phase("lint.cross"):
         conflicts = native.core().lint_cross(ad, cross.decode(), str(root))
     conflicts += private_violations(root, private_headers(root))
