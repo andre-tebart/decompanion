@@ -1425,6 +1425,19 @@ mod tests_2b {
     }
 
     #[test]
+    fn leak_paths_keep_their_directories() {
+        let caps = |s: &str| -> Vec<(String, String)> {
+            super::LEAK.captures_iter(s).map(|m| {
+                let m = m.unwrap();
+                (m[1].to_string(), m[2].to_string())
+            }).collect()
+        };
+        assert_eq!(caps(r"c:\src\net\net.c"), [(r"c:\src\net\net.c".to_string(), "net".to_string())]);
+        assert_eq!(caps("assert in d:/game/ai_main.cpp line"), [("d:/game/ai_main.cpp".to_string(), "ai_main".to_string())]);
+        assert!(caps("%s.c").is_empty());
+    }
+
+    #[test]
     fn declared_bytes_leaks_and_rechecks() {
         let k = Kit::new(&build(None));
         let t = (BASE + TEXT) as i64;
@@ -1473,7 +1486,7 @@ pub fn l_analyzer(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 
 /// layout.LEAK: a path with a .c / .cpp / .h suffix in a string (an __FILE__).
 static LEAK: std::sync::LazyLock<fancy_regex::Regex> =
-    std::sync::LazyLock::new(|| fancy_regex::Regex::new(r"(?i)(?<![%\w])((?:[a-z]:)?[\w.\/ -]*?([\w-]{2,})\.(cpp|c|h))(?![\w.])").unwrap());
+    std::sync::LazyLock::new(|| fancy_regex::Regex::new(r"(?i)(?<![%\w])((?:[a-z]:)?[\w.\\/ -]*?([\w-]{2,})\.(cpp|c|h))(?![\w.])").unwrap());
 
 /// L.analyze: boundary evidence (lit, leak, fill) once per image.
 pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {

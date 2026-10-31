@@ -32,13 +32,12 @@ def test_pe_facts(project):
 
 
 def test_setup_total_map(project):
-    from decompanion.ledger import query
     from decompanion.ledger.fact import Kind, Level
     from decompanion.rules.engine import Engine
     import decompanion.rules  # noqa: F401
     e = Engine(project, project.store)
     e.run()
-    query.ensure_bytemap(project.store)
+    project.store.ensure_bytemap()
     rows = project.store.bytemap_rows()
     img = project.image
     # total and non-overlapping over the mapped image

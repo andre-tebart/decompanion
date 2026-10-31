@@ -10,7 +10,6 @@ import pytest
 from conftest import dcp, make_project, unit
 
 from decompanion.config import Project
-from decompanion.ledger import query
 from decompanion.ledger.fact import Kind, Level
 
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
@@ -236,7 +235,7 @@ def test_bytes_dead_owned_by_the_unit(tmp_path):
     # explained now; the unit stays open only because f4, the last function of the game code, has no source
     assert "open_bytes=0" in line and "dead_bytes=9" in out and "end=open" in line
     p = Project(root)
-    query.ensure_bytemap(p.store)
+    p.store.ensure_bytemap()
     lo, hi, cls, level, sym, unit, src, sec = p.store.bytemap_at(0x10001059)
     assert cls == "dead" and unit is not None and p.store.fact(unit).value["tu"] == "tail"
     assert p.store.fact(src).value == {"what": "dead", "unit": "tail", "decl": "decl:decl/text.dcl:3"}

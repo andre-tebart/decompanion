@@ -332,7 +332,6 @@ class Engine:
             n = 0
             ms = 0
             if cur:
-                n = self.store.db.execute("SELECT COUNT(*) FROM fact WHERE run_id=?", (cur[0],)).fetchone()[0]
-                ms = self.store.db.execute("SELECT ms FROM run WHERE id=?", (cur[0],)).fetchone()[0]
+                n, ms = self.store.run_stats(cur[0])
             rows.append((r, cur is not None, ms, n, self.waiting(r)))
         return rows

@@ -18,6 +18,7 @@ mod grade;
 mod lint;
 mod layout;
 mod pe;
+mod pystore;
 mod readability;
 mod rules;
 mod setup;
@@ -75,7 +76,7 @@ pub(crate) fn put_str(out: &mut String, s: &str) {
 }
 
 /// A Python value as fact.canonical spells it: json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True).
-fn put_value(out: &mut String, v: &Bound<'_, PyAny>) -> PyResult<()> {
+pub(crate) fn put_value(out: &mut String, v: &Bound<'_, PyAny>) -> PyResult<()> {
     if v.is_none() {
         out.push_str("null");
     } else if v.is_instance_of::<PyBool>() {
@@ -213,7 +214,7 @@ fn conflicts_of(conflicts: &Bound<'_, PyList>) -> PyResult<Vec<ConflictRow>> {
 }
 
 /// store.sha256(*parts): each part followed by a NUL.
-fn hash_parts<'a>(parts: impl Iterator<Item = String>) -> String {
+pub(crate) fn hash_parts<'a>(parts: impl Iterator<Item = String>) -> String {
     let mut h = Sha256::new();
     for p in parts {
         h.update(p.as_bytes());
@@ -282,8 +283,7 @@ pub(crate) fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite
     })
 }
 
-/// Close this thread's connection to a store (a test's store before its directory goes).
-#[cfg(test)]
+/// Close this thread's connection to a store (its file is replaced or removed).
 pub(crate) fn forget_conn(path: &str) {
     CONNS.with(|c| c.borrow_mut().remove(path));
 }
@@ -617,6 +617,38 @@ fn compare_functions(
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
+    m.add_class::<pystore::StoredFact>()?;
+    m.add_function(wrap_pyfunction!(pystore::st_facts, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_fact, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_conflicts, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_open, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_close, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_meta, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_set_meta, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_main_meta, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_note_input, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_current_run, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_find_run, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_make_current, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_runs, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_run_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_blob, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_blob_json, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_put_blob, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_put_blob_json, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_drop_blobs, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_blobs, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_tus, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_tu_keys, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_put_tu, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_drop_tu, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_tu_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_include_set, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_put_include_set, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_ensure_bytemap, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_bytemap_at, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_bytemap_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_summary, m)?)?;
     m.add_function(wrap_pyfunction!(fsmemo::fs_new_epoch, m)?)?;
     m.add_function(wrap_pyfunction!(fsmemo::fs_epoch, m)?)?;
     m.add_function(wrap_pyfunction!(fsmemo::fs_exists, m)?)?;

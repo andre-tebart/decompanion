@@ -176,9 +176,15 @@ fn current(db: &Connection, db_path: &str) -> rusqlite::Result<Vec<Rc<RunFacts>>
 
 /// Facts of one kind of the current runs of `rules` that `keep` selects, in Store.facts' order.
 pub fn facts(db: &Connection, db_path: &str, kind: &str, rules: &[String], keep: impl Fn(&SFact) -> bool) -> rusqlite::Result<Facts> {
+    facts_of(db, db_path, kind, Some(rules), keep)
+}
+
+/// Facts of one kind of the current runs (of `rules`, None: of every rule) that `keep` selects, in Store.facts'
+/// order.
+pub fn facts_of(db: &Connection, db_path: &str, kind: &str, rules: Option<&[String]>, keep: impl Fn(&SFact) -> bool) -> rusqlite::Result<Facts> {
     let mut out: Facts = Vec::new();
     for run in current(db, db_path)? {
-        if !rules.iter().any(|r| *r == run.rule) {
+        if rules.is_some_and(|rules| !rules.iter().any(|r| *r == run.rule)) {
             continue;
         }
         if let Some(v) = run.by_kind.get(kind) {

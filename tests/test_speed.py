@@ -23,7 +23,7 @@ def _facts(n=3, tag="x"):
 
 
 def _at(st, rule):
-    return st.db.execute("SELECT at FROM run WHERE rule=? AND current=1", (rule,)).fetchone()[0]
+    return next(r[6] for r in st.runs() if r[0] == rule and r[4])
 
 
 def test_same_output_keeps_the_facts_and_their_ids(tmp_path):
@@ -53,14 +53,13 @@ def test_same_output_off_without_shortcuts(tmp_path, monkeypatch):
 
 def test_bytemap_names_current_facts_after_same_output_rerun(tiny):
     from decompanion.cli import open_project, refresh
-    from decompanion.ledger import query
     assert dcp(tiny, "setup", "--no-analyzer")[0] == 0
 
     class A:
         root, target = str(tiny), None
     p, e = open_project(A())
     refresh(p, e, force=True)                       # every rule again, the same output
-    query.ensure_bytemap(p.store)
+    p.store.ensure_bytemap()
     ids = {r[4] for r in p.store.bytemap_rows()}
     assert ids and all(p.store.fact(i) is not None for i in ids)
 

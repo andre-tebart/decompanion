@@ -131,7 +131,7 @@ def test_l15_views(tiny):
     assert [c.lo for c in l15] == [0x10002008, 0x1000200c], out
     assert "view rec_Names: its container table has no data declaration with an address" in l15[0].message
     assert "view rec_Bad at 0x1000200c, but records (0x10002000) + 0x8 is 0x10002008" in l15[1].message
-    names = {f.value["name"]: f.lo for f in Project(tiny).store.facts(LY.Kind.name) if f.value.get("view")}
+    names = {f.value["name"]: f.lo for f in Project(tiny).store.facts("name") if f.value.get("view")}
     assert names == {"rec_Count": 0x10002004, "rec_All": 0x10002000, "rec_Alias": 0x10002000}
 
 

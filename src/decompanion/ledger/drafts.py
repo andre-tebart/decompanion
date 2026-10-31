@@ -13,7 +13,8 @@ from __future__ import annotations
 import json
 
 from ..analyzers.base import Entry
-from .store import Store, canonical, sha256
+from .fact import canonical
+from .store import Store, sha256
 
 KIND = "drafts"
 EXPORT = "drafts.export"
