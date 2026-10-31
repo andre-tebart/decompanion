@@ -406,6 +406,10 @@ def parser() -> argparse.ArgumentParser:
         s.add_argument("name")
         s.add_argument("why", nargs="?")
         s.add_argument("--clear", action="store_true")
+        if lvl == "deep":
+            s.add_argument("--size-explained", metavar="WHY",
+                           help="escalate although the instruction count differs from the original's beyond what allocation "
+                                "explains (max(12, 1/100 of the original's)): why allocation causes it (kept in the reason)")
         s.set_defaults(level=lvl)
     s = cmd(sub, "promote", CM.cmd_promote, "raise the grade baseline ledger/grades.tsv to the current grades (main checkout "
                                             "only; a fall no dcp accept covers is refused)")

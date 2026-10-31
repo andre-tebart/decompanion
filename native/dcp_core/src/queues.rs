@@ -559,11 +559,29 @@ pub fn grades_auto_clear(project: PyRef<'_, crate::project::PyProject>) -> PyRes
     Ok(out)
 }
 
-/// `dcp escalate|stuck NAME --why` (`--clear`): (the lines, the error for stderr, the exit status).
+/// The instruction-count difference allocation explains: max(SIZE_INS, the original's count / SIZE_PER). Measured on
+/// gildegold (2026-10-31): the 173 shape functions (allocation, slots, frame, order only) differ by at most 7
+/// instructions (d3_MatInverse 429 vs 436, gm_Mix 33 vs 27), and 166 of them by none; extra saved registers
+/// (push / pop pairs), a spill or a register-held constant add a few instructions, an encoding change none.
+pub const SIZE_INS: i64 = 12;
+pub const SIZE_PER: i64 = 100;
+
+/// The refusal of a deep escalation whose instruction count differs from the original's beyond what allocation
+/// explains (ours, the original's, the allowance), or None.
+pub fn size_unexplained(ours: i64, orig: i64) -> Option<(i64, i64, i64)> {
+    let allow = SIZE_INS.max(orig / SIZE_PER);
+    ((ours - orig).abs() > allow).then_some((ours, orig, allow))
+}
+
+/// `dcp escalate|stuck NAME --why` (`--clear`): (the lines, the error for stderr, the exit status). A deep
+/// escalation of a function below byte is refused while its instruction count differs from the original's beyond
+/// size_unexplained's allowance (missing or wrong statements: base work), unless `size_explained` says why
+/// allocation explains it (recorded in the reason).
 #[pyfunction]
-#[pyo3(signature = (project, level, name, clear, why))]
-pub fn level_command(project: PyRef<'_, crate::project::PyProject>, level: &str, name: &str, clear: bool, why: Option<String>)
-    -> PyResult<(Vec<String>, Option<String>, i32)> {
+#[pyo3(signature = (project, level, name, clear, why, capstone=None, size_explained=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn level_command(project: PyRef<'_, crate::project::PyProject>, level: &str, name: &str, clear: bool, why: Option<String>,
+                     capstone: Option<String>, size_explained: Option<String>) -> PyResult<(Vec<String>, Option<String>, i32)> {
     let p = &project.p;
     let Some(r) = crate::asmcmd::find_function(&p.store_path(), name)? else {
         return Ok((vec![], Some(format!("no graded function {name} (dcp build first)")), 1));
@@ -586,6 +604,22 @@ pub fn level_command(project: PyRef<'_, crate::project::PyProject>, level: &str,
             return Ok((vec![], Some(format!("refused: the reason admits a part not read against the original (`{w}`); reading and reconciling the \
                                              whole function is base work: finish it, then escalate what is left")), 1));
         }
+        let mut why = why;
+        if let (true, Some(cap)) = (level == "deep" && s("code") != "byte", capstone.as_deref()) {
+            // a function without an object (no reading) has no size to judge
+            if let Ok(rd) = crate::asmcmd::reading(p, cap, r.clone(), None)? {
+                let (ours, orig) = (rd.la.len() as i64, rd.lb.len() as i64);
+                if let Some((o, t, allow)) = size_unexplained(ours, orig) {
+                    match size_explained.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                        None => return Ok((vec![], Some(format!(
+                            "refused: ours has {o} instructions, the original {t} ({:+}; allocation explains at most {allow}: max({SIZE_INS}, 1/{SIZE_PER} \
+                             of the original's)); a size difference beyond that is missing or wrong statements, and reconstruction is base work \
+                             (a difference allocation does cause: --size-explained \"why\")", o - t)), 1)),
+                        Some(x) => why = format!("{why} (size: {o} vs {t} instructions, explained: {x})"),
+                    }
+                }
+            }
+        }
         set_level(&root, &s("file"), Some(level), Some(&why), line)
     }.map_err(PyValueError::new_err)?;
     let addr = r.get("addr").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -607,6 +641,9 @@ mod level_tests {
         assert_eq!(admits_unread("frame 0x3bc vs 0x3b8. The part after +0x5c7 (summary page) is not yet reconciled and is hard to judge").as_deref(),
                    Some("not yet reconciled"));
         assert_eq!(admits_unread("the store order and the 0x5a paths unverified").as_deref(), Some("unverified"));
+        assert_eq!(size_unexplained(436, 429), None); // the largest difference of a shape function on gildegold
+        assert_eq!(size_unexplained(1205, 1226), Some((1205, 1226, 12))); // main_Unk5384e0, 4277 vs 4402 bytes
+        assert_eq!((size_unexplained(3030, 3000), size_unexplained(3031, 3000)), (None, Some((3031, 3000, 30))));
         assert_eq!(admits_unread("bpp is not read; cm_SendMoveGoodsUnchecked's slots; read to the end, only ebx/esi left"), None);
         let dir = std::env::temp_dir().join(format!("dcp-level-{}", std::process::id()));
         let root = dir.to_string_lossy().into_owned();

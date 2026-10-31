@@ -237,7 +237,8 @@ regs/slots/order classes proves the same shape, not behaviour — behaviour by i
 declared fact `dcp declare behaviour`), **readability** `draft → readable` (Q1..Q7 lifted; `@rough` tag replaces
 the ROUGH/SKELETON words), unit **data** `draft → placed → byte`. Level ladder `base → deep → stuck` via
 `@deep why` / `@stuck why` in the address comment (`dcp escalate`, `dcp stuck`, auto-clear at byte+readable;
-`escalate` refuses a reason that is only missing statements or admits a part not read / reconciled yet:
+`escalate` refuses a reason that is only missing statements or admits a part not read / reconciled yet,
+or (deep) an instruction count beyond max(12, 1/100) of the original's without `--size-explained`:
 reconstruction and reading are base work). Queues `dcp next
 --base|--deep|--names|--data` with the rea ordering rules; no skipping; rendezvous sharding by unit start kept.
 Checks `M1` grade fell vs baseline, `M2` stale level tag, `M3` stuck without open.md entry, `M4` distance WORSE

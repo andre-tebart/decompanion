@@ -65,9 +65,11 @@ def cmd_diffclass(args):
 # ------------------------------------------------------------------------------------------------ the level ladder
 def cmd_level(args):
     """`dcp escalate` / `dcp stuck`: the level tag of a function's address comment (the core's queues.rs)."""
+    from .rules.engine import capstone_dll
     p, e = open_project(args)
     refresh(p, e)
-    lines, error, status = _core.level_command(p.core, args.level, args.name, bool(args.clear), args.why)
+    lines, error, status = _core.level_command(p.core, args.level, args.name, bool(args.clear), args.why, capstone_dll(),
+                                               getattr(args, "size_explained", None))
     return report("escalate" if error and error.startswith("refused") else args.level, lines, error, status)
 
 

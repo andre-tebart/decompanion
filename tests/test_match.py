@@ -182,6 +182,23 @@ def test_rename_counts_the_errors_of_the_tree_as_from_before(tiny):
 
 
 @needs_vc6
+def test_escalate_refuses_an_unexplained_size(tiny):
+    """dcp escalate to deep refuses while the instruction count differs from the original's beyond what allocation
+    explains (missing or wrong statements are base work); --size-explained takes it with the why in the reason."""
+    with_vc6(tiny)
+    write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n"
+                                 "0x10001030 boundary end tu=net -- f3 is another unit\n")
+    body = "".join(f"    n = n * {k} + *(int *)\"\\x34\\x12\";\n" for k in range(3, 9))
+    unit(tiny, "net", "/* 0x10001020, reads the counter */\nint get(int n)\n{\n" + body + "    return n;\n}\n")
+    assert dcp(tiny, "build")[0] == 0
+    code, out = dcp(tiny, "escalate", "get", "register choice after the spell pass")
+    assert code == 1 and "@deep" not in (tiny / "src/net.c").read_text(), out
+    code, out = dcp(tiny, "escalate", "get", "register choice", "--size-explained", "the original keeps n in a register")
+    assert code == 0 and "@deep register choice (size: " in (tiny / "src/net.c").read_text(), out
+    assert "explained: the original keeps n in a register)" in (tiny / "src/net.c").read_text()
+
+
+@needs_vc6
 def test_headers_conflicts_trial_grades(tiny):
     """`dcp headers conflicts --trial` compiles the unit with the include and grades its functions: the one whose
     code would fall is listed (exit 1), nothing is written (a match-base report: only a real build showed that a

@@ -143,7 +143,10 @@ uv run dcp diffclass NAME [--all] # the hunk classes and the verdict; a code hun
 
 `@deep why` and `@stuck why` in the address comment: `dcp escalate NAME "why"`, `dcp stuck NAME "why"`, either
 with `--clear`. `escalate` refuses a reason all of whose clauses speak only of missing or unwritten statements
-(reconstruction is base work). `dcp build` removes the tag of a function that reached byte + readable
+(reconstruction is base work), one that admits a part not read against the original yet, and, for deep, a function
+below byte whose instruction count differs from the original's by more than max(12, 1/100 of the original's) (queues.rs
+size_unexplained; on gildegold no shape function differs by more than 7): missing or wrong statements, base work;
+`--size-explained "why"` escalates anyway with the why in the reason. `dcp build` removes the tag of a function that reached byte + readable
 (auto-clear); a stale tag is warning M2, both tags at once error M2.
 
 ## Queues

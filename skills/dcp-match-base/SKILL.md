@@ -209,7 +209,12 @@ the code is shape and only byte identity is missing), or a generated variant rou
 `uv run dcp escalate NAME "why"`, build, commit `<unit>: <name> -> deep (match-base)`. The reason lists what was
 read and tried and the exact remaining hunk (`asmdiff` lines). `dcp escalate` refuses a reason that only names
 missing statements, and one that admits a part not read against the original yet (not reconciled / checked /
-compared / verified, hard to judge): reconstruction and reading the whole function are base work. A function you raise to shape + readable that still carries a
+compared / verified, hard to judge): reconstruction and reading the whole function are base work. It also
+refuses while our instruction count differs from the original's by more than max(12, 1/100 of the original's)
+(the `asmdiff` head: `ours=` / `original=`): allocation, slots and frames move a few instructions (no shape
+function on gildegold differs by more than 7), a larger difference is missing or wrong statements. When
+allocation really causes it (extra saved registers, spills you have read in the asmdiff), say how:
+`--size-explained "why"` (kept in the reason). A function you raise to shape + readable that still carries a
 stale `@deep` / `@stuck` tag: `uv run dcp escalate NAME --clear`, build again.
 
 ## 4. When to stop
