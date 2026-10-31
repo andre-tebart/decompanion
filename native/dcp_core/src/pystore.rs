@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Attach the main checkout's store (a read-only file: URI) when this connection has not yet.
-fn ensure_main(db: &Connection, main: &str) -> rusqlite::Result<bool> {
+pub(crate) fn ensure_main(db: &Connection, main: &str) -> rusqlite::Result<bool> {
     if main.is_empty() {
         return Ok(false);
     }
@@ -174,7 +174,7 @@ fn make(py: Python<'_>, kind: &str, f: &SFact) -> PyResult<Py<StoredFact>> {
 }
 
 /// The object of a fact the core holds (made once per fact).
-fn object(py: Python<'_>, kind: &str, f: &Rc<SFact>) -> PyResult<Py<StoredFact>> {
+pub(crate) fn object(py: Python<'_>, kind: &str, f: &Rc<SFact>) -> PyResult<Py<StoredFact>> {
     let key = Rc::as_ptr(f) as usize;
     if let Some(o) = OBJECTS.with(|m| m.borrow().get(&key).map(|(_, o)| o.clone_ref(py))) {
         return Ok(o);

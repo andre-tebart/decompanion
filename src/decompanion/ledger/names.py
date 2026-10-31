@@ -14,95 +14,15 @@ Order (the first origin that names an address wins):
            it one of its own placeholders (Analyzer.is_placeholder; Ghidra: FUN_, thunk_FUN_, LAB_, ...)
 A thunk or slot imported by ordinal takes the analyzer's name for it when there is one (Ghidra knows the
 ordinals of the common system DLLs).
+
+The names are the core's (native/dcp_core/src/names.rs); this module is its face.
 """
 from __future__ import annotations
 
-import bisect
-import re
-
-from ..analyzers import dialect
-from .fact import Kind
-
-ORDER = ("source", "decl", "export", "entry", "lib", "import", "analyzer")
-IDENT = re.compile(r"^[A-Za-z_]\w*$")
+from .. import native
 
 
-class Names:
-    """address -> (C name, origin), name -> addresses; data symbols and strings for operand annotation."""
-
-    def __init__(self, project, store):
-        from . import drafts
-        self.project = project
-        self.store = store
-        tc = project.toolchain
-        cands: dict[int, list[tuple[int, str, str]]] = {}
-        rank = {o: i for i, o in enumerate(ORDER)}
-        for f in store.facts(Kind.name):
-            origin = f.value.get("origin", "")
-            raw = f.value["name"]
-            if origin == "lib":
-                names = sorted(tc.undecorate(n) for n in raw.split("|"))
-                name = names[0]
-            elif origin == "import":
-                tail = raw.split("!", 1)[-1]
-                name = tail if not tail.startswith("#") else None
-                if raw.startswith("thunk:"):
-                    origin = "import"
-            else:
-                name = raw
-            if name and IDENT.match(name):
-                cands.setdefault(f.lo, []).append((rank.get(origin, len(ORDER)), name, origin))
-        az = {}
-        for e in drafts.entries(store):
-            d = az.get(e.analyzer) or az.setdefault(e.analyzer, dialect(e.analyzer))
-            if e.name and not d.is_placeholder(e.name) and IDENT.match(e.name):
-                cands.setdefault(e.start, []).append((rank["analyzer"], e.name, "analyzer"))
-        self.at: dict[int, tuple[str, str]] = {}
-        self.by_name: dict[str, list[int]] = {}
-        for a, cs in cands.items():
-            cs.sort()
-            self.at[a] = (cs[0][1], cs[0][2])
-            for _, n, _ in cs:
-                lst = self.by_name.setdefault(n, [])
-                if a not in lst:
-                    lst.append(a)
-        self.all_at = {a: sorted({(n, o) for _, n, o in cs}) for a, cs in cands.items()}
-        syms = [f for f in store.facts(Kind.symbol) if not f.run.startswith("M.")]
-        self.syms = sorted(((f.lo, f.hi, f) for f in syms), key=lambda t: (t[0], t[1]))
-        self._los = [t[0] for t in self.syms]
-
-    def name(self, a: int) -> str | None:
-        n = self.at.get(a)
-        return n[0] if n else None
-
-    def origin(self, a: int) -> str | None:
-        n = self.at.get(a)
-        return n[1] if n else None
-
-    def symbol(self, a: int):
-        """The symbol fact (not the match phase's) covering a, or None."""
-        i = bisect.bisect_right(self._los, a) - 1
-        for j in range(i, max(i - 4, -1), -1):
-            lo, hi, f = self.syms[j]
-            if lo <= a < hi:
-                return f
-        return None
-
-    def label(self, a: int) -> str | None:
-        """How `dcp disasm` / `dcp dump` spell an address: its name, else `name+off` inside a named symbol (not an
-        unknown run), else a string's text, else None."""
-        n = self.name(a)
-        if n:
-            return n
-        f = self.symbol(a)
-        if f is None:
-            return None
-        sk = f.value.get("skind")
-        if sk in ("unknown.code", "unknown.data"):         # no symbol: an offset from it would mean nothing
-            return None
-        base = self.name(f.lo)
-        if base and a != f.lo:
-            return f"{base}+{a - f.lo:#x}"
-        if sk == "string" and a == f.lo:
-            return '"' + self.project.image.cstr(a)[:40].decode("latin-1").replace("\n", "\\n") + '"'
-        return None
+def Names(project, store):
+    """address -> (C name, origin), name -> addresses (by_name, all_at); the symbol covering an address and its
+    label as the reading commands spell it."""
+    return native.core().Names(store._p, store._main, str(project.image_path))
