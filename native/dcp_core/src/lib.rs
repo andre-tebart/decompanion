@@ -28,6 +28,7 @@ mod layoutview;
 mod pe;
 mod plan;
 mod project;
+mod pyimage;
 mod pystore;
 mod queues;
 mod readability;
@@ -632,6 +633,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
+    m.add_class::<pyimage::PeImage>()?;
+    m.add_function(wrap_pyfunction!(pyimage::pe_open, m)?)?;
     m.add_function(wrap_pyfunction!(x86::x86_disasm, m)?)?;
     m.add_function(wrap_pyfunction!(asmcmd::asm_reading, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
