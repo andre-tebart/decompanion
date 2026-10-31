@@ -382,15 +382,11 @@ def file_scope_decls(rel: str, text: str, m: dict | None = None) -> list[Decl]:
 IDENT = re.compile(r"[A-Za-z_]\w*")
 
 
-MACRO_LINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)((?:\\\n|[^\n])*)", re.M)
-
-
 def file_macros(rel: str, text: str, m: dict) -> list[tuple[str, int, str]]:
     """(name, line, `#define` line) of the macros the preprocessor defined in a file (its model's:
-    srcscan.live_defines; comments blanked, continuations joined)."""
+    srcscan.defines; comments blanked, continuations joined)."""
     S = srcscan.Source(rel, text)
-    found = srcscan.live_defines(S, m, MACRO_LINE)
-    return [(x.group(1), S.line_of(x.start()), "#define " + x.group(1) + x.group(2).replace("\\\n", " ")) for x in found]
+    return [(d.name, d.line, "#define " + d.name + d.rest(S.code).replace("\\\n", " ")) for d in srcscan.defines(S, m)]
 
 
 _scans: dict[tuple[str, str], tuple] = {}     # (file, sha256 of its text) -> (its declarations, its macros)

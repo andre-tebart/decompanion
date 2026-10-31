@@ -155,6 +155,8 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             defined there
       dead  [(first line, last line)] of every range the preprocessor skipped (a dead `#if` branch)
       macros [(line, name, function-like)] of every macro the preprocessor defined there (a live `#define`)
+      defines [(name, function-like, line, col, end line, end col)] of the same macros: the definition from its
+            name to the end of its last token (a trailing comment is no part of it)
       casts [(line, col, end line, end col, literal)] of every integer literal cast to a pointer type in code,
             the cast and the literal spelled in the file, from the cast's `(` to the literal's end: the cursor
             at the `)` before a literal is the cast, stepping over parentheses and casts to a type without a

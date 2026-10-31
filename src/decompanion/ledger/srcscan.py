@@ -77,8 +77,6 @@ PLACEHOLDER_ADDR = re.compile(r"\b[A-Za-z_]\w*?Unk([0-9a-f]{5,8}|[0-9A-F]{5,8})(
 def placeholder_value(m: re.Match) -> int:
     """The address a PLACEHOLDER_ADDR match spells."""
     return int(next(g for g in m.groups() if g), 16)
-DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
-OBJ_DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(?![\w(])[ \t]*([^\n]*)", re.M)
 DEREF_OBJ = re.compile(r"\(\s*\*\s*\(\s*[A-Za-z_]")      # an object-like macro body that dereferences a cast: (*(T ...
 _NUM = r"(0[xX][0-9a-fA-F]+|\d+)[uUlL]*"
 _TYPEP = r"[^()]*(?:\([^()]*\)[^()]*)*"
@@ -325,8 +323,6 @@ def unit_of(rel: str) -> str:
     return Path(rel).stem
 
 
-DEFINE_LINE = re.compile(r"^[ \t]*#[ \t]*define\b(?:\\\n|[^\n])*", re.M)
-
 
 def literal_value(s: str) -> int | None:
     """The value of a C integer literal's digits (hex, octal with a leading 0, decimal); None when malformed."""
@@ -352,8 +348,8 @@ def ptr_casts(S: Source, out: Scan, model: dict):
         if v is not None:
             text = " ".join(S.text[S.offset(line, col):S.offset(eline, ecol)].split())
             out.ptrcasts.append(PtrCast(S.rel, line, text + ")" * (text.count("(") - text.count(")")), v))
-    for m in live_defines(S, model, DEFINE_LINE):
-        add(m.group(0), m.start())
+    for d in defines(S, model):
+        add(S.code[d.start:d.end], d.start)
 
 
 def live_code(S: Source, model: dict) -> str:
@@ -407,15 +403,27 @@ def model_of(root: Path, rel: str, text: str) -> dict | None:
 _trees: dict[tuple, str] = {}
 
 
-def live_defines(S: Source, model: dict, pattern: re.Pattern, text: str | None = None, like: bool | None = None):
-    """The matches of a `#define` pattern at the lines of the macros the preprocessor defined (model["macros"]),
-    of the function-like ones or the object-like ones only when `like` says so."""
-    text = S.code if text is None else text
-    for line, name, flike in model["macros"]:
+@dataclass(frozen=True)
+class Define:
+    """A macro the preprocessor defined in a file: offsets in the file's text from its name to the end of its last
+    token (a trailing comment is no part of it)."""
+    name: str
+    line: int
+    start: int
+    end: int
+    flike: bool
+
+    def rest(self, text: str) -> str:
+        """What follows the name in `text` (the file's text or its code): `(params) body` or the body."""
+        return text[self.start + len(self.name):self.end]
+
+
+def defines(S: Source, model: dict, like: bool | None = None):
+    """The live macro definitions of a file (the front end's: model["defines"]), the function-like or the
+    object-like ones only when `like` says so."""
+    for name, flike, line, col, eline, ecol in model["defines"]:
         if like is None or flike == like:
-            m = pattern.match(text, S.offset(line, 1))
-            if m is not None:
-                yield m
+            yield Define(name, line, S.offset(line, col), S.offset(eline, ecol), flike)
 
 
 def view_macros(S: Source, unit: str, out: Scan, model: dict):
@@ -423,14 +431,15 @@ def view_macros(S: Source, unit: str, out: Scan, model: dict):
     its line) goes to out.views; one whose body dereferences a cast (DEREF_OBJ) and is no view to out.rawobj,
     and to out.errors (L15) when it has an address comment all the same. The live object-like macros of the
     front end's model only."""
-    for m in live_defines(S, model, OBJ_DEFINE, like=False):
-        name, body = m.group(1), m.group(2).strip()
-        if not body or body.endswith("\\"):
+    for d in defines(S, model, like=False):
+        name, body = d.name, d.rest(S.code).strip()
+        if not body or "\n" in body:
             continue
-        eol = S.text.find("\n", m.start())
+        bol = S.offset(d.line, 1)
+        eol = S.text.find("\n", bol)
         eol = len(S.text) if eol < 0 else eol
-        addrs = next((lead_addrs(b) for s, e, b in S.comments if m.start() <= s < eol and lead_addrs(b)), [])
-        line = S.line_of(m.start())
+        addrs = next((lead_addrs(b) for s, e, b in S.comments if bol <= s < eol and lead_addrs(b)), [])
+        line = d.line
         v = VIEW_BYTE.fullmatch(body)
         if v:
             container, offset, alias = v.group(2), literal_value(v.group(3)), False
@@ -457,8 +466,9 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None, views: 
     target's view holds (under its `#if`) is a function too."""
     S = Source(rel, text)
     model = model_alone(rel, text) if model is None else model
-    for m in live_defines(S, model, DEFINE, S.text, like=True):
-        out.macros.append((m.group(1), m.group(3)))
+    for d in defines(S, model, like=True):
+        rest = d.rest(S.text)
+        out.macros.append((d.name, rest[rest.find(")") + 1:].strip()))
     for s, e, body in S.comments:
         m = DESCRIBED.match(body)
         if m:
@@ -515,11 +525,11 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None, views: 
 
 _cache: dict[tuple[str, str], Scan] = {}
 _files: dict[tuple[str, str, str], Scan] = {}     # (path, sha256 of the text, model digest) -> that file's own scan
-CACHE_VERSION = 10                                # bump when scan_file's results change
-MODEL_VERSION = "16"                               # bump when the scan's translation units change
+CACHE_VERSION = 11                                # bump when scan_file's results change
+MODEL_VERSION = "17"                               # bump when the scan's translation units change
 _models: dict[str, tuple] = {}                    # model key -> ([(dependency, sha256)], files)
 _last_deps: dict[str, list[str]] = {}             # translation unit path -> what its last parse read
-EMPTY = {"defs": [], "vars": [], "macros": [], "casts": [], "decls": [], "types": [], "dead": []}
+EMPTY = {"defs": [], "vars": [], "macros": [], "defines": [], "casts": [], "decls": [], "types": [], "dead": []}
 UNIT_FILE = re.compile(r"^src/[^/]+\.c$")
 
 

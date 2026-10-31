@@ -155,6 +155,8 @@ api! {
     clang_getTokenSpelling: fn(P, CXToken) -> CXString;
     clang_equalLocations: fn(CXLoc, CXLoc) -> c_uint;
     clang_getFunctionTypeCallingConv: fn(CXType) -> c_int;
+    clang_getTokenExtent: fn(P, CXToken) -> CXRange;
+    clang_getFileLocation: fn(CXLoc, *mut P, *mut c_uint, *mut c_uint, *mut c_uint);
 }
 
 // cursor, type, storage, severity, token kinds and options of clang-c/Index.h
@@ -381,6 +383,35 @@ impl Unit {
         diagnostics(py, a, &t, root, text, presumed)
     }
 
+    /// (start, end) byte offsets of every comment of a file the unit read (clang_tokenize over the file).
+    fn comments(&self, fname: &str, size: usize) -> PyResult<Vec<(u32, u32)>> {
+        let a = api()?;
+        let t = lock(self);
+        let cf = cstr(fname)?;
+        let tu = t.tu;
+        let f = unsafe { (a.clang_getFile)(tu, cf.as_ptr()) };
+        let r = unsafe { (a.clang_getRange)((a.clang_getLocationForOffset)(tu, f, 0), (a.clang_getLocationForOffset)(tu, f, size as c_uint)) };
+        let (mut toks, mut n): (*mut CXToken, c_uint) = (std::ptr::null_mut(), 0);
+        unsafe { (a.clang_tokenize)(tu, r, &mut toks, &mut n) };
+        let off = |l: CXLoc| {
+            let (mut f, mut x, mut y, mut o): (P, c_uint, c_uint, c_uint) = (std::ptr::null_mut(), 0, 0, 0);
+            unsafe { (a.clang_getFileLocation)(l, &mut f, &mut x, &mut y, &mut o) };
+            o
+        };
+        let mut out = vec![];
+        for i in 0..n as usize {
+            let k = unsafe { *toks.add(i) };
+            if unsafe { (a.clang_getTokenKind)(k) } == 4 {
+                let e = unsafe { (a.clang_getTokenExtent)(tu, k) };
+                out.push((off(unsafe { (a.clang_getRangeStart)(e) }), off(unsafe { (a.clang_getRangeEnd)(e) })));
+            }
+        }
+        if !toks.is_null() {
+            unsafe { (a.clang_disposeTokens)(tu, toks, n) };
+        }
+        Ok(out)
+    }
+
     /// cparse.refs of the unit.
     fn refs(&self, root: &str, text: &str, names: Vec<String>) -> PyResult<Vec<(String, Vec<(usize, usize)>)>> {
         let a = api()?;
@@ -474,6 +505,7 @@ struct FileModel {
     defs: Vec<(i64, i64, String, bool)>,
     vars: Vec<(i64, i64, i64, i64, String, String, bool)>,
     macros: Vec<(i64, String, bool)>,
+    defines: Vec<(String, bool, i64, i64, i64, i64)>,
     casts: Vec<(i64, i64, i64, i64, String)>,
     decls: Vec<Decl>,
     types: Vec<(i64, String)>,
@@ -696,7 +728,14 @@ fn model<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str) -> PyRes
         } else if k == MACRO_DEFINITION {
             if let Some(p) = w.loc(a, unsafe { (a.clang_getCursorLocation)(c) }) {
                 let fl = unsafe { (a.clang_Cursor_isMacroFunctionLike)(c) } != 0;
-                out.entry(&p.0).macros.push((p.1, spelling(a, c), fl));
+                let name = spelling(a, c);
+                // the definition's extent: from its name to the end of its last token
+                let e = w.loc(a, unsafe { (a.clang_getRangeEnd)((a.clang_getCursorExtent)(c)) }).filter(|e| e.0 == p.0);
+                let f = out.entry(&p.0);
+                if let Some(e) = e {
+                    f.defines.push((name.clone(), fl, p.1, p.2, e.1, e.2));
+                }
+                f.macros.push((p.1, name, fl));
             }
         }
     }
@@ -758,6 +797,7 @@ fn model<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str) -> PyRes
         e.set_item("defs", &m.defs)?;
         e.set_item("vars", &m.vars)?;
         e.set_item("macros", &m.macros)?;
+        e.set_item("defines", &m.defines)?;
         e.set_item("casts", &m.casts)?;
         let decls = PyList::empty(py);
         for d in &m.decls {
