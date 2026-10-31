@@ -11,7 +11,9 @@ record per line, key=value tokens, addresses 0x%08x, counts before lists.
                                         only when nothing else is left and the trial without them has no new
                                         error. The includes go after the unit's last include, or before the first
                                         statement that uses a name the headers declare when that comes first;
-                                        --at LINE chooses the line.
+                                        --at LINE chooses the line. --trial compiles the unit as --write would
+                                        leave it and grades every function (byte by M.match's compare, else
+                                        the instruction diff): the falls (exit 1) and rises; nothing is written.
 """
 from __future__ import annotations
 
@@ -23,7 +25,8 @@ def cmd_headers_conflicts(args):
     from .rules.engine import capstone_dll
     p, e = open_project(args)
     refresh(p, e)
-    lines, status = native.core().headers_conflicts(p.core, capstone_dll(), args.unit, list(args.headers), bool(args.write), args.at)
+    lines, status = native.core().headers_conflicts(p.core, capstone_dll(), args.unit, list(args.headers), bool(args.write), args.at,
+                                                     bool(args.trial))
     print("\n".join(lines))
     return status
 
@@ -36,6 +39,9 @@ def register(sub, cmd):
     s.add_argument("headers", nargs="+", metavar="HEADER")
     s.add_argument("--write", action="store_true",
                    help="insert the includes and drop the head's duplicates when no other conflict is left")
+    s.add_argument("--trial", action="store_true",
+                   help="compile the unit as --write would leave it (in build/obj/trial/, removed after) and grade each of its "
+                        "functions: the ones whose code grade would fall (exit 1) or rise; writes nothing")
     s.add_argument("--at", type=int, metavar="LINE",
                    help="insert the includes before the unit file's line LINE (default: after its last include, or before "
                         "the first statement using a name the headers declare when that comes first)")

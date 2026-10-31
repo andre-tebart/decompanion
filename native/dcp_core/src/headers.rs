@@ -37,7 +37,10 @@
 //!                    dropping the line drops the function to draft; move the words to its address comment first
 //! The tool reads only; `--write` inserts the includes and drops the `duplicate` declarations of the head (a line
 //! whose names are all duplicates goes, comment and all; a multi-name extern line keeps its other declarators), and
-//! only when the trial without them has no new error at all (clang's or VC6's).
+//! only when the trial without them has no new error at all (clang's or VC6's). `--trial` compiles the unit as --write
+//! would leave it (build/obj/trial/, removed after) and grades every function of the unit against the original as
+//! G.grade grades its code (byte by M.match's compare, else shape / draft by the instruction diff over the extent and
+//! slot of its grade row): the falls (exit 1) and the rises, the declaration set's effect itself; nothing is written.
 //! Positions are in characters, as Python's str offsets were.
 
 use crate::clang::{CDiag, FileModel};
@@ -1030,11 +1033,86 @@ fn resolve_header(root: &str, h: &str) -> Option<String> {
     Path::new(&py_path(&format!("{root}/include/{name}"))).exists().then_some(name)
 }
 
-/// `dcp headers conflicts UNIT HEADER.. [--write] [--at LINE]`: (the lines, the exit status).
+/// --trial: the unit's text with the includes (and without the head's duplicates, as --write would leave it)
+/// compiled by the toolchain into build/obj/trial/ (the files removed after), and each function of the unit graded
+/// against the original as G.grade grades its code: byte when M.match's compare matches, else shape or draft by the
+/// instruction diff over the extent and slot its grade row read. (address, name, code grade now, in the trial), or
+/// the compiler's first error.
+#[allow(clippy::type_complexity)]
+fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str) -> PyResult<Result<Vec<(i64, String, String, String)>, String>> {
+    let root = p.root.to_string_lossy().into_owned();
+    let db = p.store_path();
+    let tools = crate::vc6::Tools::of(p);
+    if !tools.available() {
+        return Ok(Err("the toolchain is not available".into()));
+    }
+    let flags = crate::plan::compile_flags(p, &unit.target, &unit.unit).map_err(err)?;
+    let (src, obj) = (format!("build/trial/{}-headers.c", unit.unit), format!("build/obj/trial/{}-headers.obj", unit.unit));
+    let full = |r: &str| py_path(&format!("{root}/{r}"));
+    for r in [&src, &obj] {
+        if let Some(d) = Path::new(&full(r)).parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+    }
+    let _ = std::fs::remove_file(full(&obj));
+    std::fs::write(full(&src), text).map_err(err)?;
+    let res = tools.compile(&src, &obj, &flags, &["include".to_string()], &root).map_err(err)?;
+    let data = std::fs::read(full(&obj));
+    for r in [&src, &obj] {
+        let _ = std::fs::remove_file(full(r));
+    }
+    if !res.ok {
+        return Ok(Err(res.diags.iter().find(|d| d.severity == "error").map(|d| format!("{}({}): {} {}", d.file, d.line, d.code, d.message))
+            .unwrap_or_else(|| "does not compile".into())));
+    }
+    let o = crate::coff::Obj::parse(&data.map_err(err)?).map_err(err)?;
+    let index = o.function_index();
+    let img = crate::image(&p.target(None).map_err(err)?.path)?;
+    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| err("no toolchain"))?;
+    let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
+    let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
+    let forms = crate::compare::fill_order(&fill_forms);
+    let env = crate::diffclass::Env { dll: capstone, img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
+    let starts = crate::asmcmd::all_starts(&db, &img)?;
+    let relocs: Option<Vec<u32>> = if img.relocations().is_empty() {
+        None
+    } else {
+        let mut v: Vec<u32> = crate::with_db(&db, |c| store::facts_of(c, &db, "ref", None, |f| f.s("rkind") == Some("reloc")))?.iter().map(|f| f.lo as u32).collect();
+        v.sort_unstable();
+        (!v.is_empty()).then_some(v)
+    };
+    let mut out = vec![];
+    for r in crate::queues::function_grades(&db)?.iter().filter(|r| r["unit"].as_str() == Some(unit.unit.as_str())) {
+        let (a, name) = (r["addr"].as_i64().unwrap_or(0), r["name"].as_str().unwrap_or("").to_string());
+        let now = r["code"].as_str().unwrap_or("").to_string();
+        let Some(&k) = index.get(&name) else {
+            out.push((a, name, now, "none".into()));
+            continue;
+        };
+        let code = o.function_code(k);
+        let next = starts.get(starts.partition_point(|&x| x <= a)).copied().unwrap_or(img.end() as i64) as u32;
+        let grade = if crate::compare::compare(&img, &code, a as u32, relocs.as_deref(), next, &forms).matched() {
+            "byte"
+        } else {
+            let d = &r["dist"];
+            let (cd, cm) = code.code();
+            let size = crate::diffclass::code_size(&env, cd, cm, a as u32).map_err(err)?;
+            let extent = d.get("extent").and_then(|v| v.as_i64()).unwrap_or(size);
+            let slot = d.get("slot").and_then(|v| v.as_i64()).unwrap_or(extent.max(next as i64 - a));
+            let orig = crate::diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64).map_err(err)?;
+            if crate::diffclass::function_verdict(&env, &o, &code, a as u32, &orig).map_err(err)?.shape { "shape" } else { "draft" }
+        };
+        out.push((a, name, now, grade.to_string()));
+    }
+    out.sort();
+    Ok(Ok(out))
+}
+
+/// `dcp headers conflicts UNIT HEADER.. [--write] [--trial] [--at LINE]`: (the lines, the exit status).
 #[pyfunction]
-#[pyo3(signature = (project, capstone, unit, headers, write, at))]
-pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone: &str, unit: &str, headers: Vec<String>, write: bool, at: Option<i64>)
-    -> PyResult<(Vec<String>, i32)> {
+#[pyo3(signature = (project, capstone, unit, headers, write, at, try_grades=false))]
+pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone: &str, unit: &str, headers: Vec<String>, write: bool, at: Option<i64>,
+                         try_grades: bool) -> PyResult<(Vec<String>, i32)> {
     let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];
@@ -1123,7 +1201,7 @@ pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone
         out.push(record(&[("warning", s("declaration-set")), ("added", Tok::I(an.added as i64)), (if write { "dropped" } else { "duplicates" }, Tok::I(dropped)),
                           ("functions", Tok::I(fns.len() as i64)), ("byte", Tok::I(n("byte"))), ("shape", Tok::I(n("shape")))])
                  + "  (the unit's declaration set changes: VC6 /O2 can move code by it alone; re-grade every function of the unit, byte ones first; \
-                    the byte and shape ones follow)");
+                    the byte and shape ones follow; --trial grades them)");
         for (addr, name, code) in &fns {
             if matches!(code.as_deref(), Some("byte" | "shape")) {
                 out.push(format!("  {}", record(&[("fn", Tok::I(*addr)), ("name", s(name.clone())), ("code", os(code.clone()))])));
@@ -1137,17 +1215,42 @@ pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone
                     function's address comment first)");
     }
     let blocking: i64 = BLOCKING.iter().map(|k| count(k)).sum();
-    if !write {
-        return Ok((out, if blocking > 0 { 1 } else { 0 }));
-    }
-    if blocking > 0 {
-        out.push(record(&[("write", s("refused")), ("why", s(format!("{blocking} conflicts left; only includes and duplicates are written")))]));
-        return Ok((out, 1));
-    }
     let mut drop: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
     for i in an.items.iter().filter(|i| i.kind == "duplicate") {
         let ln: i64 = i.at.rsplit(':').next().and_then(|n| n.parse().ok()).unwrap_or(0);
         drop.entry(ln).or_default().extend(i.name.clone());
+    }
+    let mut falls = 0;
+    if try_grades {
+        // the declaration set's effect itself: the unit compiled as --write would leave it, every function graded
+        let t = trial(&x, unit, &hdrs, &drop, at).map_err(err)?;
+        match trial_grades(p, capstone, &t.unit, &t.new.replace(TRIAL_MARK, ""))? {
+            Err(e) => {
+                out.push(record(&[("trial", s("failed")), ("why", s(e))]));
+                falls = 1;
+            }
+            Ok(gs) => {
+                let rank = |c: &str| ["none", "draft", "shape", "byte"].iter().position(|x| *x == c).unwrap_or(0);
+                let fell: Vec<_> = gs.iter().filter(|g| rank(&g.3) < rank(&g.2)).collect();
+                let rose: Vec<_> = gs.iter().filter(|g| rank(&g.3) > rank(&g.2)).collect();
+                falls = fell.len();
+                out.push(record(&[("trial", s("compiled")), ("functions", Tok::I(gs.len() as i64)), ("falls", Tok::I(fell.len() as i64)),
+                                  ("rises", Tok::I(rose.len() as i64)), ("same", Tok::I((gs.len() - fell.len() - rose.len()) as i64))])
+                         + "  (the unit with the includes, as --write would leave it, compiled and each function's code graded; nothing written)");
+                for (what, gs) in [("fall", fell), ("rise", rose)] {
+                    for (a, name, now, then) in gs {
+                        out.push(format!("  {}", record(&[(what, Tok::I(*a)), ("name", s(name.clone())), ("code", s(now.clone())), ("trial", s(then.clone()))])));
+                    }
+                }
+            }
+        }
+    }
+    if !write {
+        return Ok((out, if blocking > 0 || falls > 0 { 1 } else { 0 }));
+    }
+    if blocking > 0 {
+        out.push(record(&[("write", s("refused")), ("why", s(format!("{blocking} conflicts left; only includes and duplicates are written")))]));
+        return Ok((out, 1));
     }
     let t = trial(&x, unit, &hdrs, &drop, at).map_err(err)?;
     let seen: HashSet<_> = t.base.iter().map(key).collect();

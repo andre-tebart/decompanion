@@ -182,6 +182,27 @@ def test_rename_counts_the_errors_of_the_tree_as_from_before(tiny):
 
 
 @needs_vc6
+def test_headers_conflicts_trial_grades(tiny):
+    """`dcp headers conflicts --trial` compiles the unit with the include and grades its functions: the one whose
+    code would fall is listed (exit 1), nothing is written (a match-base report: only a real build showed that a
+    header dropped a byte match to shape)."""
+    with_vc6(tiny)
+    write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n"
+                                 "0x10001030 boundary end tu=net -- f3 is another unit\n")
+    unit(tiny, "net", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return *(int *)\"\\x34\\x12\";\n}\n")
+    assert dcp(tiny, "build")[0] == 0
+    write(tiny, "include/plain.h", "int spare(void);\n")
+    write(tiny, "include/slow.h", "#pragma optimize(\"\", off)\n")
+    before = (tiny / "src/net.c").read_text()
+    code, out = dcp(tiny, "headers", "conflicts", "net", "plain", "--trial")
+    assert code == 0 and "trial=compiled  functions=1  falls=0  rises=0  same=1" in out, out
+    code, out = dcp(tiny, "headers", "conflicts", "net", "slow", "--trial")
+    assert code == 1 and "falls=1" in out and "  fall=0x10001020  name=get  code=byte  trial=draft" in out, out
+    assert (tiny / "src/net.c").read_text() == before and not list((tiny / "build" / "obj" / "trial").glob("*"))
+    assert "code=byte" in dcp(tiny, "grade", "get")[1]
+
+
+@needs_vc6
 def test_promote_raises_only_and_accept(tiny):
     """promote refuses a fall (nothing written); dcp accept lowers that one entry with its reason and M1 holds the
     function there; promote keeps the note while it stays below, clears it once the function is back; a fall

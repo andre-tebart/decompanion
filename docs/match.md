@@ -262,7 +262,10 @@ first, and they are listed) and `q6` (a duplicate's comment is the only descript
 drops the function to draft under Q6; function addresses only). `--write` inserts the includes and drops the
 duplicates (a line whose names are all duplicates goes, a multi-name line keeps its other declarators), only when
 nothing else is left and the trial without them has no new error (clang's or VC6's). About 1 s a unit (more
-with the VC6 trial).
+with the VC6 trial). `--trial` answers the declaration-set warning: the unit as --write would leave it is compiled
+(build/obj/trial/, removed after) and every function's code graded against the original (byte by M.match's
+compare, else shape / draft by the diff over its grade row's extent and slot): `fall=` / `rise=` lines, exit 1
+on a fall; nothing is written.
 
 ## The gate (`dcp check`)
 
