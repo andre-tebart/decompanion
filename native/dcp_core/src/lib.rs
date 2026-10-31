@@ -38,7 +38,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// A string as json.dumps(ensure_ascii=True) spells it, quotes included.
 pub(crate) fn put_str(out: &mut String, s: &str) {
     out.push('"');
-    for ch in s.chars() {
+    // runs of printable ASCII other than `"` and `\` go over as they are
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let j = i + b[i..].iter().position(|&c| !(0x20..=0x7e).contains(&c) || c == b'"' || c == b'\\').unwrap_or(b.len() - i);
+        out.push_str(&s[i..j]);
+        if j == b.len() {
+            break;
+        }
+        let ch = s[j..].chars().next().unwrap();
+        i = j + ch.len_utf8();
         match ch {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
@@ -316,7 +326,7 @@ fn sync_facts(tx: &rusqlite::Transaction, run_id: i64, rows: &[Row]) -> rusqlite
 /// store; the run as written, for memory.
 fn sync_facts_held(tx: &rusqlite::Transaction, run_id: i64, rows: &[Row], held: &store::RunFacts) -> rusqlite::Result<store::RunFacts> {
     type Key<'a> = (i64, i64, &'a str, &'a str, i64, &'a str, Option<&'a str>);
-    let mut have: HashMap<Key, std::collections::VecDeque<&Rc<store::SFact>>> = HashMap::new();
+    let mut have: rustc_hash::FxHashMap<Key, std::collections::VecDeque<&Rc<store::SFact>>> = Default::default();
     let mut all: Vec<(&str, &Rc<store::SFact>)> = held.by_kind.iter().flat_map(|(k, v)| v.iter().map(move |f| (k.as_str(), f))).collect();
     all.sort_by_key(|(_, f)| f.id);
     for (kind, f) in &all {
@@ -358,7 +368,7 @@ fn fact_of(id: i64, rule: &Rc<str>, r: &Row) -> store::SFact {
 
 /// The same for a run's conflicts (M.lint's thousands of M7 lines are the same from one run to the next).
 fn sync_conflicts(tx: &rusqlite::Transaction, run_id: i64, confl: &[ConflictRow]) -> rusqlite::Result<()> {
-    let mut have: HashMap<ConflictKey, std::collections::VecDeque<i64>> = HashMap::new();
+    let mut have: rustc_hash::FxHashMap<ConflictKey, std::collections::VecDeque<i64>> = Default::default();
     {
         let mut st = tx.prepare("SELECT id, severity, check_id, lo, hi, message, a, b FROM conflict WHERE run_id=? ORDER BY id")?;
         let mut q = st.query([run_id])?;
