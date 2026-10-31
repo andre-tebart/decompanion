@@ -99,9 +99,12 @@ pub fn local_refs(root: &str, names: &[String]) -> Result<Skip, String> {
     }
     let jobs: Vec<&String> = units.iter().map(|u| &u.0).filter(|p| pick.contains(*p)).collect();
     let args = front.args(&defines);
+    // one file to parse (a rename inside one unit): its parse is the live unit the scan's parse of the edit keeps
+    // (frontend.rs with_parse), so neither parses it from scratch
+    let keep = jobs.len() == 1;
     let found = crate::compile_threads(&jobs, |p| -> Result<Vec<(String, Vec<(usize, usize)>)>, String> {
         let text = crate::fsmemo::read_text(p).map_err(|e| format!("{p}: {e}"))?;
-        crate::frontend::with_parse(p, &args, &text, false, |u| u.refs(root, &text, names.to_vec()).map_err(|e| e.to_string()))
+        crate::frontend::with_parse(p, &args, &text, keep, |u| u.refs(root, &text, names.to_vec()).map_err(|e| e.to_string()))
     });
     let mut out: Skip = HashMap::new();
     for r in found {

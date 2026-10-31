@@ -283,14 +283,25 @@ pub fn ensure(p: &Project, force: bool, jobs: Option<usize>) -> Result<Report, S
     }
     if !stale.is_empty() {
         rep.log.push(format!("build: compiling {} of {} units (target {})", stale.len(), units.len(), p.target_name));
+        let spare = stale.len() * 2 <= n;
         let results = run_threads(n, &stale, |&k| {
             let (a, flags, _) = &work[k];
             let tmp = format!("build\\obj\\tmp\\{}\\{}.obj", a.target, a.unit);
             let tmp_abs = py_path(&format!("{root}/{tmp}"));
             let _ = std::fs::create_dir_all(Path::new(&tmp_abs).parent().unwrap());
             let _ = std::fs::remove_file(&tmp_abs);
-            let files = preprocess(k);
-            let res = tools.compile(&win(&a.file), &tmp, flags, &dirs, &root);
+            let compile = || tools.compile(&win(&a.file), &tmp, flags, &dirs, &root);
+            // the include set (a preprocessor process of its own) beside the compile while the pool has threads to
+            // spare (an edit or a rename compiles one unit: ~0.2 s of 0.7 s on gildegold's main.c)
+            let (files, res) = if spare {
+                std::thread::scope(|s| {
+                    let pre = s.spawn(|| preprocess(k));
+                    let res = compile();
+                    (pre.join().unwrap_or(None), res)
+                })
+            } else {
+                (preprocess(k), compile())
+            };
             let res = res.map(|mut r| {
                 r.diags = located(&root, a, std::mem::take(&mut r.diags));
                 r
