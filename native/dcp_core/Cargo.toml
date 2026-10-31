@@ -17,6 +17,9 @@ sha2 = "0.11.1"
 name = "_core"
 crate-type = ["cdylib"]
 
+[profile.dev]
+opt-level = 1
+
 [profile.release]
 opt-level = 3
 lto = "thin"

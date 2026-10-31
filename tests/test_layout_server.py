@@ -9,7 +9,7 @@ from conftest import dcp, declare_vc6
 SERVER = Path("C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll")
 TOOLCHAIN = Path("C:/Tools/MSVC600-SP5PP")
 
-pytestmark = pytest.mark.skipif(not (SERVER.exists() and TOOLCHAIN.exists()), reason="server.dll or VC6 not installed")
+pytestmark = [pytest.mark.slow, pytest.mark.skipif(not (SERVER.exists() and TOOLCHAIN.exists()), reason="server.dll or VC6 not installed")]
 
 
 @pytest.fixture(scope="module")

@@ -1,9 +1,12 @@
 """The native core (native/dcp_core, Rust; docs/plan.md section 20): built on first use, loaded once per process.
 
-`core()` is the extension module. It is built with `cargo build --release` from native/dcp_core (rustup's
-x86_64-pc-windows-gnu toolchain) and copied to build/native/_core-<source hash>.pyd of the decompanion checkout,
-so a changed crate builds a new module beside the old one (a loaded .pyd cannot be replaced on Windows). There is
-no Python fallback: a missing cargo or a failed build is an error.
+`core()` is the extension module. It is built with cargo from native/dcp_core (rustup's x86_64-pc-windows-gnu
+toolchain) and copied to build/native/_core-<profile>-<source hash>.pyd of the decompanion checkout, so a changed
+crate builds a new module beside the old one (a loaded .pyd cannot be replaced on Windows). There is no Python
+fallback: a missing cargo or a failed build is an error.
+
+DCP_NATIVE_PROFILE picks the cargo profile: `dev` (the default; opt-level 1, incremental: a change builds in a few
+seconds, for iterating and the tests) or `release` (thin LTO, one codegen unit: ~45 s a build, for timing).
 
 DCP_SHADOW names what runs twice and is compared while it is being ported (a comma-separated list; `all` for
 everything in shadow): the Python version is the reference and is deleted once the two agree on gildegold.
@@ -46,6 +49,13 @@ def cargo() -> str:
                        f"not in {home.parent}")
 
 
+def profile() -> str:
+    p = os.environ.get("DCP_NATIVE_PROFILE") or "dev"
+    if p not in ("dev", "release"):
+        raise RuntimeError(f"DCP_NATIVE_PROFILE={p!r}: dev or release")
+    return p
+
+
 def core():
     """The extension module, built if the crate changed since the last build."""
     global _core
@@ -54,10 +64,12 @@ def core():
     with _lock:
         if _core is not None:
             return _core
-        out = CHECKOUT / "build" / "native" / f"_core-{source_hash()}.pyd"
+        prof = profile()
+        out = CHECKOUT / "build" / "native" / f"_core-{prof}-{source_hash()}.pyd"
         if not out.exists():
-            r = subprocess.run([cargo(), "build", "--release", "--quiet"], cwd=CRATE, capture_output=True, text=True)
-            built = CRATE / "target" / "release" / ("_core.dll" if os.name == "nt" else "lib_core.so")
+            r = subprocess.run([cargo(), "build", "--quiet", *(["--release"] if prof == "release" else [])], cwd=CRATE,
+                               capture_output=True, text=True)
+            built = CRATE / "target" / ("release" if prof == "release" else "debug") / ("_core.dll" if os.name == "nt" else "lib_core.so")
             if r.returncode != 0 or not built.exists():
                 raise RuntimeError(f"building the native core ({CRATE}) failed:\n{r.stdout}{r.stderr}")
             out.parent.mkdir(parents=True, exist_ok=True)

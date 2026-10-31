@@ -8,6 +8,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from conftest import dcp
 
 from decompanion import fsmemo
@@ -120,6 +122,7 @@ def test_bytemap_names_current_facts_after_same_output_rerun(tiny):
     assert ids and all(p.store.fact(i) is not None for i in ids)
 
 
+@pytest.mark.slow
 def test_daemon_answers_like_the_process(tiny):
     assert dcp(tiny, "setup", "--no-analyzer")[0] == 0
     env = dict(os.environ)
@@ -156,6 +159,7 @@ def test_daemon_answers_like_the_process(tiny):
             d.kill()
 
 
+@pytest.mark.slow
 def test_serve_detaches_and_returns(tiny):
     """`dcp serve` returns once its daemon answers: the dcp script must not stay running (uv on Windows cannot
     replace a running .venv/Scripts/dcp.exe)."""

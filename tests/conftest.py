@@ -14,9 +14,30 @@ build_lib writes a COFF archive of objects that carry only an @comp.id symbol.
 from __future__ import annotations
 
 import struct
+import time
 from pathlib import Path
 
 import pytest
+
+BUDGET = 2.0                    # seconds: a default run (no `slow`, no `ghidra`) that takes longer fails
+DEFAULT_MARKS = "not ghidra and not slow"
+
+
+def pytest_sessionstart(session):
+    session.config._dcp_started = time.perf_counter()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """The run's budget (user decision: "a full test run should run under 2s"): the default selection, from the
+    session's start (collection and imports included), fails past BUDGET."""
+    took = time.perf_counter() - session.config._dcp_started
+    if session.config.option.markexpr == DEFAULT_MARKS and took > BUDGET:
+        tr = session.config.pluginmanager.get_plugin("terminalreporter")
+        msg = f"the test run took {took:.2f} s, over its budget of {BUDGET:.0f} s (tests/conftest.py BUDGET)"
+        if tr is not None:
+            tr.write_line(msg, red=True)
+        if session.exitstatus == 0:
+            session.exitstatus = 1
 
 BASE = 0x10000000
 TEXT, DATA, RELOC = 0x1000, 0x2000, 0x3000
