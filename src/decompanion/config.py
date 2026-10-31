@@ -30,12 +30,12 @@ target add` rewrites it into the list form.
 Every target has its own store, build/<target>.sqlite: facts are intervals of one address space and carry no
 target column. A worktree made by `dcp wt new` names the main checkout's build directory in .dcp/main_store;
 its stores overlay main's store of the same target (lookups go overlay first, then main).
+
+The configuration, the declarations and the input hashes are the core's (native/dcp_core/src/project.rs); this
+module adds the plugins' objects (image, toolchain, object format, instruction set, analyzer) and the store.
 """
 from __future__ import annotations
 
-import hashlib
-import re
-import tomllib
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -43,33 +43,14 @@ from pathlib import Path
 from . import analyzers as analyzer_plugins
 from . import image as image_plugins
 from . import isa as isa_plugins
-from . import objfmt as objfmt_plugins
+from . import native, objfmt as objfmt_plugins
 from . import toolchains as toolchain_plugins
 from . import fsmemo, timing
-from .ledger.fact import canonical
-from .ledger.store import Store, file_hash, sha256
+from .ledger.store import Store
 
+_core = native.core()
 CONFIG_NAME = "decompanion.toml"
-PLUGIN_PACKAGES = (image_plugins, toolchain_plugins, objfmt_plugins, isa_plugins)
-TARGET_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-
-
-class ConfigError(RuntimeError):
-    pass
-
-
-TOOLCHAIN_KEYS = ("compiler", "linker", "cflags")
-TARGET_KEYS = ("name", "path", "sha256", "image", "isa", "archives", *TOOLCHAIN_KEYS, "reason")
-REASON_KEYS = (*TOOLCHAIN_KEYS, "archives", "root", "plugin")    # the keys a `reason.<key>` may name
-
-
-def reason_of(table: dict, key: str) -> str:
-    """The reason a table gives for one of its keys: `reason.<key>`, or the older form `reason = "..."` (one
-    reason for every key of the table); '' when it gives none."""
-    r = (table or {}).get("reason")
-    if isinstance(r, dict):
-        r = r.get(key, "")
-    return str(r or "").strip()
+ConfigError = _core.ConfigError
 
 
 @dataclass(frozen=True)
@@ -85,111 +66,41 @@ class Target:
     reasons: tuple = ()        # ((key, reason), ...) the target table gives for its own declarations
 
 
-def find_root(start: Path | None = None) -> Path:
-    p = (start or Path.cwd()).resolve()
-    for d in (p, *p.parents):
-        if (d / CONFIG_NAME).exists():
-            return d
-    raise ConfigError(f"no {CONFIG_NAME} in {p} or above (run dcp init)")
-
-
-def target_name_of(path: Path) -> str:
+def target_name_of(path) -> str:
     """The default name of a target: the binary's stem, lower case, reduced to [a-z0-9_-]."""
-    n = re.sub(r"[^a-z0-9_-]", "_", Path(path).stem.lower())
-    return n if n and n[0].isalpha() else "t" + n
+    return _core.config_target_name_of(str(path))
 
 
-def parse_targets(cfg: dict, expand) -> list[Target]:
-    t = cfg.get("target")
-    if t is None:
-        raise ConfigError(f"{CONFIG_NAME}: no [[target]] table")
-    legacy = isinstance(t, dict)
-    tables = [t] if legacy else list(t)
-    out = []
-    for i, tab in enumerate(tables):
-        if "path" not in tab:
-            raise ConfigError(f"{CONFIG_NAME}: target #{i + 1} has no path")
-        path = expand(tab["path"])
-        name = tab.get("name") or target_name_of(path)
-        if not TARGET_NAME.match(name):
-            raise ConfigError(f"{CONFIG_NAME}: target name {name!r} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)")
-        if any(o.name == name for o in out):
-            raise ConfigError(f"{CONFIG_NAME}: target {name!r} declared twice")
-        unknown = sorted(set(tab) - set(TARGET_KEYS))
-        if unknown:
-            raise ConfigError(f"{CONFIG_NAME}: target {name!r} has unknown keys {', '.join(unknown)} (known: {', '.join(TARGET_KEYS)})")
-        archives = tab.get("archives")
-        if archives is not None and not (isinstance(archives, list) and all(isinstance(a, str) for a in archives)):
-            raise ConfigError(f"{CONFIG_NAME}: target {name!r}: archives is not a list of paths")
-        r = tab.get("reason")
-        if isinstance(r, dict):
-            bad = sorted(set(r) - set(REASON_KEYS))
-            if bad:
-                raise ConfigError(f"{CONFIG_NAME}: target {name!r}: reason.{bad[0]} names no declaration (known: {', '.join(REASON_KEYS)})")
-        elif r is not None and not isinstance(r, str):
-            raise ConfigError(f"{CONFIG_NAME}: target {name!r}: reason is neither a string nor reason.<key> = ...")
-        tc = tuple((k, tuple(tab[k]) if isinstance(tab[k], list) else tab[k]) for k in TOOLCHAIN_KEYS if k in tab)
-        reasons = tuple((k, reason_of(tab, k)) for k in (*TOOLCHAIN_KEYS, "archives") if reason_of(tab, k))
-        out.append(Target(name, path, tab.get("sha256", ""), tab.get("image") or image_plugins.default_key(), legacy, tc,
-                          tuple(archives) if archives is not None else None, tab.get("isa"), reasons))
-    if not out:
-        raise ConfigError(f"{CONFIG_NAME}: the [[target]] list is empty")
-    return out
+def is_target_name(name: str) -> bool:
+    return _core.config_is_target_name(name)
 
 
-def toolchain_plugin_key(tc: dict) -> str | None:
-    """[toolchain] plugin, else the only registered toolchain plugin."""
-    return tc.get("plugin") or toolchain_plugins.default_key()
-
-
-_plugins_digest: str | None = None
-
-
-def plugins_hash(selection: str) -> str:
-    """The hash of the plugin code every rule reads through the seams (image, toolchain, object format and
-    instruction-set packages, every .py file) and of the selection: editing a plugin reruns the rules."""
-    global _plugins_digest
-    if _plugins_digest is None:
-        h = hashlib.sha256()
-        for pkg in PLUGIN_PACKAGES:
-            d = Path(pkg.__file__).parent
-            for p in sorted(d.rglob("*.py")):
-                h.update(p.relative_to(d.parent).as_posix().encode() + b"\0" + p.read_bytes())
-        _plugins_digest = h.hexdigest()
-    return sha256(_plugins_digest, selection)
+def config_targets(root, text: str) -> list[tuple[str, str]]:
+    """(name, path) of every target a configuration's text declares."""
+    return _core.config_targets(str(root), text)
 
 
 class Project:
     def __init__(self, root: Path | None = None, target: str | None = None):
-        self.root = find_root(root) if root is None or not (Path(root) / CONFIG_NAME).exists() else Path(root).resolve()
+        self.core = _core.Project(None if root is None else str(root), target, native.source_hash())
+        self.root = Path(self.core.root)
         self.config_path = self.root / CONFIG_NAME
-        self.cfg = tomllib.loads(self.config_path.read_text())
-        self.targets = parse_targets(self.cfg, self.expand)
-        self.target_name = self.target(target).name     # the current target (default: the first)
+        self.cfg = self.core.cfg
+        self.targets = [Target(n, Path(p), sha, img, legacy, tuple(tc), tuple(a) if a is not None else None, isa, tuple(r))
+                        for n, p, sha, img, legacy, tc, a, isa, r in self.core.targets()]
+        self.target_name = self.core.target_name
         tc = self.cfg.get("toolchain") or {}
-        key = toolchain_plugin_key(tc)
-        plugin = toolchain_plugins.TOOLCHAINS.get(key)
-        if plugin is None:
-            raise ConfigError(f"unknown toolchain plugin {key!r} (known: {', '.join(toolchain_plugins.TOOLCHAINS)}); "
-                              f"name one with [toolchain] plugin = ...")
-        self.toolchain = plugin(self.expand(tc["root"]) if tc.get("root") else None, tc)
+        self.toolchain = toolchain_plugins.TOOLCHAINS[self.core.toolchain_key()](self.expand(tc["root"]) if tc.get("root") else None, tc)
         self.build_dir = self.root / "build"
-        self._hashes: dict[str, str] = {}
         fsmemo.attach(self.root)
 
     def expand(self, s: str) -> Path:
-        tc = self.cfg.get("toolchain") or {}
-        s = s.replace("{toolchain.root}", str(tc.get("root", "")))
-        p = Path(s)
-        return p if p.is_absolute() else (self.root / p)
+        return Path(self.core.expand(s))
 
     # ------------------------------------------------------------------ targets
     def target(self, name: str | None = None) -> Target:
-        """The named target; None: the current one (the default target before the selection is made)."""
-        if name is None:
-            name = getattr(self, "target_name", None)
-            if name is None:
-                return self.targets[0]
+        """The named target; None: the current one."""
+        name = name or self.target_name
         for t in self.targets:
             if t.name == name:
                 return t
@@ -219,13 +130,13 @@ class Project:
         return self.build_dir / f"{self.target(name).name}.sqlite"
 
     def main_build_dir(self) -> Path | None:
-        """The main checkout's build directory when this checkout is a worktree (.dcp/main_store), else None.
-        The marker of milestone 1 named a store file; its directory is meant."""
-        marker = self.root / ".dcp" / "main_store"
-        if not marker.exists():
-            return None
-        p = Path(marker.read_text().strip())
-        return p.parent if p.suffix == ".sqlite" else p
+        """The main checkout's build directory when this checkout is a worktree (.dcp/main_store), else None."""
+        d = self.core.main_build_dir()
+        return Path(d) if d is not None else None
+
+    def reason(self, table: str, key: str) -> str:
+        """The reason a table of the configuration gives for one of its keys ('' when none)."""
+        return self.core.reason(table, key)
 
     # ------------------------------------------------------------------ objects
     @cached_property
@@ -244,8 +155,7 @@ class Project:
     @property
     def isa_name(self) -> str | None:
         """The current target's instruction set: its `isa` key, else what the image's machine type implies."""
-        t = self.target()
-        return t.isa or self.image.default_isa
+        return self.target().isa or self.image.default_isa
 
     @cached_property
     def isa(self):
@@ -293,17 +203,7 @@ class Project:
 
     def lib_archives_of(self, name: str | None = None) -> list[Path]:
         """The library archives of a target: its own `archives` list, else the project's [libs] archives."""
-        t = self.target(name)
-        own = t.archives is not None
-        libs = self.archives_decl_for(name)["archives"] or []
-        out = []
-        for s in libs:
-            p = self.expand(s)
-            if not p.exists():
-                where = f"target {t.name} archives" if own else "[libs] archives"
-                raise ConfigError(f"{where}: {p} does not exist")
-            out.append(p)
-        return out
+        return [Path(p) for p in self.core.lib_archives(name)]
 
     @cached_property
     def lib_archives(self) -> list[Path]:
@@ -311,62 +211,22 @@ class Project:
         return self.lib_archives_of()
 
     def toolchain_decl_for(self, name: str | None = None) -> dict:
-        """The toolchain declaration of a target: plugin and root from [toolchain]; compiler, linker and cflags
-        from the target's own table, else the [toolchain] defaults. `from` names where each came from (target |
-        toolchain | missing), `reasons` the reason of each declared key (from the same table; '' when it gives
-        none)."""
-        tc = self.cfg.get("toolchain") or {}
-        t = self.target(name)
-        own, own_reasons = dict(t.toolchain), dict(t.reasons)
-        out = {"plugin": toolchain_plugin_key(tc), "root": tc.get("root", "")}
-        src = {"root": "toolchain" if tc.get("root") else "missing"}
-        reasons = {"root": reason_of(tc, "root") if tc.get("root") else ""}
-        for k in TOOLCHAIN_KEYS:
-            if k in own:
-                v, src[k], reasons[k] = own[k], "target", own_reasons.get(k, "")
-            elif k in tc:
-                v, src[k], reasons[k] = tc[k], "toolchain", reason_of(tc, k)
-            else:
-                v, src[k], reasons[k] = ([] if k == "cflags" else ""), "missing", ""
-            out[k] = list(v) if isinstance(v, (list, tuple)) else v
-        out["from"] = src
-        out["reasons"] = reasons
-        return out
+        """The toolchain declaration of a target: plugin, root, compiler, linker, cflags; `from` names where each
+        came from (target | toolchain | missing), `reasons` the reason of each declared key."""
+        return self.core.toolchain_decl(name)
 
     def archives_decl_for(self, name: str | None = None) -> dict:
-        """The library-archive declaration of a target: `archives` (the strings as written, None when nothing
-        declares any), `from` (target | libs | missing) and `reason`."""
-        t = self.target(name)
-        if t.archives is not None:
-            return {"archives": list(t.archives), "from": "target", "reason": dict(t.reasons).get("archives", "")}
-        libs = self.cfg.get("libs") or {}
-        if "archives" in libs:
-            return {"archives": list(libs["archives"] or []), "from": "libs", "reason": reason_of(libs, "archives")}
-        return {"archives": None, "from": "missing", "reason": ""}
+        """The library-archive declaration of a target: `archives` (as written, None when nothing declares any),
+        `from` (target | libs | missing) and `reason`."""
+        return self.core.archives_decl(name)
 
     def waiting(self, name: str) -> tuple[str, ...]:
-        """The obligations (obligations.py) an external input waits on: absent until a human declares it. A rule
-        reading a waiting input does not run (rules/engine.py); `libs` waits for the archives (and for the
-        toolchain root when they are spelled under it), `toolchain` for the compiler and linker builds."""
-        cache = self.__dict__.setdefault("_waiting", {})
-        if name in cache:
-            return cache[name]
-        out: tuple[str, ...] = ()
-        if name == "libs":
-            d = self.archives_decl_for()
-            if d["archives"] is None:
-                out = ("libs.archives",)
-            elif not (self.cfg.get("toolchain") or {}).get("root") and any("{toolchain.root}" in a for a in d["archives"]):
-                out = ("toolchain.root",)
-        elif name == "toolchain":
-            d = self.toolchain_decl
-            out = tuple(f"toolchain.{k}" for k in ("compiler", "linker") if not d[k])
-        cache[name] = out
-        return out
+        """The obligations (obligations.py) an external input waits on: absent until a human declares it."""
+        return tuple(self.core.waiting(name))
 
     def waiting_for(self, inputs) -> tuple[str, ...]:
         """Every obligation the given inputs wait on, in order, once."""
-        return tuple(dict.fromkeys(w for i in inputs for w in self.waiting(i)))
+        return tuple(self.core.waiting_for(list(inputs)))
 
     @property
     def toolchain_decl(self) -> dict:
@@ -375,61 +235,18 @@ class Project:
 
     # ------------------------------------------------------------------ inputs
     def input_hash(self, name: str) -> str:
-        if name in self._hashes:
-            return self._hashes[name]
+        """The content hash of a named input (the core's: project.rs; the source scan's digest is the front end's)."""
         with timing.phase(f"hash.{name}"):
-            h = self._input_hash(name)
-        self._hashes[name] = h
-        return h
-
-    def _input_hash(self, name: str) -> str:
-        if name == "image":
-            h = file_hash(self.image_path)
-        elif name == "config":
-            h = file_hash(self.config_path)
-        elif name in ("libs", "archives"):
-            # archives: the declared archives or none while `libs` waits (S.rich reads it, the Rich candidates
-            # need no archive; their archive_objects counts do)
-            libs = [] if self.waiting("libs") else self.lib_archives
-            h = hashlib.sha256(b"".join(f"{p.name}:{file_hash(p)}\n".encode() for p in libs)).hexdigest()
-        elif name == "decl":
-            h = self.tree_hash([self.root / "decl"], ("*.dcl",))
-        elif name == "src":
-            h = self.tree_hash([self.root / "src", self.root / "include"], ("*.c", "*.h"))
-        elif name == "scan":
-            from .ledger import srcscan
-            h = srcscan.scan(self.root, self.input_hash("src")).digest()
-        elif name == "drafts":
-            from .ledger import drafts
-            h = drafts.input_hash(self.store)
-        elif name == "toolchain":
-            h = sha256(canonical(self.toolchain_decl))
-        elif name == "targets":
-            h = sha256(canonical(self.input("targets")))
-        elif name == "plugins":
-            h = plugins_hash(f"{self.target().image}/{self.toolchain.key}/{self.toolchain.object_format}/{self.target().isa or ''}")
-        elif name == "objects":
-            h = sha256(self.store.tu_hash(), str(self.toolchain.available()))
-        elif name == "baseline":
-            p = self.root / "ledger" / "grades.tsv"
-            h = file_hash(p) if p.exists() else "none"
-        elif name == "probe":
-            h = sha256(self.store.meta("probe") or "")
-        elif name == "lint":
-            h = sha256(self.store.meta("lint") or "")
-        else:
-            raise ConfigError(f"unknown input {name!r}")
+            h = self.core.input_hash(name)
+            if h is None:                                 # scan: the front end's
+                from .ledger import srcscan
+                h = srcscan.scan(self.root, self.input_hash("src")).digest()
+                self.core.set_input_hash(name, h)
         return h
 
     def forget_input(self, name: str):
         """Drop a memoised input hash (after a command changed the input, e.g. the analyzer's export)."""
-        self._hashes.pop(name, None)
-        if name == "src":
-            self._hashes.pop("scan", None)            # the source scan's items, of the sources
-
-    @staticmethod
-    def tree_hash(dirs: list[Path], patterns: tuple[str, ...]) -> str:
-        return fsmemo.tree_hash(dirs, patterns)
+        self.core.forget_input(name)
 
     def input(self, name: str):
         if name == "image":
@@ -460,12 +277,9 @@ class Project:
             p = self.root / "ledger" / "grades.tsv"
             return p.read_text() if p.exists() else ""
         if name == "probe":
-            import json
-            m = self.store.meta("probe")
-            return json.loads(m) if m else None
+            return self.store.meta_json("probe")
         if name == "lint":
-            import json
-            m = json.loads(self.store.meta("lint") or "null")
+            m = self.store.meta_json("lint")
             # a lint of an older decompanion (calls without their lines) counts as none: `dcp lint` again
             if m and any(isinstance(c, str) for cs in m.get("calls", {}).values() for c in cs):
                 return None

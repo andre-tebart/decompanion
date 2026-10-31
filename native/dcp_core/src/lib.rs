@@ -18,6 +18,7 @@ mod grade;
 mod lint;
 mod layout;
 mod pe;
+mod project;
 mod pystore;
 mod readability;
 mod rules;
@@ -617,6 +618,11 @@ fn compare_functions(
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
+    m.add_class::<project::PyProject>()?;
+    m.add_function(wrap_pyfunction!(project::config_targets, m)?)?;
+    m.add_function(wrap_pyfunction!(project::config_target_name_of, m)?)?;
+    m.add_function(wrap_pyfunction!(project::config_is_target_name, m)?)?;
+    m.add("ConfigError", m.py().get_type::<project::ConfigError>())?;
     m.add_class::<pystore::StoredFact>()?;
     m.add_function(wrap_pyfunction!(pystore::st_facts, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_fact, m)?)?;
@@ -624,6 +630,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pystore::st_open, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_close, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_meta, m)?)?;
+    m.add_function(wrap_pyfunction!(pystore::st_meta_json, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_set_meta, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_main_meta, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_note_input, m)?)?;

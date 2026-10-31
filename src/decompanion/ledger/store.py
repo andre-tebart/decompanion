@@ -93,6 +93,10 @@ class Store:
     def meta(self, key: str) -> str | None:
         return _core.st_meta(self._p, key)
 
+    def meta_json(self, key: str):
+        """A meta value that holds JSON, as Python objects (None when there is none)."""
+        return _core.st_meta_json(self._p, key)
+
     def set_meta(self, key: str, value: str):
         _core.st_set_meta(self._p, key, value)
 

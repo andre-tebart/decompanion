@@ -110,14 +110,14 @@ def analyzer_lines() -> list[str]:
 
 def init_project(dir_: Path, target: Path, name: str | None = None, target_name: str | None = None):
     """Create the project around one binary. Declares nothing (module docstring)."""
-    from .config import TARGET_NAME, target_name_of
+    from .config import is_target_name, target_name_of
     dir_ = Path(dir_).resolve()
     target = Path(target).resolve()
     if not target.exists():
         raise SystemExit(f"target {target} does not exist")
     name = name or dir_.name
     tname = target_name or target_name_of(target)
-    if not TARGET_NAME.match(tname):
+    if not is_target_name(tname):
         raise SystemExit(f"target name {tname!r} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)")
     fmt, img = open_target(target)
     isa = img.default_isa
@@ -168,11 +168,11 @@ def add_target(root: Path, name: str, path: Path) -> str:
     hold defaults). Returns the new table's text."""
     import tomllib
 
-    from .config import CONFIG_NAME, TARGET_NAME, parse_targets, target_name_of
+    from .config import CONFIG_NAME, config_targets, is_target_name, target_name_of
     cfg_path = Path(root) / CONFIG_NAME
     text = cfg_path.read_text()
     cfg = tomllib.loads(text)
-    if not TARGET_NAME.match(name):
+    if not is_target_name(name):
         raise SystemExit(f"target name {name!r} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)")
     path = Path(path).resolve()
     if not path.exists():
@@ -181,14 +181,14 @@ def add_target(root: Path, name: str, path: Path) -> str:
     isa = img.default_isa
     if isa is None:
         raise SystemExit(f"{path}: machine type {img.machine:#x} implies no known instruction set")
-    existing = parse_targets(cfg, lambda s: Path(s))
-    if any(t.name == name for t in existing):
+    existing = config_targets(root, text)
+    if any(n == name for n, _ in existing):
         raise SystemExit(f"target {name!r} exists")
     lines = text.split("\n")
     if isinstance(cfg.get("target"), dict):     # the milestone-1 form: [target] without a name
         i = next(k for k, l in enumerate(lines) if l.strip() == "[target]")
         lines[i] = "[[target]]"
-        lines.insert(i + 1, f'name = "{target_name_of(existing[0].path)}"')
+        lines.insert(i + 1, f'name = "{target_name_of(existing[0][1])}"')
     heads = [k for k, l in enumerate(lines) if l.strip() == "[[target]]"]
     end = next((k for k in range(heads[-1] + 1, len(lines)) if lines[k].lstrip().startswith("[")), len(lines))
     while end > heads[-1] + 1 and not lines[end - 1].strip():

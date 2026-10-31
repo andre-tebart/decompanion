@@ -315,6 +315,12 @@ pub fn st_meta(path: &str, key: &str) -> PyResult<Option<String>> {
     with_db(path, |db| db.query_row("SELECT value FROM meta WHERE key=?", [key], |r| r.get(0)).optional())
 }
 
+/// A meta value that holds JSON, as Python objects (None when there is none).
+#[pyfunction]
+pub fn st_meta_json<'py>(py: Python<'py>, path: &str, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
+    st_meta(path, key)?.map(|m| json_py(py, &serde_json::from_str(&m).unwrap_or(Value::Null))).transpose()
+}
+
 #[pyfunction]
 pub fn st_set_meta(path: &str, key: &str, value: &str) -> PyResult<()> {
     with_db(path, |db| db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [key, value]).map(|_| ()))

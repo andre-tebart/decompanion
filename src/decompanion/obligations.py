@@ -186,9 +186,8 @@ def setup_obligations(p) -> list[Obligation]:
 
 
 def analyzer_obligation(p) -> Obligation | None:
-    from .config import reason_of
     cfg = p.cfg.get("analyzer") or {}
-    if reason_of(cfg, "plugin"):
+    if p.reason("analyzer", "plugin"):
         return None
     az = p.analyzer
     inst = az.available()
