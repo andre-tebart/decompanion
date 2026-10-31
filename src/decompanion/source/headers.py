@@ -79,7 +79,7 @@ class Item:
 
 
 def symbol_of(g) -> str | None:
-    """The symbol a diagnostic group is about: the first one named (cparse.name_of), the diagnostic's own before
+    """The symbol a diagnostic group is about: the first one named (cparse.diagnostics' name), the diagnostic's own before
     its notes'."""
     return next((d["name"] for d in g if d.get("name")), None)
 

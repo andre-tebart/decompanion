@@ -5,6 +5,7 @@
 //! `canonical` and `out_hash` are fact.canonical and the run hash, byte for byte: the shadow mode of the engine
 //! compares them with Python's for every rule's output.
 
+mod clang;
 mod coff;
 mod compare;
 mod cs;
@@ -646,5 +647,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(layout::py_boundary_issues, m)?)?;
     m.add_function(wrap_pyfunction!(layout::py_outside_unit_issues, m)?)?;
     m.add_function(wrap_pyfunction!(rules::py_padding_masked, m)?)?;
+    m.add_function(wrap_pyfunction!(clang::clang_load, m)?)?;
+    m.add_function(wrap_pyfunction!(clang::clang_version, m)?)?;
+    m.add_function(wrap_pyfunction!(clang::clang_parse, m)?)?;
+    m.add_function(wrap_pyfunction!(clang::clang_function_headers, m)?)?;
+    m.add_class::<clang::Unit>()?;
     Ok(())
 }

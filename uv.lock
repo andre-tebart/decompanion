@@ -21,15 +21,6 @@ wheels = [
 ]
 
 [[package]]
-name = "clang"
-version = "21.1.7"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/50/9b/956a03195656847c4e3620dab9c36c9e53aecf685a6c3f0bc1ce025d7ec3/clang-21.1.7.tar.gz", hash = "sha256:01d5602b3fff77fef6d691a193d7aead4766b0f11d789d596200f3334a88f4b8", size = 8600, upload-time = "2025-12-18T22:04:51.886Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/50/a4/608c542925949b300a295baa422b568f835044c5e3ad20820676b840228a/clang-21.1.7-py3-none-any.whl", hash = "sha256:23ee8f7b62af648009aee5139516b2a2a9320680dbce6e42a53e48bd5e8983ea", size = 40240, upload-time = "2025-12-18T22:04:50.636Z" },
-]
-
-[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -44,7 +35,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "capstone" },
-    { name = "clang" },
 ]
 
 [package.optional-dependencies]
@@ -58,7 +48,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "capstone", specifier = "==5.0.9" },
-    { name = "clang", specifier = "==21.1.7" },
     { name = "frida", marker = "extra == 'c2prio'", specifier = "==17.24.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]

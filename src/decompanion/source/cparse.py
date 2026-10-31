@@ -1,7 +1,8 @@
-"""The C front end: libclang (the LLVM installation's, through the `clang` bindings) parses a translation unit the
-way VC6 sees it (ARGS: the i386 MSVC target, MS compatibility, C89 so that `T f();` is a K&R declaration, every
-warning off but the two M7 reads; the toolchain's headers as system headers). In process; nothing here changes a
-byte.
+"""The C front end: libclang (the LLVM installation's, loaded and walked by the native core:
+native/dcp_core/src/clang.rs) parses a translation unit the way VC6 sees it (ARGS: the i386 MSVC target, MS
+compatibility, C89 so that `T f();` is a K&R declaration, every warning off but the two M7 reads; the toolchain's
+headers as system headers). In process; nothing here changes a byte. This module chooses the parse (a live unit,
+a fresh one, the worker processes); every read of a parsed unit is the core's.
 
 libclang: `[lint] libclang = "<path>"` in decompanion.toml, else the libclang.dll beside `clang` on PATH, else the
 LLVM default install path (library). load(path) loads it once per process; version() names it in every cache key
@@ -13,8 +14,7 @@ name}], the lint-style list the clang subprocess gave before, in clang's order (
          name its `#line` directives give (a generated text: the all-declarations unit's pseudo files)
   line   the physical line there: a `#line` directive of a unit (its original `__FILE__` name, its `__LINE__`
          pins) is the compiler's business; with `presumed`, in the parsed file the line its `#line` directives
-         give (line_map: read from the text, not from clang, whose precompiled preamble drops a `#line` it
-         holds)
+         give (read from the text, not from clang, whose precompiled preamble drops a `#line` it holds)
   kind   error / warning / note; `flag` the warning option (`-Wdeprecated-non-prototype`) or ""
   name   the symbol the diagnostic is about: the identifier clang quotes in it (libclang hands a diagnostic's
          arguments over only in its text; a call written through a macro names the callee there, where the
@@ -25,11 +25,13 @@ name}], the lint-style list the clang subprocess gave before, in clang's order (
 The `in file included from` notes are left out, as the subprocess's text output carried them in a form lint
 never read.
 
-Live units: with `keep` (the unit's include hash), the parsed unit stays in the process (the last LIVE of them,
-the daemon's edit loop lints one unit again and again) and the next parse of the same file with the same
-arguments and the same `keep` is a reparse over its precompiled preamble (the system headers and the unit's
-leading includes: a small unit in ~10 ms, a large one still parses its own code). The file's text is handed over
-on every parse, so a reparse never trusts a file stamp; a changed `keep` (a header changed) parses afresh.
+Live units: with `keep`, the parsed unit stays in the process (the last LIVE of them: the daemon's edit loop
+parses one unit again and again) with its text and every file it read (their hashes). The next parse of the same
+file with the same arguments while those files are unchanged is the live unit itself for the same text (the
+scan's model and the lint's diagnostics of one edit share one parse), else a reparse over its precompiled
+preamble (the system headers and the unit's leading includes: a small unit in ~10 ms, a large one still parses
+its own code); a changed file it read parses afresh. The text is handed over on every parse, so no file stamp of
+the parsed file is trusted.
 
 many(jobs): several parses at once (a header edit relints its includers, a first run every unit) go to worker
 processes (libclang in threads of one process does not scale: 93 units of gildegold in 2.4 s on 12 threads, in
@@ -38,29 +40,18 @@ in process (with its live unit).
 """
 from __future__ import annotations
 
-import bisect
-import ctypes
 import os
-import re
 import shutil
 import threading
 from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-import clang.cindex as ci
+from .. import native
 
 ARGS = ["--target=i386-pc-windows-msvc", "-fms-compatibility", "-fms-extensions", "-fms-compatibility-version=12",
         "-std=gnu89", "-ferror-limit=0", "-Wno-everything", "-Wdeprecated-non-prototype",
         "-Wimplicit-function-declaration"]
-KEEP_GOING = 0x200                   # CXTranslationUnit_KeepGoing
-OPTIONS = ci.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD | KEEP_GOING
-KIND = {ci.Diagnostic.Note: "note", ci.Diagnostic.Warning: "warning", ci.Diagnostic.Error: "error",
-        ci.Diagnostic.Fatal: "error"}
-IDENT = re.compile(r"[A-Za-z_]\w*")
-LINE = re.compile(r'^[ \t]*#[ \t]*line[ \t]+(\d+)(?:[ \t]+"((?:\\.|[^"\\])*)")?', re.M)
-QUOTED = re.compile(r"'(?:(?:struct|union|enum) )?([A-Za-z_]\w*)'")
-C_WORDS = {"struct", "union", "enum", "int", "char", "short", "long", "void", "unsigned", "signed", "float", "double"}
 DEFAULT_LIBCLANG = "C:/Program Files/LLVM/bin/libclang.dll"
 LIVE = 4                             # live units kept for a reparse (each holds its whole AST)
 VERSION = "4"                        # with lint.VERSION and version() in every cached result derived from a parse
@@ -80,82 +71,15 @@ _loaded: Path | None = None
 
 
 def load(lib: Path) -> None:
-    """Load libclang once per process; another library later is an error (the bindings hold one)."""
+    """Load libclang once per process; another library later is an error (the core holds one)."""
     global _loaded
     lib = Path(lib).resolve()
-    if _loaded is None:
-        ci.Config.set_library_file(str(lib))
-        _loaded = lib
-    elif _loaded != lib:
-        raise RuntimeError(f"libclang {lib} asked for, {_loaded} already loaded in this process")
+    native.core().clang_load(str(lib))
+    _loaded = lib
 
 
 def version() -> str:
-    f = ci.conf.lib.clang_getClangVersion          # not among the functions the bindings register
-    f.argtypes, f.restype = [], ci._CXString
-    return ci._CXString.from_result(f())
-
-
-NATIVE_SRC = Path(__file__).resolve().parent.parent / "data" / "native" / "dcp_clang.c"
-_native = None
-_native_lock = threading.Lock()
-
-
-def native():
-    """The native walk of model (data/native/dcp_clang.c) bound to the loaded libclang, once per process. Built on
-    first use into data/native/dcp_clang-<source hash>.dll with the gcc on PATH (MinGW-w64, the bitness of
-    libclang) and the headers of the libclang's LLVM installation (<llvm>/include/clang-c); a missing compiler
-    or a failed build is an error, there is no other walk."""
-    global _native
-    if _native is not None:
-        return _native
-    import hashlib
-    import subprocess
-    with _native_lock:
-        if _native is not None:
-            return _native
-        if _loaded is None:
-            raise RuntimeError("libclang is not loaded (cparse.load) before the native walk")
-        src = NATIVE_SRC
-        out = src.with_name(f"dcp_clang-{hashlib.sha256(src.read_bytes()).hexdigest()[:12]}.dll")
-        if not out.exists():
-            inc = _loaded.parent.parent / "include"
-            gcc = shutil.which("gcc")
-            if gcc is None or not (inc / "clang-c" / "Index.h").exists():
-                raise RuntimeError(f"the native walk {out.name} is not built and cannot be: it needs gcc on PATH (MinGW-w64, "
-                                   f"64-bit like {_loaded.name}; " + ("found" if gcc else "missing") + f") and the libclang "
-                                   f"headers {inc / 'clang-c' / 'Index.h'} (" + ("found" if (inc / "clang-c").exists() else "missing") + ")")
-            tmp = out.with_name(f"{out.stem}.{os.getpid()}.tmp")
-            r = subprocess.run([gcc, "-O2", "-shared", "-Wall", "-I", str(inc), str(src), "-o", str(tmp)],
-                               capture_output=True, text=True)
-            if r.returncode != 0 or not tmp.exists():
-                raise RuntimeError(f"building the native walk {out.name} failed:\n{r.stdout}{r.stderr}")
-            try:
-                os.replace(tmp, out)
-            except OSError:                         # another process built and loaded it meanwhile
-                tmp.unlink(missing_ok=True)
-        lib = ctypes.CDLL(str(out))
-        lib.dcp_init.argtypes, lib.dcp_init.restype = [ctypes.c_void_p], ctypes.c_int
-        lib.dcp_model_walk.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
-        lib.dcp_model_walk.restype = ctypes.c_void_p
-        lib.dcp_free.argtypes, lib.dcp_free.restype = [ctypes.c_void_p], None
-        if not lib.dcp_init(ci.conf.lib._handle):
-            raise RuntimeError(f"the native walk {out.name}: {_loaded} lacks a function it calls")
-        _native = lib
-    return _native
-
-
-def native_walk(tu: ci.TranslationUnit) -> list[str]:
-    """The records of a translation unit's top-level cursors (data/native/dcp_clang.c: one per cursor the model
-    reads, raw positions); the call runs without the interpreter lock."""
-    lib = native()
-    n = ctypes.c_size_t()
-    p = lib.dcp_model_walk(tu.obj, ctypes.byref(n))
-    try:
-        text = ctypes.string_at(p, n.value).decode("utf-8", errors="replace")
-    finally:
-        lib.dcp_free(p)
-    return text.split("\n")[:-1]
+    return native.core().clang_version()
 
 
 def args(sysdirs: list[Path], incdirs: list[Path], defines=()) -> list[str]:
@@ -163,191 +87,61 @@ def args(sysdirs: list[Path], incdirs: list[Path], defines=()) -> list[str]:
             *(f"-D{d}" for d in defines)]
 
 
-def line_map(text: str, name: str) -> tuple[list[int], list[tuple[str, int]]]:
-    """The `#line` directives of a text: (their physical lines, (file, number) after each), the file itself first."""
-    lines, at = [0], [(name, 1)]
-    ln, pos = 1, 0
-    for m in LINE.finditer(text):
-        f = m.group(2).replace("\\\\", "\\") if m.group(2) is not None else at[-1][0]
-        ln += text.count("\n", pos, m.start())
-        pos = m.start()
-        lines.append(ln)
-        at.append((f, int(m.group(1))))
-    return lines, at
-
-
-def locate(lmap, line: int) -> tuple[str, int]:
-    """A physical line of the parsed file -> (the file, the line) its `#line` directives give it."""
-    lines, at = lmap
-    k = bisect.bisect_left(lines, line) - 1         # the last directive above the line
-    f, n = at[k]
-    return f, n + line - lines[k] - 1
-
-
 _live: OrderedDict = OrderedDict()
 _lock = threading.Lock()
 
 
+def _deps(u) -> list[tuple[str, str]]:
+    """(path, sha256) of every file a parse read besides the parsed one."""
+    from .. import fsmemo
+    return [(d, fsmemo.sha256(d)) for d in sorted(set(u.includes()))]
+
+
+def _unchanged(deps: list[tuple[str, str]]) -> bool:
+    from .. import fsmemo
+    try:
+        return all(fsmemo.sha256(d) == h for d, h in deps)
+    except OSError:
+        return False
+
+
 def parse(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str | None = None,
-          keep: str | None = None, defines=()) -> ci.TranslationUnit:
-    """One translation unit; src relative to root or absolute, its text read when not given; defines: the
-    macros the command line defines (a target's `DCP_TARGET_<name>`)."""
+          keep: bool | None = None, defines=()):
+    """One translation unit (the core's Unit); src relative to root or absolute, its text read when not given;
+    defines: the macros the command line defines (a target's `DCP_TARGET_<name>`). keep: as the module says."""
     src = src if src.is_absolute() else Path(root) / src
     text = src.read_text(errors="replace") if text is None else text
     a = args(sysdirs, incdirs, defines)
-    unsaved = [(str(src), text)]
-    if keep is None:
-        return ci.Index.create().parse(str(src), args=a, unsaved_files=unsaved, options=OPTIONS)
-    key = (str(src), tuple(a))
+    core = native.core()
+    if not keep:
+        return core.clang_parse(str(src), a, text, False)
+    key = (os.path.normcase(os.path.abspath(src)), tuple(a))
     with _lock:
         hit = _live.pop(key, None)
-    if hit is not None and hit[1] == keep:
-        idx, _, tu = hit
-        tu.reparse(unsaved_files=unsaved)
+    if hit is not None and _unchanged(hit[1]):
+        held, deps, u = hit
+        if held != text:
+            u.reparse(text)
+            deps = _deps(u)
     else:
-        idx = ci.Index.create()
-        tu = idx.parse(str(src), args=a, unsaved_files=unsaved,
-                       options=OPTIONS | ci.TranslationUnit.PARSE_PRECOMPILED_PREAMBLE)
+        u = core.clang_parse(str(src), a, text, True)
+        deps = _deps(u)
     with _lock:
-        _live[key] = (idx, keep, tu)
+        _live[key] = (text, deps, u)
         while len(_live) > LIVE:
             _live.popitem(last=False)
-    return tu
-
-
-def rel(root: Path, f: str) -> str:
-    p = Path(f)
-    try:
-        return (p if p.is_absolute() else root / p).resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        return p.as_posix()
-
-
-def name_of(tu: ci.TranslationUnit, d: ci.Diagnostic) -> str | None:
-    for m in QUOTED.finditer(d.spelling):
-        if m.group(1) not in C_WORDS:
-            return m.group(1)
-    return name_at(tu, d.location)
-
-
-def name_at(tu: ci.TranslationUnit, loc: ci.SourceLocation) -> str | None:
-    """The symbol at a location: the cursor's spelling when it is an identifier (a declaration, a call, a
-    reference), else the identifier token there (a tag clang's recovery left unnamed)."""
-    if loc.file is None:
-        return None
-    c = ci.Cursor.from_location(tu, loc)
-    if c is not None and IDENT.fullmatch(c.spelling or ""):
-        return c.spelling
-    for t in tu.get_tokens(extent=ci.SourceRange.from_locations(loc, loc)):
-        if t.kind == ci.TokenKind.IDENTIFIER and t.location == loc:
-            return t.spelling
-    return None
+    return u
 
 
 def diagnostics(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], defines=(), presumed: bool = False,
-                keep: str | None = None) -> list[dict]:
-    root = Path(root)
-    path = src if src.is_absolute() else root / src
+                keep: bool | None = None) -> list[dict]:
+    path = src if src.is_absolute() else Path(root) / src
     text = path.read_text(errors="replace")
-    tu = parse(path, root, sysdirs, incdirs, text, keep, defines)
-    lmap = line_map(text, str(path)) if presumed else None
-    main = path.resolve()
-    files: dict[str, tuple[bool, str]] = {}          # clang's file name -> (the parsed file?, relative path)
-    out = []
-
-    def one(d, kind):
-        loc = d.location
-        if loc.file is None:
-            return False                 # no location (the command line): the subprocess's text had no file:line
-        f, line = loc.file.name, loc.line
-        if f not in files:
-            files[f] = (Path(f).resolve() == main, rel(root, f))
-        is_main, fr = files[f]
-        if is_main and lmap is not None:
-            mf, line = locate(lmap, line)
-            fr = rel(root, mf)
-        out.append({"file": fr, "line": line, "kind": kind, "msg": d.spelling, "flag": d.option or "",
-                    "name": name_of(tu, d)})
-        return True
-
-    for d in tu.diagnostics:
-        if d.severity < ci.Diagnostic.Warning or not one(d, KIND[d.severity]):
-            continue
-        for n in d.children:
-            if not n.spelling.startswith("in file included from"):
-                one(n, "note")
-    return out
-
-
-_flags: dict[str, object] = {}
-
-
-
-class _RangeList(ctypes.Structure):
-    _fields_ = [("count", ctypes.c_uint), ("ranges", ctypes.POINTER(ci.SourceRange))]
-
-
-_skipped = None
-
-
-def skipped(tu: ci.TranslationUnit, f: ci.File) -> list[tuple[ci.SourceLocation, ci.SourceLocation]]:
-    """(start, end) of every range of a file the preprocessor skipped (dead `#if` branches):
-    clang_getSkippedRanges, which the bindings do not register; read out before the list is freed."""
-    global _skipped
-    if _skipped is None:
-        get, free = ci.conf.lib.clang_getSkippedRanges, ci.conf.lib.clang_disposeSourceRangeList
-        get.argtypes, get.restype = [ci.TranslationUnit, ci.File], ctypes.POINTER(_RangeList)
-        free.argtypes, free.restype = [ctypes.POINTER(_RangeList)], None
-        _skipped = (get, free)
-    get, free = _skipped
-    p = get(tu, f)
-    try:
-        return [(p.contents.ranges[i].start, p.contents.ranges[i].end) for i in range(p.contents.count)] if p else []
-    finally:
-        if p:
-            free(p)
-
-
-# an integer literal right after `(` or `)`: where a cast to a pointer type of a literal ends (casts in code)
-CAST_END = re.compile(rb"[()][ \t\r\n]*((?:0[xX][0-9a-fA-F]+|[0-9]+)[uUlL]*)(?![\w.])")
-
-
-def _casts(tu: ci.TranslationUnit, f: ci.File, data: bytes):
-    """(start, literal end, literal), byte offsets in data (a location clang gives for an offset inside a macro
-    argument reads back as the macro call's), of every integer literal of a file cast to a pointer type in code, the
-    cast and the literal spelled in the file: for each literal after a parenthesis, the cursor at the `)` before
-    it is the cast (clang's), stepping over parentheses and casts to a type without a pointer
-    (`(char *)(unsigned)0x5de470`); a typedef'd pointer type counts (`(LPVOID)0x5de470`). Comments, strings
-    and dead branches have no cursor there."""
-    for m in CAST_END.finditer(data):
-        j = m.start()
-        while j >= 0:
-            ch = data[j:j + 1]
-            if ch.isspace() or ch == b"(":
-                j -= 1
-                continue
-            if ch != b")":
-                break
-            c = ci.Cursor.from_location(tu, ci.SourceLocation.from_offset(tu, f, j))
-            if c is None or c.kind != ci.CursorKind.CSTYLE_CAST_EXPR:
-                break
-            # the cast's `(` in the file (its extent is the macro call's when it stands in a macro argument)
-            k, depth = j, 0
-            while k >= 0:
-                depth += (data[k:k + 1] == b")") - (data[k:k + 1] == b"(")
-                if depth == 0:
-                    break
-                k -= 1
-            if k < 0:
-                break
-            if c.type.get_canonical().kind == ci.TypeKind.POINTER:
-                yield k, m.end(), m.group(1).decode()
-                break
-            j = k - 1
+    return parse(path, root, sysdirs, incdirs, text, keep, defines).diagnostics(str(root), text, presumed)
 
 
 def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str | None = None,
-          defines=(), keep: str | None = None) -> dict:
+          defines=(), keep: bool | None = None) -> dict:
     """What the scan reads of one translation unit, per project file it holds (the parsed file, every header
     below root it includes), at the files' physical positions (a `#line` directive maps nothing):
       defs  [(line, col, name, static)] of every function definition that is no inline helper
@@ -361,192 +155,32 @@ def model(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text:
             defined there
       dead  [(first line, last line)] of every range the preprocessor skipped (a dead `#if` branch)
       macros [(line, name, function-like)] of every macro the preprocessor defined there (a live `#define`)
-      casts [(line, col, end line, end col, literal)] of every integer literal cast to a pointer type in code
-            (_casts): from the cast's `(` to the literal's end
+      casts [(line, col, end line, end col, literal)] of every integer literal cast to a pointer type in code,
+            the cast and the literal spelled in the file, from the cast's `(` to the literal's end: the cursor
+            at the `)` before a literal is the cast, stepping over parentheses and casts to a type without a
+            pointer (`(char *)(unsigned)0x5de470`); a typedef'd pointer type counts. Comments, strings and dead
+            branches have no cursor there
       vars  [(line, col, end line, end col, name, kind, static)] of every file-scope data declarator: (line, col)
             the start of its declaration (one per statement: several declarators share it), (end line, end col)
             the end of the declarator (its initialiser included); kind extern (declared `extern` without an
             initialiser) or def (a definition, a tentative one too)
     plus `deps`, the absolute paths of every file the parse read besides the parsed one (the system headers
-    too). Columns count characters of the file's text (fsmemo.read_text), from 1. keep: as parse's."""
-    root = Path(root)
-    path = src if src.is_absolute() else root / src
+    too), and `missing`: an include clang did not find. Columns count characters of the file's text
+    (fsmemo.read_text), from 1. keep: as parse's."""
+    path = src if src.is_absolute() else Path(root) / src
     text = path.read_text(errors="replace") if text is None else text
-    tu = parse(path, root, sysdirs, incdirs, text, keep, defines)
-    main = path.resolve()
-    main_lines = text.split("\n")
-    rootr = root.resolve()
-    main_rel = main.relative_to(rootr).as_posix() if main.is_relative_to(rootr) else None
-    files: dict[str, tuple] = {}         # clang's file name -> (parsed file?, the file below root or None)
-    raw: dict[str, list[bytes]] = {}
-
-    def where(loc: ci.SourceLocation):
-        return where_at(loc.file.name, loc.line, loc.column) if loc.file is not None else None
-
-    def where_at(f: str, line: int, col: int):
-        """(file below root, line, column in characters) of clang's file name, line and byte column; None
-        outside root."""
-        if f not in files:
-            p = Path(f).resolve()
-            inside = p.is_relative_to(rootr)
-            files[f] = (p == main, p.relative_to(rootr).as_posix() if inside else None)
-        is_main, rel_ = files[f]
-        if is_main:
-            if main_rel is None:
-                return None
-            bline = main_lines[line - 1].encode() if 0 < line <= len(main_lines) else b""
-            rel_ = main_rel
-        elif rel_ is None:
-            return None
-        else:
-            if f not in raw:
-                raw[f] = Path(f).read_bytes().split(b"\n")
-            bl = raw[f]
-            bline = bl[line - 1] if 0 < line <= len(bl) else b""
-        return rel_, line, len(bline[:col - 1].decode("utf-8", errors="replace")) + 1
-
-    out: dict[str, dict] = {}
-
-    def entry(rel_: str) -> dict:
-        return out.setdefault(rel_, {"defs": [], "vars": [], "macros": [], "casts": [], "decls": [], "types": [],
-                                     "dead": []})
-
-    def dead(fname: str):
-        """The lines of a file the preprocessor skipped, as where() maps them."""
-        for s_, e_ in skipped(tu, ci.File.from_name(tu, fname)):
-            w, e = where(s_), where(e_)
-            if w is not None and e is not None and w[0] == e[0]:
-                entry(w[0])["dead"].append((w[1], e[1]))
-
-    err: list = []
-
-    def errors() -> set:
-        """(file, line) of every error, as where() maps it (computed on first use)."""
-        if not err:
-            err.append({w[:2] for d in tu.diagnostics if d.severity >= ci.Diagnostic.Error
-                        and (w := where(d.location)) is not None})
-        return err[0]
-
-    def at(r: list, i: int):
-        """The position of a record's fields i .. i+2 (file, line, column), as where() maps it."""
-        return where_at(r[i], int(r[i + 1]), int(r[i + 2])) if r[i] and r[i] != "-" else None
-
-    enum_at = None                                         # the position of the last enum (its constants follow)
-    for line in native_walk(tu):                           # the top-level cursors (data/native/dcp_clang.c)
-        r = line.split("\t")
-        k = r[0]
-        if k == "F":
-            w, n, e = at(r, 4), at(r, 7), at(r, 10)
-            if w is None or n is None or w[0] != n[0]:
-                continue
-            if e is not None and e[0] != w[0]:
-                e = None                                   # a body that ends in an included file: no end here
-            b = at(r, 13)
-            # a definition's parameters (K&R is the syntax, parameter declarations before the body: a prototype
-            # in scope gives a K&R definition a prototyped type)
-            knr = None if r[16] == "-" else [(a, p or None) for a, p in (x.split("\x1f") for x in r[16].split("\x1e") if x)]
-            entry(w[0])["decls"].append(("f", r[1], r[2] == "1", w[1:], n[1:], e[1:] if e else None, b[1:] if b else None,
-                                         knr))
-            if r[3] == "1":
-                entry(w[0])["defs"].append((w[1], w[2], r[1], r[2] == "1"))
-        elif k == "V":
-            w, n, e = at(r, 4), at(r, 7), at(r, 10)
-            if w is not None and n is not None and e is not None and w[0] == n[0] == e[0]:
-                static = r[2] == "1"
-                entry(w[0])["vars"].append((w[1], w[2], e[1], e[2], r[1], r[3], static))
-                # None: a type clang does not know (its recovery makes an unknown type name int)
-                agg = None if any((w[0], ln) in errors() for ln in range(w[1], e[1] + 1)) else r[14] == "1"
-                entry(w[0])["decls"].append(("v", r[1], static, w[1:], n[1:], e[1:], r[3], r[13] == "1", agg))
-        elif k == "T":
-            n = at(r, 3)
-            if n is not None and not r[1].startswith(("struct (", "union (", "enum (")):
-                entry(n[0])["types"].append((n[1], r[1]))
-            enum_at = n if r[2] == "1" else None
-        elif k == "E":
-            if enum_at is not None and (xn := at(r, 2)) is not None:
-                entry(xn[0])["types"].append((xn[1], r[1]))
-        elif k == "M":
-            w = at(r, 2)
-            if w is not None:
-                entry(w[0])["macros"].append((w[1], r[1], r[5] == "1"))
-    deps = sorted({str(Path(i.include.name).resolve()) for i in tu.get_includes()})
-
-    def casts(fname: str, data: bytes, rel_: str | None):
-        """The casts of one file, mapped as where() maps a location (by the file's own lines: a location clang
-        gives inside a macro argument reads back as the macro call's)."""
-        found = list(_casts(tu, ci.File.from_name(tu, fname), data))
-        nl = [m.start() for m in re.finditer(rb"\n", data)] if found else []
-        for s_, e_, lit in found:
-            ws = []
-            for off in (s_, e_):
-                line = bisect.bisect_left(nl, off) + 1
-                bol = nl[line - 2] + 1 if line > 1 else 0
-                col = len(data[bol:off].decode("utf-8", errors="replace")) + 1
-                ws.append((rel_, line, col))
-            (w, wl, wc), (e, el, ec) = ws
-            if w is not None and w == e:
-                entry(w)["casts"].append((wl, wc, el, ec, lit))
-
-    # every project file the parse read holds its entry, an empty one too: the unit holds it; its casts
-    for d in deps:
-        if Path(d).is_relative_to(rootr):
-            r = Path(d).relative_to(rootr).as_posix()
-            entry(r)
-            casts(d, Path(d).read_bytes(), r)
-            dead(d)
-    if main_rel is not None:
-        entry(main_rel)
-    casts(str(path), text.encode(), main_rel)
-    dead(str(path))
-    # an include clang did not find: the file may appear later without the text changing, no result to keep
-    missing = any(d.severity == ci.Diagnostic.Fatal and "not found" in d.spelling for d in tu.diagnostics)
-    return {"files": out, "deps": deps, "missing": missing}
-
-
-LOCAL = {ci.CursorKind.PARM_DECL, ci.CursorKind.FIELD_DECL, ci.CursorKind.LABEL_STMT}
+    return parse(path, root, sysdirs, incdirs, text, keep, defines).model(str(root), text)
 
 
 def refs(src: Path, root: Path, sysdirs: list[Path], incdirs: list[Path], text: str, defines, names: list[str],
-         keep: str | None = None) -> dict[str, list[tuple[int, int]]]:
+         keep: bool | None = None) -> dict[str, list[tuple[int, int]]]:
     """rel -> [(line, col)] of every whole-word occurrence of one of `names` in the project files of a translation
     unit (the file, the headers below root it reads) that refers to a declaration not at file scope: a local
     variable, a parameter, a struct / union field, a label (clang's cursor at the occurrence, the declaration it
     refers to or is). What a rename of a file-scope symbol leaves alone; an occurrence in a comment, a string,
     a dead branch or a macro body refers to nothing and is not listed."""
-    root = Path(root)
-    path = src if src.is_absolute() else root / src
-    tu = parse(path, root, sysdirs, incdirs, text, keep, defines)
-    rootr = root.resolve()
-    main = path.resolve()
-    pat = re.compile(rb"\b(?:" + b"|".join(re.escape(n.encode()) for n in names) + rb")\b")
-    out: dict[str, list] = {}
-    files = [(str(path), text.encode(), main.relative_to(rootr).as_posix() if main.is_relative_to(rootr) else None)]
-    for i in tu.get_includes():
-        p = Path(i.include.name).resolve()
-        if p.is_relative_to(rootr) and all(p != Path(f).resolve() for f, _, _ in files):
-            files.append((str(p), p.read_bytes(), p.relative_to(rootr).as_posix()))
-    for fname, data, rel_ in files:
-        f = ci.File.from_name(tu, fname)
-        nl = None
-        for m in pat.finditer(data):
-            c = ci.Cursor.from_location(tu, ci.SourceLocation.from_offset(tu, f, m.start()))
-            t = c.referenced if c is not None and c.referenced is not None else c
-            if t is None or t.spelling != m.group(0).decode():
-                continue
-            if not (t.kind in LOCAL or t.kind == ci.CursorKind.VAR_DECL
-                    and t.semantic_parent is not None and t.semantic_parent.kind != ci.CursorKind.TRANSLATION_UNIT):
-                continue
-            if nl is None:
-                nl = [x.start() for x in re.finditer(rb"\n", data)]
-            line = bisect.bisect_left(nl, m.start()) + 1
-            bol = nl[line - 2] + 1 if line > 1 else 0
-            col = len(data[bol:m.start()].decode("utf-8", errors="replace")) + 1
-            if rel_ is not None:
-                out.setdefault(rel_, []).append((line, col))
-    return out
-
-
-CC_C = 1                                          # CXCallingConv_C: cdecl
+    path = src if src.is_absolute() else Path(root) / src
+    return dict(parse(path, root, sysdirs, incdirs, text, keep, defines).refs(str(root), text, list(names)))
 
 
 def function_headers(sysdirs: list[Path], headers: list[str]) -> dict[str, str]:
@@ -554,21 +188,7 @@ def function_headers(sysdirs: list[Path], headers: list[str]) -> dict[str, str]:
     C compile sees them (dead `#if` branches, `_DEBUG` and C++ only declarations are none), parsed as one
     translation unit that includes `headers` in their order of preference; a name several headers declare
     goes to the first of that order. The library must be loaded (load)."""
-    cc = _flags.get("clang_getFunctionTypeCallingConv")
-    if cc is None:
-        cc = _flags["clang_getFunctionTypeCallingConv"] = ci.conf.lib.clang_getFunctionTypeCallingConv
-        cc.argtypes, cc.restype = [ci.Type], ctypes.c_uint
-    text = "".join(f"#include <{h}>\n" for h in headers)
-    tu = ci.Index.create().parse("dcp_system_headers.c", args=args(sysdirs, []),
-                                 unsaved_files=[("dcp_system_headers.c", text)], options=KEEP_GOING)
-    order = {h.lower(): k for k, h in enumerate(headers)}
-    out: dict[str, str] = {}
-    for c in tu.cursor.get_children():
-        if c.kind == ci.CursorKind.FUNCTION_DECL and c.location.file is not None and cc(c.type) == CC_C:
-            h = Path(c.location.file.name).name.lower()
-            if c.spelling not in out or order.get(h, len(order)) < order.get(out[c.spelling], len(order)):
-                out[c.spelling] = h
-    return out
+    return dict(native.core().clang_function_headers(args(sysdirs, []), list(headers)))
 
 
 _pool: ProcessPoolExecutor | None = None

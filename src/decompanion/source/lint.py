@@ -40,7 +40,7 @@ run is the store meta `lint` (the input `lint` of M.lint and G.grade).
 
 clang: the LLVM installation's libclang in process (source/cparse.py: `[lint] libclang = "<path>"` in
 decompanion.toml, else beside `clang` on PATH, else the LLVM default install path); the units a lint parses at
-once go to cparse's worker processes, the include hash keeps a unit live for the reparse after its next edit.
+once go to cparse's worker processes; a unit alone stays live (cparse.parse: the scan's parse of an edit serves its lint).
 """
 from __future__ import annotations
 
@@ -856,8 +856,8 @@ def lint(project, log=None) -> dict:
         key = sha256("lint", VERSION, *clang, a.src_hash, inc, *defines)
         hit = st.blob_json(key)
         if hit is None:
-            # kept live (the include hash): the next lint of the unit alone (an edit of it) is a reparse
-            jobs.append((Path(a.path), root, sysdirs, [Path(root) / d for d in B.include_dirs(a.unit)], defines, False, inc))
+            # kept live: the scan's parse of the same text, the next lint of the unit alone (an edit of it) a reparse
+            jobs.append((Path(a.path), root, sysdirs, [Path(root) / d for d in B.include_dirs(a.unit)], defines, False, True))
             keys.append((a.unit, key))
         else:
             results[a.unit] = hit

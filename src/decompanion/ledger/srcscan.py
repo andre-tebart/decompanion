@@ -619,12 +619,6 @@ def models(root: Path, files: list[tuple[str, str]], defines=()) -> dict[str, di
                      str(path), f"{rel}={fsmemo.sha256(path)}")
         return key, path
 
-    def live(path) -> str:
-        try:
-            return sha256("srcscan.live", *(f"{d}={fsmemo.sha256(d)}" for d in _last_deps.get(str(path), [])))
-        except OSError:
-            return "gone"
-
     def run(tus) -> list[dict]:
         got, misses = {}, []
         for key, path in tus:
@@ -634,9 +628,9 @@ def models(root: Path, files: list[tuple[str, str]], defines=()) -> dict[str, di
             else:
                 got[key] = hit
                 _last_deps[str(path)] = [d for d, _ in _models[key][0]]
-        # a lone miss (the unit an edit changed) is parsed in process and stays live: the next edit reparses it
-        # while every file its last parse read is unchanged (keep: their hashes)
-        jobs = [(path, root, sysdirs, dirs, fsmemo.read_text(path), list(defines), live(path) if len(misses) == 1 else None)
+        # a lone miss (the unit an edit changed) is parsed in process and stays live: the lint of the edit reads
+        # the same parse, the next edit reparses it
+        jobs = [(path, root, sysdirs, dirs, fsmemo.read_text(path), list(defines), True if len(misses) == 1 else None)
                 for _, path in misses]
         for (key, path), m in zip(misses, cparse.many(jobs, fn="model")):
             _model_keep(root, key, m)
