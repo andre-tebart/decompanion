@@ -23,6 +23,7 @@ mod setup;
 mod srcscan;
 mod store;
 mod toolchain;
+mod walk;
 mod x86;
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};

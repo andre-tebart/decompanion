@@ -151,7 +151,7 @@ pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()
 use crate::store::{SFact, DERIVED, OPEN};
 use std::rc::Rc;
 
-fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> PyResult<Vec<Rc<SFact>>> {
+pub(crate) fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> PyResult<Vec<Rc<SFact>>> {
     store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err)
 }
 
@@ -176,7 +176,7 @@ pub(crate) fn py_str(v: Option<&serde_json::Value>) -> String {
 }
 
 /// The toolchain native_inputs name ({"toolchain": key}).
-fn toolchain_of(ctx: &Ctx) -> PyResult<Box<dyn crate::toolchain::Toolchain>> {
+pub(crate) fn toolchain_of(ctx: &Ctx) -> PyResult<Box<dyn crate::toolchain::Toolchain>> {
     let x: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
     crate::toolchain::of(x["toolchain"].as_str().unwrap_or("")).ok_or_else(|| PyRuntimeError::new_err(format!("{}: no toolchain in its inputs", ctx.rule)))
 }

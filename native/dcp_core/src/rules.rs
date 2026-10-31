@@ -970,6 +970,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
         "S.fill" => crate::setup::s_fill(ctx, db, &mut out),
         "S.unknown" => crate::setup::s_unknown(ctx, db, &mut out),
         "L.decl" => crate::decl::l_decl(ctx, db, &mut out),
+        "S.codewalk" => crate::walk::s_codewalk(ctx, db, &mut out),
         "L.decl.start" => crate::decl::l_decl_start(ctx, db, &mut out),
         "L.analyzer" => crate::layout::l_analyzer(ctx, db, &mut out),
         "L.analyze" => crate::layout::l_analyze(ctx, db, &mut out),

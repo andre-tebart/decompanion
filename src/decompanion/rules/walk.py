@@ -1,5 +1,8 @@
 """The code walk (rule S.codewalk): recursive descent over the code sections, and the Walker it uses.
 
+The rule is the core's (native/dcp_core/src/walk.rs, the same conventions and the same replay). The Python Walker
+below is what match/diffclass.py's walk of an original's slot still uses until asmdiff moves to diffclass.rs.
+
 Conventions it rests on (derived level; VC6 / LINK are the toolchain they were stated for):
   W1  a function's code is contiguous: every block of a function lies between its start and the next
       function's start, and its jump tables follow its code. A direct jump that crosses a known start is
@@ -45,6 +48,7 @@ from collections import defaultdict
 from ..isa.base import CALL, CJUMP, IJUMP, JUMP, JUMPS, RET, Decoder
 from ..ledger.fact import Kind, Level, Severity
 from .engine import RuleContext, rule
+from .layout import toolchain_key
 
 D = Level.derived
 
@@ -322,7 +326,7 @@ class Walker:
 
 @rule("S.codewalk", version="6", ceiling=D, outputs=("symbol", "start", "ref"),
       needs=("S.sections", "S.exports", "S.entry", "S.crt.code", "S.crt.refs", "S.thunk", "S.relocs", "L.decl.start"),
-      helpers=(Record, Walker))
+      native=True, native_inputs=toolchain_key)
 def codewalk(ctx: RuleContext):
     """Recursive descent over the code sections from every known start (exports, the entry point, the symbols
     of placed library sections, the entry the CRT calls), adding the starts the walk reveals (conventions
@@ -333,134 +337,4 @@ def codewalk(ctx: RuleContext):
     `idxtable` symbols; calls (over the call instruction), tail calls, immediates and memory operands pointing
     into the image are `ref` facts. A walk that runs into bytes another function owns is a conflict (C.walk).
     Instructions come from the target's instruction-set plugin (isa/), fill forms from the toolchain."""
-    img, tc = ctx.image, ctx.project.toolchain
-    code_secs = [s for s in img.sections if s.holds_code]
-    if not code_secs:
-        return
-    lo = min(s.va for s in code_secs)
-    hi = max(s.end for s in code_secs)
-    reloc_sites = {f.lo for f in ctx.facts(Kind.ref) if f.value["rkind"] == "reloc"}
-    data_ptrs = {f.value["to"] for f in ctx.facts(Kind.ref)
-                 if f.value["rkind"] == "reloc" and not any(s.va <= f.lo < s.end for s in code_secs)}
-    claimed = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.value.get("skind") in ("func", "thunk") and lo <= f.lo < hi)
-    claimed_starts = {a for a, _ in claimed}
-    claimed_los = [a for a, _ in claimed]
-
-    def inside_claimed(t):
-        i = bisect.bisect_right(claimed_los, t) - 1
-        while i >= 0:
-            a, b = claimed[i]
-            if a <= t < b:
-                return True
-            i -= 1
-            if i >= 0 and claimed[i][0] < t - 0x100000:
-                break
-        return False
-
-    known: dict[int, str] = {}
-    for f in ctx.facts(Kind.start):
-        if lo <= f.lo < hi and not inside_claimed(f.lo):
-            known.setdefault(f.lo, f.value["how"])
-    derived: dict[int, str] = {}
-    w = None
-    inner: dict[int, int] = {}
-    dec = ctx.project.isa.decoder(img, lo, hi, tc.fill_forms)
-    records: dict[int, Record] = {}
-    for _ in range(25):
-        roots = dict(known)
-        roots.update({k: v for k, v in derived.items() if k not in roots})
-        w = Walker(dec, reloc_sites, set(roots) | claimed_starts, tc.function_alignment)
-        for a, b in claimed:
-            w.claim(a, b, a, 3)
-            w.extent.pop(a, None)
-        for r in sorted(roots):
-            rec = records.get(r)
-            if rec is None or not w.replay(r, rec):
-                records[r] = w.walk_root(r)
-        # W2: a call target called only from inside the one function whose range holds it is an inner label of
-        # that function (walked on its behalf when the function's own walk did not reach it)
-        inner = {}
-        changed = True
-        while changed:
-            changed = False
-            for t, sites in sorted(w.calls.items()):
-                if t in roots or t in inner:
-                    continue
-                owners = {w.owner[s - lo] for s in sites if w.kind[s - lo] == 1}
-                if len(owners) != 1:
-                    continue
-                o = owners.pop()
-                if o in w.extent and o < t < w.extent[o]:
-                    inner[t] = o
-                    if w.kind[t - lo] == 0:
-                        w.walk(t, o)
-                    changed = True
-        new: dict[int, str] = {}
-        for t, how in [(t, "call") for t in w.calls] + [(t, "tail") for t in w.tails] + [(t, "immediate") for t in w.imms]:
-            if t in roots or t in inner or inside_claimed(t) or not (lo <= t < hi):
-                continue
-            new.setdefault(t, how)
-        if not new:
-            for t in sorted(data_ptrs):
-                if lo <= t < hi and t not in roots and t not in inner and not inside_claimed(t) and w.kind[t - lo] == 0:
-                    new[t] = "fptr"
-        if not new and set(derived) <= set(roots):
-            break
-        derived.update(new)
-    roots = dict(known)
-    roots.update({k: v for k, v in derived.items() if k not in roots})
-
-    def owner_at(s):
-        return w.owner[s - lo] if lo <= s < hi and w.kind[s - lo] == 1 else None
-
-    # the roots that rest on a declared start: the declared ones, then every start found only from their code
-    premise = {r for r, how in roots.items() if how == "decl"}
-    found: dict[int, set] = defaultdict(set)
-    for table in (w.calls, w.tails, w.imms):
-        for t, sites in table.items():
-            found[t].update(owner_at(s) for s in sites)
-    grew = bool(premise)
-    while grew:
-        grew = False
-        for r in roots:
-            if r not in premise and r in derived and r in found and found[r] and found[r] <= premise:
-                premise.add(r)
-                grew = True
-
-    def level_of(owner):
-        return Level.declared if owner in premise else D
-
-    for r in sorted(roots):
-        e = w.extent.get(r, r)
-        if e <= r:
-            continue
-        n_walked, n_table = w.counts(r, r, e)
-        holes = (e - r) - n_walked - n_table
-        yield ctx.fact(r, r + 1, Kind.start, {"skind": "func", "how": roots[r]}, level_of(r))
-        v = {"skind": "func", "extent": "derived", "walked": n_walked, "holes": holes}
-        labels = sorted(t for t, o in inner.items() if o == r)
-        if labels:
-            v["inner"] = labels
-        yield ctx.fact(r, e, Kind.symbol, v, level_of(r))
-    for tlo, thi, owner, sk in w.tables:
-        if thi > tlo:
-            yield ctx.fact(tlo, thi, Kind.symbol, {"skind": sk, "extent": "derived", "fn": owner}, level_of(owner))
-    for t, sites in w.calls.items():
-        for s in sorted(sites):
-            yield ctx.fact(s, s + w.call_size[s], Kind.ref, {"rkind": "call", "to": t}, level_of(owner_at(s)))
-    for t, sites in w.tails.items():
-        for s in sorted(sites):
-            yield ctx.fact(s, s + 1, Kind.ref, {"rkind": "tail", "to": t}, level_of(owner_at(s)))
-    for t, sites in w.imms.items():
-        for s in sorted(sites):
-            yield ctx.fact(s, s + 1, Kind.ref, {"rkind": "immediate", "to": t}, level_of(owner_at(s)))
-    seen = set()
-    for site, size, target, osize in w.operands:
-        if (site, target) in seen:
-            continue
-        seen.add((site, target))
-        yield ctx.fact(site, site + size, Kind.ref, {"rkind": "operand", "to": target, "size": osize}, level_of(owner_at(site)))
-    for owner, addr, other in sorted(set(w.overlaps)):
-        yield ctx.conflict(Severity.error, "C.walk", addr, addr + 1,
-                           f"the walk from {owner:#x} ({roots.get(owner, 'inner')}) runs into bytes owned by {other:#x}: one start is wrong",
-                           a=f"start:{owner:#x}", b=f"start:{other:#x}")
+    return ()  # native: native/dcp_core/src/walk.rs
