@@ -929,6 +929,7 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         "M.data.draft" => m_data_draft(&ctx, db, &mut out),
         "D.data" => d_data(&ctx, db, &mut out),
         "L9.analyzer.span" => crate::layout::l9_analyzer_span(&ctx, db, &mut out),
+        "L.src.extent" => crate::layout::l_src_extent(&ctx, db, &mut out),
         other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
     })?;
     let ms = t0.elapsed().as_millis() as i64;

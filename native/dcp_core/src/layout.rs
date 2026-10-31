@@ -1,7 +1,7 @@
 //! The native layout rules (rules/layout.py keeps their criteria as docstrings).
 
 use crate::rules::Ctx;
-use crate::store::{self, Out, SFact, OPEN};
+use crate::store::{self, Out, SFact, DECLARED, OPEN};
 use crate::image;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -147,6 +147,109 @@ pub fn l9_analyzer_span(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<(
                      format!("{}'s function {:#x} ({name}, {size} bytes) spans our start{} {}{more}: its draft holds more than one function",
                              e.analyzer, e.start, if hits.len() > 1 { "s" } else { "" }, listed.join(", ")),
                      &format!("decl:analyzer:{}:{}", e.analyzer, e.source));
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------------------------ L.src.extent
+
+/// Python's bisect.bisect_right on any list (claimed's starts: the symbols sorted, then the regions sorted, the
+/// whole not sorted; the search must probe as Python's does).
+fn py_bisect_right(a: &[i64], x: i64) -> usize {
+    let (mut lo, mut hi) = (0, a.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if x < a[mid] {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
+}
+
+/// L.src.extent: a sourced function no other function covers owns its code up to the next stop, less the fill.
+pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let extra: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
+    let align = extra["function_alignment"].as_i64().unwrap_or(1).max(1);
+    let forms = crate::compare::fill_order(&ctx.fill_forms);
+    let code: Vec<(i64, i64)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va as i64, s.end() as i64)).collect();
+    let in_code = |a: i64| code.iter().any(|&(lo, hi)| lo <= a && a < hi);
+    let fs = |kind: &str| store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
+    let symbols = fs("symbol")?;
+    let sources = fs("source")?;
+    let mut claimed: Vec<(i64, i64)> = symbols.iter().filter(|f| f.level > OPEN).map(|f| (f.lo, f.hi)).collect();
+    claimed.sort();
+    let mut regions: Vec<(i64, i64)> = fs("region")?.iter().map(|f| (f.lo, f.hi)).collect();
+    regions.sort();
+    claimed.extend(regions);
+    let mut stops: Vec<i64> = fs("start")?.iter().map(|f| f.lo).collect();
+    stops.extend(fs("boundary")?.iter().map(|f| f.lo));
+    stops.extend(claimed.iter().map(|c| c.0));
+    stops.extend(code.iter().map(|c| c.1));
+    stops.sort();
+    stops.dedup();
+    let los: Vec<i64> = claimed.iter().map(|c| c.0).collect();
+    let is_match = |f: &SFact| &*f.rule == "M.match" && f.s("what") == Some("match");
+    let mut ends: Vec<i64> = symbols.iter().filter(|f| f.level > OPEN && in_code(f.lo)).map(|f| f.hi).collect();
+    ends.extend(sources.iter().filter(|f| is_match(f)).map(|f| f.hi));
+    let match_hi: HashMap<i64, i64> = sources.iter().filter(|f| is_match(f)).map(|f| (f.lo, f.hi)).collect();
+    let mut pad: HashMap<i64, i64> = HashMap::new();
+    for f in symbols.iter().filter(|f| &*f.rule == "M.match") {
+        if *match_hi.get(&f.lo).unwrap_or(&f.hi) > f.hi {
+            pad.insert(f.hi, match_hi[&f.lo]);
+        }
+    }
+    // the facts are in (lo, ...) order already: the sort by lo keeps it
+    for s in sources.iter().filter(|f| &*f.rule == "L.src" && f.s("what") == Some("func")) {
+        let a = s.lo;
+        if !in_code(a) {
+            continue;
+        }
+        let i = py_bisect_right(&los, a) as i64 - 1;
+        if i >= 0 && claimed[(i - 8).max(0) as usize..=i as usize].iter().any(|&(lo, hi)| lo <= a && a < hi) {
+            continue; // the walk, a match or a library member owns it already
+        }
+        let j = stops.partition_point(|&x| x <= a);
+        let end = if j < stops.len() { stops[j] } else { a };
+        if end <= a {
+            continue;
+        }
+        let data = img.read(a as u32, (end - a) as usize);
+        let mut cut = data.len();
+        for k in data.len().saturating_sub((align - 1) as usize)..data.len() {
+            if crate::compare::is_fill(&data[k..], &forms) {
+                cut = k;
+                break;
+            }
+        }
+        if cut == 0 {
+            continue;
+        }
+        let v = &s.value;
+        out.fact(a, a + cut as i64, "symbol", serde_json::json!({"skind": "func", "extent": "source", "name": v["symbol"],
+                                                                  "unit": v["unit"], "file": v["file"]}), DECLARED);
+        if cut < data.len() {
+            out.fact(a + cut as i64, end, "symbol", serde_json::json!({"skind": "fill", "extent": "source"}), DECLARED);
+        }
+    }
+    // the gap after any claimed code up to the next stop: a match's proven padding, then alignment fill
+    ends.sort();
+    ends.dedup();
+    for e in ends {
+        let j = stops.partition_point(|&x| x < e);
+        let stop = if j < stops.len() { stops[j] } else { e };
+        if stop <= e || stop > e + align - 1 {
+            continue;
+        }
+        let p = (*pad.get(&e).unwrap_or(&e)).min(stop);
+        if p > e {
+            out.fact(e, p, "symbol", serde_json::json!({"skind": "fill", "extent": "matched"}), DECLARED);
+        }
+        if stop > p && crate::compare::is_fill(&img.read(p as u32, (stop - p) as usize), &forms) {
+            out.fact(p, stop, "symbol", serde_json::json!({"skind": "fill", "extent": "source"}), DECLARED);
+        }
     }
     Ok(())
 }

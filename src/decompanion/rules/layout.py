@@ -34,7 +34,6 @@ from ..build import tu as build_tu
 from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..source import cparse
-from ..match import compare as C
 from ..ledger.fact import Kind, Level, Severity, min_level
 from .engine import RuleContext, rule
 
@@ -1056,7 +1055,7 @@ def analyzer_span(ctx: RuleContext):
 @rule("L.src.extent", version="1", ceiling=DE, outputs=("symbol",),
       needs=("L.src", "L.decl", "L.decl.start", "S.sections", "S.codewalk", "S.crt.code", "S.thunk", "S.fill", "M.match",
              "S.exports", "S.entry"),
-      helpers=(C.is_fill,))
+      native=True, native_inputs=lambda p: {"function_alignment": p.toolchain.function_alignment})
 def src_extent(ctx: RuleContext):
     """A sourced function whose start no other function covers (the walk did not reach it: an image without base
     relocations hides most call-only and pointer-only functions; it does not byte-match) owns its code by the
@@ -1068,68 +1067,9 @@ def src_extent(ctx: RuleContext):
     its jump or index table, a match's compared section), a gap of less than function_alignment bytes up to the
     next stop is claimed too: first a match's padding inside our compiled section (compared equal: `fill`
     {extent: matched}), then alignment fill (`fill` {extent: source}). S.fill cannot see these gaps: it claims
-    fill that ends at a claimed byte, and the next function may be one only this rule claims."""
-    img, tc = ctx.image, ctx.project.toolchain
-    code = [(s.va, s.end) for s in img.sections if s.holds_code]
-    claimed = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.level > Level.open) + \
-        sorted((f.lo, f.hi) for f in ctx.facts(Kind.region))
-    stops = {f.lo for f in ctx.facts(Kind.start)} | {f.lo for f in ctx.facts(Kind.boundary)}
-    stops |= {lo for lo, _ in claimed} | {hi for _, hi in code}
-    stops = sorted(stops)
-    los = [lo for lo, _ in claimed]
-    srcs = sorted((f for f in ctx.facts(Kind.source) if f.run == "L.src" and f.value.get("what") == "func"), key=lambda f: f.lo)
-    align = max(1, tc.function_alignment)
-    ends = []                                         # where claimed code ends: candidates for the fill after it
-    for f in ctx.facts(Kind.symbol):
-        if f.level > Level.open and any(lo <= f.lo < hi for lo, hi in code):
-            ends.append(f.hi)
-    for f in ctx.facts(Kind.source):
-        if f.value.get("what") == "match" and f.run == "M.match":
-            ends.append(f.hi)                         # a match's compared section, its padding included
-    pad = {}                                          # match padding inside our section: [symbol end, section end)
-    match_hi = {f.lo: f.hi for f in ctx.facts(Kind.source) if f.value.get("what") == "match" and f.run == "M.match"}
-    for f in ctx.facts(Kind.symbol):
-        if f.run == "M.match" and match_hi.get(f.lo, f.hi) > f.hi:
-            pad[f.hi] = match_hi[f.lo]
-    for s in srcs:
-        a = s.lo
-        if not any(lo <= a < hi for lo, hi in code):
-            continue
-        i = bisect.bisect_right(los, a) - 1
-        if i >= 0 and any(lo <= a < hi for lo, hi in claimed[max(0, i - 8):i + 1]):
-            continue                                  # the walk, a match or a library member owns it already
-        j = bisect.bisect_right(stops, a)
-        end = stops[j] if j < len(stops) else a
-        if end <= a:
-            continue
-        data = img.read(a, end - a)
-        cut = len(data)
-        for k in range(max(0, len(data) - (align - 1)), len(data)):
-            if C.is_fill(data[k:], tc.fill_forms):
-                cut = k
-                break
-        if cut == 0:
-            continue
-        yield ctx.fact(a, a + cut, Kind.symbol, {"skind": "func", "extent": "source", "name": s.value["symbol"],
-                                                 "unit": s.value["unit"], "file": s.value["file"]}, DE)
-        if cut < len(data):
-            yield ctx.fact(a + cut, end, Kind.symbol, {"skind": "fill", "extent": "source"}, DE)
-    # the gap after any claimed code up to the next stop: a match's proven padding, then alignment fill
-    done = set()
-    for e in sorted(set(ends)):
-        if e in done:
-            continue
-        j = bisect.bisect_left(stops, e)
-        stop = stops[j] if j < len(stops) else e
-        if stop <= e or stop > e + align - 1:
-            continue
-        p = min(pad.get(e, e), stop)
-        if p > e:
-            yield ctx.fact(e, p, Kind.symbol, {"skind": "fill", "extent": "matched"}, DE)
-            done.add(e)
-        if stop > p and C.is_fill(img.read(p, stop - p), tc.fill_forms):
-            yield ctx.fact(p, stop, Kind.symbol, {"skind": "fill", "extent": "source"}, DE)
-            done.add(e)
+    fill that ends at a claimed byte, and the next function may be one only this rule claims. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 @rule("L10.unexplained", version="2", ceiling=DE, needs=("L.unit.extent", "L.src", "M.match", "S.codewalk", "L.decl", "L.src.extent"))
