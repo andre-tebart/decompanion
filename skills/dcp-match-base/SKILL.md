@@ -63,6 +63,8 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
 - `uv run dcp grade NAME` - the failing rules with their evidence (B1..B3 code, Q1..Q7 readability) and `dist`.
 - `uv run dcp asmdiff NAME` - our instructions against the original's, aligned; `--regs eax=ecx,esi=edi` renames
   registers on our side. Run it first on every big `code` hunk: a pure register rotation reads as `code`.
+  `--symbols` prints the call targets, data and string literals by name instead of `X`; `!` marks an equal
+  instruction that names another symbol or literal than the original's (a wrong callee, datum or string).
 - `uv run dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`, `fpu`,
   `frame` (all explained: shape) and `code` (the rest: a meaning difference until shown otherwise). `frame`:
   the two frames differ in size (`frame: ours 0xcc, the original's 0xc8`) and these lines differ only by the

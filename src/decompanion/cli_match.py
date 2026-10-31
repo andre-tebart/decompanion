@@ -48,10 +48,10 @@ def cmd_next(args):
 # ------------------------------------------------------------------------------------------------ asmdiff / diffclass
 def cmd_asmdiff(args):
     """The instruction diff of one function: ours ('-') against the original ('+'), both listed at the
-    original address (numbers that are image addresses and our relocated fields read X)."""
+    original address (numbers that are image addresses and our relocated fields read X; --symbols prints their names)."""
     from .rules.engine import capstone_dll
     p, e = built(args)
-    return report("asmdiff", *_core.asmdiff_command(p.core, capstone_dll(), args.name, args.regs, bool(args.all)))
+    return report("asmdiff", *_core.asmdiff_command(p.core, capstone_dll(), args.name, args.regs, bool(args.all), bool(args.symbols)))
 
 
 def cmd_diffclass(args):

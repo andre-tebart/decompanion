@@ -129,7 +129,9 @@ grade fact and of every report; it is not a gate.
 uv run dcp grade                  # the matrix and the unit table
 uv run dcp grade UNIT             # its functions, failing rules with evidence
 uv run dcp grade NAME|0xADDR      # one function: grades, failing rules, hunks, distance
-uv run dcp asmdiff NAME [--regs a=b,...] [--all]   # instruction diff, ours '-' / original '+'
+uv run dcp asmdiff NAME [--regs a=b,...] [--all] [--symbols]   # instruction diff, ours '-' / original '+';
+                                  # --symbols: names for X (ours: relocations, the original: the ledger), '!' an
+                                  # equal instruction naming another symbol or literal
 uv run dcp diffclass NAME         # the hunk classes and the verdict
 ```
 

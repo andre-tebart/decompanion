@@ -177,14 +177,15 @@ pub fn next_command(project: PyRef<'_, PyProject>, which: &str, shard: Option<St
 
 /// One graded function's reading, or the lines to stop with: no such function (exit 1), no reading (a
 /// configuration error, as the Python raised it).
-fn reading(project: &PyProject, capstone: &str, key: &str, cmd: &str) -> PyResult<Result<crate::asmcmd::Reading, Out>> {
+fn reading(project: &PyProject, capstone: &str, key: &str, cmd: &str, symbols: bool) -> PyResult<Result<crate::asmcmd::Reading, Out>> {
     let p = &project.p;
     let db = opened(p)?;
     let Some(row) = crate::asmcmd::find_function(&db, key)? else {
         return Ok(Err((vec![], Some(format!("no graded function {key}")), 1)));
     };
     let name = row["name"].as_str().unwrap_or("").to_string();
-    match crate::asmcmd::reading(p, capstone, row)? {
+    let names = if symbols { Some(crate::names::Names::build(&db, &p.main_uri(), &p.target(None).map_err(PyRuntimeError::new_err)?.path)?) } else { None };
+    match crate::asmcmd::reading(p, capstone, row, names.as_ref())? {
         Ok(r) => Ok(Ok(r)),
         Err(why) => {
             let _ = cmd;
@@ -199,23 +200,28 @@ fn tables_tokens(t: &crate::diffclass::Tables) -> String {
 
 /// `dcp asmdiff`: the instruction diff of one function, ours ('-') against the original ('+'), both listed at the
 /// original address (numbers that are image addresses and our relocated fields read X); `regs` renames registers
-/// of ours (`eax=ecx,ecx=eax`).
+/// of ours (`eax=ecx,ecx=eax`). `symbols`: the lines print the names for X (our relocations' symbols, the ledger's
+/// labels of the original's addresses, else the number); the alignment still compares the X texts.
 #[pyfunction]
-#[pyo3(signature = (project, capstone, name, regs, all))]
-pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str, regs: Option<String>, all: bool) -> PyResult<Out> {
-    let r = match reading(&project, capstone, name, "asmdiff")? {
+#[pyo3(signature = (project, capstone, name, regs, all, symbols=false))]
+pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str, regs: Option<String>, all: bool, symbols: bool) -> PyResult<Out> {
+    let r = match reading(&project, capstone, name, "asmdiff", symbols)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
     };
     let mut a: Vec<String> = r.la.iter().map(|x| x.text.clone()).collect();
+    let (mut sa, sb) = r.named.clone().unwrap_or_default();
     if let Some(m) = regs.filter(|x| !x.is_empty()) {
         let pairs: Vec<(String, String)> = m.split(',').map(|x| {
             let (k, v) = x.split_once('=').unwrap_or((x, ""));
             (k.to_string(), v.to_string())
         }).collect();
         a = crate::x86::rename_registers(&a, &pairs);
+        sa = crate::x86::rename_registers(&sa, &pairs);
     }
     let b: Vec<String> = r.lb.iter().map(|x| x.text.clone()).collect();
+    // what a line prints: its X text, or with --symbols its named text
+    let (pa, pb) = if r.named.is_some() { (&sa, &sb) } else { (&a, &b) };
     let ops = crate::difflib::opcodes(&a, &b);
     use crate::difflib::Tag;
     let n: usize = ops.iter().filter(|o| o.0 != Tag::Equal).map(|o| o.2 - o.1 + o.4 - o.3).sum();
@@ -229,17 +235,34 @@ pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str
     if n > 0 {
         out.push("  legend: '-' ours (our object), '+' the original (the image)".into());
     }
+    if r.named.is_some() {
+        out.push("  symbols: ours by our relocations, the original's by the ledger; '!' the same instruction naming another symbol \
+                  (ours | the original's)".into());
+    }
     for (tag, i1, i2, j1, j2) in ops {
         if tag == Tag::Equal {
-            if i2 - i1 > 6 && !all {
-                out.push(format!("     ... {} equal instructions ...", i2 - i1));
-                continue;
+            // runs of lines that print alike (without --symbols the whole run); a line whose names differ
+            // (--symbols) is always printed, `!`, ours | the original's
+            let mut i = i1;
+            while i < i2 {
+                let same = |i: usize| pa[i] == pb[j1 + i - i1];
+                let mut e = i + 1;
+                while e < i2 && same(e) == same(i) {
+                    e += 1;
+                }
+                if !same(i) {
+                    out.extend((i..e).map(|k| format!("!  {:#010x}  {}   | {}", r.la[k].addr, pa[k], pb[j1 + k - i1])));
+                } else if e - i > 6 && !all {
+                    out.push(format!("     ... {} equal instructions ...", e - i));
+                } else {
+                    out.extend((i..e).map(|k| format!("   {:#010x}  {}", r.la[k].addr, pa[k])));
+                }
+                i = e;
             }
-            out.extend((i1..i2).map(|i| format!("   {:#010x}  {}", r.la[i].addr, a[i])));
             continue;
         }
-        out.extend((i1..i2).map(|i| format!("-  {:#010x}  {}", r.la[i].addr, a[i])));
-        out.extend((j1..j2).map(|j| format!("+  {:#010x}  {}", r.lb[j].addr, b[j])));
+        out.extend((i1..i2).map(|i| format!("-  {:#010x}  {}", r.la[i].addr, pa[i])));
+        out.extend((j1..j2).map(|j| format!("+  {:#010x}  {}", r.lb[j].addr, pb[j])));
     }
     Ok((out, None, 0))
 }
@@ -247,7 +270,7 @@ pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str
 /// `dcp diffclass`: the hunks of one function's instruction diff with their classes (diffclass.rs).
 #[pyfunction]
 pub fn diffclass_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str) -> PyResult<Out> {
-    let r = match reading(&project, capstone, name, "diffclass")? {
+    let r = match reading(&project, capstone, name, "diffclass", false)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
     };

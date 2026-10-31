@@ -98,6 +98,16 @@ pub fn py_hex(v: i64) -> String {
 /// masked fields keeps the target.
 pub fn listing(dll: &str, code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64, i64), fills: &HashSet<Vec<u8>>)
                -> Result<Vec<Line>, String> {
+    listing_named(dll, code, va, mask, range, fills, &|_, _, _| None)
+}
+
+/// How a number that reads X is spelled instead: (instruction address, Some(k): the instruction's k-th masked field
+/// in text order, None: a number inside the image; the value) -> the text, None for X.
+pub type Namer<'a> = &'a dyn Fn(u32, Option<usize>, i64) -> Option<String>;
+
+/// listing, the numbers that read X spelled by `name` where it gives a text (`dcp asmdiff --symbols`).
+pub fn listing_named(dll: &str, code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64, i64), fills: &HashSet<Vec<u8>>,
+                     name: Namer) -> Result<Vec<Line>, String> {
     let (lo, hi) = range;
     let mut data = code.to_vec();
     let dummy = (lo as u32).to_le_bytes();
@@ -141,10 +151,18 @@ pub fn listing(dll: &str, code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64
         } else {
             None
         };
+        let mut k = 0;
         let text = hexnum_re().replace_all(&text, |c: &Captures| {
             let s = &c[0];
             let v = u128::from_str_radix(&s[2..], 16).unwrap_or(u128::MAX);
-            if masked.iter().any(|&m| m as u128 == v) || (lo as i128 <= v as i128 && (v as i128) < hi as i128) { "X".to_string() } else { s.to_string() }
+            if masked.iter().any(|&m| m as u128 == v) {
+                k += 1;
+                name(a, Some(k - 1), v as i64).unwrap_or_else(|| "X".to_string())
+            } else if lo as i128 <= v as i128 && (v as i128) < hi as i128 {
+                name(a, None, v as i64).unwrap_or_else(|| "X".to_string())
+            } else {
+                s.to_string()
+            }
         }).into_owned();
         let bytes = &code[o.min(code.len())..(o + size as usize).min(code.len())];
         out.push(Line { addr: a, size, text, fill: fills.contains(bytes), target });

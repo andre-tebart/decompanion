@@ -131,11 +131,17 @@ def test_byte_match_with_a_differing_literal_is_no_byte(tiny):
     assert code == 0, out
     code, out = dcp(tiny, "grade", "get")
     assert "code=byte" in out, out
+    code, out = dcp(tiny, "asmdiff", "get", "--symbols")            # the literal is the original's: one name
+    assert "   0x10001020  mov eax, dword ptr [0x10002000]" in out and "\n!  " not in out, out
     unit(tiny, "net", fn.format("\\x34\\x13"))
     code, out = dcp(tiny, "build")
     assert [f.lo for f in Project(tiny).store.facts(Kind.symbol) if f.run == "M.match"] == [0x10001020]
     code, out = dcp(tiny, "grade", "get")
     assert "code=shape" in out and "B1 byte: M9" in out and "differs from the original's bytes" in out, out
+    code, out = dcp(tiny, "asmdiff", "get")                          # X on both sides: equal
+    assert "differing=0" in out and "... " not in out and "   0x10001020  mov eax, dword ptr [X]" in out, out
+    code, out = dcp(tiny, "asmdiff", "get", "--symbols")
+    assert "differing=0" in out and '!  0x10001020  mov eax, dword ptr ["4\\x13"]   | mov eax, dword ptr [0x10002000]' in out, out
 
 
 @needs_vc6

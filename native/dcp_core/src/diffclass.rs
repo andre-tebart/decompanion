@@ -812,5 +812,12 @@ mod tests {
         let orig = x86::listing(&dll, &[0xa1, 0x00, 0x20, 0x00, 0x10, 0xe8, 0x10, 0, 0, 0, 0xc3], 0x1000_1000, None, range, &fills).unwrap();
         assert_eq!(texts(&ours), texts(&orig));
         assert_eq!(texts(&ours), ["mov eax, dword ptr [X]", "call X", "ret"]);
+        // asmdiff --symbols: the same listing, each X spelled by the namer (the k-th masked field, an image number)
+        let named = x86::listing_named(&dll, &code, 0x1000_1000, Some(&mask), range, &fills,
+                                       &|ins, k, _| Some(format!("f{:x}k{}", ins & 0xff, k.map(|k| k as i64).unwrap_or(-1)))).unwrap();
+        assert_eq!(texts(&named), ["mov eax, dword ptr [f0k0]", "call f5k0", "ret"]);
+        let named = x86::listing_named(&dll, &[0xa1, 0x00, 0x20, 0x00, 0x10, 0xc3], 0x1000_1000, None, range, &fills,
+                                       &|_, k, v| k.is_none().then(|| format!("{v:#x}"))).unwrap();
+        assert_eq!(texts(&named), ["mov eax, dword ptr [0x10002000]", "ret"]);
     }
 }

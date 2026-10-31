@@ -394,6 +394,8 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("name")
     s.add_argument("--regs", help="rename registers on our side: a=b,c=d")
     s.add_argument("--all", action="store_true", help="print every equal instruction")
+    s.add_argument("--symbols", action="store_true", help="print the names instead of X (ours: the relocations' symbols, the "
+                   "original's: the ledger's labels); '!' marks an equal instruction naming another symbol")
     s = cmd(sub, "diffclass", CM.cmd_diffclass, "the hunk classes of one function's instruction diff")
     s.add_argument("name")
     for lvl, verb in (("deep", "escalate"), ("stuck", "stuck")):

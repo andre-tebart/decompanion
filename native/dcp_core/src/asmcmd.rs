@@ -18,6 +18,66 @@ pub struct Reading {
     pub tables: Option<Tables>,
     pub hunks: Vec<Hunk>,
     pub verdict: Verdict,
+    /// the texts of la and lb with names for X (reading's `names`): our relocations' symbols, the ledger's labels
+    pub named: Option<(Vec<String>, Vec<String>)>,
+}
+
+/// How an address of the original reads by name (`asmdiff --symbols`): a number inside the function's slot `own`
+/// (a jump of its own) as the number, else the ledger's label (dcp disasm's), else the printable C string the
+/// image holds there, else the number.
+fn label(names: &crate::names::Names, img: &crate::pe::Image, own: (i64, i64), v: i64) -> String {
+    if own.0 <= v && v < own.1 {
+        return format!("{v:#x}");
+    }
+    if let Ok(Some(l)) = names.label_of(v) {
+        return l;
+    }
+    let s = img.cstr_n(v as u32, 256);
+    if s.len() >= 2 && s.len() < 256 && s.iter().all(|&c| (0x20..0x7f).contains(&c) || c == b'\t' || c == b'\n') {
+        let t: String = s.iter().take(40).map(|&c| c as char).collect();
+        return format!("\"{}\"", t.replace('\n', "\\n"));
+    }
+    format!("{v:#x}")
+}
+
+/// How our relocated field (at `off` of the function at `a`) reads by name: what the original's field refers to
+/// (label) when that is our symbol (the ledger registers its C name there) or our literal's bytes (M8 / M9 hold);
+/// else our symbol (a string literal as its text), `+off` for an addend.
+#[allow(clippy::too_many_arguments)]
+fn reloc_name(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crate::coff::Reloc, a: u32, off: u32,
+              img: &crate::pe::Image, names: &crate::names::Names, own: (i64, i64)) -> String {
+    let Some(sym) = obj.symbol_at(r.symbol_index) else { return "?".into() };
+    let addend = obj.addend(code.secnum, r);
+    let site = a.wrapping_add(off);
+    let to = r.resolve(site, &img.bytes(site, r.kind_width().1 as usize), addend).filter(|&t| img.in_image(t));
+    let theirs = |t: u32| label(names, img, own, t.wrapping_add(addend) as i64);
+    let data = if sym.secnum > 0 { obj.sections.get(sym.secnum as usize).and_then(|s| s.data.as_ref()) } else { None };
+    let base = match (sym.constant(), data) {
+        (Some("string"), Some(d)) => {
+            let lit = d.get(sym.value as usize..).unwrap_or(&[]);
+            let lit = &lit[..lit.iter().position(|&c| c == 0).map(|z| z + 1).unwrap_or(lit.len())];
+            if let Some(t) = to.filter(|&t| *img.bytes(t, lit.len()) == *lit) {
+                return theirs(t);
+            }
+            let t: String = lit.iter().take_while(|&&c| c != 0).take(40).map(|&c| match c {
+                b'\n' => "\\n".to_string(),
+                0x20..=0x7e => (c as char).to_string(),
+                _ => format!("\\x{c:02x}"),
+            }).collect();
+            format!("\"{t}\"")
+        }
+        _ => {
+            let cname = crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name));
+            if let Some(t) = to.filter(|&t| names.by_name.iter().any(|(n, at)| *n == cname && at.contains(&(t as i64)))) {
+                return theirs(t);
+            }
+            crate::coff::undecorate(&sym.name)
+        }
+    };
+    match addend as i32 {
+        0 => base,
+        n => format!("{base}{}{:#x}", if n < 0 { "-" } else { "+" }, n.unsigned_abs()),
+    }
 }
 
 fn py_int0(s: &str) -> Option<i64> {
@@ -43,8 +103,9 @@ pub fn all_starts(db: &str, img: &crate::pe::Image) -> PyResult<Vec<i64>> {
     Ok(s.into_iter().collect())
 }
 
-/// The reading of a graded function (its object's code against the original), or why there is none.
-pub fn reading(p: &Project, capstone: &str, row: Value) -> Result<Result<Reading, String>, PyErr> {
+/// The reading of a graded function (its object's code against the original), or why there is none; with `names`,
+/// the texts with names for X too.
+pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::names::Names>) -> Result<Result<Reading, String>, PyErr> {
     let db = p.store_path();
     let unit = row["unit"].as_str().unwrap_or("").to_string();
     let name = row["name"].as_str().unwrap_or("").to_string();
@@ -90,7 +151,31 @@ pub fn reading(p: &Project, capstone: &str, row: Value) -> Result<Result<Reading
     let lb = crate::x86::strip_fill(crate::x86::listing(env.dll, &data, a as u32, None, env.range, env.fills).map_err(e)?);
     let tables = diffclass::compare_tables(&env, &obj, &code, a as u32, &la, &lb, &o.tables);
     let (hunks, verdict) = diffclass::analyse(&la, &lb, tables.as_ref());
-    Ok(Ok(Reading { row, la, lb, tables, hunks, verdict }))
+    let named = match names {
+        None => None,
+        Some(names) => {
+            // the same listings (strip_fill drops trailing lines only): ours by the relocations inside each
+            // instruction in offset order, the original's by the ledger; a number inside the function's slot (a
+            // jump of its own) stays a number on both sides
+            let own = (a, a + slot);
+            let ours = |ins: u32, k: Option<usize>, v: i64| -> Option<String> {
+                let o = ins - a as u32;
+                let size = la.iter().find(|l| l.addr == ins).map(|l| l.size).unwrap_or(0);
+                match k {
+                    Some(k) => code.relocs.iter().filter(|(off, _)| o <= *off && *off < o + size).nth(k)
+                        .map(|(off, r)| reloc_name(&obj, &code, r, a as u32, *off, &img, names, own)),
+                    None => Some(label(names, &img, own, v)),
+                }
+            };
+            let theirs = |_: u32, _: Option<usize>, v: i64| -> Option<String> {
+                Some(label(names, &img, own, v))
+            };
+            let na = crate::x86::listing_named(env.dll, cd, a as u32, Some(cm), env.range, env.fills, &ours).map_err(e)?;
+            let nb = crate::x86::listing_named(env.dll, &data, a as u32, None, env.range, env.fills, &theirs).map_err(e)?;
+            Some((na.into_iter().take(la.len()).map(|l| l.text).collect(), nb.into_iter().take(lb.len()).map(|l| l.text).collect()))
+        }
+    };
+    Ok(Ok(Reading { row, la, lb, tables, hunks, verdict, named }))
 }
 
 // ------------------------------------------------------------------------------------------------ Python's face
