@@ -87,7 +87,7 @@ def rule(id: str, *, version: str, ceiling: Level, outputs: tuple[str, ...] = ()
         src = inspect.getsource(fn) + "".join(inspect.getsource(h) for h in helpers)
         if native:
             from ..native import source_hash
-            src += " native:" + source_hash()
+            src += " native:" + source_hash() + (inspect.getsource(native_inputs) if native_inputs else "")
         if loader and Level(ceiling) > Level.declared:
             raise RuntimeError(f"loader rule {id} with ceiling {Level(ceiling)}: loaders declare")
         RULES[id] = Rule(id, version, Level(ceiling), tuple(needs), tuple(outputs), tuple(inputs), fn,
@@ -242,7 +242,7 @@ class Engine:
                 "fill_forms": [bytes(f) for f in p.toolchain.fill_forms], "record": record, "capstone": capstone_dll(),
                 "objects": {u: (row.get("obj_hash") or "", bool(row.get("ok"))) for u, row in objs.items()},
                 "shortcuts": not os.environ.get("DCP_NO_SHORTCUTS"),
-                "extra": json.dumps(r.native_inputs(p) if r.native_inputs else {})}
+                "extra": extra if isinstance(extra := r.native_inputs(p) if r.native_inputs else {}, str) else json.dumps(extra)}
 
     def waiting(self, r: Rule) -> tuple[str, ...]:
         """The obligations a rule waits on: those of its inputs that are absent until a human declares them

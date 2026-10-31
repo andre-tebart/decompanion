@@ -29,7 +29,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 
-from .. import fsmemo
+from .. import fsmemo, native
 from ..build import tu as build_tu
 from ..ledger import decl as decl_mod
 from ..ledger import srcscan
@@ -131,75 +131,13 @@ def compute_units(game: tuple[int, int, Level], bounds: list[Bound], srcs: list[
       after every object), else open (the unit may end anywhere before);
     - a boundary level is the level of what places it: declared for boundaries and sources.
     L7: two start or end boundaries of one unit, two units starting at one address, an end beyond the next
-    unit's start, a unit outside the game code, an empty extent, a source outside its unit's extent."""
-    glo, ghi, glevel = game
-    issues: list[Issue] = []
-    starts: dict[str, tuple] = {}
-    ends: dict[str, tuple] = {}
-    for b in sorted(bounds, key=lambda b: (b.addr, b.side, b.tu)):
-        table = starts if b.side == "start" else ends
-        if b.tu in table:
-            issues.append(Issue("L7", b.addr, b.addr + 1, f"unit {b.tu} has two {b.side} boundaries: {table[b.tu][0]:#x} and {b.addr:#x}",
-                                a=table[b.tu][2], b=b.by))
-            continue
-        table[b.tu] = (b.addr, DE, b.by, b.named_by)
-    first_src: dict[str, SrcFn] = {}
-    for s in sorted(srcs, key=lambda s: s.addr):
-        if glo <= s.addr < ghi and s.unit not in first_src:
-            first_src[s.unit] = s
-    for u, s in first_src.items():
-        if u not in starts:
-            starts[u] = (s.addr, DE, s.by, None)
-    for tu, e in ends.items():
-        if tu not in starts:
-            issues.append(Issue("L7", e[0], e[0] + 1, f"end boundary of unit {tu}, which has no start boundary and no source", a=e[2]))
-    order = sorted(starts.items(), key=lambda kv: (kv[1][0], kv[0]))
-    srcs_by_unit = defaultdict(set)
-    for s in srcs:
-        srcs_by_unit[s.unit].add(s.addr)
-    units: list[UnitX] = []
-    seen_at: dict[int, str] = {}
-    fs = sorted(func_starts)
-    for i, (tu, (a, lvl, by, named)) in enumerate(order):
-        if not (glo <= a < ghi):
-            issues.append(Issue("L7", a, a + 1, f"unit {tu} starts at {a:#x}, outside the game code {glo:#x}..{ghi:#x}", a=by))
-            continue
-        if a in seen_at:
-            issues.append(Issue("L7", a, a + 1, f"units {seen_at[a]} and {tu} start at the same address", a=by))
-            continue
-        seen_at[a] = tu
-        nxt = next(((t, v) for t, v in order[i + 1:] if v[0] > a and glo <= v[0] < ghi), None)
-        if tu in ends:
-            hi, elvl, eby = ends[tu][0], DE, ends[tu][2]
-            if nxt is not None and hi > nxt[1][0]:
-                issues.append(Issue("L7", nxt[1][0], hi, f"unit {tu} ends at {hi:#x}, after unit {nxt[0]} starts at {nxt[1][0]:#x}",
-                                    a=eby, b=nxt[1][2]))
-        elif nxt is not None:
-            hi, elvl, eby = nxt[1][0], nxt[1][1], f"start of {nxt[0]}"
-        else:
-            hi, eby = ghi, "end of the game code"
-            k = bisect.bisect_left(fs, a)
-            rest = [x for x in fs[k:] if x < ghi]
-            elvl = min_level(glevel, ceiling=D) if all(x in srcs_by_unit[tu] for x in rest) else O
-        if hi > ghi:
-            issues.append(Issue("L7", ghi, hi, f"unit {tu} runs to {hi:#x}, into the library code at {ghi:#x}", a=ends.get(tu, (0, 0, ""))[2]))
-            hi = ghi
-        if hi <= a:
-            issues.append(Issue("L7", a, a + 1, f"unit {tu} has an empty extent {a:#x}..{hi:#x}", a=by))
-            continue
-        units.append(UnitX(tu, a, hi, lvl, elvl, by, eby, named))
-    los = [u.lo for u in units]
-    for s in srcs:
-        if not (glo <= s.addr < ghi):
-            continue
-        i = bisect.bisect_right(los, s.addr) - 1
-        u = units[i] if i >= 0 and s.addr < units[i].hi else None
-        if u is None:
-            issues.append(Issue("L7", s.addr, s.addr + 1, f"function of unit {s.unit} ({s.name}) lies outside every unit extent", a=s.by))
-        elif u.tu != s.unit:
-            issues.append(Issue("L7", s.addr, s.addr + 1, f"function of unit {s.unit} ({s.name}) lies in unit {u.tu} {u.lo:#x}..{u.hi:#x}",
-                                a=s.by, b=u.start_by))
-    return units, issues
+    unit's start, a unit outside the game code, an empty extent, a source outside its unit's extent. Native:
+    native/dcp_core/src/layout.rs (L.unit.extent's and `dcp layout unit propose`'s)."""
+    units, issues = native.core().compute_units(
+        (game[0], game[1], int(game[2])), [(b.addr, b.side, b.tu, b.by, b.named_by) for b in bounds],
+        [(s.addr, s.unit, s.name, s.by) for s in srcs], list(func_starts))
+    return ([UnitX(tu, lo, hi, Level(sl), Level(el), sb, eb, nb) for tu, lo, hi, sl, el, sb, eb, nb in units],
+            [Issue(*i) for i in issues])
 
 
 def unit_index(units: list[UnitX]):
@@ -656,9 +594,16 @@ def lib_units_of(ctx) -> dict:
     return decl_mod.lib_units(decls, ctx.project.target_name, targets[0])
 
 
+def lib_unit_names(p) -> dict:
+    """What L.unit.extent reads that only Python computes: {libs: the units declared `libunit` for the current target}."""
+    targets = [t["name"] for t in p.input("targets")]
+    decls, _ = decl_mod.load(p.input("decl"), p.root, targets)
+    return {"libs": sorted(decl_mod.lib_units(decls, p.target_name, targets[0]))}
+
+
 @rule("L.unit.extent", version="3", ceiling=DE, outputs=("unit",),
       needs=("L.decl", "L.src", "S.sections", "S.crt.code", "S.thunk", "S.codewalk", "S.unknown"),
-      inputs=("decl", "targets"), helpers=(compute_units, game_range, lib_starts_of, unit_status, lib_units_of))
+      inputs=("decl", "targets"), native=True, native_inputs=lib_unit_names)
 def unit_extent(ctx: RuleContext):
     """The units of the game code (compute_units in rules/layout.py: a unit runs from its declared start
     boundary or first source to its declared end, the next unit's start or the end of the game code; the
@@ -669,35 +614,9 @@ def unit_extent(ctx: RuleContext):
     two starts is wrong). Status: separated when both boundaries are at least declared, no open byte and no
     C.walk conflict lies inside, else open. Level: the lower of the two boundary levels (at most declared).
     Issues of the computation are L7 conflicts. A unit declared `libunit` (a library member compiled from source)
-    is no game unit: its functions are left out (L14 checks them against the member's range)."""
-    img = ctx.image
-    syms = ctx.facts(Kind.symbol)
-    game = game_range(img, lib_starts_of(syms))
-    funcs = [lo for lo, _, _ in functions_of(syms) if game[0] <= lo < game[1]]
-    libs = lib_units_of(ctx)
-    srcs = [s for s in srcfns_of(ctx.facts(Kind.source)) if s.unit not in libs]
-    units, issues = compute_units(game, bounds_of(ctx.facts(Kind.boundary)), srcs, funcs)
-    yield from _emit(ctx, issues)
-    unknown = sorted((f.lo, f.hi) for f in syms if f.value.get("skind") == "unknown.code")
-    dead = sorted((f.lo, f.hi) for f in syms if f.run == "L.decl" and f.value.get("skind") in ("dead", "foreign"))
-    walks = sorted(c.lo for c in ctx.conflicts("C.walk"))
-    sourced = {s.addr for s in srcs}
-
-    def overlap(ranges, u):
-        return sum(max(0, min(b, u.hi) - max(a, u.lo)) for a, b in ranges if a < u.hi and b > u.lo)
-
-    for u in units:
-        open_bytes = overlap(unknown, u)
-        n_walk = bisect.bisect_left(walks, u.hi) - bisect.bisect_left(walks, u.lo)
-        inside = [a for a in funcs if u.lo <= a < u.hi]
-        extra = {s.addr for s in srcs if u.lo <= s.addr < u.hi} - set(inside)
-        v = {"tu": u.tu, "status": unit_status(u.start_level, u.end_level, open_bytes, n_walk),
-             "start_level": u.start_level.name, "end_level": u.end_level.name, "start_by": u.start_by, "end_by": u.end_by,
-             "open_bytes": open_bytes, "dead_bytes": overlap(dead, u), "walk_conflicts": n_walk,
-             "functions": len(inside) + len(extra), "sourced": sum(1 for a in inside if a in sourced) + len(extra)}
-        if u.named_by:
-            v["named_by"] = u.named_by
-        yield ctx.fact(u.lo, u.hi, Kind.unit, v, u.level)
+    is no game unit: its functions are left out (L14 checks them against the member's range). Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 # ------------------------------------------------------------------------------------------------ checks
@@ -772,16 +691,17 @@ def boundary_at_start(ctx: RuleContext):
     yield from _emit(ctx, boundary_issues(bounds_of(ctx.facts(Kind.boundary)), starts, funcs, fills, game))
 
 
-def line_targets(sc, targets: list[str]) -> srcscan.Spans:
-    """(file, line) -> the targets a line belongs to: inside a function's span the targets its address comment
-    lists (a bare address: the default target); a line of no function with an address (an unlinked one, the
-    head region, the data between functions, a header) belongs to every target (`at` gives None)."""
-    return srcscan.Spans((f.file, f.comment_line, f.end_line, {t or targets[0] for t, _ in f.addrs})
-                         for f in sc.functions if f.addrs)
+def scan_inputs(p) -> str:
+    """What L5, A1 and L13 read that only Python computes, as JSON text: the targets (the default first), the
+    current one, the targets' image files and the source scan's items (srcscan.native_view)."""
+    import json
+    head = json.dumps({"targets": [t.name for t in p.targets], "target": p.target_name,
+                       "images": {t.name: str(t.path) for t in p.targets}})
+    return head[:-1] + ',"scan":' + srcscan.native_view(srcscan.scan(p.root, p.input_hash("src"))) + "}"
 
 
 @rule("L5.placeholder", version="3", ceiling=P, inputs=("src", "targets"), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
-      helpers=(srcscan, line_targets))
+      native=True, native_inputs=scan_inputs)
 def placeholder(ctx: RuleContext):
     """L5: an identifier that spells an address (`Unk<hex>`, `FUN_<hex>`, `DAT_<hex>`, `<name>_<6-8 hex with a
     digit>`, in any .c / .h of src/ and include/) names a real address: on a line of the current target (inside
@@ -789,57 +709,13 @@ def placeholder(ctx: RuleContext):
     target's image must, inside a code section, be a function start (a `start` fact of any producer, or an inner
     label). A number inside no section of any target the file belongs to is a dropped or extra digit, reported
     in the default target's store only (at the line that spells it). A function's span ends with its definition
-    (line_targets)."""
-    p, img = ctx.project, ctx.image
-    names = [t["name"] for t in ctx.input("targets")]
-    sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
-    starts = {f.lo for f in ctx.facts(Kind.start)}
-    for f in ctx.facts(Kind.symbol):
-        if f.value.get("skind") == "func":
-            starts.update(f.value.get("inner", ()))
-    code = code_ranges(img)
-    cur = p.target_name
-    default = cur == names[0]
-    owners = line_targets(sc, names)
-    for ph in sc.placeholders:
-        v = ph.value
-        by = f"src:{ph.file}:{ph.line}"
-        mine = owners.at(ph.file, ph.line) or set(names)
-        if cur in mine and img.section_of(v) is not None:
-            if in_ranges(v, code) and v not in starts:
-                yield ctx.conflict(Severity.error, "L5", v, v + 1, f"{ph.file}:{ph.line}: {ph.ident}: no function starts at {v:#x}", a=by)
-        elif default and not any(p.image_of(t).section_of(v) is not None for t in mine):
-            yield ctx.conflict(Severity.error, "L5", img.base, img.base + 1,
-                               f"{ph.file}:{ph.line}: {ph.ident}: {v:#x} is not an address of {', '.join(n for n in names if n in mine)} "
-                               f"(a dropped or extra digit?)", a=by)
-
-
-NAME_ORIGINS = ("source", "decl", "export", "entry")       # the origins a reader names an address by, preferred first
-
-
-def what_is_at(a: int, names: dict, syms: list) -> str:
-    """What the facts know at address a: its names (`name` facts at a, sources and declarations first), else the
-    symbol above open that contains it (`func 0x5de460..0x5de480 (MSS_auto_cleanup) +0x10`), else `nothing known`.
-    `names` maps an address to its name facts, `syms` is [(lo, hi, fact)] sorted (symbols do not overlap)."""
-    def name_of(x):
-        fs = sorted(names.get(x, ()), key=lambda f: (NAME_ORIGINS.index(f.value.get("origin")) if f.value.get("origin") in NAME_ORIGINS
-                                                      else len(NAME_ORIGINS), f.value["name"]))
-        return list(dict.fromkeys(f.value["name"] for f in fs))
-    own = name_of(a)
-    if own:
-        return "the name " + " / ".join(own[:3])
-    i = bisect.bisect_right([s[0] for s in syms], a) - 1
-    for j in range(i, max(i - 8, -1), -1):
-        lo, hi, f = syms[j]
-        if lo <= a < hi:
-            nm = name_of(lo)
-            return (f"the {f.value.get('skind', f.kind.value)} {lo:#x}..{hi:#x}" + (f" ({nm[0]})" if nm else "")
-                    + (f" +{a - lo:#x}" if a != lo else ""))
-    return "nothing known"
+    (line_targets). Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 @rule("A1.addr.cast", version="1", ceiling=P, inputs=("src", "targets"), needs=("kind:name", "kind:symbol"),
-      helpers=(srcscan, line_targets, what_is_at))
+      native=True, native_inputs=scan_inputs)
 def addr_cast(ctx: RuleContext):
     """A1: an integer literal cast to a pointer type in the sources (srcscan.PTR_CAST: `(void (*)(void))0x5de470`,
     `(char *)0x6f242c`, `(T *)(unsigned)0x...`; the cast's type spells its `*`, a typedef'd pointer name is not
@@ -849,34 +725,14 @@ def addr_cast(ctx: RuleContext):
     frozen into the code: the relinked image places that object elsewhere, so the pointer goes wrong. An error;
     the message names what the facts know at the address (its name, else the symbol containing it, else nothing
     known) and asks for the symbol by name. The address of a symbol (`(unsigned)&x`, `(char *)&x`) is no literal
-    and is not reported."""
-    p, img = ctx.project, ctx.image
-    names_t = [t["name"] for t in ctx.input("targets")]
-    sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
-    if not sc.ptrcasts:
-        return
-    owners = line_targets(sc, names_t)
-    names = defaultdict(list)
-    for f in ctx.facts(Kind.name):
-        names[f.lo].append(f)
-    syms = sorted(((f.lo, f.hi, f) for f in ctx.facts(Kind.symbol) if f.level > O), key=lambda t: (t[0], t[1]))
-    for c in sc.ptrcasts:
-        if p.target_name not in (owners.at(c.file, c.line) or set(names_t)) or not (img.base <= c.value < img.end):
-            continue
-        what = what_is_at(c.value, names, syms)
-        hint = (f"reference {what[len('the name '):].split(' / ')[0]} by name" if what.startswith("the name ")
-                else "declare the object at that address and reference it by name")
-        yield ctx.conflict(Severity.error, "A1", c.value, c.value + 1,
-                           f"{c.file}:{c.line}: `{c.text}` casts the image address {c.value:#x} to a pointer; the image has "
-                           f"{what} there: {hint} (a relinked image places it elsewhere)", a=f"src:{c.file}:{c.line}")
-
-
-TABLE_KINDS = ("jumptable", "idxtable", "fptr")            # data a code section legitimately holds
+    and is not reported. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 @rule("L13.data.code", version="1", ceiling=P, inputs=("src", "targets"),
       needs=("kind:name", "kind:start", "S.codewalk", "S.crt.code", "S.thunk", "M.match", "L.decl"),
-      helpers=(srcscan, what_is_at))
+      native=True, native_inputs=scan_inputs)
 def data_at_code(ctx: RuleContext):
     """L13: a data declaration of the sources (a definition or an `extern` with an address comment, srcscan Data)
     whose address, for the current target, is a known function start (a `start` fact above declared: the walk,
@@ -884,38 +740,9 @@ def data_at_code(ctx: RuleContext):
     a known function's extent (a `func` symbol above declared: walked, placed or byte-matched), unless a table
     symbol covers it (the walk's or a declared jumptable / idxtable, a declared fptr range: data a code section
     holds). The name declares data at code: whatever reads or calls it through that declaration, the relinked
-    image gives it a data object instead of the function. An error naming the function there."""
-    p = ctx.project
-    targets = [t["name"] for t in ctx.input("targets")]
-    sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
-    syms = ctx.facts(Kind.symbol)
-    funcs = sorted(((f.lo, f.hi, f) for f in syms if f.value.get("skind") == "func" and f.level > DE), key=lambda t: (t[0], t[1]))
-    tables = sorted((f.lo, f.hi) for f in syms if f.value.get("skind") in TABLE_KINDS and f.level >= DE)
-    starts = {f.lo for f in ctx.facts(Kind.start) if f.level > DE} | {lo for lo, _, _ in funcs}
-    if not funcs and not starts:
-        return
-    at = container(funcs)
-    data_names = {d.name for d in sc.data}
-    names = defaultdict(list)
-    for f in ctx.facts(Kind.name):
-        if f.value["name"] not in data_names:       # name the function by its function names, not by the data views
-            names[f.lo].append(f)
-    for d in sc.data:
-        a = srcscan.address_for(d.addrs, p.target_name, targets[0])
-        if a is None:
-            continue
-        fn = at(a)
-        if fn is None and a not in starts:
-            continue
-        if any(lo <= a < hi for lo, hi in tables):
-            continue
-        what = what_is_at(fn[0] if fn else a, names, funcs)
-        where = "the start of" if fn is None or fn[0] == a else f"+{a - fn[0]:#x} inside"
-        rng = f" {fn[0]:#x}..{fn[1]:#x}" if fn else ""
-        yield ctx.conflict(Severity.error, "L13", a, a + 1,
-                           f"{d.file}:{d.line}: data {'definition' if d.kind == 'def' else 'extern'} {d.name} at {a:#x} lies at {where} "
-                           f"the function{rng} ({what}): declare it as a function (or fix the address)",
-                           a=f"src:{d.file}:{d.line}", b=fn[2].by if fn else "")
+    image gives it a data object instead of the function. An error naming the function there. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 def outside_unit_issues(units: list[UnitX], srcs: list[SrcFn], declared: set[str], game: tuple,

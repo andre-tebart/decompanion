@@ -391,18 +391,13 @@ def falls(base: dict, now: dict | None) -> list[str]:
     return out
 
 
-@rule("M1.baseline", version="1", ceiling=P, needs=("G.grade",), inputs=("baseline",), helpers=(parse_baseline, falls))
+@rule("M1.baseline", version="1", ceiling=P, needs=("G.grade",), inputs=("baseline",), native=True,
+      native_inputs=lambda p: {"target": p.target_name, "code_rank": CODE_RANK})
 def baseline_check(ctx: RuleContext):
     """M1: every function of the current target in the grade baseline (ledger/grades.tsv, written only by `dcp
     promote`, lowered for one function only by `dcp accept`) keeps its grades: code byte -> shape / draft and
     shape -> draft are falls, readable -> draft is a fall, and a function the baseline grades that has no
     grade now fell too. Each fall is an error. A function the baseline does not list cannot fall; an accepted
-    fall holds the function at the accepted grade."""
-    t = ctx.project.target_name
-    base = {a: r for (tt, a), r in parse_baseline(ctx.input("baseline")).items() if tt == t}
-    now = {f.lo: f.value for f in ctx.facts(Kind.grade) if f.value.get("of") == "function"}
-    img = ctx.image
-    for a, r in sorted(base.items()):
-        for what in falls(r, now.get(a)):
-            at = a if img.in_image(a) else img.base
-            yield ctx.conflict(Severity.error, "M1", at, at + 1, f"{r['name']} at {a:#x}: {what} (baseline ledger/grades.tsv)")
+    fall holds the function at the accepted grade. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()

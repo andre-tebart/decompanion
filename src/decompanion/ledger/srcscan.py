@@ -183,6 +183,7 @@ class Scan:
     views: list[View] = field(default_factory=list)             # view macros (L15)
     rawobj: list[str] = field(default_factory=list)             # object-like macros dereferencing a cast, no view (Q4)
     models: dict = field(default_factory=dict)                  # file -> its front end model (cparse.model's entry)
+    _native: str | None = field(default=None, repr=False, compare=False)  # native_view's text
 
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
@@ -828,6 +829,21 @@ class Spans:
         if k < 0 or xs[k][1] and line > xs[k][1]:
             return None
         return xs[k][2]
+
+
+def native_view(sc: Scan) -> str:
+    """The items of a scan the native rules read (L5, A1, L13 in native/dcp_core/src/layout.rs), as JSON text:
+    functions with addresses (file, comment line, end line, addrs), placeholders and pointer casts (file, line,
+    text, value as hex: a placeholder may spell more digits than an integer type holds), data declarations
+    (file, line, kind, name, addrs). Made once per scan (a scan is made once per tree)."""
+    if sc._native is None:
+        import json
+        sc._native = json.dumps({
+            "functions": [(f.file, f.comment_line, f.end_line, f.addrs) for f in sc.functions if f.addrs],
+            "placeholders": [(p.file, p.line, p.ident, format(p.value, "x")) for p in sc.placeholders],
+            "ptrcasts": [(c.file, c.line, c.text, format(c.value, "x")) for c in sc.ptrcasts],
+            "data": [(d.file, d.line, d.kind, d.name, d.addrs) for d in sc.data]}, separators=(",", ":"))
+    return sc._native
 
 
 def function_spans(sc: Scan, target: str, default: str) -> Spans:
