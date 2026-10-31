@@ -169,15 +169,9 @@ def rewrite_body(p, entry, own: str, names, view, labels: dict) -> tuple[str, di
 
 def skeleton(p, names, a: int, name: str) -> str:
     """An empty definition whose body comment holds the disassembly of the walk's extent (at most 0x400 bytes)."""
-    from ..cli_read import annotate, walk_func
-    img, isa = p.image, p.isa
-    fn = walk_func(p, a)
-    hi = min(fn.hi if fn is not None else a + 0x40, a + 0x400)
-    lines = isa.disasm(img.read(a, hi - a), a, p.toolchain.fill_forms)
-    body = [f"       {ln.addr:#010x}  {annotate(isa, names, ln.text)}".replace("*/", "* /") for ln in lines]
-    more = [f"       ... {fn.hi - hi} more bytes: dcp disasm {a:#x}"] if fn is not None and fn.hi > hi else []
-    return (f"{skeleton_signature(p.toolchain, name)}\n{{\n    /* disassembly ({hi - a} bytes):\n" + "\n".join(body + more)
-            + "\n     */\n}\n")
+    from ..cli_read import read
+    body, _ = read(p, "skeleton", addr=hex(a))
+    return f"{skeleton_signature(p.toolchain, name)}\n{{\n" + "\n".join(body) + "\n     */\n}\n"
 
 
 def types_headers() -> set[str]:

@@ -66,9 +66,9 @@ pub fn draft_values(db: &rusqlite::Connection, main: &str) -> rusqlite::Result<V
 /// address -> (C name, origin), name -> addresses; the symbols for annotation.
 #[pyclass(unsendable)]
 pub struct Names {
-    at: HashMap<i64, (String, String)>,
-    all_at: HashMap<i64, Vec<(String, String)>>,
-    by_name: Vec<(String, Vec<i64>)>,
+    pub(crate) at: HashMap<i64, (String, String)>,
+    pub(crate) all_at: HashMap<i64, Vec<(String, String)>>,
+    pub(crate) by_name: Vec<(String, Vec<i64>)>,
     syms: Vec<Rc<SFact>>,
     image: String,
     by_name_py: Option<Py<PyDict>>,
@@ -211,7 +211,7 @@ impl Names {
     }
 
     /// The instruction text with ` <label>` after every number the ledger names (label).
-    fn annotate(&self, text: &str) -> PyResult<String> {
+    pub(crate) fn annotate(&self, text: &str) -> PyResult<String> {
         use std::sync::LazyLock;
         static HEX: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"0x([0-9a-f]+)").unwrap());
         let (mut out, mut pos) = (String::new(), 0);

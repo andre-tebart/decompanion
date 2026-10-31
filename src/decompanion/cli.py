@@ -209,15 +209,12 @@ def cmd_why(args):
     refresh(p, e)
     st = p.store
     from .cli_read import resolve
-    from .ledger.names import Names
-    names = None
     missing = 0
     for s in args.addr:
         try:
             a = parse_addr(s)
         except ValueError:                           # a function or data name (as dcp disasm / dump resolve it)
-            names = names or Names(p, st)
-            a = resolve(p, names, s)
+            a = resolve(p, s)
             if a is None:
                 print(f"name={s}  target={p.target_name}  unknown (no address or name the ledger knows)")
                 missing += 1

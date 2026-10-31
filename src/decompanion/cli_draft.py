@@ -154,11 +154,10 @@ def show_draft(p, e, args):
     from .cli import fmt_addr
     from .cli_read import resolve
     from .ledger import drafts as G
-    from .ledger.names import Names
     refresh(p, e)
     if not args.addr:
         return err("draft", "--show needs ADDR")
-    a = resolve(p, Names(p, p.store), args.addr)
+    a = resolve(p, args.addr)
     if a is None:
         return err("draft", f"{args.addr}: no such address or name")
     d = G.draft(p.store, p.image.sha256, a)
@@ -201,7 +200,7 @@ def cmd_draft(args):
     else:
         if not args.addr:
             return err("draft", "ADDR or --next")
-        a = resolve(p, names, args.addr)
+        a = resolve(p, args.addr)
         if a is None:
             return err("draft", f"{args.addr}: no such address or name")
     try:

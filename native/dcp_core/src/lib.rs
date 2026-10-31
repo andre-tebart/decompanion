@@ -7,6 +7,7 @@
 
 mod asmcmd;
 mod clang;
+mod cliread;
 mod coff;
 mod decl;
 mod crt;
@@ -664,6 +665,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pyimage::pe_open, m)?)?;
     m.add_function(wrap_pyfunction!(x86::x86_disasm, m)?)?;
     m.add_function(wrap_pyfunction!(asmcmd::asm_reading, m)?)?;
+    m.add_function(wrap_pyfunction!(cliread::read_command, m)?)?;
+    m.add_function(wrap_pyfunction!(cliread::read_resolve, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_stale, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_private_headers, m)?)?;

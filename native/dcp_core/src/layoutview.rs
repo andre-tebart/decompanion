@@ -19,22 +19,22 @@ const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
 /// The layout-relevant facts of one store, indexed.
 #[pyclass(unsendable)]
 pub struct View {
-    image: String,
-    syms: Vec<Rc<SFact>>,
-    game: (i64, i64, i64),
-    funcs: Vec<Rc<SFact>>,                 // function symbols above open, by (lo, hi)
-    starts: BTreeMap<i64, Vec<Rc<SFact>>>, // addr -> start facts
-    sources: HashMap<i64, Rc<SFact>>,      // addr -> source fact (functions)
-    src_facts: Vec<Rc<SFact>>,
-    units: Vec<Unit>,
-    unit_facts: Vec<Rc<SFact>>,
-    lits: Vec<Lit>,
-    leaks: Vec<Leak>,
-    fills: HashMap<i64, Value>,            // start -> fill evidence value
-    bounds: Vec<Boundary>,
-    refs: Vec<Rc<SFact>>,
-    drafted: HashSet<i64>,
-    made: HashMap<&'static str, Py<PyAny>>, // the Python objects of the attributes, made once
+    pub(crate) image: String,
+    pub(crate) syms: Vec<Rc<SFact>>,
+    pub(crate) game: (i64, i64, i64),
+    pub(crate) funcs: Vec<Rc<SFact>>,                 // function symbols above open, by (lo, hi)
+    pub(crate) starts: BTreeMap<i64, Vec<Rc<SFact>>>, // addr -> start facts
+    pub(crate) sources: HashMap<i64, Rc<SFact>>,      // addr -> source fact (functions)
+    pub(crate) src_facts: Vec<Rc<SFact>>,
+    pub(crate) units: Vec<Unit>,
+    pub(crate) unit_facts: Vec<Rc<SFact>>,
+    pub(crate) lits: Vec<Lit>,
+    pub(crate) leaks: Vec<Leak>,
+    pub(crate) fills: HashMap<i64, Value>,            // start -> fill evidence value
+    pub(crate) bounds: Vec<Boundary>,
+    pub(crate) refs: Vec<Rc<SFact>>,
+    pub(crate) drafted: HashSet<i64>,
+    pub(crate) made: HashMap<&'static str, Py<PyAny>>, // the Python objects of the attributes, made once
 }
 
 fn py_layout(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
@@ -82,7 +82,7 @@ impl View {
 
     /// The game code in address order as (lo, hi, what, fact): func (a function symbol), start (a declared start
     /// inside unknown code), unknown (open bytes no start explains); other symbols skipped.
-    fn items_of(&self) -> Vec<(i64, i64, &'static str, Rc<SFact>)> {
+    pub(crate) fn items_of(&self) -> Vec<(i64, i64, &'static str, Rc<SFact>)> {
         let (glo, ghi, _) = self.game;
         let mut out = vec![];
         for f in &self.syms {
@@ -113,7 +113,7 @@ impl View {
         out
     }
 
-    fn unit_index(&self, a: i64) -> Option<usize> {
+    pub(crate) fn unit_index(&self, a: i64) -> Option<usize> {
         layout::unit_at(&self.units, a)
     }
 
@@ -121,7 +121,7 @@ impl View {
         self.unit_facts.iter().find(|f| f.lo == u.lo && f.s("tu") == Some(u.tu.as_str()))
     }
 
-    fn container(&self, a: i64) -> Option<&Rc<SFact>> {
+    pub(crate) fn container(&self, a: i64) -> Option<&Rc<SFact>> {
         let i = self.funcs.partition_point(|f| f.lo <= a);
         (i > 0 && a < self.funcs[i - 1].hi && self.funcs[i - 1].lo <= a).then(|| &self.funcs[i - 1])
     }
