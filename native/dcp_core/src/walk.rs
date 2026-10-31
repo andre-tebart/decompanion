@@ -611,7 +611,7 @@ pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::pe::testpe::{build, BASE, DATA, TEXT};
     use crate::rules::testkit::{of, Kit};
     use crate::rules::{dispatch, Ctx};

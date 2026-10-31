@@ -213,6 +213,20 @@ fn sub_table(mapping: &Mapping) -> HashMap<&str, &str> {
     sub
 }
 
+/// Isa.rename_registers: the lines with the registers renamed (a mapping of full or partial registers; the partial
+/// ones follow their full register where both have as many).
+pub fn rename_registers(lines: &[String], mapping: &[(String, String)]) -> Vec<String> {
+    let mut m: Mapping = vec![];
+    for (k, v) in mapping {
+        let (k, v) = (full_reg(k), full_reg(v));
+        match m.iter_mut().find(|x| x.0 == k) {
+            Some(x) => x.1 = v,
+            None => m.push((k, v)),
+        }
+    }
+    rename_regs(&sited(lines), &m)
+}
+
 fn rename_regs(lines: &[Sited], mapping: &Mapping) -> Vec<String> {
     let sub = sub_table(mapping);
     lines.iter().map(|l| {
@@ -562,6 +576,18 @@ pub const CJUMP: u8 = 3;
 pub const IJUMP: u8 = 4;
 pub const RET: u8 = 5;
 
+/// capstone's Intel text of every instruction of `code` at `va`, unchanged: (address, size, text, fill form?).
+#[pyo3::pyfunction]
+pub fn x86_disasm(dll: &str, code: &[u8], va: u32, fill_forms: Vec<Vec<u8>>) -> pyo3::PyResult<Vec<(u32, u32, String, bool)>> {
+    let fills: HashSet<Vec<u8>> = fill_forms.into_iter().collect();
+    let ins = crate::cs::disasm(dll, code, va).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    Ok(ins.into_iter().map(|i| {
+        let o = (i.addr - va) as usize;
+        let text = if i.op_str.is_empty() { i.mnemonic } else { format!("{} {}", i.mnemonic, i.op_str).trim().to_string() };
+        (i.addr, i.size, text, fills.contains(&code[o..(o + i.size as usize).min(code.len())]))
+    }).collect())
+}
+
 /// isa/base.Ins: one instruction as the walks read it, from capstone's operand details.
 #[derive(Clone)]
 pub struct WIns {
@@ -685,5 +711,73 @@ impl<'a> Decoder<'a> {
     pub fn read_entry(&self, a: u32) -> u32 {
         let o = (a - self.lo) as usize;
         u32::from_le_bytes([self.code[o], self.code[o + 1], self.code[o + 2], self.code[o + 3]])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pe::testpe::{build_with, BASE, DATA, TEXT};
+
+    fn decoder<'a>(img: &crate::pe::Image, dll: &'a str, len: u32, fills: &'a HashSet<Vec<u8>>) -> Decoder<'a> {
+        Decoder::new(dll, img, BASE + TEXT, BASE + TEXT + len, fills)
+    }
+
+    #[test]
+    fn decoder_flows_and_table_shape() {
+        let dll = crate::walk::tests::capstone();
+        let a = BASE + TEXT;
+        let mut code: Vec<u8> = vec![0xe8, 0x0b, 0, 0, 0, 0x74, 0x02, 0xeb, 0xfe, 0xff, 0xe0, 0xc3, 0x90, 0x8b, 0xff, 0xcc, 0xa1];
+        code.extend((BASE + DATA).to_le_bytes()); // mov eax, [data]
+        let img = crate::pe::Image::parse(build_with(None, Some(&code))).unwrap();
+        let fills: HashSet<Vec<u8>> = [vec![0x90u8], vec![0xcc], vec![0x8b, 0xff]].into_iter().collect();
+        let mut dec = decoder(&img, &dll, code.len() as u32, &fills);
+        let at = |dec: &mut Decoder, x: u32| dec.at(a + x).unwrap().unwrap().clone();
+        let i = at(&mut dec, 0);
+        assert_eq!((i.flow, i.target, i.size), (CALL, Some((a + 0x10) as i64), 5));
+        let i = at(&mut dec, 5);
+        assert_eq!((i.flow, i.target), (CJUMP, Some((a + 9) as i64)));
+        let i = at(&mut dec, 7);
+        assert_eq!((i.flow, i.target), (JUMP, Some((a + 7) as i64)));
+        let i = at(&mut dec, 9);
+        assert_eq!((i.flow, i.target, i.table), (IJUMP, None, None));
+        assert!(at(&mut dec, 0xb).flow == RET && at(&mut dec, 0xc).fill && at(&mut dec, 0xd).fill && at(&mut dec, 0xf).fill);
+        let i = at(&mut dec, 0x10);
+        assert!(i.flow == OTHER && i.mem == vec![(BASE + DATA, 4)] && !i.fill);
+        assert_eq!(Decoder::field_starts(&i).collect::<Vec<_>>(), vec![a + 0x11]);
+        // a table jump after its bound check
+        let mut code: Vec<u8> = vec![0x83, 0xf8, 0x03, 0x77, 0x00, 0xff, 0x24, 0x85];
+        code.extend((a + 0x10).to_le_bytes());
+        code.extend([0u8; 16]);
+        let img = crate::pe::Image::parse(build_with(None, Some(&code))).unwrap();
+        let mut dec = decoder(&img, &dll, code.len() as u32, &fills);
+        let recent: Vec<WIns> = [0u32, 3, 5].iter().map(|&x| at(&mut dec, x)).collect();
+        assert_eq!((recent[2].flow, recent[2].table), (IJUMP, Some(a + 0x10)));
+        assert_eq!(dec.table_shape(&recent), (Some(4), None));
+    }
+
+    #[test]
+    fn esp_offsets_normalised() {
+        let lines: Vec<String> = ["mov dword ptr [esp + 0x10], eax", "push edx", "mov dword ptr [esp + 0x14], eax", "sub esp, 8",
+                                  "mov dword ptr [esp + 0x1c], eax", "pop ecx", "mov eax, dword ptr [esp]"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(esp_normalised(&lines), ["mov dword ptr [esp + 0x10], eax", "push edx", "mov dword ptr [esp + 0x10], eax", "sub esp, 8",
+                                            "mov dword ptr [esp + 0x10], eax", "pop ecx", "mov eax, dword ptr [esp - 0x8]"]);
+    }
+
+    #[test]
+    fn store_moved_across_a_push() {
+        // ai_CurseWindow of GildeGold.exe: ours stores before the push, the original after it
+        let v = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
+        let ours = v(&["mov word ptr [esp + 0xa4], ax", "mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]",
+                       "mov dword ptr [esp + 0xd0], ecx", "push edx"]);
+        let orig = v(&["mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "push edx", "mov word ptr [esp + 0xa8], ax",
+                       "mov dword ptr [esp + 0xd0], ecx"]);
+        let ctx: Vec<String> = ours.iter().chain(&orig).cloned().collect();
+        let (cls, why) = explain(&ours, &orig, &ctx).unwrap();
+        assert!(cls == "slots" && why.contains("across a push"), "{cls} {why}");
+        let same = v(&["mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "push edx", "mov word ptr [esp + 0xa8], ax",
+                       "mov dword ptr [esp + 0xd4], ecx"]);
+        let ctx: Vec<String> = ours.iter().chain(&same).cloned().collect();
+        assert_eq!(explain(&ours, &same, &ctx).unwrap().0, "order");
     }
 }

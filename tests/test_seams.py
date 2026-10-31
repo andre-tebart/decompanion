@@ -8,7 +8,6 @@ from conftest import build_pe, dcp
 
 from decompanion import image, isa, objfmt, toolchains
 from decompanion.config import ConfigError, Project
-from decompanion.isa.base import CALL, CJUMP, IJUMP, JUMP, OTHER, RET
 from decompanion.objfmt.base import ABSOLUTE, ABSOLUTE_RVA, RELATIVE
 from decompanion.objfmt.coff import DIR32, DIR32NB, REL32, Reloc, Section
 
@@ -90,41 +89,6 @@ class Code:
     def read(self, va, n):
         o = va - 0x1000
         return (self.code[o:o + n] + bytes(n))[:n]
-
-
-def test_x86_decoder_flows():
-    code = bytes.fromhex(
-        "e80b000000"        # 0x1000 call 0x1010
-        "7402"              # 0x1005 je 0x1009
-        "ebfe"              # 0x1007 jmp 0x1007
-        "ffe0"              # 0x1009 jmp eax
-        "c3"                # 0x100b ret
-        "90"                # 0x100c nop (fill)
-        "8bff"              # 0x100d mov edi, edi (fill)
-        "cc"                # 0x100f int3
-        "a100200000")       # 0x1010 mov eax, [0x2000]
-    dec = isa.get("x86").decoder(Code(code), 0x1000, 0x1000 + len(code), toolchains.TOOLCHAINS["vc6"](None, {}).fill_forms)
-    ins = {i.addr: i for i in dec.decode(0x1000)}
-    assert (ins[0x1000].flow, ins[0x1000].target, ins[0x1000].size) == (CALL, 0x1010, 5)
-    assert (ins[0x1005].flow, ins[0x1005].target) == (CJUMP, 0x1009)
-    assert (ins[0x1007].flow, ins[0x1007].target) == (JUMP, 0x1007)
-    assert (ins[0x1009].flow, ins[0x1009].target, ins[0x1009].table) == (IJUMP, None, None)
-    assert ins[0x100b].flow == RET and ins[0x100c].fill and ins[0x100d].fill and ins[0x100f].fill
-    assert ins[0x1010].flow == OTHER and ins[0x1010].mem == ((0x2000, 4),) and not ins[0x1010].fill
-    assert list(dec.field_starts(ins[0x1010])) == [0x1011]
-
-
-def test_x86_table_shape():
-    code = bytes.fromhex(
-        "83f803"            # 0x1000 cmp eax, 3
-        "7700"              # 0x1003 ja 0x1005
-        "ff248510100000")   # 0x1005 jmp [eax*4 + 0x1010]
-    dec = isa.get("x86").decoder(Code(code + bytes(16)), 0x1000, 0x1000 + len(code) + 16, ())
-    recent = list(dec.decode(0x1000))[:3]
-    jump = recent[-1]
-    assert jump.flow == IJUMP and jump.table == 0x1010
-    shape = dec.table_shape(jump, recent)
-    assert (shape.entry_size, shape.bound, shape.index_table) == (4, 4, None)
 
 
 # ------------------------------------------------------------------------------------------------ init

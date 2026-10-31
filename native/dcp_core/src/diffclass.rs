@@ -350,16 +350,22 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
 
 /// diffclass.verdict: the plain diff's, or the frame-aligned one's when the frames differ and the plain one is no shape.
 pub fn verdict(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> Verdict {
+    analyse(la, lb, tables).1
+}
+
+/// diffclass.analyse: (the hunks, the verdict) of two listings: the plain diff, or the frame-aligned one when the
+/// frames differ in size and the plain diff is no shape.
+pub fn analyse(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> (Vec<Hunk>, Verdict) {
     let hs = classify_hunks(la, lb);
     let v = judge(la, lb, &hs, tables);
     if v.shape {
-        return v;
+        return (hs, v);
     }
-    let Some(frame) = x86::frame_delta(&texts(la), &texts(lb)) else { return v };
+    let Some(frame) = x86::frame_delta(&texts(la), &texts(lb)) else { return (hs, v) };
     let fh = frame_hunks(la, lb, frame);
     let mut fv = judge(la, lb, &fh, tables);
     fv.frame = Some(frame);
-    fv
+    (fh, fv)
 }
 
 // ------------------------------------------------------------------------------------------------ sizes, the original
@@ -652,4 +658,165 @@ pub fn function_verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::F
     let lb = x86::strip_fill(x86::listing(env.dll, &data, addr, None, env.range, env.fills)?);
     let t = compare_tables(env, obj, code, addr, &la, &lb, &o.tables);
     Ok(verdict(&la, &lb, t.as_ref()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pe::testpe::{build_with, BASE, TEXT};
+
+    fn lines(texts: &[&str]) -> Vec<Line> {
+        texts.iter().enumerate().map(|(k, t)| Line { addr: 0x1000 + k as u32, size: 1, text: t.to_string(), fill: *t == "nop" || *t == "int3", target: None }).collect()
+    }
+
+    fn classes(a: &[Line], b: &[Line]) -> Vec<String> {
+        classify_hunks(a, b).into_iter().map(|h| h.4).collect()
+    }
+
+    fn weight(v: &Verdict, k: &str) -> Option<i64> {
+        v.hunks.iter().find(|x| x.0 == k).map(|x| x.1)
+    }
+
+    #[test]
+    fn hunk_classes() {
+        let a = lines(&["push esi", "mov esi, dword ptr [esp + 8]", "mov eax, esi", "pop esi", "ret"]);
+        let b = lines(&["push edi", "mov edi, dword ptr [esp + 8]", "mov eax, edi", "pop edi", "ret"]);
+        let hs = classify_hunks(&a, &b);
+        assert_eq!(hs.len(), 1);
+        assert_eq!(hs[0].4, "regs");
+        assert!(hs[0].5.contains("esi->edi"));
+        assert!(verdict(&a, &b, None).shape);
+        assert_eq!(classes(&lines(&["mov eax, 1", "mov ecx, 2", "ret"]), &lines(&["mov ecx, 2", "mov eax, 1", "ret"])), ["order"]);
+        let c = classes(&lines(&["mov eax, dword ptr [esp + 4]", "mov ecx, dword ptr [esp + 8]", "ret"]),
+                        &lines(&["mov eax, dword ptr [esp + 8]", "mov ecx, dword ptr [esp + 4]", "ret"]));
+        assert!(c == ["slots"] || c == ["regs"]);
+        assert_eq!(classes(&lines(&["mov eax, dword ptr [ecx + edx + 4]", "mov ebx, dword ptr [ecx + esi]", "ret"]),
+                           &lines(&["mov eax, dword ptr [edx + ecx + 4]", "mov ebx, dword ptr [esi + ecx]", "ret"])), ["sib"]);
+        let (a, b) = (lines(&["mov eax, 1", "ret"]), lines(&["mov eax, 2", "ret"]));
+        let v = verdict(&a, &b, None);
+        assert_eq!(classes(&a, &b), ["code"]);
+        assert!(!v.shape && v.distance == 2);
+        assert_eq!(weight(&verdict(&lines(&["ret", "nop", "nop"]), &lines(&["ret", "int3"]), None), "fill"), Some(3));
+    }
+
+    #[test]
+    fn frame_class() {
+        let body = ["sub esp, {f}", "mov eax, dword ptr [esp + {arg}]", "mov dword ptr [esp + 0x10], eax", "mov ecx, 3", "mov edx, 4",
+                    "lea ecx, [esp + {loc}]", "push ecx", "call X", "{st}", "add esp, {f}", "ret"];
+        let f = |fr: &str, arg: &str, loc: &str, st: &str| -> Vec<Line> {
+            let ts: Vec<String> = body.iter().map(|t| t.replace("{f}", fr).replace("{arg}", arg).replace("{loc}", loc).replace("{st}", st)).collect();
+            lines(&ts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+        };
+        let st = "mov dword ptr [esp + 0x14], ecx";
+        let (a, b) = (f("0xcc", "0xd0", "0x7c", st), f("0xc8", "0xcc", "0x78", st));
+        assert!(!judge(&a, &b, &classify_hunks(&a, &b), None).shape);
+        let (hs, v) = analyse(&a, &b, None);
+        assert!(v.shape && v.frame == Some((0xcc, 0xc8)) && hs.iter().all(|h| h.4 == "frame"));
+        assert!(hs[0].5.contains("shifted by 0x4 (frame 0xcc vs 0xc8)") && v.summary().contains("frame 0xcc vs 0xc8"));
+        let (hs, v) = analyse(&a, &f("0xc8", "0xcc", "0x78", "mov dword ptr [esp + 0x14], 0"), None);
+        assert!(!v.shape);
+        assert_eq!(hs.iter().filter(|h| h.4 == "code").map(|h| (h.0, h.1)).collect::<Vec<_>>(), [(8, 9)]);
+        let (hs, v) = analyse(&a, &f("0xc8", "0xc4", "0x78", st), None);
+        assert!(!v.shape && hs.iter().any(|h| h.4 == "code"));
+        let (_, v) = analyse(&f("0xcc", "0xd0", "0x7c", st), &f("0xcc", "0xd4", "0x7c", st), None);
+        assert!(v.frame.is_none());
+    }
+
+    fn jumps(rows: &[(&str, Option<u32>)]) -> Vec<Line> {
+        rows.iter().enumerate().map(|(k, (t, g))| Line { addr: 0x1000 + k as u32, size: 1, text: t.to_string(), fill: false,
+                                                         target: g.map(|g| 0x1000 + g as i64) }).collect()
+    }
+
+    #[test]
+    fn branch_targets() {
+        let body = [("test eax, eax", None), ("je X", Some(4)), ("mov eax, 1", None), ("jmp X", Some(5)), ("xor eax, eax", None),
+                    ("pop esi", None), ("ret", None)];
+        let a = jumps(&body);
+        assert!(verdict(&a, &jumps(&body), None).shape);
+        let mut b = body.to_vec();
+        b[1] = ("je X", Some(2));
+        let v = verdict(&a, &jumps(&b), None);
+        assert!(!v.shape && v.hunks == [("branch".to_string(), 1)] && v.branches[0].contains("je at +0x1: ours to +0x4, the original's to +0x2"));
+        let renamed: Vec<(String, Option<u32>)> = body.iter().map(|(t, g)| (t.replace("eax", "ecx"), *g)).collect();
+        let renamed: Vec<(&str, Option<u32>)> = renamed.iter().map(|(t, g)| (t.as_str(), *g)).collect();
+        assert!(verdict(&a, &jumps(&renamed), None).shape);
+        let dup = [("test eax, eax", None), ("je X", Some(6)), ("mov eax, 1", None), ("pop esi", None), ("ret", None), ("int3", None),
+                   ("pop esi", None), ("ret", None)];
+        let ours = jumps(&[dup[0], ("je X", Some(3)), dup[2], dup[3], dup[4]]);
+        assert!(verdict(&ours, &jumps(&dup), None).branches.is_empty());
+        let mut out = body.to_vec();
+        out[1] = ("je X", Some(0x40));
+        let v = verdict(&a, &jumps(&out), None);
+        assert!(!v.branches.is_empty() && v.branches[0].contains("outside the code"));
+    }
+
+    /// A switch at the function's start: three cases and a default, the 3-entry jump table at +0x28 after three
+    /// bytes of fill, int3 up to the next function at +0x40.
+    fn switch_fn(addr: u32, entries: [u32; 3]) -> Vec<u8> {
+        let mut code: Vec<u8> = vec![0x8b, 0x44, 0x24, 0x04, 0x83, 0xf8, 0x02, 0x77, 0x19, 0xff, 0x24, 0x85];
+        code.extend((addr + 0x28).to_le_bytes());
+        for v in [1u8, 2, 3] {
+            code.extend([0xb8, v, 0, 0, 0, 0xc3]);
+        }
+        code.extend([0x33, 0xc0, 0xc3]);
+        code.resize(0x28, 0x90);
+        for e in entries {
+            code.extend((addr + e).to_le_bytes());
+        }
+        code.resize(0x40, 0xcc);
+        code
+    }
+
+    /// Our compiled switch: the same code, the table after the $L label at +0x28 (entries relocated to the section,
+    /// the target offset as the addend in place).
+    fn switch_ours() -> (crate::coff::Obj, usize) {
+        let mut data = switch_fn(0, [0x10, 0x16, 0x1c])[..0x34].to_vec();
+        data[0x0c..0x10].copy_from_slice(&0x28u32.to_le_bytes());
+        let relocs: Vec<(u32, u32, u16)> = [0x0c, 0x28, 0x2c, 0x30].iter().map(|&o| (o, 0, 6)).collect();
+        let obj = crate::coff::testlib::code_obj(&data, &relocs, &[(".text", 0, 1, 3), ("_sw", 0, 1, 2), ("$L1", 0x28, 1, 3)]);
+        let obj = crate::coff::Obj::parse(&obj).unwrap();
+        let k = obj.function_index()["sw"];
+        (obj, k)
+    }
+
+    #[test]
+    fn switch_tables_are_data_and_listings_mask_relocations() {
+        let dll = crate::walk::tests::capstone();
+        let addr = BASE + TEXT;
+        let fills: HashSet<Vec<u8>> = [vec![0x90u8], vec![0xcc]].into_iter().collect();
+        let forms = vec![vec![0x90u8], vec![0xcc]];
+        let check = |entries: [u32; 3]| {
+            let img = crate::pe::Image::parse(build_with(None, Some(&switch_fn(addr, entries)))).unwrap();
+            let env = Env { dll: &dll, img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
+            let o = original(&env, addr, 0x34, 0x40, 16).unwrap();
+            assert_eq!(o.code, 0x25);
+            assert_eq!(o.tables, vec![(addr as i64 + 0x28, addr as i64 + 0x34, "jumptable".to_string())]);
+            assert_eq!(original(&env, addr, 0x25, 0x40, 16).unwrap().code, 0x25);
+            let (obj, k) = switch_ours();
+            let code = obj.function_code(k);
+            assert_eq!(code.code_len, Some(0x28));
+            let (cd, cm) = code.code();
+            let la = x86::strip_fill(x86::listing(env.dll, cd, addr, Some(cm), env.range, env.fills).unwrap());
+            let lb = x86::strip_fill(x86::listing(env.dll, &img.read(addr, o.code as usize), addr, None, env.range, env.fills).unwrap());
+            assert_eq!(texts(&la), texts(&lb));
+            let t = compare_tables(&env, &obj, &code, addr, &la, &lb, &o.tables).unwrap();
+            let v = verdict(&la, &lb, Some(&t));
+            (t, v)
+        };
+        let (t, v) = check([0x10, 0x16, 0x1c]);
+        assert_eq!((t.entries, t.bytes, t.diffs.len()), (3, 0, 0));
+        assert!(v.shape && v.summary().contains("switch tables equal (3 entries, 0 index bytes)"));
+        let (t, v) = check([0x16, 0x10, 0x1c]);
+        assert_eq!(t.diffs.len(), 2);
+        assert!(t.diffs[0].contains("entry +0x0: ours to +0x10, the original's to +0x16"));
+        assert!(!v.shape && v.hunks == [("table".to_string(), 2)] && v.summary().contains("switch tables differ"));
+        // a relocated field of ours reads X, as the image address of the original does
+        let code = [0xa1u8, 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0xc3];
+        let mask = [0u8, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0];
+        let range = (0x1000_0000i64, 0x1001_0000i64);
+        let ours = x86::listing(&dll, &code, 0x1000_1000, Some(&mask), range, &fills).unwrap();
+        let orig = x86::listing(&dll, &[0xa1, 0x00, 0x20, 0x00, 0x10, 0xe8, 0x10, 0, 0, 0, 0xc3], 0x1000_1000, None, range, &fills).unwrap();
+        assert_eq!(texts(&ours), texts(&orig));
+        assert_eq!(texts(&ours), ["mov eax, dword ptr [X]", "call X", "ret"]);
+    }
 }

@@ -1,0 +1,153 @@
+//! `dcp asmdiff` and `dcp diffclass`: one graded function's reading as G.grade takes it (diffclass.rs: our
+//! listing against the original's, the switch tables, the hunks and the verdict), for the commands to print.
+
+use crate::diffclass::{self, Env, Hunk, Tables, Verdict};
+use crate::difflib::{opcodes, Tag};
+use crate::project::Project;
+use crate::store;
+use crate::x86::Line;
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
+use serde_json::Value;
+use std::collections::{BTreeSet, HashSet};
+
+/// A function's reading: its grade row, our listing, the original's, the tables compare, the hunks and the verdict.
+pub struct Reading {
+    pub row: Value,
+    pub la: Vec<Line>,
+    pub lb: Vec<Line>,
+    pub tables: Option<Tables>,
+    pub hunks: Vec<Hunk>,
+    pub verdict: Verdict,
+}
+
+fn py_int0(s: &str) -> Option<i64> {
+    let t = s.trim().to_lowercase();
+    t.strip_prefix("0x").map(|h| i64::from_str_radix(h, 16).ok()).unwrap_or_else(|| t.parse().ok())
+}
+
+/// The function grade row named `key` (a function name or an address).
+pub fn find_function(db: &str, key: &str) -> PyResult<Option<Value>> {
+    let a = if key.to_lowercase().starts_with("0x") { py_int0(key) } else { None };
+    Ok(crate::queues::function_grades(db)?.into_iter()
+        .find(|r| r.get("name").and_then(|v| v.as_str()) == Some(key) || (a.is_some() && r["addr"].as_i64() == a))
+        .map(Value::Object))
+}
+
+/// Every known function start (start facts, function and thunk symbols above open) and the end of every code
+/// section: what bounds a function's slot.
+pub fn all_starts(db: &str, img: &crate::pe::Image) -> PyResult<Vec<i64>> {
+    let mut s: BTreeSet<i64> = crate::with_db(db, |c| store::facts_of(c, db, "start", None, |_| true))?.iter().map(|f| f.lo).collect();
+    s.extend(crate::with_db(db, |c| store::facts_of(c, db, "symbol", None, |f| matches!(f.s("skind"), Some("func" | "thunk")) && f.level > store::OPEN))?
+        .iter().map(|f| f.lo));
+    s.extend(img.sections.iter().filter(|x| x.holds_code()).map(|x| x.end() as i64));
+    Ok(s.into_iter().collect())
+}
+
+/// The reading of a graded function (its object's code against the original), or why there is none.
+pub fn reading(p: &Project, capstone: &str, row: Value) -> Result<Result<Reading, String>, PyErr> {
+    let db = p.store_path();
+    let unit = row["unit"].as_str().unwrap_or("").to_string();
+    let name = row["name"].as_str().unwrap_or("").to_string();
+    let a = row["addr"].as_i64().unwrap_or(0);
+    let tus = crate::compile::tu_rows(&db)?;
+    let Some(t) = tus.get(&unit).filter(|t| t.ok) else { return Ok(Err(format!("unit {unit} has no object (dcp build)"))) };
+    let root = p.root.to_string_lossy().into_owned();
+    let obj = std::fs::read(crate::compile::obj_path(&root, &t.obj_hash)).ok().and_then(|d| crate::coff::Obj::parse(&d).ok());
+    let Some((obj, k)) = obj.and_then(|o| o.function_index().get(&name).copied().map(|k| (o, k))) else {
+        return Ok(Err(format!("the object of unit {unit} defines no {name}")));
+    };
+    let code = obj.function_code(k);
+    let img = crate::image(&p.target(None).map_err(PyRuntimeError::new_err)?.path)?;
+    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| PyRuntimeError::new_err("no toolchain"))?;
+    let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
+    let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
+    let forms = crate::compare::fill_order(&fill_forms);
+    let env = Env { dll: capstone, img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
+    let e = |s: String| PyRuntimeError::new_err(s);
+    let d = &row["dist"];
+    let (extent, slot) = match (d.get("extent").and_then(|v| v.as_i64()), d.get("slot").and_then(|v| v.as_i64())) {
+        (Some(x), Some(s)) => (x, s),
+        _ => {
+            let walk = crate::with_db(&db, |c| store::facts_of(c, &db, "symbol", None, |f| {
+                f.lo == a && matches!(&*f.rule, "S.codewalk" | "L.src.extent") && f.s("skind") == Some("func")
+            }))?;
+            let extent = match walk.first() {
+                Some(w) => w.hi - w.lo,
+                None => {
+                    let (cd, cm) = code.code();
+                    diffclass::code_size(&env, cd, cm, a as u32).map_err(e)?
+                }
+            };
+            let st = all_starts(&db, &img)?;
+            let nxt = st.get(st.partition_point(|&x| x <= a)).copied().unwrap_or(img.end() as i64);
+            (extent, extent.max(nxt - a))
+        }
+    };
+    let o = diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64).map_err(e)?;
+    let (cd, cm) = code.code();
+    let la = crate::x86::strip_fill(crate::x86::listing(env.dll, cd, a as u32, Some(cm), env.range, env.fills).map_err(e)?);
+    let data = img.read(a as u32, o.code.max(0) as usize);
+    let lb = crate::x86::strip_fill(crate::x86::listing(env.dll, &data, a as u32, None, env.range, env.fills).map_err(e)?);
+    let tables = diffclass::compare_tables(&env, &obj, &code, a as u32, &la, &lb, &o.tables);
+    let (hunks, verdict) = diffclass::analyse(&la, &lb, tables.as_ref());
+    Ok(Ok(Reading { row, la, lb, tables, hunks, verdict }))
+}
+
+// ------------------------------------------------------------------------------------------------ Python's face
+
+fn lines_py<'py>(py: Python<'py>, l: &[Line]) -> PyResult<Bound<'py, PyList>> {
+    PyList::new(py, l.iter().map(|x| (x.addr as i64, x.text.clone())))
+}
+
+fn tables_py<'py>(py: Python<'py>, t: &Option<Tables>) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let Some(t) = t else { return Ok(None) };
+    let d = PyDict::new(py);
+    d.set_item("entries", t.entries)?;
+    d.set_item("bytes", t.bytes)?;
+    d.set_item("diffs", &t.diffs)?;
+    Ok(Some(d))
+}
+
+/// One graded function's reading for asmdiff / diffclass: None when no function has that name or address; else a
+/// dict {row, why (no reading: the reason), ours [(addr, text)], original, tables, hunks [(i1, i2, j1, j2, class,
+/// info)], shape, distance, frame, branches, summary, opcodes [(tag, i1, i2, j1, j2)] of the diff (ours with the
+/// registers renamed by `regs`)}.
+#[pyfunction]
+#[pyo3(signature = (project, capstone, key, regs=None))]
+pub fn asm_reading<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, capstone: &str, key: &str, regs: Option<Vec<(String, String)>>)
+    -> PyResult<Option<Bound<'py, PyDict>>> {
+    let p = &project.p;
+    crate::pystore::st_open(&p.store_path(), &p.main_uri())?;
+    let Some(row) = find_function(&p.store_path(), key)? else { return Ok(None) };
+    let d = PyDict::new(py);
+    d.set_item("row", crate::pystore::json_py(py, &row)?)?;
+    let r = match reading(p, capstone, row)? {
+        Ok(r) => r,
+        Err(why) => {
+            d.set_item("why", why)?;
+            return Ok(Some(d));
+        }
+    };
+    d.set_item("ours", lines_py(py, &r.la)?)?;
+    d.set_item("original", lines_py(py, &r.lb)?)?;
+    d.set_item("tables", tables_py(py, &r.tables)?)?;
+    d.set_item("hunks", PyList::new(py, r.hunks.iter().cloned())?)?;
+    d.set_item("shape", r.verdict.shape)?;
+    d.set_item("distance", r.verdict.distance)?;
+    d.set_item("frame", r.verdict.frame)?;
+    d.set_item("branches", &r.verdict.branches)?;
+    d.set_item("summary", r.verdict.summary())?;
+    let mut a: Vec<String> = r.la.iter().map(|x| x.text.clone()).collect();
+    if let Some(m) = regs {
+        a = crate::x86::rename_registers(&a, &m);
+        d.set_item("ours_renamed", &a)?;
+    }
+    let b: Vec<String> = r.lb.iter().map(|x| x.text.clone()).collect();
+    let ops: Vec<(&str, usize, usize, usize, usize)> = opcodes(&a, &b).into_iter().map(|o| {
+        (match o.0 { Tag::Equal => "equal", Tag::Replace => "replace", Tag::Delete => "delete", Tag::Insert => "insert" }, o.1, o.2, o.3, o.4)
+    }).collect();
+    d.set_item("opcodes", ops)?;
+    Ok(Some(d))
+}

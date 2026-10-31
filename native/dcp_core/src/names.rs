@@ -210,6 +210,25 @@ impl Names {
         self.label_of(a)
     }
 
+    /// The instruction text with ` <label>` after every number the ledger names (label).
+    fn annotate(&self, text: &str) -> PyResult<String> {
+        use std::sync::LazyLock;
+        static HEX: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"0x([0-9a-f]+)").unwrap());
+        let (mut out, mut pos) = (String::new(), 0);
+        for m in HEX.captures_iter(text) {
+            let e = m.get(0).unwrap().end();
+            out.push_str(&text[pos..e]);
+            if let Some(v) = i64::from_str_radix(&m[1], 16).ok() {
+                if let Some(l) = self.label_of(v)? {
+                    out.push_str(&format!(" <{l}>"));
+                }
+            }
+            pos = e;
+        }
+        out.push_str(&text[pos..]);
+        Ok(out)
+    }
+
     /// name -> its addresses (first-named first).
     #[getter]
     fn by_name(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {

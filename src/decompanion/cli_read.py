@@ -53,16 +53,8 @@ def walk_func(p, a: int):
 
 
 def annotate(isa, names, text: str) -> str:
-    """The instruction text with ` <label>` after every number the ledger names (Names.label)."""
-    out, pos = [], 0
-    for s, e, v in isa.numbers(text):
-        lab = names.label(v)
-        out.append(text[pos:e])
-        if lab:
-            out.append(f" <{lab}>")
-        pos = e
-    out.append(text[pos:])
-    return "".join(out)
+    """The instruction text with ` <label>` after every number the ledger names (Names.annotate)."""
+    return names.annotate(text)
 
 
 # ------------------------------------------------------------------------------------------------ disasm

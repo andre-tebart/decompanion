@@ -5,6 +5,7 @@
 //! `canonical` and `out_hash` are fact.canonical and the run hash, byte for byte: the shadow mode of the engine
 //! compares them with Python's for every rule's output.
 
+mod asmcmd;
 mod clang;
 mod coff;
 mod decl;
@@ -631,6 +632,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
+    m.add_function(wrap_pyfunction!(x86::x86_disasm, m)?)?;
+    m.add_function(wrap_pyfunction!(asmcmd::asm_reading, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_stale, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_private_headers, m)?)?;

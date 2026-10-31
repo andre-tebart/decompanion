@@ -565,6 +565,11 @@ pub(crate) mod testpe {
     }
 
     pub fn build(rich: Option<&[(u32, u32, u32)]>) -> Vec<u8> {
+        build_with(rich, None)
+    }
+
+    /// The synthetic dll with other bytes in .text (its relocations in .text then refer to nothing in them).
+    pub fn build_with(rich: Option<&[(u32, u32, u32)]>, text: Option<&[u8]>) -> Vec<u8> {
         let va = |rva: u32| BASE + rva;
         let mut code = vec![0x90u8; 0x60];
         let mut relocs = vec![];
@@ -579,6 +584,12 @@ pub(crate) mod testpe {
         let f4: Vec<u8> = [&[0x68u8][..], &va(DATA + 0x38).to_le_bytes(), &[0x58, 0xc3]].concat();
         code[0x50..0x50 + f4.len()].copy_from_slice(&f4);
         relocs.push(TEXT + 0x51);
+        if let Some(x) = text {
+            code = x.to_vec();
+            if code.len() < 0x60 {
+                code.resize(0x60, 0xcc);
+            }
+        }
         // .data: the dword, strings, a pointer to f4; at 0x100 the import tables, at 0x200 the export tables
         let mut data = vec![0u8; 0x300];
         put32(&mut data, 0, 0x1234);

@@ -1,23 +1,19 @@
 """The match phase on the synthetic dll: the translation units, the compare, the hunk classes and the grade verdict
 on hand-made instruction lists, the queues, the baseline (M1), the level ladder; with VC6 installed: compile
 and byte match on the synthetic image, the include-set cache."""
-import struct
 from pathlib import Path
 
 import pytest
 
 from conftest import dcp, unit
 
-from decompanion import isa as isa_plugins
 from decompanion.build import tu as T
 from decompanion.config import Project
-from decompanion.isa.base import Line
 from decompanion.ledger import grades as G
 from decompanion.ledger import srcscan
 from decompanion.ledger.fact import Fact, Kind, Level
 from decompanion.ledger.store import Store
 from decompanion.match import compare as C
-from decompanion.match import diffclass as DC
 from decompanion.objfmt.base import FunctionCode
 from decompanion.objfmt.coff import DIR32, Reloc
 from decompanion.rules.grade import falls, parse_baseline
@@ -153,118 +149,6 @@ def test_aligned_sites():
 
 
 # ------------------------------------------------------------------------------------------------ diffclass
-def lines(*texts):
-    return [Line(0x1000 + k, 1, t, t in ("nop", "int3")) for k, t in enumerate(texts)]
-
-
-def test_hunk_classes():
-    x86 = isa_plugins.get("x86")
-    a = lines("push esi", "mov esi, dword ptr [esp + 8]", "mov eax, esi", "pop esi", "ret")
-    b = lines("push edi", "mov edi, dword ptr [esp + 8]", "mov eax, edi", "pop edi", "ret")
-    hs = DC.classify_hunks(a, b, x86)
-    assert [h[4] for h in hs] == ["regs"] and "esi->edi" in hs[0][5]
-    assert DC.verdict(a, b, x86).shape
-    a = lines("mov eax, 1", "mov ecx, 2", "ret")
-    b = lines("mov ecx, 2", "mov eax, 1", "ret")
-    assert [h[4] for h in DC.classify_hunks(a, b, x86)] == ["order"]
-    a = lines("mov eax, dword ptr [esp + 4]", "mov ecx, dword ptr [esp + 8]", "ret")
-    b = lines("mov eax, dword ptr [esp + 8]", "mov ecx, dword ptr [esp + 4]", "ret")
-    assert [h[4] for h in DC.classify_hunks(a, b, x86)] in (["slots"], ["regs"])
-    a = lines("mov eax, dword ptr [ecx + edx + 4]", "mov ebx, dword ptr [ecx + esi]", "ret")
-    b = lines("mov eax, dword ptr [edx + ecx + 4]", "mov ebx, dword ptr [esi + ecx]", "ret")
-    assert [h[4] for h in DC.classify_hunks(a, b, x86)] == ["sib"]     # no one register renaming explains both
-    a = lines("mov eax, 1", "ret")
-    b = lines("mov eax, 2", "ret")
-    v = DC.verdict(a, b, x86)
-    assert [h[4] for h in DC.classify_hunks(a, b, x86)] == ["code"] and not v.shape and v.distance == 2
-    a = lines("ret", "nop", "nop")
-    b = lines("ret", "int3")
-    assert DC.verdict(a, b, x86).hunks.get("fill") == 3
-
-
-def test_frame_class():
-    """Frames of another size (one slot more or less) shift every stack offset above it: the frame-aligned diff
-    classes those lines `frame` (by 0 or the frame delta, the frame sizes by exactly the delta) and leaves the
-    real differences in hunks of their own; a function the plain diff explains keeps its verdict."""
-    x86 = isa_plugins.get("x86")
-    body = ["sub esp, {f}", "mov eax, dword ptr [esp + {arg}]", "mov dword ptr [esp + 0x10], eax", "mov ecx, 3",
-            "mov edx, 4", "lea ecx, [esp + {loc}]", "push ecx", "call X", "{st}", "add esp, {f}", "ret"]
-
-    def fn(f, arg, loc, st="mov dword ptr [esp + 0x14], ecx"):
-        return lines(*(t.format(f=f, arg=arg, loc=loc, st=st) for t in body))
-    a, b = fn("0xcc", "0xd0", "0x7c"), fn("0xc8", "0xcc", "0x78")
-    assert not DC.judge(a, b, x86, DC.classify_hunks(a, b, x86)).shape        # the plain diff: code
-    hs, v = DC.analyse(a, b, x86)
-    assert v.shape and v.frame == [0xcc, 0xc8] and {h[4] for h in hs} == {"frame"}, hs
-    assert "shifted by 0x4 (frame 0xcc vs 0xc8)" in hs[0][5] and "frame 0xcc vs 0xc8" in v.summary()
-    # one real difference: a code hunk of its own, the shifted lines stay frame
-    hs, v = DC.analyse(a, fn("0xc8", "0xcc", "0x78", st="mov dword ptr [esp + 0x14], 0"), x86)
-    assert not v.shape and {h[4] for h in hs} == {"frame", "code"}
-    assert [(h[0], h[1]) for h in hs if h[4] == "code"] == [(8, 9)]
-    # a shift other than the frame delta is no frame
-    hs, v = DC.analyse(a, fn("0xc8", "0xc4", "0x78"), x86)
-    assert not v.shape and "code" in {h[4] for h in hs}
-    # the same frame size: no frame-aligned diff (a plain slot renaming stays `slots`)
-    hs, v = DC.analyse(fn("0xcc", "0xd0", "0x7c"), fn("0xcc", "0xd4", "0x7c"), x86)
-    assert v.frame is None
-
-
-def switch_fn(entries=(0x1010, 0x1016, 0x101C)):
-    """A switch at 0x1000 of the stand-in image: three cases and a default, the 3-entry jump table at 0x1028
-    after three bytes of fill, int3 up to the next function at 0x1040."""
-    code = bytes.fromhex("8b442404" "83f802" "7719" "ff2485") + struct.pack("<I", 0x1028)
-    code += bytes.fromhex("b801000000c3" "b802000000c3" "b803000000c3" "33c0c3")
-    code += bytes.fromhex("90") * (0x28 - len(code))
-    return code + b"".join(struct.pack("<I", e) for e in entries) + bytes.fromhex("cc") * 0xc
-
-
-def switch_ours():
-    """Our compiled switch: the same code, the table after the $L label at 0x28 (entries relocated to the
-    section, the target offset as the addend in place)."""
-    from decompanion.objfmt.coff import Section, Symbol
-    data = bytearray(switch_fn()[:0x34])
-    data[0x0c:0x10] = struct.pack("<I", 0x28)
-    for k, off in enumerate((0x10, 0x16, 0x1c)):
-        data[0x28 + 4 * k:0x2c + 4 * k] = struct.pack("<I", off)
-    relocs = [Reloc(o, 0, DIR32) for o in (0x0c, 0x28, 0x2c, 0x30)]
-    sec = Section(None, 1, ".text", 0x60000020, bytes(data), len(data), relocs)
-    sym = Symbol(None, 0, ".text", 0, 1, 0, 3, sec)
-    mask = sec.mask()
-    return FunctionCode(None, sec, 0, bytes(data), mask, tuple((r.offset, r, sym) for r in relocs), 0x28)
-
-
-def test_switch_tables_are_data():
-    """The source extent of a function the walk does not reach holds its switch tables: the original's code ends
-    at its first table (a walk of the slot finds it), and the tables compare as data, entry by the instruction
-    it points to (a 37-byte tail read as instructions kept main_WindowProc draft with identical instructions)."""
-    x86 = isa_plugins.get("x86")
-    img = Img(switch_fn())
-    o = DC.original(x86, img, 0x1000, 0x34, 0x40, FILL, 16)
-    assert o.code == 0x25 and o.tables == [(0x1028, 0x1034, "jumptable")]
-    assert DC.original(x86, img, 0x1000, 0x25, 0x40, FILL, 16).code == 0x25         # the walk's extent: no table inside
-    A, B, o, tables = DC.compare_function(x86, img, switch_ours(), 0x1000, 0x34, 0x40, FILL, 16)
-    assert [x.text for x in A] == [x.text for x in B] and B[-1].addr < 0x1025
-    assert tables == {"entries": 3, "bytes": 0, "diffs": []}
-    v = DC.verdict(A, B, x86, tables)
-    assert v.shape and "switch tables equal (3 entries, 0 index bytes)" in v.summary()
-    # two cases exchanged in the original's table: a table difference, no shape
-    img = Img(switch_fn((0x1016, 0x1010, 0x101C)))
-    A, B, o, tables = DC.compare_function(x86, img, switch_ours(), 0x1000, 0x34, 0x40, FILL, 16)
-    assert len(tables["diffs"]) == 2 and "entry +0x0: ours to +0x10, the original's to +0x16" in tables["diffs"][0]
-    v = DC.verdict(A, B, x86, tables)
-    assert not v.shape and v.hunks == {"table": 2} and "switch tables differ" in v.summary()
-    assert DC.Verdict.from_json(v.to_json()) == v
-
-
-def test_listing_masks_relocated_fields():
-    x86 = isa_plugins.get("x86")
-    code = b"\xa1\x00\x00\x00\x00" + b"\xe8\x00\x00\x00\x00" + b"\xc3"        # mov eax,[reloc]; call reloc; ret
-    mask = bytes([0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0])
-    ours = x86.listing(code, 0x10001000, mask, (0x10000000, 0x10010000), FILL)
-    orig = x86.listing(b"\xa1\x00\x20\x00\x10\xe8\x10\x00\x00\x00\xc3", 0x10001000, None, (0x10000000, 0x10010000), FILL)
-    assert [l.text for l in ours] == [l.text for l in orig] == ["mov eax, dword ptr [X]", "call X", "ret"]
-
-
 # ------------------------------------------------------------------------------------------------ queues
 def grade_store(tmp_path, units, funcs):
     """A store holding unit facts (L.unit.extent) and function grade facts (G.grade)."""
@@ -583,47 +467,3 @@ def test_auto_clear_and_data_order(tiny):
     assert syms[0x10002000] == "site" and syms[0x10002004] == "draft"
 
 
-def test_branch_targets():
-    """The listings read a jump's target as X: a jump to another block of the function is a `branch`
-    difference that keeps it from shape; a jump to an identical copy of an epilogue is not."""
-    x86 = isa_plugins.get("x86")
-
-    def fn(*rows):
-        return [Line(0x1000 + k, 1, t, False, None if g is None else 0x1000 + g) for k, (t, g) in enumerate(rows)]
-    body = [("test eax, eax", None), ("je X", 4), ("mov eax, 1", None), ("jmp X", 5), ("xor eax, eax", None),
-            ("pop esi", None), ("ret", None)]
-    a = fn(*body)
-    assert DC.verdict(a, fn(*body), x86).shape
-    b = fn(*body[:1], ("je X", 2), *body[2:])                     # the same text, the jump goes elsewhere
-    v = DC.verdict(a, b, x86)
-    assert not v.shape and v.hunks == {"branch": 1} and "je at +0x1: ours to +0x4, the original's to +0x2" in v.branches[0]
-    # register-renamed hunks keep their lines paired one to one: the targets still align
-    assert DC.verdict(a, fn(*[(t.replace("eax", "ecx"), g) for t, g in body]), x86).shape
-    # a jump to an identical copy of the epilogue: the same code
-    dup = [("test eax, eax", None), ("je X", 6), ("mov eax, 1", None), ("pop esi", None), ("ret", None),
-           ("int3", None), ("pop esi", None), ("ret", None)]
-    ours = fn(*dup[:1], ("je X", 3), *dup[2:5])
-    v = DC.verdict(ours, fn(*dup), x86)
-    assert not v.branches, v.branches
-    # an `order` hunk across a jump target: the target is the same instruction on both sides (gildegold's
-    # ai_Unk49a5b0: `xor eax, eax` moved past the `pop edi` both jumps land on)
-    o = [("test esi, esi", None), ("je X", 3), ("ret", None), ("xor eax, eax", None), ("pop edi", None),
-         ("pop esi", None), ("ret", None)]
-    ours = fn(*o[:1], ("je X", 3), o[2], o[4], o[5], o[3], o[6])
-    assert DC.verdict(ours, fn(*o[:1], ("je X", 4), *o[2:]), x86).shape
-    assert DC.verdict(ours, fn(*o), x86).shape                     # both enter the reordered hunk at its start
-    assert not DC.verdict(ours, fn(*o[:1], ("je X", 5), *o[2:]), x86).shape    # the original's skips the pop edi
-    # a block the compiler placed elsewhere: ours falls through to the join, the original's jumps back to it
-    ours = fn(("cmp edx, 0xa", None), ("jg X", 4), ("mov edx, 1", None), ("jmp X", 5), ("mov edx, 0xa", None),
-              ("push edi", None), ("ret", None))
-    orig = fn(("cmp edx, 0xa", None), ("jg X", 5), ("mov edx, 1", None), ("push edi", None), ("ret", None),
-              ("mov edx, 0xa", None), ("jmp X", 3))
-    v = DC.verdict(ours, orig, x86)
-    assert v.shape and not v.branches, v.summary()
-    orig = fn(("cmp edx, 0xa", None), ("jg X", 5), ("mov edx, 1", None), ("push edi", None), ("ret", None),
-              ("mov edx, 0xa", None), ("jmp X", 4))
-    assert DC.verdict(ours, orig, x86).branches                    # the original's block jumps to the ret instead
-    # a target inside our code against one outside the original's
-    v = DC.verdict(a, fn(*body[:1], ("je X", 0x40), *body[2:]), x86)
-    assert v.branches and "outside the code" in v.branches[0]
-    assert DC.Verdict.from_json(v.to_json()).branches == v.branches

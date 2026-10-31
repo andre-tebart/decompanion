@@ -4,6 +4,8 @@ addresses 0x%08x, counts before lists.
 """
 from __future__ import annotations
 
+from . import native
+
 import difflib
 import sys
 from collections import Counter
@@ -24,35 +26,6 @@ def find_function(p, key: str) -> dict | None:
     except ValueError:
         a = None
     return next((r for r in rows if r["name"] == key or (a is not None and r["addr"] == a)), None)
-
-
-def compiled_code(p, row):
-    """(FunctionCode, (extent, slot)) of a graded function, or (None, why): the extent and slot the grade
-    compared (its dist), else the walk's or the source extent's function symbol and the next known start."""
-    from .match import compare as C
-    tus = p.store.tus()
-    t = tus.get(row["unit"])
-    if t is None or not t["ok"]:
-        return None, f"unit {row['unit']} has no object (dcp build)"
-    obj = C.read_object(p, t["obj_hash"])
-    sym = C.function_index(obj, p.toolchain).get(row["name"]) if obj else None
-    if sym is None:
-        return None, f"the object of unit {row['unit']} defines no {row['name']}"
-    code = obj.function_code(sym)
-    d = row.get("dist") or {}
-    if d.get("extent") is not None and d.get("slot") is not None:
-        return code, (d["extent"], d["slot"])
-    a = row["addr"]
-    walk = next((f for f in p.store.facts(Kind.symbol, a, a + 1)
-                 if f.run in ("S.codewalk", "L.src.extent") and f.lo == a and f.value.get("skind") == "func"), None)
-    from .match import diffclass as DC
-    extent = (walk.hi - walk.lo) if walk else DC.code_size(p.isa, p.image, code.code_data, code.code_mask, a, p.toolchain.fill_forms)
-    from .cli_read import all_starts
-    import bisect
-    st = all_starts(p)
-    i = bisect.bisect_right(st, a)
-    nxt = st[i] if i < len(st) else p.image.end
-    return code, (extent, max(extent, nxt - a))
 
 
 def dist_text(d) -> str:
@@ -142,35 +115,37 @@ def cmd_next(args):
 
 
 # ------------------------------------------------------------------------------------------------ asmdiff / diffclass
-def listings_for(p, r):
-    """(ours, the original's listings, the switch tables compare) of a graded function: the reading the grade
-    takes (diffclass.compare_function)."""
-    from .match import diffclass as DC
-    code, ext = compiled_code(p, r)
-    if code is None:
-        raise ConfigError(f"{r['name']}: {ext}")
-    tc = p.toolchain
-    A, B, _, tables = DC.compare_function(p.isa, p.image, code, r["addr"], ext[0], ext[1], tc.fill_forms, tc.function_alignment)
-    return A, B, tables
+def reading(p, name: str, regs=None, cmd: str = "asmdiff"):
+    """One graded function's reading as G.grade takes it (the core's: asmcmd.rs; diffclass.rs), None (and the
+    reason printed) when there is none."""
+    from .rules.engine import capstone_dll
+    x = native.core().asm_reading(p.core, capstone_dll(), name, regs)
+    if x is None:
+        print(f"dcp {cmd}: no graded function {name}", file=sys.stderr)
+        return None
+    if "why" in x:
+        raise ConfigError(f"{x['row']['name']}: {x['why']}")
+    return x
+
+
+def tables_record(t) -> str:
+    return record(tables="differ" if t["diffs"] else "equal", entries=t["entries"], index_bytes=t["bytes"])
 
 
 def cmd_asmdiff(args):
     """The instruction diff of one function: ours ('-') against the original ('+'), both listed at the
     original address by the ISA plugin (numbers that are image addresses and our relocated fields read X)."""
     p, e, rep = build_target(args, getattr(args, "target", None), quiet=True)
-    r = find_function(p, args.name)
-    if r is None:
-        print(f"dcp asmdiff: no graded function {args.name}", file=sys.stderr)
+    regs = [tuple(x.split("=")) for x in args.regs.split(",")] if args.regs else None
+    x = reading(p, args.name, regs, "asmdiff")
+    if x is None:
         return 1
-    A, B, tables = listings_for(p, r)
-    a, b = [x.text for x in A], [x.text for x in B]
-    if args.regs:
-        a = p.isa.rename_registers(a, dict(x.split("=") for x in args.regs.split(",")))
-    ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+    r, A, B, tables = x["row"], x["ours"], x["original"], x["tables"]
+    a, b = x.get("ours_renamed") or [t for _, t in A], [t for _, t in B]
+    ops = x["opcodes"]
     n = sum(i2 - i1 + j2 - j1 for tag, i1, i2, j1, j2 in ops if tag != "equal")
     print(record(fn=r["addr"], name=r["name"], code=r["code"], ours=len(a), original=len(b), differing=n)
-          + ("" if tables is None else "  " + record(tables="differ" if tables["diffs"] else "equal", entries=tables["entries"],
-                                                     index_bytes=tables["bytes"])))
+          + ("" if tables is None else "  " + tables_record(tables)))
     if n:
         print("  legend: '-' ours (our object), '+' the original (the image)")
     for tag, i1, i2, j1, j2 in ops:
@@ -179,47 +154,44 @@ def cmd_asmdiff(args):
                 print(f"     ... {i2 - i1} equal instructions ...")
                 continue
             for i in range(i1, i2):
-                print(f"   {A[i].addr:#010x}  {a[i]}")
+                print(f"   {A[i][0]:#010x}  {a[i]}")
             continue
         for i in range(i1, i2):
-            print(f"-  {A[i].addr:#010x}  {a[i]}")
+            print(f"-  {A[i][0]:#010x}  {a[i]}")
         for j in range(j1, j2):
-            print(f"+  {B[j].addr:#010x}  {b[j]}")
+            print(f"+  {B[j][0]:#010x}  {b[j]}")
     return 0
 
 
 def cmd_diffclass(args):
-    """The hunks of one function's instruction diff with their classes (match/diffclass.py)."""
-    from .match import diffclass as DC
+    """The hunks of one function's instruction diff with their classes (diffclass.rs)."""
     p, e, rep = build_target(args, getattr(args, "target", None), quiet=True)
-    r = find_function(p, args.name)
-    if r is None:
-        print(f"dcp diffclass: no graded function {args.name}", file=sys.stderr)
+    x = reading(p, args.name, None, "diffclass")
+    if x is None:
         return 1
-    A, B, tables = listings_for(p, r)
-    hs, v = DC.analyse(A, B, p.isa, tables)
-    print(record(fn=r["addr"], name=r["name"], ours=len(A), original=len(B), hunks=len(hs), differing=v.distance,
-                 verdict="shape" if v.shape else "draft"))
-    if v.frame:
-        print(f"  frame: ours {v.frame[0]:#x}, the original's {v.frame[1]:#x}: the hunks of the frame-aligned diff "
+    r, A, B, tables = x["row"], x["ours"], x["original"], x["tables"]
+    print(record(fn=r["addr"], name=r["name"], ours=len(A), original=len(B), hunks=len(x["hunks"]), differing=x["distance"],
+                 verdict="shape" if x["shape"] else "draft"))
+    if x["frame"]:
+        print(f"  frame: ours {x['frame'][0]:#x}, the original's {x['frame'][1]:#x}: the hunks of the frame-aligned diff "
               f"(stack offsets masked for the alignment)")
     if tables is not None:
-        print("  " + record(tables="differ" if tables["diffs"] else "equal", entries=tables["entries"], index_bytes=tables["bytes"]))
-        for x in tables["diffs"]:
-            print(f"      {x}")
-    if v.branches:
-        print(f"  branch targets differ ({len(v.branches)}): jumps the alignment pairs go to other code")
-        for x in v.branches:
-            print(f"      {x}")
-    for i1, i2, j1, j2, cls, info in hs:
-        at = A[i1].addr if i1 < len(A) else B[j1].addr
+        print("  " + tables_record(tables))
+        for d in tables["diffs"]:
+            print(f"      {d}")
+    if x["branches"]:
+        print(f"  branch targets differ ({len(x['branches'])}): jumps the alignment pairs go to other code")
+        for d in x["branches"]:
+            print(f"      {d}")
+    for i1, i2, j1, j2, cls, info in x["hunks"]:
+        at = A[i1][0] if i1 < len(A) else B[j1][0]
         print(f"  {at:#010x}  {cls:<6} {i2 - i1 + j2 - j1:>4}  {info}")
         if cls == "code" and i2 - i1 + j2 - j1 <= 12:
-            for x in A[i1:i2]:
-                print(f"      - {x.text}")
-            for x in B[j1:j2]:
-                print(f"      + {x.text}")
-    print("  summary: " + v.summary())
+            for _, s in A[i1:i2]:
+                print(f"      - {s}")
+            for _, s in B[j1:j2]:
+                print(f"      + {s}")
+    print("  summary: " + x["summary"])
     return 0
 
 
