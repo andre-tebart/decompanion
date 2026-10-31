@@ -397,8 +397,9 @@ _scans: dict[tuple[str, str], tuple] = {}     # (file, sha256 of its text) -> (i
 
 
 def scanned(rel: str, p: Path, m: dict) -> tuple[list[Decl], list]:
-    """(the declarations, the macros) of one file, from its model (srcscan.models)."""
-    key = (rel, fsmemo.sha256(p), hash(repr(m)))
+    """(the declarations, the macros) of one file, from its model (srcscan.models: the scan holds a model while
+    the file's parse stands, so the model's identity names it; the entry keeps it alive)."""
+    key = (rel, fsmemo.sha256(p), id(m))
     hit = _scans.get(key)
     if hit is None:
         if len(_scans) > 50000:
@@ -406,8 +407,8 @@ def scanned(rel: str, p: Path, m: dict) -> tuple[list[Decl], list]:
         text = fsmemo.read_text(p)
         macros = file_macros(rel, text, m)
         decls = file_scope_decls(rel, text, m)
-        hit = _scans[key] = (decls, macros)
-    return hit
+        hit = _scans[key] = (decls, macros, m)
+    return hit[0], hit[1]
 
 
 RENAME = re.compile(r"#define ([A-Za-z_]\w*)[ \t]+([A-Za-z_]\w*)[ \t]*$")
@@ -477,6 +478,21 @@ class AllDecls:
 SYSINC = re.compile(r'^[ \t]*#[ \t]*include[ \t]*<([^>]+)>', re.M)
 
 
+_provided: dict[tuple, tuple] = {}
+
+
+def provides(root: Path, rel: str, m: dict) -> tuple[set, set]:
+    """_provides of a file, kept while its text and its model are the same (as scanned keeps its declarations)."""
+    p = Path(root) / rel
+    key = (rel, fsmemo.sha256(p), id(m))
+    hit = _provided.get(key)
+    if hit is None:
+        if len(_provided) > 5000:
+            _provided.clear()
+        hit = _provided[key] = (*_provides(rel, fsmemo.read_text(p), m), m)
+    return hit[0], hit[1]
+
+
 def _provides(rel: str, text: str, m: dict) -> tuple[set, set]:
     """(the typedef names, tags with a body and macros a header defines, the identifiers it uses): the front end's
     typedefs, tags and live macros of the header's model; the identifiers are the words of its live code
@@ -491,8 +507,7 @@ def _provides(rel: str, text: str, m: dict) -> tuple[set, set]:
 def header_order(root: Path, headers: list[str], models: dict) -> list[str]:
     """The headers in an order that defines a name before the headers that use it (by name, alphabetical
     among equals): what the units' own include order gives each of them, as far as names show it."""
-    texts = {h: fsmemo.read_text(Path(root) / h) for h in headers}
-    info = {h: _provides(h, texts[h], models.get(h, srcscan.EMPTY)) for h in headers}
+    info = {h: provides(root, h, models.get(h, srcscan.EMPTY)) for h in headers}
     provider = {}
     for h in headers:
         for n in info[h][0]:
@@ -521,12 +536,21 @@ def header_order(root: Path, headers: list[str], models: dict) -> list[str]:
     return out
 
 
+_sysinc: dict[tuple, list] = {}         # (file, its text's hash) -> its #include <..> names
+
+
 def system_includes(root: Path, files: list[str]) -> list[str]:
     """The `#include <..>` names of the files, first seen first (winsock2.h before windows.h)."""
     out = []
     for f in files:
-        for m in SYSINC.finditer(fsmemo.read_text(Path(root) / f)):
-            n = m.group(1).strip()
+        p = Path(root) / f
+        key = (f, fsmemo.sha256(p))
+        names = _sysinc.get(key)
+        if names is None:
+            if len(_sysinc) > 5000:
+                _sysinc.clear()
+            names = _sysinc[key] = [m.group(1).strip() for m in SYSINC.finditer(fsmemo.read_text(p))]
+        for n in names:
             if n not in out:
                 out.append(n)
     if "winsock2.h" in out:
