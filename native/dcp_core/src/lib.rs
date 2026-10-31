@@ -639,6 +639,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(queues::grades_only_missing_statements, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_parse_baseline, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_at_least, m)?)?;
+    m.add_function(wrap_pyfunction!(queues::grades_falls, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_accept_note, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_note_from, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_baseline_text, m)?)?;

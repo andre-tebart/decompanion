@@ -45,74 +45,26 @@ and the unit's name has an origin other than `guess` (its start boundary's `by=`
 """
 from __future__ import annotations
 
-import functools
-import json
-import re
-
-from ..build import compile as build_compile
+from .. import native
 from ..ledger import srcscan
-from ..ledger.fact import Level
-from .engine import RuleContext, rule
-from .match import WALK
 
-P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
 CODE = ("draft", "shape", "byte")
 READ = ("draft", "readable")
 CODE_RANK = {c: i for i, c in enumerate(CODE)}
 
-DEREF_CAST = re.compile(r"\*\s*\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*"
-                        r"(?:\s+[A-Za-z_]\w*)*\s*\*+\s*(?:const\s*)?\)")
 
-
-@functools.lru_cache(maxsize=2)
 def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
-    """(raw macro names (Q4), described addresses (Q6)) over every source and header of the tree (collected by
-    the source scan, per file)."""
-    sc = srcscan.scan(root, tree)
-    defs = {}
-    for name, body in sc.macros:
-        defs.setdefault(name, body)
-    described = set(sc.described)
-    obj = set(sc.rawobj)                              # object-like: used without a call
-    raw = {n for n, body in defs.items() if DEREF_CAST.search(body)} | obj
-    while raw:
-        fn = sorted(map(re.escape, raw - obj))
-        pat = re.compile("|".join(([r"\b(" + "|".join(fn) + r")\s*\("] if fn else [])
-                                  + ([r"\b(" + "|".join(sorted(map(re.escape, obj))) + r")\b"] if obj else [])))
-        more = {n for n, body in defs.items() if n not in raw and pat.search(body)}
-        if not more:
-            break
-        raw |= more
+    """(raw macro names (Q4), described addresses (Q6)) over every source and header of the tree (the core's:
+    frontend.rs context)."""
+    raw, described = srcscan.scan(root, tree)._x.context()
     return frozenset(raw), frozenset(described)
 
 
-# ------------------------------------------------------------------------------------------------ M1
 def parse_baseline(text: str) -> dict[tuple[str, int], dict]:
-    """(target, address) -> {name, unit, code, readability, level, accepted} of a ledger/grades.tsv text (a
-    header line and one tab-separated line per function: target, address, name, unit, code, readability, level,
-    accepted; the last column, empty unless `dcp accept` lowered the entry, may be missing in an older file)."""
-    out = {}
-    for line in text.splitlines():
-        if not line.strip() or line.startswith(("#", "target\t")):
-            continue
-        f = line.split("\t")
-        f += [""] * (8 - len(f))
-        try:
-            a = int(f[1], 16)
-        except ValueError:
-            continue
-        out[(f[0], a)] = {"name": f[2], "unit": f[3], "code": f[4], "readability": f[5], "level": f[6], "accepted": f[7]}
-    return out
+    """(target, address) -> {name, unit, code, readability, level, accepted} of a ledger/grades.tsv text."""
+    return native.core().grades_parse_baseline(text)
 
 
 def falls(base: dict, now: dict | None) -> list[str]:
     """What fell from a baseline row to the current grade (None: the function has no grade any more)."""
-    if now is None:
-        return [f"graded {base['code']} + {base['readability']} in the baseline, no grade now (its source is gone?)"]
-    out = []
-    if base["code"] in CODE_RANK and CODE_RANK[now["code"]] < CODE_RANK[base["code"]]:
-        out.append(f"code {base['code']} -> {now['code']}")
-    if base["readability"] == "readable" and now["readability"] != "readable":
-        out.append("readability readable -> draft")
-    return out
-
+    return native.core().grades_falls(base["code"], base["readability"], (now["code"], now["readability"]) if now else None)

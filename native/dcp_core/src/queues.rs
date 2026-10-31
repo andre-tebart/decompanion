@@ -403,6 +403,13 @@ pub fn grades_parse_baseline<'py>(py: Python<'py>, text: &str) -> PyResult<Bound
     Ok(d)
 }
 
+/// What fell from a baseline row (code, readability) to the current grade (None: no grade any more).
+#[pyfunction]
+pub fn grades_falls(code: &str, readability: &str, now: Option<(String, String)>) -> Vec<String> {
+    let base = Entry { code: code.into(), readability: readability.into(), ..Default::default() };
+    falls(&base, now.as_ref().map(|(c, r)| (c.as_str(), r.as_str())))
+}
+
 #[pyfunction]
 pub fn grades_at_least(code: &str, readability: &str, grade: &str) -> bool {
     at_least(code, readability, grade)
