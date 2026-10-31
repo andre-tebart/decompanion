@@ -948,9 +948,10 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     Ok(())
 }
 
-/// Run a native rule: (facts, conflicts, out_hash); recorded unless ctx.record is false (shadow).
+/// Run a native rule: (facts, conflicts, out_hash, ms computing, ms recording); recorded unless ctx.record is
+/// false (shadow).
 #[pyfunction]
-pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
+pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String, f64, f64)> {
     let t0 = std::time::Instant::now();
     let mut out = Out::new(&ctx.rule, &ctx.version);
     with_conn(&ctx.db, |db| match ctx.rule.as_str() {
@@ -978,13 +979,15 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
     })?;
     let ms = t0.elapsed().as_millis() as i64;
+    let computed = t0.elapsed().as_secs_f64() * 1000.0;
+    let t1 = std::time::Instant::now();
     let (rows, confl) = out.sorted();
     let (nf, nc) = (rows.len(), confl.len());
     if !ctx.record {
-        return Ok((nf, nc, run_hash(&rows, &confl)));
+        return Ok((nf, nc, run_hash(&rows, &confl), computed, t1.elapsed().as_secs_f64() * 1000.0));
     }
     let (_, h) = with_db(&ctx.db, |db| {
         write_run(db, &ctx.db, &ctx.rule, &ctx.version, &ctx.code_hash, &ctx.input_hash, &rows, &confl, ms, ctx.shortcuts)
     })?;
-    Ok((nf, nc, h))
+    Ok((nf, nc, h, computed, t1.elapsed().as_secs_f64() * 1000.0))
 }

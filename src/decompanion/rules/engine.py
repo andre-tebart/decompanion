@@ -283,8 +283,13 @@ class Engine:
                 continue
             t0 = time.perf_counter()
             if r.native and not native.shadow(r.id):
-                nf, nc, _ = native.core().run_rule(self.native_ctx(r, needed, ih, record=True))
+                ctx = self.native_ctx(r, needed, ih, record=True)
+                t_ctx = time.perf_counter()
+                nf, nc, _, ms_run, ms_rec = native.core().run_rule(ctx)
                 ms = int((time.perf_counter() - t0) * 1000)
+                timing.add(f"rule.{r.id}.inputs", (t_ctx - t0) * 1000)        # native_inputs and the context
+                timing.add(f"rule.{r.id}.run", ms_run)
+                timing.add(f"rule.{r.id}.record", ms_rec)
                 timing.add("refresh.rules", ms)
                 timing.add(f"rule.{r.id}", ms)
                 results.append(RunResult(r.id, True, ms, nf, nc))
@@ -303,7 +308,7 @@ class Engine:
             ms = int((time.perf_counter() - t0) * 1000)
             if r.native:                               # shadow: Python is the reference, the native run must agree
                 ref = native.core().out_hash(facts, conflicts)
-                nf, nc, got = native.core().run_rule(self.native_ctx(r, needed, ih, record=False))
+                nf, nc, got, _, _ = native.core().run_rule(self.native_ctx(r, needed, ih, record=False))
                 if got != ref:
                     raise RuleError(f"shadow {r.id}: the native rule's output differs from Python's ({nf} facts, "
                                     f"{nc} conflicts native; {len(facts)}, {len(conflicts)} Python)")

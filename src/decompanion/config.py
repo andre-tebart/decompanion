@@ -396,6 +396,9 @@ class Project:
             h = self.tree_hash([self.root / "decl"], ("*.dcl",))
         elif name == "src":
             h = self.tree_hash([self.root / "src", self.root / "include"], ("*.c", "*.h"))
+        elif name == "scan":
+            from .ledger import srcscan
+            h = srcscan.scan(self.root, self.input_hash("src")).digest()
         elif name == "drafts":
             from .ledger import drafts
             h = drafts.input_hash(self.store)
@@ -421,6 +424,8 @@ class Project:
     def forget_input(self, name: str):
         """Drop a memoised input hash (after a command changed the input, e.g. the analyzer's export)."""
         self._hashes.pop(name, None)
+        if name == "src":
+            self._hashes.pop("scan", None)            # the source scan's items, of the sources
 
     @staticmethod
     def tree_hash(dirs: list[Path], patterns: tuple[str, ...]) -> str:
@@ -448,6 +453,9 @@ class Project:
             return sorted((self.root / "decl").glob("*.dcl")) if (self.root / "decl").exists() else []
         if name == "src":
             return self.root
+        if name == "scan":
+            from .ledger import srcscan
+            return srcscan.scan(self.root, self.input_hash("src"))
         if name == "drafts":
             from .ledger import drafts
             return drafts.entries(self.store)

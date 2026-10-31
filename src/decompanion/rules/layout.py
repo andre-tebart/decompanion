@@ -320,7 +320,7 @@ def load_decl_starts(ctx: RuleContext):
             yield ctx.declared(d.lo, d.lo + 1, Kind.start, {"skind": "func", "how": "decl"}, d.by, d.reason)
 
 
-@rule("L.src", version="5", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
+@rule("L.src", version="5", ceiling=DE, outputs=("source", "name", "start"), inputs=("scan", "targets"),
       loader=True, helpers=(srcscan, cparse), native=True, native_inputs=lambda p: scan_inputs(p))   # the front end decides what the scan sees
 def load_src(ctx: RuleContext):
     """The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function
@@ -552,7 +552,7 @@ def scan_inputs(p) -> str:
     return head[:-1] + ',"scan":' + srcscan.native_view(srcscan.scan(p.root, p.input_hash("src"))) + "}"
 
 
-@rule("L5.placeholder", version="3", ceiling=P, inputs=("src", "targets"), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
+@rule("L5.placeholder", version="3", ceiling=P, inputs=("scan", "targets"), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
       helpers=(srcscan,), native=True, native_inputs=scan_inputs)
 def placeholder(ctx: RuleContext):
     """L5: an identifier that spells an address (`Unk<hex>`, `FUN_<hex>`, `DAT_<hex>`, `<name>_<6-8 hex with a
@@ -566,7 +566,7 @@ def placeholder(ctx: RuleContext):
     return ()
 
 
-@rule("A1.addr.cast", version="1", ceiling=P, inputs=("src", "targets"), needs=("kind:name", "kind:symbol"),
+@rule("A1.addr.cast", version="1", ceiling=P, inputs=("scan", "targets"), needs=("kind:name", "kind:symbol"),
       helpers=(srcscan,), native=True, native_inputs=scan_inputs)
 def addr_cast(ctx: RuleContext):
     """A1: an integer literal cast to a pointer type in the sources (srcscan's PtrCast: `(void (*)(void))0x5de470`,
@@ -582,7 +582,7 @@ def addr_cast(ctx: RuleContext):
     return ()
 
 
-@rule("L13.data.code", version="1", ceiling=P, inputs=("src", "targets"),
+@rule("L13.data.code", version="1", ceiling=P, inputs=("scan", "targets"),
       needs=("kind:name", "kind:start", "S.codewalk", "S.crt.code", "S.thunk", "M.match", "L.decl"),
       helpers=(srcscan,), native=True, native_inputs=scan_inputs)
 def data_at_code(ctx: RuleContext):

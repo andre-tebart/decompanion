@@ -295,11 +295,14 @@ impl Piece {
 }
 
 /// A file's piece, held by the Python scan that holds the file's scan (srcscan.Scan.native); the native rules
-/// name it by its id (native_view).
+/// name it by its id (native_view). digest: the hash of the items the native rules read of it (the scan's
+/// input hash: srcscan.Scan.digest).
 #[pyclass(frozen)]
 pub struct ScanPiece {
     #[pyo3(get)]
     id: u64,
+    #[pyo3(get)]
+    digest: String,
     _piece: Arc<Piece>,
 }
 
@@ -307,6 +310,11 @@ static HELD: LazyLock<Mutex<HashMap<u64, Weak<Piece>>>> = LazyLock::new(|| Mutex
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 fn hold(p: Piece) -> ScanPiece {
+    use sha2::{Digest, Sha256};
+    let v = &p.view;
+    let rows = format!("{}\0{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}", p.rel, v.functions, v.placeholders, v.ptrcasts, v.data, v.items.fns, v.items.datas,
+                       v.items.views, v.items.errors, { let mut d: Vec<_> = p.defs.iter().collect(); d.sort_by(|a, b| a.0.cmp(b.0)); d });
+    let digest = Sha256::digest(rows.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
     let piece = Arc::new(p);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let mut h = HELD.lock().unwrap_or_else(|e| e.into_inner());
@@ -314,7 +322,7 @@ fn hold(p: Piece) -> ScanPiece {
         h.retain(|_, w| w.strong_count() > 0);
     }
     h.insert(id, Arc::downgrade(&piece));
-    ScanPiece { id, _piece: piece }
+    ScanPiece { id, digest, _piece: piece }
 }
 
 fn pieces(ids: &[u64]) -> PyResult<Vec<Arc<Piece>>> {

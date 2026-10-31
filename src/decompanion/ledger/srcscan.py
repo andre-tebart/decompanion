@@ -168,6 +168,17 @@ class Scan:
     native: list = field(default_factory=list, repr=False, compare=False)  # its files' pieces in the core (ScanPiece)
     own_errors: list[ScanError] = field(default_factory=list)   # the errors of the whole scan (L16), after the files'
 
+    def digest(self) -> str:
+        """The hash of what the native rules read of the scan (its files' pieces, its own errors): the input
+        `scan` of the rules that read only that (an edit that changes no address comment, name, macro or line
+        of them leaves it as it was)."""
+        import hashlib
+        h = hashlib.sha256()
+        for x in self.native:
+            h.update(x.digest.encode())
+        h.update(repr([(e.check, e.file, e.line, e.message) for e in self.own_errors]).encode())
+        return h.hexdigest()
+
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
     """The addresses a comment starts with: `0x10001000` / `server:0x10001000, exe:0x4a3000, what`."""
