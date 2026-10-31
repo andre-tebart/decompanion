@@ -28,64 +28,36 @@ main checkout; M1 compares against it, `dcp check --against REV` against its ver
 `--accept-falls`. `dcp accept FN --to GRADE --why TEXT` lowers one entry and fills its accepted column
 (`byte+readable -> shape+readable at <commit>: <why>`); promote keeps the column while the function stays below
 the grade it fell from and clears it once it is back.
+
+The queues, the shards and the baseline are the core's (native/dcp_core/src/queues.rs); this module is their face
+and keeps the source edits of the level ladder (set_level, auto_clear).
 """
 from __future__ import annotations
 
-import hashlib
 import re
-import subprocess
 from pathlib import Path
 
-from .. import fsmemo
-from ..rules.grade import CODE_RANK, falls, parse_baseline
+from .. import fsmemo, native
 from . import srcscan
-from .fact import Kind
 
+_core = native.core()
 HEADER = "target\taddress\tname\tunit\tcode\treadability\tlevel\taccepted"
 SHARD_FILE = Path(".dcp") / "shard"
+CODE_RANK = {c: i for i, c in enumerate(("draft", "shape", "byte"))}
 
 
 def function_grades(store) -> list[dict]:
-    out = []
-    for f in store.facts(Kind.grade):
-        if f.value.get("of") == "function":
-            out.append(dict(f.value, addr=f.lo, by=f.by))
-    return sorted(out, key=lambda r: r["addr"])
+    """The function grade rows (the grade fact's value with addr and by), by address."""
+    return _core.grades_function(store._p)
 
 
 def unit_grades(store) -> list[dict]:
-    return sorted((dict(f.value, lo=f.lo, hi=f.hi) for f in store.facts(Kind.grade) if f.value.get("of") == "unit"),
-                  key=lambda r: r["lo"])
+    return _core.grades_unit(store._p)
 
 
-def game_units(store) -> list[dict]:
-    """The game units (L.unit.extent): {tu, lo, hi, status, named_by}."""
-    return sorted(({"tu": f.value["tu"], "lo": f.lo, "hi": f.hi, "status": f.value["status"], "named_by": f.value.get("named_by")}
-                   for f in store.facts(Kind.unit) if "status" in f.value), key=lambda u: u["lo"])
-
-
-def below_shape(r) -> bool:
-    return r["code"] == "draft" or r["readability"] != "readable"
-
-
-def below_byte(r) -> bool:
-    return r["code"] != "byte" or r["readability"] != "readable"
-
-
-def q_only(r) -> bool:
-    return r["level"] in ("deep", "stuck") and r["code"] == "byte" and r["readability"] != "readable"
-
-
-# ------------------------------------------------------------------------------------------------ shards
 def parse_shard(text: str) -> tuple[int, int] | None:
     """'k/N' -> (k, N); 'off' -> None."""
-    text = text.strip()
-    if text == "off":
-        return None
-    m = re.fullmatch(r"(\d+)/(\d+)", text)
-    if not m or not 0 <= int(m.group(1)) < int(m.group(2)):
-        raise ValueError(f"a shard is k/N with 0 <= k < N (or off), not {text!r}")
-    return int(m.group(1)), int(m.group(2))
+    return _core.grades_parse_shard(text)
 
 
 def shard_setting(root: Path, arg: str | None) -> tuple[int, int] | None:
@@ -97,66 +69,20 @@ def shard_setting(root: Path, arg: str | None) -> tuple[int, int] | None:
 
 def shard_owner(start: int, n: int) -> int:
     """The shard of a unit among n: rendezvous hashing of its start address."""
-    return max(range(n), key=lambda k: hashlib.sha1(f"{start:#010x}:{k}".encode()).digest())
+    return _core.grades_shard_owner(start, n)
 
 
-# ------------------------------------------------------------------------------------------------ queues
 def queue(store, which: str = "base", shard: tuple[int, int] | None = None, unit: str | None = None) -> list[dict]:
     """The items of the base / deep / names queue in order (module docstring); each a function grade row with
     `queue_unit` and `section` (draft / read for base, deep / stuck for deep and names)."""
-    rows = function_grades(store)
-    by_unit: dict[str, list[dict]] = {}
-    for r in rows:
-        by_unit.setdefault(r["unit"], []).append(r)
-    units = [u for u in game_units(store) if u["status"] == "separated" and u["tu"] in by_unit]
-    if unit:
-        units = [u for u in units if u["tu"] == unit]
-    elif shard:
-        units = [u for u in units if shard_owner(u["lo"], shard[1]) == shard[0]]
-    dist = lambda r: (r.get("dist") or {}).get("ins") or 0  # noqa: E731
-    if which == "base":
-        drafts, reads = [], []
-        for u in units:
-            base = [r for r in by_unit[u["tu"]] if below_shape(r) and not r["level"]]
-            d = [dict(r, queue_unit=u["tu"], section="draft") for r in base if r["code"] == "draft"]
-            rd = [dict(r, queue_unit=u["tu"], section="read") for r in base if r["code"] != "draft"]
-            if d:
-                drafts.append((len(d), u["lo"], d))
-            if rd:
-                reads.append((len(rd), u["lo"], rd))
-        drafts.sort(key=lambda x: (x[0], x[1]))
-        reads.sort(key=lambda x: (x[0], x[1]))
-        return [it for *_, items in drafts for it in items] + [it for *_, items in reads for it in items]
-    per = []
-    for u in units:
-        rs = by_unit[u["tu"]]
-        base_left = any(below_shape(r) and not r["level"] for r in rs)
-        all_items = [r for r in rs if r["level"] in ("deep", "stuck") or (not base_left and below_byte(r))]
-        byte_items = [r for r in all_items if not q_only(r)]
-        if which == "names":
-            items = [r for r in all_items if q_only(r)]
-        else:
-            items = byte_items or [r for r in all_items if q_only(r)]
-        items = sorted(items, key=lambda r: (dist(r), r["addr"]))
-        if items:
-            per.append((0 if byte_items else 1, sum(dist(r) for r in byte_items), u["lo"],
-                        [dict(r, queue_unit=u["tu"], section="stuck" if r["level"] == "stuck" else "deep") for r in items]))
-    per.sort(key=lambda x: (x[0], x[1], x[2]))
-    flat = [it for *_, items in per for it in items]
-    return [r for r in flat if r["section"] != "stuck"] + [r for r in flat if r["section"] == "stuck"]
+    return _core.grades_queue(store._p, which, shard, unit)
 
 
 # ------------------------------------------------------------------------------------------------ the level ladder
-MISSING = re.compile(r"\b(missing|absent|lacks?|lacking|reconstruct\w*|unwritten|not\s+(?:yet\s+)?written|add(?:ed)?)\b", re.I)
-STATEMENTS = re.compile(r"\b(statements?|bod(?:y|ies)|calls?|branch(?:es)?|loops?|cases?|code|lines?)\b", re.I)
-
-
 def only_missing_statements(reason: str) -> bool:
-    """True when every clause of the reason (split at `;` `,` `.` and the word `and`) speaks of missing or
-    unwritten (missing, absent, lacking, reconstruct, unwritten, not written, add) statements, bodies, calls,
-    branches, loops, cases, code or lines: reconstruction is base work, not a reason to escalate."""
-    clauses = [c.strip() for c in re.split(r"[;,.]|\band\b", reason) if c.strip()]
-    return bool(clauses) and all(MISSING.search(c) and STATEMENTS.search(c) for c in clauses)
+    """True when every clause of the reason speaks of missing or unwritten statements: reconstruction is base
+    work, not a reason to escalate."""
+    return _core.grades_only_missing_statements(reason)
 
 
 DEEP = re.compile(r"[ \t]*@deep\b[^@*\n]*")
@@ -210,6 +136,11 @@ def auto_clear(project, rows) -> list[str]:
 
 
 # ------------------------------------------------------------------------------------------------ baseline
+def parse_baseline(text: str) -> dict[tuple[str, int], dict]:
+    """(target, address) -> {name, unit, code, readability, level, accepted} of a ledger/grades.tsv text."""
+    return _core.grades_parse_baseline(text)
+
+
 def grade_of(r) -> str:
     """`code+readability` of a grade row."""
     return f"{r['code']}+{r['readability']}"
@@ -217,87 +148,39 @@ def grade_of(r) -> str:
 
 def at_least(r, grade: str) -> bool:
     """True when a grade row is at or above `code+readability` in both dimensions."""
-    code, _, rd = grade.partition("+")
-    return (CODE_RANK.get(r["code"], -1) >= CODE_RANK.get(code, -1)
-            and (rd != "readable" or r["readability"] == "readable"))
-
-
-ACCEPTED = re.compile(r"^(\w+\+\w+) -> (\w+\+\w+) at (\S+): (.*)$")
+    return _core.grades_at_least(r["code"], r["readability"], grade)
 
 
 def accept_note(before: str, after: str, commit: str, why: str) -> str:
-    """The accepted column: `byte+readable -> shape+readable at 897b411: why` (tabs and newlines of the reason
-    become spaces)."""
-    return f"{before} -> {after} at {commit}: {' '.join(why.split())}"
+    """The accepted column: `byte+readable -> shape+readable at 897b411: why`."""
+    return _core.grades_accept_note(before, after, commit, why)
 
 
 def note_from(note: str) -> str | None:
     """The grade an accepted fall came from (None for an empty or unreadable column)."""
-    m = ACCEPTED.match(note or "")
-    return m.group(1) if m else None
-
-
-def render_baseline(rows) -> str:
-    """ledger/grades.tsv from (target, address, {name, unit, code, readability, level, accepted}) in order."""
-    lines = [HEADER]
-    for t, a, r in rows:
-        lines.append("\t".join((t, f"{a:#010x}", r["name"], r["unit"], r["code"], r["readability"], r["level"] or "",
-                                r.get("accepted") or "")))
-    return "\n".join(lines) + "\n"
+    return _core.grades_note_from(note or "")
 
 
 def baseline_text(projects, old: str = "", accept_falls: bool = False, commit: str = "-") -> str:
-    """The text of ledger/grades.tsv from the current grades of every target (projects in config order). An
-    accepted column of the old text is kept while the function stays below the grade it fell from (cleared
-    once it is back there); with accept_falls, every fall against the old text is written with a note
-    `.. at COMMIT: promote --accept-falls`."""
-    base = parse_baseline(old)
-    rows = []
-    for p in projects:
-        for r in function_grades(p.store):
-            o = base.get((p.target_name, r["addr"]))
-            note = ""
-            if o is not None:
-                src = note_from(o.get("accepted", ""))
-                if src and not at_least(r, src):
-                    note = o["accepted"]
-                if falls(o, r) and accept_falls:
-                    note = accept_note(src or grade_of(o), grade_of(r), commit, "promote --accept-falls")
-            rows.append((p.target_name, r["addr"], dict(r, accepted=note)))
-    return render_baseline(rows)
+    """The text of ledger/grades.tsv from the current grades of every target (projects in config order)."""
+    return _core.grades_baseline_text([(p.target_name, p.store._p) for p in projects], old, accept_falls, commit)
 
 
 def accept(text: str, target: str, addr: int, code: str, readability: str, note: str) -> str:
-    """The baseline text with one function's entry lowered to `code` + `readability` and its accepted column
-    set (every other line as it was, in the current format)."""
-    rows = [(t, a, r) for (t, a), r in parse_baseline(text).items()]
-    for t, a, r in rows:
-        if t == target and a == addr:
-            r.update(code=code, readability=readability, accepted=note)
-    return render_baseline(rows)
+    """The baseline text with one function's entry lowered to `code` + `readability` and its accepted column set."""
+    return _core.grades_accept(text, target, addr, code, readability, note)
 
 
 def commit_of(root: Path) -> str:
     """The short hash of HEAD ('-' outside a git checkout)."""
-    r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True)
-    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "-"
+    return _core.grades_commit_of(str(root))
 
 
 def baseline_at(root: Path, rev: str) -> str:
     """ledger/grades.tsv at a git revision ('' when it has none)."""
-    r = subprocess.run(["git", "show", f"{rev}:ledger/grades.tsv"], cwd=root, capture_output=True, text=True)
-    return r.stdout if r.returncode == 0 else ""
+    return _core.grades_baseline_at(str(root), rev)
 
 
 def regressions(project, text: str) -> list[str]:
     """The falls of the current target's function grades against a baseline text."""
-    base = {a: r for (t, a), r in parse_baseline(text).items() if t == project.target_name}
-    now = {r["addr"]: r for r in function_grades(project.store)}
-    out = []
-    for a, r in sorted(base.items()):
-        for what in falls(r, now.get(a)):
-            out.append(f"{a:#010x} {r['name']}: {what}")
-    return out
-
-
-__all__ = ["CODE_RANK", "function_grades", "unit_grades", "queue", "set_level", "auto_clear", "baseline_text", "regressions"]
+    return _core.grades_regressions(project.target_name, project.store._p, text)

@@ -823,7 +823,7 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// int(s, 16) as Python reads it: surrounding whitespace, a sign, a 0x prefix and _ between digits allowed.
-fn py_int16(s: &str) -> Option<i64> {
+pub(crate) fn py_int16(s: &str) -> Option<i64> {
     let t = s.trim();
     let (neg, t) = match t.strip_prefix('-') {
         Some(r) => (true, r),
