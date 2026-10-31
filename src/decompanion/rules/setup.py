@@ -19,102 +19,62 @@ from .engine import RuleContext, rule
 P, D, O = Level.proven, Level.derived, Level.open
 
 
-def _range_facts(ctx, what, ranges, level=P):
-    """A region per non-empty range: ranges of (lo, hi) named `what`, or (what, lo, hi) triples (what=None)."""
-    for r in ranges:
-        w, lo, hi = r if what is None else (what, *r)
-        if hi > lo:
-            yield ctx.fact(lo, hi, Kind.region, {"what": w}, level)
-
-
 # ---------------------------------------------------------------------------------------------------- headers
-@rule("S.headers", version="1", ceiling=P, outputs=("region",))
+@rule("S.headers", version="1", ceiling=P, outputs=("region",), native=True)
 def headers(ctx: RuleContext):
     """The image format's headers own their bytes, one region each as the format names them
     (Image.header_regions; PE32: [image base, image base + SizeOfHeaders) is DOS header and stub, PE
     signature, file and optional headers and section table as pe.header, the Rich header where the linker
     wrote one as pe.rich)."""
-    for what, lo, hi in ctx.image.header_regions():
-        yield ctx.fact(lo, hi, Kind.region, {"what": what}, P)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S.sections", version="1", ceiling=P, outputs=("section", "region"))
+@rule("S.sections", version="1", ceiling=P, outputs=("section", "region"), native=True)
 def sections(ctx: RuleContext):
     """One section fact per entry of the section table, over [VirtualAddress, VirtualAddress + max(VirtualSize,
     SizeOfRawData)). File bytes past VirtualSize up to SizeOfRawData are file-alignment padding (region pad).
     The bytes between one section's end and the next section's start are not mapped (region unmapped)."""
-    img = ctx.image
-    secs = sorted(img.sections, key=lambda s: s.va)
-    prev_end = img.base + img.headers_size
-    for s in secs:
-        if s.va > prev_end:
-            yield ctx.fact(prev_end, s.va, Kind.region, {"what": "unmapped"}, P)
-        yield ctx.fact(s.va, s.end, Kind.section,
-                       {"name": s.name, "chars": s.chars, "raw_lo": s.raw_off, "raw_hi": s.raw_off + s.raw_size,
-                        "code": s.code, "vsize": s.vsize, "rsize": s.raw_size}, P)
-        if s.raw_size > s.vsize:
-            yield ctx.fact(s.va + s.vsize, s.va + s.raw_size, Kind.region, {"what": "pad"}, P)
-        prev_end = s.end
-    if img.end > prev_end:
-        yield ctx.fact(prev_end, img.end, Kind.region, {"what": "unmapped"}, P)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S.datadirs", version="1", ceiling=P, outputs=("region",))
+@rule("S.datadirs", version="1", ceiling=P, outputs=("region",), native=True)
 def datadirs(ctx: RuleContext):
     """The directories of the image format that are byte ranges of their own inside a section
     (Image.directory_regions; PE32: base relocations, resources, debug, TLS, load config, bound and delay
     imports, the COM descriptor, as pe.<directory>). Import and export tables are walked by S.imports /
     S.exports, which know their exact extents."""
-    for what, lo, hi in ctx.image.directory_regions():
-        yield ctx.fact(lo, hi, Kind.region, {"what": what}, P)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S.imports", version="1", ceiling=P, outputs=("region", "symbol", "name"))
+@rule("S.imports", version="1", ceiling=P, outputs=("region", "symbol", "name"), native=True)
 def imports(ctx: RuleContext):
     """The import machinery as regions (Image.import_regions; PE32: descriptors pe.import_desc, lookup tables
     pe.ilt, hint/name strings and DLL names pe.names, the terminating zero slot of each address table
     pe.iat), and one `iat` symbol per address-table slot (an address wide), named DLL!symbol (or
     DLL!#ordinal)."""
-    img = ctx.image
-    yield from _range_facts(ctx, None, img.import_regions())
-    w = img.ptr_size
-    for imp in img.imports():
-        yield ctx.fact(imp.slot, imp.slot + w, Kind.symbol, {"skind": "iat", "name": imp.label, "extent": "proven"}, P)
-        yield ctx.fact(imp.slot, imp.slot + w, Kind.name, {"name": imp.label, "origin": "import"}, P)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S.exports", version="1", ceiling=P, outputs=("region", "start", "name"))
+@rule("S.exports", version="1", ceiling=P, outputs=("region", "start", "name"), native=True)
 def exports(ctx: RuleContext):
     """The export machinery as regions (Image.export_regions; PE32: the export directory with its address, name
     and ordinal tables and name strings, pe.export_*, pe.names), and for every exported address a function
     start plus its name (a forwarder names no start)."""
-    img = ctx.image
-    yield from _range_facts(ctx, None, img.export_regions())
-    for e in img.exports():
-        if e.forwarder:
-            continue
-        label = e.name or f"#{e.ordinal}"
-        yield ctx.fact(e.va, e.va + 1, Kind.start, {"skind": "func", "how": "export"}, P)
-        yield ctx.fact(e.va, e.va + 1, Kind.name, {"name": label, "origin": "export", "ordinal": e.ordinal}, P)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S.entry", version="1", ceiling=P, outputs=("start",))
+@rule("S.entry", version="1", ceiling=P, outputs=("start",), native=True)
 def entry(ctx: RuleContext):
     """AddressOfEntryPoint is a function start."""
-    img = ctx.image
-    if img.entry:
-        yield ctx.fact(img.entry, img.entry + 1, Kind.start, {"skind": "func", "how": "entry"}, P)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S.relocs", version="1", ceiling=P, outputs=("ref",))
+@rule("S.relocs", version="1", ceiling=P, outputs=("ref",), native=True)
 def relocs(ctx: RuleContext):
     """One `reloc` reference per absolute relocation site of the image (Image.relocations; PE32: every HIGHLOW
     entry of the base relocation directory): the address-wide field at the site holds an absolute address of
     the image (`to`). For a dll this is the complete list of absolute operands in code and data."""
-    img = ctx.image
-    w = img.ptr_size
-    for site in img.relocations():
-        yield ctx.fact(site, site + w, Kind.ref, {"rkind": "reloc", "to": img.read_ptr(site)}, P)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
 # ---------------------------------------------------------------------------------------------------- rich

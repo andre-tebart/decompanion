@@ -116,16 +116,11 @@ def rich_members(ctx: RuleContext):
                            f"{len(members)} members placed")
 
 
-@rule("S7.entry.section", version="1", ceiling=Level.proven, needs=("S.sections", "S.exports", "S.entry"))
+@rule("S7.entry.section", version="1", ceiling=Level.proven, needs=("S.sections", "S.exports", "S.entry"), native=True)
 def entry_section(ctx: RuleContext):
     """The entry point and every export must lie in a code section (Section.holds_code: marked as code or as
     executable)."""
-    img = ctx.image
-    secs = [(f.lo, f.hi) for f in ctx.facts(Kind.section)]
-    for s in ctx.facts(Kind.start):
-        sec = next((img.section_of(a) for a, b in secs if a <= s.lo < b), None)
-        if sec is None or not sec.holds_code:
-            yield ctx.conflict(Severity.error, "S7", s.lo, s.lo + 1, f"{s.value['how']} start outside an executable section")
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
 @rule("S5.crt.gaps", version="1", ceiling=Level.proven, needs=("S.crt.code", "S.unknown", "S.fill"))
@@ -141,14 +136,18 @@ def crt_gaps(ctx: RuleContext):
             yield ctx.conflict(Severity.warn, "S5", max(f.lo, lo), min(f.hi, hi), f"{min(f.hi, hi) - max(f.lo, lo)} unknown bytes inside the library region")
 
 
-@rule("S4.import.libs", version="1", ceiling=Level.proven, inputs=("libs",))
+def import_libs_inputs(p) -> dict:
+    """What S4 reads of the configuration: the toolchain's key and root, the target's archives."""
+    tc = p.toolchain
+    return {"toolchain": tc.key, "root": str(tc.root) if tc.root is not None else None,
+            "libs": [str(x) for x in p.input("libs")]}
+
+
+@rule("S4.import.libs", version="1", ceiling=Level.proven, inputs=("libs",), native=True,
+      native_inputs=import_libs_inputs)
 def import_libs(ctx: RuleContext):
     """Every DLL the image imports needs an import library for the full link: the toolchain's library archives
     or the target's archives must hold the import library the toolchain names for it
     (Toolchain.import_library_name, compared case-insensitively; VC6: <DLL name>.LIB in VC98/Lib); a missing
     one is a warning until the link milestone."""
-    tc = ctx.project.toolchain
-    have = {p.name.lower() for p in tc.library_archives()} | {p.name.lower() for p in ctx.input("libs")}
-    for dll in sorted({i.dll for i in ctx.image.imports()}):
-        if tc.import_library_name(dll).lower() not in have:
-            yield ctx.conflict(Severity.warn, "S4", ctx.image.base, ctx.image.base + 1, f"no import library for {dll} in the toolchain")
+    return ()                                      # native: native/dcp_core/src/setup.rs

@@ -956,6 +956,15 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String, f64, f64)> {
     let mut out = Out::new(&ctx.rule, &ctx.version);
     with_conn(&ctx.db, |db| match ctx.rule.as_str() {
         "M.draft" => m_draft(&ctx, db, &mut out),
+        "S.headers" => crate::setup::s_headers(&ctx, db, &mut out),
+        "S.sections" => crate::setup::s_sections(&ctx, db, &mut out),
+        "S.datadirs" => crate::setup::s_datadirs(&ctx, db, &mut out),
+        "S.imports" => crate::setup::s_imports(&ctx, db, &mut out),
+        "S.exports" => crate::setup::s_exports(&ctx, db, &mut out),
+        "S.entry" => crate::setup::s_entry(&ctx, db, &mut out),
+        "S.relocs" => crate::setup::s_relocs(&ctx, db, &mut out),
+        "S7.entry.section" => crate::setup::s7_entry_section(&ctx, db, &mut out),
+        "S4.import.libs" => crate::setup::s4_import_libs(&ctx, db, &mut out),
         "M.match" => m_match(&ctx, db, &mut out),
         "M8.reloc" => m8_reloc(&ctx, db, &mut out),
         "M.lint" => m_lint(&ctx, db, &mut out),

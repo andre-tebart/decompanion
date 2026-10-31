@@ -18,6 +18,7 @@ mod layout;
 mod pe;
 mod readability;
 mod rules;
+mod setup;
 mod srcscan;
 mod store;
 mod toolchain;
