@@ -34,35 +34,9 @@ from pathlib import Path
 from .. import timing
 from .fact import Conflict, Fact, Kind, Level, canonical
 
-SCHEMA_VERSION = "1"
+from .. import native
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS input (key TEXT PRIMARY KEY, hash TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS run (
-    id INTEGER PRIMARY KEY, rule TEXT NOT NULL, version TEXT NOT NULL, code_hash TEXT NOT NULL,
-    input_hash TEXT NOT NULL, out_hash TEXT NOT NULL DEFAULT '', current INTEGER NOT NULL DEFAULT 0,
-    ms INTEGER NOT NULL DEFAULT 0, at REAL NOT NULL DEFAULT 0, UNIQUE(rule, input_hash));
-CREATE TABLE IF NOT EXISTS fact (
-    id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, lo INTEGER NOT NULL, hi INTEGER NOT NULL, kind TEXT NOT NULL,
-    value TEXT NOT NULL, level INTEGER NOT NULL, by TEXT NOT NULL, reason TEXT);
-CREATE INDEX IF NOT EXISTS fact_kind_lo ON fact (kind, lo);
-CREATE INDEX IF NOT EXISTS fact_run ON fact (run_id);
-CREATE TABLE IF NOT EXISTS conflict (
-    id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, severity TEXT NOT NULL, check_id TEXT NOT NULL,
-    lo INTEGER NOT NULL, hi INTEGER NOT NULL, message TEXT NOT NULL, a TEXT NOT NULL DEFAULT '', b TEXT NOT NULL DEFAULT '');
-CREATE INDEX IF NOT EXISTS conflict_run ON conflict (run_id);
-CREATE TABLE IF NOT EXISTS blob (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, data BLOB NOT NULL);
-CREATE INDEX IF NOT EXISTS blob_kind ON blob (kind);
-CREATE TABLE IF NOT EXISTS bytemap (
-    lo INTEGER PRIMARY KEY, hi INTEGER NOT NULL, cls TEXT NOT NULL, level INTEGER NOT NULL,
-    symbol INTEGER, unit INTEGER, source INTEGER, section INTEGER);
-CREATE TABLE IF NOT EXISTS tu (
-    unit TEXT PRIMARY KEY, amalg TEXT NOT NULL, src_hash TEXT NOT NULL, flags TEXT NOT NULL, flags_hash TEXT NOT NULL,
-    include_hash TEXT NOT NULL, obj_hash TEXT NOT NULL, ok INTEGER NOT NULL, log TEXT NOT NULL, diags TEXT NOT NULL,
-    at REAL NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS include_set (key TEXT PRIMARY KEY, files TEXT NOT NULL);
-"""
+SCHEMA_VERSION, SCHEMA = native.core().store_schema()         # the tables: the core's (store.rs)
 
 
 def sha256(*parts: bytes | str) -> str:

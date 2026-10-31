@@ -279,6 +279,12 @@ pub(crate) fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite
     })
 }
 
+/// Close this thread's connection to a store (a test's store before its directory goes).
+#[cfg(test)]
+pub(crate) fn forget_conn(path: &str) {
+    CONNS.with(|c| c.borrow_mut().remove(path));
+}
+
 /// The store's native connection for code that reports Python errors itself (a native rule).
 pub(crate) fn with_conn<T>(path: &str, f: impl FnOnce(&mut Connection) -> PyResult<T>) -> PyResult<T> {
     with_db(path, |_| Ok(()))?;
@@ -654,6 +660,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(record_run, m)?)?;
     m.add_function(wrap_pyfunction!(compare_functions, m)?)?;
     m.add_function(wrap_pyfunction!(rules::run_rule, m)?)?;
+    m.add_function(wrap_pyfunction!(store::store_schema, m)?)?;
     m.add_function(wrap_pyfunction!(lde_selftest, m)?)?;
     m.add_function(wrap_pyfunction!(rules::py_aligned_sites, m)?)?;
     m.add_function(wrap_pyfunction!(rules::py_least_size, m)?)?;

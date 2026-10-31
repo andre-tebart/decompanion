@@ -145,3 +145,66 @@ pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::pe::testpe::{build, BASE, DATA, RELOC, TEXT};
+    use crate::rules::testkit::{of, Kit};
+    use serde_json::json;
+
+    const RICH: &[(u32, u32, u32)] = &[(0x30, 9044, 3), (0x0a, 8047, 5), (0x04, 8447, 1)];
+
+    #[test]
+    fn headers_sections_datadirs() {
+        let k = Kit::new(&build(Some(RICH)));
+        let (rows, _) = k.run("S.headers", &[], "");
+        let r = of(&rows, "region");
+        assert_eq!(r.iter().map(|x| x.2["what"].as_str().unwrap()).collect::<Vec<_>>(), ["pe.header", "pe.rich", "pe.header"]);
+        let (rows, _) = k.run("S.sections", &[], "");
+        let s = of(&rows, "section");
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0], (BASE as i64 + TEXT as i64, BASE as i64 + TEXT as i64 + 0x200,
+                          json!({"name": ".text", "chars": 0x6000_0020u32, "raw_lo": 0x400, "raw_hi": 0x600, "code": true, "vsize": 0x60, "rsize": 0x200})));
+        // pad past each VirtualSize, unmapped between the sections and after the last
+        let what: Vec<&str> = of(&rows, "region").iter().map(|x| x.2["what"].as_str().unwrap().to_string()).map(|s| if s == "pad" { "pad" } else { "unmapped" }).collect();
+        assert_eq!(what, ["unmapped", "pad", "unmapped", "pad", "unmapped", "pad", "unmapped"]);
+        let (rows, _) = k.run("S.datadirs", &[], "");
+        assert_eq!(of(&rows, "region"), vec![(BASE as i64 + RELOC as i64, BASE as i64 + RELOC as i64 + 0x1c, json!({"what": "pe.basereloc"}))]);
+    }
+
+    #[test]
+    fn imports_exports_entry_relocs() {
+        let k = Kit::new(&build(None));
+        let (rows, _) = k.run("S.imports", &[], "");
+        let d = (BASE + DATA) as i64;
+        assert_eq!(of(&rows, "symbol"), vec![(d + 0x150, d + 0x154, json!({"skind": "iat", "name": "KERNEL32.dll!GetTickCount", "extent": "proven"})),
+                                             (d + 0x154, d + 0x158, json!({"skind": "iat", "name": "KERNEL32.dll!#3", "extent": "proven"}))]);
+        assert_eq!(of(&rows, "name")[1].2, json!({"name": "KERNEL32.dll!#3", "origin": "import"}));
+        assert_eq!(of(&rows, "region").len(), 5);
+        let (rows, _) = k.run("S.exports", &[], "");
+        let t = (BASE + TEXT) as i64;
+        assert_eq!(of(&rows, "start"), vec![(t, t + 1, json!({"skind": "func", "how": "export"})), (t + 0x50, t + 0x51, json!({"skind": "func", "how": "export"}))]);
+        assert_eq!(of(&rows, "name").iter().map(|x| x.2["name"].as_str().unwrap().to_string()).collect::<Vec<_>>(), ["Start", "#2"]);
+        let (rows, _) = k.run("S.entry", &[], "");
+        assert_eq!(of(&rows, "start"), vec![(t, t + 1, json!({"skind": "func", "how": "entry"}))]);
+        let (rows, _) = k.run("S.relocs", &[], "");
+        let refs = of(&rows, "ref");
+        assert_eq!(refs.len(), 5);
+        assert_eq!(refs[0], (t + 0x21, t + 0x25, json!({"rkind": "reloc", "to": BASE + DATA})));
+    }
+
+    #[test]
+    fn entry_section_and_import_libs() {
+        let k = Kit::new(&build(None));
+        for r in ["S.sections", "S.exports", "S.entry"] {
+            k.record(r, &[], "");
+        }
+        let (_, c) = k.run("S7.entry.section", &["S.sections", "S.exports", "S.entry"], "");
+        assert!(c.is_empty());
+        let (_, c) = k.run("S4.import.libs", &[], r#"{"toolchain": "vc6", "root": null, "libs": []}"#);
+        assert_eq!(c.iter().map(|x| (x.severity.as_str(), x.message.as_str())).collect::<Vec<_>>(),
+                   [("warn", "no import library for KERNEL32.dll in the toolchain")]);
+        let (_, c) = k.run("S4.import.libs", &[], r#"{"toolchain": "vc6", "root": null, "libs": ["C:/x/KERNEL32.LIB"]}"#);
+        assert!(c.is_empty());
+    }
+}

@@ -948,45 +948,51 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     Ok(())
 }
 
+/// A native rule's output (its facts and conflicts, unsorted).
+pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
+    let mut out = Out::new(&ctx.rule, &ctx.version);
+    with_conn(&ctx.db, |db| match ctx.rule.as_str() {
+        "M.draft" => m_draft(ctx, db, &mut out),
+        "S.headers" => crate::setup::s_headers(ctx, db, &mut out),
+        "S.sections" => crate::setup::s_sections(ctx, db, &mut out),
+        "S.datadirs" => crate::setup::s_datadirs(ctx, db, &mut out),
+        "S.imports" => crate::setup::s_imports(ctx, db, &mut out),
+        "S.exports" => crate::setup::s_exports(ctx, db, &mut out),
+        "S.entry" => crate::setup::s_entry(ctx, db, &mut out),
+        "S.relocs" => crate::setup::s_relocs(ctx, db, &mut out),
+        "S7.entry.section" => crate::setup::s7_entry_section(ctx, db, &mut out),
+        "S4.import.libs" => crate::setup::s4_import_libs(ctx, db, &mut out),
+        "M.match" => m_match(ctx, db, &mut out),
+        "M8.reloc" => m8_reloc(ctx, db, &mut out),
+        "M.lint" => m_lint(ctx, db, &mut out),
+        "M.data.site" => m_data_site(ctx, db, &mut out),
+        "M.data.content" => m_data_content(ctx, db, &mut out),
+        "M.data.draft" => m_data_draft(ctx, db, &mut out),
+        "D.data" => d_data(ctx, db, &mut out),
+        "L9.analyzer.span" => crate::layout::l9_analyzer_span(ctx, db, &mut out),
+        "L.src.extent" => crate::layout::l_src_extent(ctx, db, &mut out),
+        "L5.placeholder" => crate::layout::l5_placeholder(ctx, db, &mut out),
+        "A1.addr.cast" => crate::layout::a1_addr_cast(ctx, db, &mut out),
+        "L13.data.code" => crate::layout::l13_data_code(ctx, db, &mut out),
+        "L.unit.extent" => crate::layout::l_unit_extent(ctx, db, &mut out),
+        "M1.baseline" => crate::layout::m1_baseline(ctx, db, &mut out),
+        "G.grade" => crate::grade::g_grade(ctx, db, &mut out),
+        "L1.src.start" => crate::layout::l1_src_start(ctx, db, &mut out),
+        "L.src" => crate::layout::l_src(ctx, db, &mut out),
+        "L4.boundary" => crate::layout::l4_boundary(ctx, db, &mut out),
+        "L10.unexplained" => crate::layout::l10_unexplained(ctx, db, &mut out),
+        "L14.unit.outside" => crate::layout::l14_unit_outside(ctx, db, &mut out),
+        other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
+    })?;
+    Ok(out)
+}
+
 /// Run a native rule: (facts, conflicts, out_hash, ms computing, ms recording); recorded unless ctx.record is
 /// false (shadow).
 #[pyfunction]
 pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String, f64, f64)> {
     let t0 = std::time::Instant::now();
-    let mut out = Out::new(&ctx.rule, &ctx.version);
-    with_conn(&ctx.db, |db| match ctx.rule.as_str() {
-        "M.draft" => m_draft(&ctx, db, &mut out),
-        "S.headers" => crate::setup::s_headers(&ctx, db, &mut out),
-        "S.sections" => crate::setup::s_sections(&ctx, db, &mut out),
-        "S.datadirs" => crate::setup::s_datadirs(&ctx, db, &mut out),
-        "S.imports" => crate::setup::s_imports(&ctx, db, &mut out),
-        "S.exports" => crate::setup::s_exports(&ctx, db, &mut out),
-        "S.entry" => crate::setup::s_entry(&ctx, db, &mut out),
-        "S.relocs" => crate::setup::s_relocs(&ctx, db, &mut out),
-        "S7.entry.section" => crate::setup::s7_entry_section(&ctx, db, &mut out),
-        "S4.import.libs" => crate::setup::s4_import_libs(&ctx, db, &mut out),
-        "M.match" => m_match(&ctx, db, &mut out),
-        "M8.reloc" => m8_reloc(&ctx, db, &mut out),
-        "M.lint" => m_lint(&ctx, db, &mut out),
-        "M.data.site" => m_data_site(&ctx, db, &mut out),
-        "M.data.content" => m_data_content(&ctx, db, &mut out),
-        "M.data.draft" => m_data_draft(&ctx, db, &mut out),
-        "D.data" => d_data(&ctx, db, &mut out),
-        "L9.analyzer.span" => crate::layout::l9_analyzer_span(&ctx, db, &mut out),
-        "L.src.extent" => crate::layout::l_src_extent(&ctx, db, &mut out),
-        "L5.placeholder" => crate::layout::l5_placeholder(&ctx, db, &mut out),
-        "A1.addr.cast" => crate::layout::a1_addr_cast(&ctx, db, &mut out),
-        "L13.data.code" => crate::layout::l13_data_code(&ctx, db, &mut out),
-        "L.unit.extent" => crate::layout::l_unit_extent(&ctx, db, &mut out),
-        "M1.baseline" => crate::layout::m1_baseline(&ctx, db, &mut out),
-        "G.grade" => crate::grade::g_grade(&ctx, db, &mut out),
-        "L1.src.start" => crate::layout::l1_src_start(&ctx, db, &mut out),
-        "L.src" => crate::layout::l_src(&ctx, db, &mut out),
-        "L4.boundary" => crate::layout::l4_boundary(&ctx, db, &mut out),
-        "L10.unexplained" => crate::layout::l10_unexplained(&ctx, db, &mut out),
-        "L14.unit.outside" => crate::layout::l14_unit_outside(&ctx, db, &mut out),
-        other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
-    })?;
+    let out = dispatch(&ctx)?;
     let ms = t0.elapsed().as_millis() as i64;
     let computed = t0.elapsed().as_secs_f64() * 1000.0;
     let t1 = std::time::Instant::now();
@@ -999,4 +1005,64 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String, f64, f64)> {
         write_run(db, &ctx.db, &ctx.rule, &ctx.version, &ctx.code_hash, &ctx.input_hash, &rows, &confl, ms, ctx.shortcuts)
     })?;
     Ok((nf, nc, h, computed, t1.elapsed().as_secs_f64() * 1000.0))
+}
+
+// ------------------------------------------------------------------------------------------------ test kit
+
+#[cfg(test)]
+pub(crate) mod testkit {
+    //! A store in a temporary directory with an image beside it; rules run on it as the engine runs them.
+    use super::*;
+    use crate::{ConflictRow, Row};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static N: AtomicUsize = AtomicUsize::new(0);
+
+    pub struct Kit {
+        pub dir: std::path::PathBuf,
+        pub db: String,
+        pub image: String,
+    }
+
+    impl Kit {
+        pub fn new(image: &[u8]) -> Kit {
+            let dir = std::env::temp_dir().join(format!("dcp-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            std::fs::create_dir_all(&dir).unwrap();
+            let img = dir.join("image.dll");
+            std::fs::write(&img, image).unwrap();
+            let db = dir.join("store.sqlite");
+            let c = Connection::open(&db).unwrap();
+            c.execute_batch(crate::store::SCHEMA).unwrap();
+            Kit { db: db.to_string_lossy().into_owned(), image: img.to_string_lossy().into_owned(), dir }
+        }
+
+        pub fn ctx(&self, rule: &str, needed: &[&str], extra: &str) -> Ctx {
+            Ctx { rule: rule.into(), version: "1".into(), code_hash: "test".into(), input_hash: format!("test:{rule}"), db: self.db.clone(),
+                  main: String::new(), needed: needed.iter().map(|s| s.to_string()).collect(), root: self.dir.to_string_lossy().into_owned(),
+                  image: self.image.clone(), fill_forms: vec![vec![0x90], vec![0xcc], vec![0x8b, 0xff], vec![0x8d, 0x49, 0x00]],
+                  capstone: String::new(), record: true, shortcuts: true, extra: extra.into() }
+        }
+
+        /// A rule's output, sorted as recorded.
+        pub fn run(&self, rule: &str, needed: &[&str], extra: &str) -> (Vec<Row>, Vec<ConflictRow>) {
+            dispatch(&self.ctx(rule, needed, extra)).unwrap().sorted()
+        }
+
+        /// Run and record a rule (the rules that need it read its facts).
+        pub fn record(&self, rule: &str, needed: &[&str], extra: &str) {
+            run_rule(self.ctx(rule, needed, extra)).unwrap();
+        }
+    }
+
+    impl Drop for Kit {
+        fn drop(&mut self) {
+            crate::forget_conn(&self.db);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// (lo, hi, kind, value) of the rows of one kind.
+    pub fn of(rows: &[Row], kind: &str) -> Vec<(i64, i64, serde_json::Value)> {
+        rows.iter().filter(|r| r.kind == kind).map(|r| (r.lo, r.hi, serde_json::from_str(&r.value).unwrap())).collect()
+    }
 }
