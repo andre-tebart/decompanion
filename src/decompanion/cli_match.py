@@ -58,7 +58,7 @@ def cmd_diffclass(args):
     """The hunks of one function's instruction diff with their classes (diffclass.rs)."""
     from .rules.engine import capstone_dll
     p, e = built(args)
-    return report("diffclass", *_core.diffclass_command(p.core, capstone_dll(), args.name))
+    return report("diffclass", *_core.diffclass_command(p.core, capstone_dll(), args.name, bool(args.all)))
 
 
 # ------------------------------------------------------------------------------------------------ the level ladder

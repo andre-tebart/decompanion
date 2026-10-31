@@ -132,7 +132,8 @@ uv run dcp grade NAME|0xADDR      # one function: grades, failing rules, hunks, 
 uv run dcp asmdiff NAME [--regs a=b,...] [--all] [--symbols]   # instruction diff, ours '-' / original '+';
                                   # --symbols: names for X (ours: relocations, the original: the ledger), '!' an
                                   # equal instruction naming another symbol or literal
-uv run dcp diffclass NAME         # the hunk classes and the verdict
+uv run dcp diffclass NAME [--all] # the hunk classes and the verdict; a code hunk's lines (the first 8 per
+                                  # side and how many more; --all every line)
 ```
 
 ## The level ladder

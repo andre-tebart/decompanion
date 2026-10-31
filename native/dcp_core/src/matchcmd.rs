@@ -267,9 +267,14 @@ pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str
     Ok((out, None, 0))
 }
 
-/// `dcp diffclass`: the hunks of one function's instruction diff with their classes (diffclass.rs).
+/// The lines of a `code` hunk diffclass prints per side (asmdiff prints them all); `all`: every line.
+const HUNK_LINES: usize = 8;
+
+/// `dcp diffclass`: the hunks of one function's instruction diff with their classes (diffclass.rs); a `code` hunk
+/// with its lines, the first HUNK_LINES of each side and how many more (`all`: every line).
 #[pyfunction]
-pub fn diffclass_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str) -> PyResult<Out> {
+#[pyo3(signature = (project, capstone, name, all=false))]
+pub fn diffclass_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str, all: bool) -> PyResult<Out> {
     let r = match reading(&project, capstone, name, "diffclass", false)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
@@ -294,9 +299,15 @@ pub fn diffclass_command(project: PyRef<'_, PyProject>, capstone: &str, name: &s
     for (i1, i2, j1, j2, cls, info) in &r.hunks {
         let at = if *i1 < la.len() { la[*i1].addr } else { lb[*j1].addr };
         out.push(format!("  {at:#010x}  {cls:<6} {:>4}  {info}", i2 - i1 + j2 - j1));
-        if cls == "code" && i2 - i1 + j2 - j1 <= 12 {
-            out.extend(la[*i1..*i2].iter().map(|x| format!("      - {}", x.text)));
-            out.extend(lb[*j1..*j2].iter().map(|x| format!("      + {}", x.text)));
+        if cls == "code" {
+            // a small hunk whole (as before: up to 12 lines), else the first lines of each side
+            let keep = if all || i2 - i1 + j2 - j1 <= 12 { usize::MAX } else { HUNK_LINES };
+            for (sign, lines, whose) in [("-", &la[*i1..*i2], "ours"), ("+", &lb[*j1..*j2], "the original's")] {
+                out.extend(lines.iter().take(keep).map(|x| format!("      {sign} {}", x.text)));
+                if lines.len() > keep {
+                    out.push(format!("      {sign} ... (+{} more of {whose}: --all, or dcp asmdiff)", lines.len() - keep));
+                }
+            }
         }
     }
     out.push(format!("  summary: {}", v.summary()));

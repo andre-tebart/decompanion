@@ -109,6 +109,13 @@ def test_compile_and_byte_match(tiny):
     assert "code=draft" in out and "B3 draft" in out
     code, out = dcp(tiny, "diffclass", "get")
     assert "code" in out
+    # a big code hunk: its first lines and how many more (every line with --all)
+    calls = "".join(f"    put({k});\n" for k in range(1, 10))
+    unit(tiny, "net", head + "void put(int x);\n", f"/* 0x10001020, reads the counter */\nint get(void)\n{{\n{calls}    return counter;\n}}\n")
+    code, out = dcp(tiny, "diffclass", "get")
+    assert "      - push 1" in out and "more of ours: --all, or dcp asmdiff)" in out, out
+    code, out = dcp(tiny, "diffclass", "get", "--all")
+    assert "more of ours" not in out and out.count("      - call X") == 9, out
     # a compile error names the unit's file and line and fails the gate
     unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return nothing;\n}\n")
     code, out = dcp(tiny, "build")

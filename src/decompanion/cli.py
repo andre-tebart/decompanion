@@ -398,6 +398,7 @@ def parser() -> argparse.ArgumentParser:
                    "original's: the ledger's labels); '!' marks an equal instruction naming another symbol")
     s = cmd(sub, "diffclass", CM.cmd_diffclass, "the hunk classes of one function's instruction diff")
     s.add_argument("name")
+    s.add_argument("--all", action="store_true", help="print every line of every code hunk (else the first 8 of each side)")
     for lvl, verb in (("deep", "escalate"), ("stuck", "stuck")):
         s = cmd(sub, verb, CM.cmd_level, f"write `@{lvl} why` into a function's address comment (--clear removes the tag)")
         s.add_argument("name")
