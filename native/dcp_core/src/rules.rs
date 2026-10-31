@@ -41,6 +41,7 @@ pub struct Compiled {
     pub src: Rc<SFact>,
     pub c: Compared,
     pub code: crate::coff::FunctionCode,
+    pub next: u32, // the next known start (the end of the function's slot)
 }
 
 impl Compared {
@@ -145,7 +146,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
         let next = if i < starts.len() { starts[i] } else { img.end() };
         let code = obj.0.function_code(k);
         let c = compare(&img, &code, lo, relocs.as_deref(), next, &forms);
-        out.push(Compiled { obj: obj.clone(), src: s, c, code });
+        out.push(Compiled { obj: obj.clone(), src: s, c, code, next });
     }
     Ok((out, missing))
 }
@@ -935,6 +936,7 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         "L13.data.code" => crate::layout::l13_data_code(&ctx, db, &mut out),
         "L.unit.extent" => crate::layout::l_unit_extent(&ctx, db, &mut out),
         "M1.baseline" => crate::layout::m1_baseline(&ctx, db, &mut out),
+        "G.grade" => crate::grade::g_grade(&ctx, db, &mut out),
         other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
     })?;
     let ms = t0.elapsed().as_millis() as i64;

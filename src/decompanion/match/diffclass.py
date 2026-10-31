@@ -155,7 +155,7 @@ class Verdict:
     branches: list = field(default_factory=list)    # the jumps whose targets do not align (branch_diffs)
 
     def summary(self) -> str:
-        hs = ", ".join(f"{k} {v}" for k, v in sorted(self.hunks.items(), key=lambda kv: -kv[1])) or "identical instructions"
+        hs = ", ".join(f"{k} {v}" for k, v in sorted(self.hunks.items(), key=lambda kv: (-kv[1], kv[0]))) or "identical instructions"
         extra = "; the code hunks are moved instructions" if self.moved else (
             "; equal under one function-wide renaming" if self.renamed else "")
         if self.frame:

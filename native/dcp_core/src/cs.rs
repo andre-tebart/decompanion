@@ -133,3 +133,24 @@ pub fn disasm(dll: &str, code: &[u8], va: u32) -> Result<Vec<Ins>, String> {
         Ok(out)
     })
 }
+
+/// The first instruction of `code` at `va` with its text, None when it does not decode.
+pub fn first(dll: &str, code: &[u8], va: u32) -> Result<Option<Ins>, String> {
+    with_engine(dll, |eng| {
+        let mut insn: *mut CsInsn = std::ptr::null_mut();
+        let len = code.len().min(16);
+        let n = unsafe { (eng.disasm)(eng.handle, code.as_ptr(), len, va as u64, 1, &mut insn) };
+        if n == 0 {
+            return Ok(None);
+        }
+        let i = unsafe { &*insn };
+        let out = Ins {
+            addr: i.address as u32,
+            size: i.size as u32,
+            mnemonic: unsafe { CStr::from_ptr(i.mnemonic.as_ptr()) }.to_string_lossy().into_owned(),
+            op_str: unsafe { CStr::from_ptr(i.op_str.as_ptr()) }.to_string_lossy().into_owned(),
+        };
+        unsafe { (eng.free)(insn, n) };
+        Ok(Some(out))
+    })
+}

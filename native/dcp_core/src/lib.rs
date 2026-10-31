@@ -8,11 +8,16 @@
 mod coff;
 mod compare;
 mod cs;
+mod diffclass;
+mod difflib;
+mod grade;
 mod lde;
 mod layout;
 mod pe;
+mod readability;
 mod rules;
 mod store;
+mod x86;
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;

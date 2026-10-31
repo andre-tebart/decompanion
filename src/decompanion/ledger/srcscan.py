@@ -835,14 +835,18 @@ def native_view(sc: Scan) -> str:
     """The items of a scan the native rules read (L5, A1, L13 in native/dcp_core/src/layout.rs), as JSON text:
     functions with addresses (file, comment line, end line, addrs), placeholders and pointer casts (file, line,
     text, value as hex: a placeholder may spell more digits than an integer type holds), data declarations
-    (file, line, kind, name, addrs). Made once per scan (a scan is made once per tree)."""
+    (file, line, kind, name, addrs); the function definitions of the front end's models (file -> name -> start
+    line, column, end line, column: G.grade's readability, the last definition with a body). Made once per scan (a
+    scan is made once per tree)."""
     if sc._native is None:
         import json
         sc._native = json.dumps({
             "functions": [(f.file, f.comment_line, f.end_line, f.addrs) for f in sc.functions if f.addrs],
             "placeholders": [(p.file, p.line, p.ident, format(p.value, "x")) for p in sc.placeholders],
             "ptrcasts": [(c.file, c.line, c.text, format(c.value, "x")) for c in sc.ptrcasts],
-            "data": [(d.file, d.line, d.kind, d.name, d.addrs) for d in sc.data]}, separators=(",", ":"))
+            "data": [(d.file, d.line, d.kind, d.name, d.addrs) for d in sc.data],
+            "defs": {rel: {d[1]: (*d[3], *(d[5] or (None, None))) for d in m["decls"] if d[0] == "f" and d[6] is not None}
+                     for rel, m in sc.models.items()}}, separators=(",", ":"))
     return sc._native
 
 

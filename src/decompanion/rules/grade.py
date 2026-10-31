@@ -49,34 +49,19 @@ import functools
 import json
 import re
 
-from .. import fsmemo
 from ..build import compile as build_compile
 from ..ledger import srcscan
-from ..ledger.fact import Kind, Level, Severity
-from ..ledger.store import sha256
-from ..match import diffclass as DC
+from ..ledger.fact import Level
 from .engine import RuleContext, rule
-from .match import WALK, compiled_functions, starts_of
-from ..match import compare as C
+from .match import WALK
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
 CODE = ("draft", "shape", "byte")
 READ = ("draft", "readable")
 CODE_RANK = {c: i for i, c in enumerate(CODE)}
 
-PLACEHOLDER = re.compile(r"Unk[0-9a-fA-F]{4,}|^(?=.*\d)[A-Za-z_]\w*?[0-9a-fA-F]{6}$|^param_\d+$|^[a-z]{1,3}Var\d+$|^local_[0-9a-f]+$"
-                         r"|^_?(?:DAT|PTR|FUN|LAB)_[0-9a-fA-F]+$|^unk_?[0-9a-fA-F]{1,8}$")
-IDENT = re.compile(r"\b[A-Za-z_]\w*\b")
-LITERAL = re.compile(r"(?<![\w.])(0[xX][0-9a-fA-F]+|\d+)[uUlL]*(?![\w.])")
 DEREF_CAST = re.compile(r"\*\s*\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*"
                         r"(?:\s+[A-Za-z_]\w*)*\s*\*+\s*(?:const\s*)?\)")
-READABILITY_VERSION = "4"                          # bump when readability() changes its verdicts or texts
-Q4_VIEW = ("a typed field, struct or symbol instead; a datum read as another type is a view: "
-           "`#define NAME (*(T *)&datum)  /* 0xADDR */` or `(*(T *)((char *)&datum + OFF))` with the address comment "
-           "on its line; `(*(T *)datum)` reads through the datum's value and stays raw")
-DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(([^)]*)\)[ \t]*((?:\\\n|[^\n])*)", re.M)
-MARKER = re.compile(r"\b(ROUGH|SKELETON|TODO|FIXME|XXX)\b")
-DESCRIBED = re.compile(r"\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)", re.S)
 
 
 @functools.lru_cache(maxsize=2)
@@ -101,153 +86,22 @@ def context(root: str, tree: str) -> tuple[frozenset, frozenset]:
     return frozenset(raw), frozenset(described)
 
 
-_sources: dict[tuple, srcscan.Source] = {}
-_lines: dict[tuple, list[str]] = {}
-SOURCES_MAX = 2048                      # files: above every unit and header of a project, a grade run never thrashes
-
-
-def lines_of(path) -> list[str]:
-    """The lines of a file, once per content (a unit's functions read the same file)."""
-    key = (str(path), fsmemo.sha256(path))
-    hit = _lines.get(key)
-    if hit is None:
-        if len(_lines) > SOURCES_MAX:
-            _lines.clear()
-        hit = _lines[key] = fsmemo.read_text(path).split("\n")
-    return hit
-
-
-def source_of(rel: str, path) -> tuple[srcscan.Source, list[str]]:
-    """(the lexed Source, the lines) of a file, once per content; lexed only when asked (a memo hit of
-    readability_cached needs the lines only)."""
-    from pathlib import Path
-    p = Path(path)
-    key = (str(p), fsmemo.sha256(p))
-    hit = _sources.get(key)
-    if hit is None:
-        if len(_sources) > SOURCES_MAX:
-            _sources.clear()
-        hit = _sources[key] = srcscan.Source(rel, fsmemo.read_text(p))
-    return hit, lines_of(p)
-
-
-def own_calls(lint: dict, fn_value: dict) -> list[str]:
-    """The lint's M7 calls (source/lint.py's `calls`) inside one function's span (its address comment to the
-    end of its definition; the whole file without an end)."""
-    lo, hi = fn_value.get("comment", 1), fn_value.get("end") or 0
-    return [c for line, c in lint.get(fn_value["file"], []) if lo <= line and (not hi or line <= hi)]
-
-
-def readability(root, tree: str, fn_value: dict, addr: int, image_range, lint=None) -> tuple[str, list[str]]:
-    """(readable | draft, [failing rule with evidence]) of one sourced function (Q1..Q7, module docstring)."""
-    from pathlib import Path
-    rel, name = fn_value["file"], fn_value["symbol"]
-    p = Path(root) / rel
-    if not p.exists():
-        return "draft", ["the source is gone"]
-    S = source_of(rel, p)[0]
-    m = srcscan.scan(root, tree).models.get(rel, srcscan.EMPTY)
-    defs = [d for d in m["decls"] if d[0] == "f" and d[1] == name and d[6] is not None]
-    if not defs:
-        return "draft", ["definition not found by the parser"]
-    off = S.offset(*defs[-1][3])                                     # the front end's extent of the definition
-    end = S.offset(*defs[-1][5]) if defs[-1][5] else len(S.code)     # (its body runs on into the next file: L.src)
-    code = S.code[off:end]
-    raw, described = context(str(root), tree)
-    fails = []
-    if PLACEHOLDER.search(name):
-        fails.append(f"Q1 name: {name} is a placeholder")
-    words = IDENT.findall(code)
-    idents = sorted({w for w in words if w != name and PLACEHOLDER.search(w)})
-    if idents:
-        fails.append("Q2 identifiers: " + ", ".join(idents[:8]) + (f" (+{len(idents) - 8} more)" if len(idents) > 8 else ""))
-    lo, hi = image_range
-    lits = []
-    for m in LITERAL.finditer(code):
-        s = m.group(1)
-        try:
-            v = int(s, 16) if s[:2] in ("0x", "0X") else int(s, 8) if len(s) > 1 and s[0] == "0" else int(s, 10)
-        except ValueError:
-            continue
-        if lo <= v < hi and s not in lits:
-            lits.append(s)
-    if lits:
-        fails.append("Q3 addresses: " + ", ".join(lits[:6]))
-    casts = DEREF_CAST.findall(code)
-    macros = sorted({w for w in words if w in raw})
-    if casts or macros:
-        fails.append("Q4 raw access: " + ", ".join(([f"{len(casts)} x `*(T *)`"] if casts else []) + ["macro " + m for m in macros])
-                     + " (" + Q4_VIEW + ")")
-    cline = fn_value.get("comment", 1)
-    first = next((b for s, e, b in S.comments if S.line_of(s) == cline), "")
-    texts = [first] + [b for s, e, b in S.comments if off <= s < end] + [code]
-    marks = sorted({m.group(1) for t in texts for m in MARKER.finditer(t)})
-    if fn_value.get("rough"):
-        marks.append("@rough")
-    if marks:
-        fails.append("Q5 markers: " + ", ".join(marks))
-    if addr not in described:
-        fails.append("Q6 described: no text after the address, no other comment describes it")
-    if lint is not None:
-        bad = own_calls(lint, fn_value)
-        if bad:
-            fails.append("Q7 prototypes: " + ", ".join(bad[:6]))
-    return ("draft" if fails else "readable"), fails
-
-
-_ctx_digest: dict[str, str] = {}
-_read_memo: dict[str, tuple] = {}        # readability_cached's key -> (grade, failing), this process
-_code_memo: dict[tuple, tuple] = {}      # (compare key, the original's extent, matched) -> a function's code grade row
-_read_used: dict[str, tuple] = {}        # the entries of each memo the current run used (trim)
-_code_used: dict[tuple, tuple] = {}
-MEMO_MAX = 15000
-
-
-def readability_cached(store, root, tree, fn_value, addr, image_range, lint=None):
-    """readability(), memoised in the store by everything it reads: the text of the function's span (its address
-    comment to the end of its definition), the function's source fact, its address, the tree's context (macros,
-    described addresses) and its lint entry."""
-    from pathlib import Path
-    p = Path(root) / fn_value["file"]
-    if not fsmemo.exists(p):
-        return readability(root, tree, fn_value, addr, image_range, lint)
-    dig = _ctx_digest.get(tree)
-    if dig is None:
-        raw, described = context(str(root), tree)
-        dig = _ctx_digest[tree] = sha256(json.dumps(sorted(raw)), json.dumps(sorted(described)))
-    lines = lines_of(p)
-    span = "\n".join(lines[fn_value.get("comment", 1) - 1:fn_value.get("end") or len(lines)])
-    # the positions are left out (an edit above a function moves it, the verdict stays): what they locate, the
-    # span's text and the calls inside it, is in the key
-    fv = {k: v for k, v in fn_value.items() if k not in ("line", "comment", "end")}
-    key = sha256("readability", READABILITY_VERSION, span, json.dumps(fv, sort_keys=True), f"{addr:x}",
-                 dig, json.dumps(list(image_range)), json.dumps(own_calls(lint, fn_value) if lint is not None else None))
-    hit = _read_memo.get(key)
-    if hit is not None:
-        _read_used[key] = hit
-        return hit
-    hit = store.blob_json(key)
-    if hit is not None:
-        _read_memo[key] = _read_used[key] = (hit[0], hit[1])
-        return hit[0], hit[1]
-    q, qf = readability(root, tree, fn_value, addr, image_range, lint)
-    store.put_blob_json(key, "readability", [q, qf])
-    _read_memo[key] = _read_used[key] = (q, qf)
-    return q, qf
-
-
-def trim(memo: dict, used: dict):
-    """A memo grown past MEMO_MAX keeps the entries the last run used (each edit adds the keys of the functions it
-    changed; clearing all would make the next run compute every function again)."""
-    if len(memo) > MEMO_MAX:
-        memo.clear()
-        memo.update(used)
-    used.clear()
+def grade_inputs(p) -> str:
+    """What G.grade reads that only Python computes, as JSON text: the raw macros and described addresses of the
+    tree (context), the last lint's calls and the units whose text it parsed, the function alignment, the source
+    scan's items (srcscan.native_view: the definitions' extents)."""
+    tree = p.input_hash("src")
+    raw, described = context(str(p.root), tree)
+    lint = p.input("lint")
+    current = {a.unit: a.src_hash for a in build_compile.plan(p)} if lint else {}
+    linted = sorted(u for u, h in (lint or {}).get("units", {}).items() if current.get(u) == h)
+    head = json.dumps({"raw": sorted(raw), "described": sorted(described), "lint_calls": lint.get("calls") if lint else None,
+                       "linted": linted, "function_alignment": p.toolchain.function_alignment})
+    return head[:-1] + ',"scan":' + srcscan.native_view(srcscan.scan(p.root, tree)) + "}"
 
 
 @rule("G.grade", version="5", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
-      inputs=("objects", "src", "lint"), helpers=(compiled_functions, starts_of, readability, readability_cached, source_of, lines_of, trim, context, DC, C,
-                                                         build_compile.plan))
+      inputs=("objects", "src", "lint"), native=True, native_inputs=grade_inputs)
 def grade(ctx: RuleContext):
     """The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8
     and the unit grades of rules/grade.py's module docstring), as `grade` facts: a function's at its address
@@ -257,107 +111,9 @@ def grade(ctx: RuleContext):
     not a gate; `dcp asmdiff` / `dcp diffclass` read the same extent and slot), hunks}; a unit's over its extent {of: unit, code,
     readability, functions, named_by}. A function's grade fact is proven when its code is byte (M.match), else
     declared (its address comment is the premise). Q7 is evaluated only for the units whose text the
-    last `dcp lint` parsed (the store meta `lint`)."""
-    p, img, tc = ctx.project, ctx.image, ctx.project.toolchain
-    funcs, missing = compiled_functions(ctx)
-    matched = {f.lo for f in ctx.facts(Kind.symbol) if f.run == "M.match"}
-    walk = {f.lo: f for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "func" and f.run in ("S.codewalk", "L.src.extent")}
-    lint = ctx.input("lint")
-    lint_calls = lint.get("calls") if lint else None
-    # Q7 only for units whose text is what the last lint parsed
-    current = {a.unit: a.src_hash for a in build_compile.plan(p)} if lint else {}
-    linted = {u for u, h in (lint or {}).get("units", {}).items() if current.get(u) == h}
-    tree = p.input_hash("src")
-    plug = p.input_hash("plugins")
-    rng = (img.base, img.end)
-    rows = []
-    trim(_code_memo, _code_used)
-    trim(_read_memo, _read_used)
-    for s, obj, sym, code, c in funcs:
-        w = walk.get(s.lo)
-        mk = (getattr(c, "fkey", None), w.hi if w is not None else None, s.lo in matched, DC.VERSION)
-        hit = _code_memo.get(mk) if mk[0] is not None else None
-        if hit is not None:
-            _code_used[mk] = hit
-            rows.append((s, *hit))
-            continue
-        skey = sha256("codesize", DC.VERSION, plug, code.code_data.hex(), code.code_mask.hex(), f"{s.lo:x}")
-        size = ctx.store.blob_json(skey)
-        if size is None:
-            size = DC.code_size(p.isa, img, code.code_data, code.code_mask, s.lo, tc.fill_forms)
-            ctx.store.put_blob_json(skey, "codesize", size)
-        extent = (w.hi - s.lo) if w is not None else size
-        slot = max(extent, (c.next_start or s.lo) - s.lo)
-        okey = sha256("original", DC.VERSION, plug, f"{s.lo:x}", f"{extent:x}", f"{tc.function_alignment}",
-                      img.read(s.lo, slot).hex())
-        cached = ctx.store.blob_json(okey)
-        if cached is None:
-            o = DC.original(p.isa, img, s.lo, extent, slot, tc.fill_forms, tc.function_alignment)
-            ctx.store.put_blob_json(okey, "original", o.to_json())
-        else:
-            o = DC.Original.from_json(cached)
-        orig_size = o.code
-        n = min(size, orig_size)
-        nbytes = sum(1 for k in c.diffs if k < n) + abs(size - orig_size)
-        if s.lo in matched:
-            g, why, hunks, dist_ins = "byte", [], {}, 0
-        else:
-            tbl = [(off, s2.value if s2 is not None else None) for off, r, s2 in code.relocs if off >= len(code.code_data)]
-            key = sha256("diffclass", DC.VERSION, plug, code.data.hex(), code.mask.hex(), str(code.code_len), str(code.start),
-                         json.dumps(tbl), f"{s.lo:x}", okey)
-            cached = ctx.store.blob_json(key)
-            if cached is None:
-                A, B, _, tables = DC.compare_function(p.isa, img, code, s.lo, extent, slot, tc.fill_forms, orig=o)
-                v = DC.verdict(A, B, p.isa, tables)
-                ctx.store.put_blob_json(key, "diffclass", v.to_json())
-            else:
-                v = DC.Verdict.from_json(cached)
-            g = "shape" if v.shape else "draft"
-            hunks, dist_ins = v.hunks, v.distance
-            why = [f"B1 byte: {c.why()}"] if c.why() else []
-            if g == "draft":
-                why.append(("B3 draft: unexplained code hunks: " if v.code else "B3 draft: ") + v.summary())
-            else:
-                why.append("B2 shape: " + v.summary())
-        rows.append((s, g, why, hunks, {"ins": dist_ins, "bytes": nbytes, "size": size, "orig": orig_size,
-                                        "extent": extent, "slot": slot}))
-        if mk[0] is not None:
-            _code_memo[mk] = _code_used[mk] = rows[-1][1:]
-    for s, reason in missing:
-        w = walk.get(s.lo)
-        rows.append((s, "draft", [f"B3 draft: {reason}"], {}, {"ins": None, "bytes": None, "size": None,
-                                                               "orig": (w.hi - s.lo) if w is not None else None}))
-    per_unit = {}
-    for s, g, why, hunks, dist in sorted(rows, key=lambda r: r[0].lo):
-        q, qf = readability_cached(ctx.store, p.root, tree, s.value, s.lo, rng, lint_calls if s.value["unit"] in linted else None)
-        if dist.get("size") and dist.get("orig") and dist["size"] * 2 < dist["orig"]:     # Q8: a stub is not readable
-            q, qf = "draft", qf + [f"Q8 complete: our code is {dist['size']} bytes, the original's {dist['orig']}: the body is "
-                                    f"a stub or unfinished (at least half the original's size)"]
-        level = "stuck" if s.value.get("stuck") is not None else ("deep" if s.value.get("deep") is not None else "")
-        v = {"of": "function", "name": s.value["symbol"], "unit": s.value["unit"], "file": s.value["file"],
-             "comment": s.value.get("comment", 1), "code": g,
-             "readability": q, "level": level, "failing": why + qf, "dist": dist}
-        if hunks:
-            v["hunks"] = hunks
-        if s.value.get("deep") is not None and s.value.get("stuck") is not None:
-            yield ctx.conflict(Severity.error, "M2", s.lo, s.lo + 1, f"{s.value['symbol']}: carries both @deep and @stuck", a=s.by)
-        elif level and g == "byte" and q == "readable":
-            yield ctx.conflict(Severity.warn, "M2", s.lo, s.lo + 1, f"{s.value['symbol']}: byte + readable, its @{level} tag is stale "
-                                                                    f"(dcp build clears it)", a=s.by)
-        yield ctx.fact(s.lo, s.lo + 1, Kind.grade, v, P if g == "byte" else DE)
-        per_unit.setdefault(s.value["unit"], []).append(v)
-    for u in ctx.facts(Kind.unit):
-        if "status" not in u.value:
-            continue
-        fs = per_unit.get(u.value["tu"])
-        if not fs:
-            continue
-        code = min((f["code"] for f in fs), key=CODE_RANK.get)
-        named = u.value.get("named_by")
-        readable = all(f["readability"] == "readable" for f in fs) and named not in (None, "guess")
-        yield ctx.fact(u.lo, u.hi, Kind.grade, {"of": "unit", "unit": u.value["tu"], "code": code,
-                                               "readability": "readable" if readable else "draft", "functions": len(fs),
-                                               "named_by": named or "-"}, min(u.level, DE))
+    last `dcp lint` parsed (the store meta `lint`). Native:
+    native/dcp_core/src/grade.rs (diffclass.rs, readability.rs, x86.rs)."""
+    return ()
 
 
 # ------------------------------------------------------------------------------------------------ M1

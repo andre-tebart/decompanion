@@ -14,94 +14,14 @@ table (input `objects`); the rules never compile (`dcp build` does).
 """
 from __future__ import annotations
 
-import bisect
-import json
-
 from ..build import compile as build_compile
 from ..ledger.fact import Kind, Level, Severity
-from ..ledger.store import sha256
 from ..match import compare as C
 from .engine import RuleContext, rule
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
 
 WALK = ("S.sections", "S.relocs", "S.codewalk", "S.crt.code", "S.thunk", "S.exports", "S.entry")
-
-
-def starts_of(ctx) -> list[int]:
-    """Every known function start (start facts and function / thunk symbols of the needed rules), and the end
-    of every code section, sorted: the end of a function's slot is the next of them."""
-    s = {f.lo for f in ctx.facts(Kind.start)}
-    s |= {f.lo for f in ctx.facts(Kind.symbol) if f.value.get("skind") in ("func", "thunk") and f.level > O}
-    s |= {sec.end for sec in ctx.image.sections if sec.holds_code}
-    return sorted(s)
-
-
-_compiled: dict[str, tuple] = {}
-_per_fn: dict[tuple, tuple] = {}         # (image, plugins, object, symbol, address, next start, relocs) -> (code, compare)
-_index: dict[str, dict] = {}             # object hash -> its function index
-PER_FN_MAX = 15000                       # about three compiles of every function: the current ones and recent edits
-
-
-def compiled_functions(ctx, sources=None):
-    """[(source fact, unit object, function symbol, FunctionCode, Compared)] for every sourced function of the
-    current target whose unit compiled and whose object defines the source's function; plus a list of
-    (source fact, why) for the functions that have no compiled function. Memoised per process by its inputs
-    (the objects, the starts, the relocation sites, the sources): the match, check, data and grade rules of
-    one refresh share one compare of every function."""
-    p, img, tc = ctx.project, ctx.image, ctx.project.toolchain
-    tus = ctx.input("objects")
-    relocs = sorted(f.lo for f in ctx.facts(Kind.ref) if f.value["rkind"] == "reloc") or None
-    if not img.relocations():
-        relocs = None
-    starts = starts_of(ctx)
-    srcs = sources if sources is not None else [f for f in ctx.facts(Kind.source) if f.value.get("what") == "func" and f.run == "L.src"]
-    key = sha256(p.target_name, str(p.root), json.dumps({u: r.get("obj_hash") for u, r in sorted(tus.items())}),
-                 json.dumps(starts), json.dumps(relocs), json.dumps([(f.lo, f.value["unit"], f.value["symbol"]) for f in srcs]))
-    # the result holds the source facts themselves (the rules read their file, level, tags): a hit needs the very
-    # same fact objects, i.e. the same L.src run (the memo keeps them alive, so an id is never reused meanwhile)
-    key = (key, tuple(map(id, srcs)))
-    hit = _compiled.get(key)
-    if hit is not None:
-        return hit
-    if len(_compiled) > 4:
-        _compiled.clear()
-    if len(_per_fn) > PER_FN_MAX:
-        _per_fn.clear()
-        _index.clear()
-    # one function's compare depends on its object, its symbol, its address, the next start, the image and the
-    # relocation sites only: an edit of one unit compares that unit's functions again, not every function
-    world = (p.input_hash("image"), p.input_hash("plugins"), sha256(json.dumps(relocs)))
-    objs = C.objects(p, tus)
-    index = {}
-    for u, o in objs.items():
-        oh = tus[u]["obj_hash"]
-        if oh not in _index:
-            _index[oh] = C.function_index(o, tc)
-        index[u] = _index[oh]
-    out, missing = [], []
-    for s in sorted(srcs, key=lambda f: f.lo):
-        unit, name = s.value["unit"], s.value["symbol"]
-        if unit not in objs:
-            row = tus.get(unit)
-            missing.append((s, "no object: the unit " + ("failed to compile" if row else "is not compiled (dcp build)")))
-            continue
-        sym = index[unit].get(name)
-        if sym is None:
-            missing.append((s, f"the object of unit {unit} defines no function {name}"))
-            continue
-        i = bisect.bisect_right(starts, s.lo)
-        nxt = starts[i] if i < len(starts) else img.end
-        fk = (*world, tus[unit]["obj_hash"], name, s.lo, nxt)
-        got = _per_fn.get(fk)
-        if got is None:
-            code = objs[unit].function_code(sym)
-            c = C.compare(img, code, s.lo, relocs, nxt, tc.fill_forms)
-            c.fkey = fk                  # what the compare was computed from: the key of memos built on it (G.grade)
-            got = _per_fn[fk] = (code, c)
-        out.append((s, objs[unit], sym, *got))
-    _compiled[key] = (out, missing)
-    return out, missing
 
 
 # ------------------------------------------------------------------------------------------------ M.compile
@@ -207,23 +127,6 @@ def draft(ctx: RuleContext):
 
 
 # ------------------------------------------------------------------------------------------------ M8 / M9 / M10
-def name_registry(ctx) -> tuple[dict, dict]:
-    """(C name -> {address: producer level}, address -> {C names}) from every name fact of the needed rules:
-    library names (linker symbols, `a|b` for several) undecorated, imports `DLL!f` as f at their slot."""
-    tc = ctx.project.toolchain
-    by_name, by_addr = {}, {}
-    for f in ctx.facts(Kind.name):
-        raw = f.value["name"]
-        for n in raw.split("|"):
-            if f.value.get("origin") == "import":
-                n = n.split("!", 1)[-1]
-            elif f.value.get("origin") == "lib":
-                n = tc.undecorate(n)
-            by_name.setdefault(n, {})[f.lo] = max(by_name.get(n, {}).get(f.lo, Level.open), f.level)
-            by_addr.setdefault(f.lo, set()).add(n)
-    return by_name, by_addr
-
-
 @rule("M8.reloc", version="2", ceiling=P, needs=("L.src", *WALK, "kind:name"), inputs=("objects",), native=True)
 def reloc_checks(ctx: RuleContext):
     """For every compiled function that is a byte match, or whose bytes differ while the DLL aid holds (every

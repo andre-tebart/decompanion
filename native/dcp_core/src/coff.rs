@@ -93,6 +93,17 @@ pub struct FunctionCode {
     pub mask: Vec<u8>,
     pub relocs: Vec<(u32, Reloc)>, // (offset from the function start, relocation)
     pub code_len: Option<u32>,
+    pub start: u32, // the function symbol's value
+}
+
+impl FunctionCode {
+    /// (code_data, code_mask): the instructions up to the first compiler label after the code.
+    pub fn code(&self) -> (&[u8], &[u8]) {
+        match self.code_len {
+            None => (&self.data, &self.mask),
+            Some(n) => (&self.data[..(n as usize).min(self.data.len())], &self.mask[..(n as usize).min(self.mask.len())]),
+        }
+    }
 }
 
 fn latin1(b: &[u8]) -> String {
@@ -284,7 +295,7 @@ impl Obj {
             .filter(|r| start <= r.offset && r.offset < end)
             .map(|r| (r.offset - start, *r))
             .collect();
-        FunctionCode { secnum: sym.secnum as usize, data, mask, relocs, code_len: table.map(|t| t - start) }
+        FunctionCode { secnum: sym.secnum as usize, data, mask, relocs, code_len: table.map(|t| t - start), start }
     }
 }
 
