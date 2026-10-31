@@ -13,6 +13,7 @@ mod diffclass;
 mod difflib;
 mod grade;
 mod lde;
+mod lint;
 mod layout;
 mod pe;
 mod readability;
@@ -655,5 +656,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<clang::Unit>()?;
     m.add_function(wrap_pyfunction!(srcscan::scan_file, m)?)?;
     m.add_class::<srcscan::ScanPiece>()?;
+    m.add_function(wrap_pyfunction!(lint::lint_file_decls, m)?)?;
+    m.add_function(wrap_pyfunction!(lint::lint_alldecls, m)?)?;
+    m.add_function(wrap_pyfunction!(lint::lint_cross, m)?)?;
+    m.add_class::<lint::AllDecls>()?;
     Ok(())
 }

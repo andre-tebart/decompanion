@@ -17,16 +17,16 @@ type Addrs = Vec<(Option<String>, u64)>;
 type Lc = (i64, i64);
 
 /// str.isspace: Unicode white space and the separators U+001C..U+001F.
-fn py_space(c: char) -> bool {
+pub(crate) fn py_space(c: char) -> bool {
     c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
 }
 
-fn py_strip(s: &str) -> &str {
+pub(crate) fn py_strip(s: &str) -> &str {
     s.trim_matches(py_space)
 }
 
 /// " ".join(s.split())
-fn py_words(s: &str) -> String {
+pub(crate) fn py_words(s: &str) -> String {
     s.split(py_space).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
@@ -162,9 +162,9 @@ fn placeholder(w: &str) -> Option<u64> {
 }
 
 /// A file's text with its comments (the model's), its code (comments and literals blanked) and its lines.
-struct Src<'a> {
+pub(crate) struct Src<'a> {
     text: &'a str,
-    code: String,
+    pub(crate) code: String,
     starts: Vec<usize>,
     comments: Vec<(usize, usize, &'a str)>, // start, end, body
     cstarts: Vec<usize>,
@@ -172,7 +172,7 @@ struct Src<'a> {
 }
 
 impl<'a> Src<'a> {
-    fn new(text: &'a str, comments: &[(i64, i64, i64, i64)], strings: &[(i64, i64, i64, i64)]) -> Self {
+    pub(crate) fn new(text: &'a str, comments: &[(i64, i64, i64, i64)], strings: &[(i64, i64, i64, i64)]) -> Self {
         let starts: Vec<usize> = std::iter::once(0).chain(memchr::memchr_iter(b'\n', text.as_bytes()).map(|i| i + 1)).collect();
         let mut s = Src { text, code: String::new(), starts, comments: vec![], cstarts: vec![], own: HashMap::new() };
         let mut code = text.as_bytes().to_vec();
@@ -205,14 +205,14 @@ impl<'a> Src<'a> {
     }
 
     /// The byte offset of a (line, column in characters) position, both from 1 (Source.offset).
-    fn offset(&self, line: i64, col: i64) -> usize {
+    pub(crate) fn offset(&self, line: i64, col: i64) -> usize {
         let k = (line.min(self.starts.len() as i64) - 1).max(0) as usize;
         let ls = self.starts[k];
         let n = (col - 1).max(0) as usize;
         self.text[ls..].char_indices().nth(n).map(|(i, _)| ls + i).unwrap_or(self.text.len())
     }
 
-    fn line_of(&self, off: usize) -> i64 {
+    pub(crate) fn line_of(&self, off: usize) -> i64 {
         self.starts.partition_point(|&s| s <= off) as i64
     }
 
@@ -280,6 +280,18 @@ pub(crate) struct Piece {
     view: ScanView,
     rel: String,
     defs: Defs,
+    lint: Vec<(Option<String>, crate::lint::FileLint)>, // per target's view of the file
+    sysinc: Vec<String>,                                // its `#include <..>` names
+}
+
+impl Piece {
+    pub(crate) fn lint_for(&self, target: &Option<String>) -> Option<&crate::lint::FileLint> {
+        self.lint.iter().find(|(t, _)| t == target).map(|x| &x.1)
+    }
+
+    pub(crate) fn sysinc(&self) -> &[String] {
+        &self.sysinc
+    }
 }
 
 /// A file's piece, held by the Python scan that holds the file's scan (srcscan.Scan.native); the native rules
@@ -310,6 +322,11 @@ fn pieces(ids: &[u64]) -> PyResult<Vec<Arc<Piece>>> {
     ids.iter()
         .map(|id| h.get(id).and_then(|w| w.upgrade()).ok_or_else(|| PyRuntimeError::new_err(format!("scan piece {id} is no longer held"))))
         .collect()
+}
+
+/// rel -> the piece of the file, of the pieces named.
+pub(crate) fn pieces_by_rel(ids: &[u64]) -> PyResult<HashMap<String, Arc<Piece>>> {
+    Ok(pieces(ids)?.into_iter().map(|p| (p.rel.clone(), p)).collect())
 }
 
 /// The scan a ScanRef names: its pieces joined, its own errors after theirs.
@@ -537,7 +554,8 @@ pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py,
             errors: errors.iter().map(|e| (e.2.clone(), e.0.clone(), e.1, e.3.clone())).collect(),
         },
     };
-    let piece = hold(Piece { view, rel: rel.to_string(), defs: defs_of });
+    let lint = views.iter().map(|(t, m)| Ok((t.clone(), crate::lint::file_lint(rel, &sf, m)?))).collect::<PyResult<Vec<_>>>()?;
+    let piece = hold(Piece { view, rel: rel.to_string(), defs: defs_of, lint, sysinc: crate::lint::system_includes(text) });
     PyTuple::new(py, [
         macros.into_pyobject(py)?.into_any(),
         described.into_pyobject(py)?.into_any(),

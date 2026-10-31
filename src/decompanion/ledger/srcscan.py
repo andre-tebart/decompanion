@@ -164,6 +164,7 @@ class Scan:
     views: list[View] = field(default_factory=list)             # view macros (L15)
     rawobj: list[str] = field(default_factory=list)             # object-like macros dereferencing a cast, no view (Q4)
     models: dict = field(default_factory=dict)                  # file -> its front end model (cparse.model's entry)
+    target_models: dict = field(default_factory=dict, repr=False, compare=False)  # target -> its models (models())
     native: list = field(default_factory=list, repr=False, compare=False)  # its files' pieces in the core (ScanPiece)
     own_errors: list[ScanError] = field(default_factory=list)   # the errors of the whole scan (L16), after the files'
 
@@ -532,6 +533,7 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
     with timing.phase("scan.models"):
         per_target = {t: models(root, files, d) for t, d in targets}
     ms = out.models = per_target[default]
+    out.target_models = per_target
     for rel, p in files:
         m = ms.get(rel, EMPTY)
         views = {t: per_target[t].get(rel, EMPTY) for t, _ in targets} if default is not None else None
