@@ -3,7 +3,7 @@
 //! A rule here keeps its Python docstring as the criterion (`dcp rules` prints it); the code is this file.
 
 use crate::compare::{compare, Compared};
-use crate::store::{self, Out, SFact, DERIVED, OPEN};
+use crate::store::{self, Out, SFact, DECLARED, DERIVED, OPEN};
 use crate::{image, run_hash, with_conn, with_db, write_run};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -318,23 +318,7 @@ fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
     let (funcs, _) = compiled_functions(ctx, db)?;
-    // name_registry: C name -> {address: the producer's best level}, address -> {C names}
-    let mut by_name: HashMap<String, std::collections::BTreeMap<i64, i64>> = HashMap::new();
-    let mut by_addr: HashMap<i64, std::collections::BTreeSet<String>> = HashMap::new();
-    for f in store::facts(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?.iter() {
-        let raw = f.s("name").unwrap_or("");
-        let origin = f.s("origin");
-        for n in raw.split('|') {
-            let n = match origin {
-                Some("import") => n.split_once('!').map(|x| x.1).unwrap_or(n).to_string(),
-                Some("lib") => crate::coff::undecorate(n),
-                _ => n.to_string(),
-            };
-            let e = by_name.entry(n.clone()).or_default().entry(f.lo).or_insert(OPEN);
-            *e = (*e).max(f.level);
-            by_addr.entry(f.lo).or_default().insert(n);
-        }
-    }
+    let (by_name, by_addr) = name_registry(ctx, db)?;
     for x in &funcs {
         if !(x.c.matched() || (x.c.abs_image.is_some() && x.c.aid_ok())) {
             continue;
@@ -524,6 +508,411 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     Ok(())
 }
 
+// ------------------------------------------------------------------------------------------------ data rules
+
+type Registry = (HashMap<String, std::collections::BTreeMap<i64, i64>>, HashMap<i64, std::collections::BTreeSet<String>>);
+
+/// match.name_registry: C name -> {address: the producer's best level}, address -> {C names}.
+fn name_registry(ctx: &Ctx, db: &Connection) -> PyResult<Registry> {
+    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+    let mut by_name: HashMap<String, std::collections::BTreeMap<i64, i64>> = HashMap::new();
+    let mut by_addr: HashMap<i64, std::collections::BTreeSet<String>> = HashMap::new();
+    for f in store::facts(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?.iter() {
+        let raw = f.s("name").unwrap_or("");
+        let origin = f.s("origin");
+        for n in raw.split('|') {
+            let n = match origin {
+                Some("import") => n.split_once('!').map(|x| x.1).unwrap_or(n).to_string(),
+                Some("lib") => crate::coff::undecorate(n),
+                _ => n.to_string(),
+            };
+            let e = by_name.entry(n.clone()).or_default().entry(f.lo).or_insert(OPEN);
+            *e = (*e).max(f.level);
+            by_addr.entry(f.lo).or_default().insert(n);
+        }
+    }
+    Ok((by_name, by_addr))
+}
+
+/// One data definition of the sources with an address (match_data.data_objects): its L.src fact, its unit's
+/// object and the data symbol of its C name there (kind, size).
+struct DataObj {
+    f: Rc<SFact>,
+    obj: Option<crate::ObjIndex>,
+    sym: Option<(usize, &'static str, u32)>,
+}
+
+impl DataObj {
+    fn symbol(&self) -> Option<&crate::coff::Symbol> {
+        Some(&self.obj.as_ref()?.0.symbols[self.sym?.0])
+    }
+    fn kind(&self) -> Option<&'static str> {
+        self.sym.map(|s| s.1)
+    }
+    fn size(&self) -> Option<u32> {
+        self.sym.map(|s| s.2)
+    }
+}
+
+fn data_objects(ctx: &Ctx, db: &Connection) -> PyResult<Vec<DataObj>> {
+    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+    let mut index: HashMap<String, (crate::ObjIndex, HashMap<String, (usize, &'static str, u32)>)> = HashMap::new();
+    for (unit, (h, ok)) in &ctx.objects {
+        if !*ok || h.is_empty() {
+            continue;
+        }
+        let Some(o) = crate::object_if(&format!("{}/build/obj/{}.obj", ctx.root, h))? else { continue };
+        let mut idx = HashMap::new();
+        for d in o.0.data_symbols() {
+            idx.entry(crate::coff::undecorate(&o.0.symbols[d.sym].name)).or_insert((d.sym, d.kind, d.size));
+        }
+        index.insert(unit.clone(), (o, idx));
+    }
+    let mut fs: Vec<Rc<SFact>> = store::facts(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("data"))
+        .map_err(err)?;
+    fs.sort_by(|a, b| (a.lo, a.s("file")).cmp(&(b.lo, b.s("file"))));
+    Ok(fs
+        .into_iter()
+        .map(|f| {
+            let hit = index.get(f.s("unit").unwrap_or(""));
+            let sym = hit.and_then(|(_, idx)| idx.get(f.s("symbol").unwrap_or("")).copied());
+            DataObj { obj: hit.map(|(o, _)| o.clone()), sym, f }
+        })
+        .collect())
+}
+
+/// least_size: the fewest bytes a symbol at `value` (None: no symbol) with the COFF size `size` can have. COFF
+/// records no sizes: a size runs to the next symbol of the section, taking in the alignment padding in front of
+/// it, which is less than the alignment of the offset where the distance ends (at most 8: VC6 aligns an object
+/// of 8 bytes or more to 8, smaller ones naturally); exactly `size` when that offset is odd.
+pub fn least(value: Option<u32>, size: u32) -> u32 {
+    let Some(v) = value else { return size };
+    if size == 0 {
+        return 0;
+    }
+    let end = v.wrapping_add(size);
+    let a = if end % 8 == 0 { 8 } else if end % 4 == 0 { 4 } else if end % 2 == 0 { 2 } else { 1 };
+    1u32.max(size.saturating_sub(a - 1))
+}
+
+#[pyfunction]
+#[pyo3(name = "least_size")]
+pub fn py_least_size(value: Option<u32>, size: u32) -> u32 {
+    least(value, size)
+}
+
+/// padding_masked: the mask with the possible alignment padding masked too, the zero bytes from the least size
+/// on (the padding in front of the next symbol is zero in our object; a nonzero byte there is the symbol's own).
+pub fn padding_masked(data: &[u8], mask: &[u8], least: usize) -> Vec<u8> {
+    let mut m = mask.to_vec();
+    for k in least..data.len() {
+        if data[k] == 0 && k < m.len() {
+            m[k] = 1;
+        }
+    }
+    m
+}
+
+#[pyfunction]
+#[pyo3(name = "padding_masked")]
+pub fn py_padding_masked(data: Vec<u8>, mask: Vec<u8>, least: usize) -> Vec<u8> {
+    padding_masked(&data, &mask, least)
+}
+
+/// The least size of a data definition (None without a size).
+fn least_size(d: &DataObj) -> Option<u32> {
+    Some(least(d.symbol().map(|s| s.value), d.size()?))
+}
+
+/// match_data.extent: [address, address + least size) (one byte without a size).
+fn data_extent(d: &DataObj) -> (i64, i64) {
+    let n = least_size(d).unwrap_or(0).max(1);
+    (d.f.lo, d.f.lo + n as i64)
+}
+
+/// match_data.site_confirmed: address -> C name of every data address a byte-matched function's absolute
+/// relocation confirms (the first such relocation wins).
+fn site_confirmed(ctx: &Ctx, db: &Connection) -> PyResult<HashMap<u32, String>> {
+    let img = image(&ctx.image)?;
+    let (funcs, _) = compiled_functions(ctx, db)?;
+    let mut out = HashMap::new();
+    for x in &funcs {
+        if !x.c.matched() {
+            continue;
+        }
+        let obj = &x.obj.0;
+        for (off, r) in &x.code.relocs {
+            let Some(t) = obj.symbol_at(r.symbol_index) else { continue };
+            let (kind, width) = r.kind_width();
+            if !t.named() || t.function() || t.constant().is_some() || t.name.starts_with("__imp_") || kind != crate::coff::ABSOLUTE {
+                continue;
+            }
+            let site = (x.src.lo as u32).wrapping_add(*off);
+            if let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(x.code.secnum, r)) {
+                out.entry(to).or_insert_with(|| crate::coff::undecorate(&t.name));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn global(d: &DataObj, extent: &str, kind: &str) -> Value {
+    json!({"skind": "global", "name": d.f.value["symbol"], "unit": d.f.value["unit"], "extent": extent, "kind": kind})
+}
+
+/// M.data.site: a data definition whose address a byte-matched function's relocation to the same symbol confirms.
+fn m_data_site(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let confirmed = site_confirmed(ctx, db)?;
+    for d in data_objects(ctx, db)? {
+        if confirmed.get(&(d.f.lo as u32)).map(|s| s.as_str()) == d.f.s("symbol") {
+            let (lo, hi) = data_extent(&d);
+            out.fact(lo, hi, "symbol", global(&d, "site", d.kind().unwrap_or("-")), crate::store::PROVEN);
+        }
+    }
+    Ok(())
+}
+
+fn masked_equal(img: &crate::pe::Image, at: u32, data: &[u8], mask: &[u8]) -> bool {
+    let have = img.bytes(at, data.len());
+    (0..data.len()).all(|k| mask.get(k).copied().unwrap_or(0) != 0 || Some(&data[k]) == have.get(k))
+}
+
+/// match_data.content_hits: the image's initialised non-code data addresses where data occurs (masked), at most 2.
+fn content_hits(img: &crate::pe::Image, data: &[u8], mask: &[u8]) -> Vec<u32> {
+    let (mut run, mut k0): (&[u8], usize) = (&[], 0);
+    let mut i = 0;
+    while i < data.len() {
+        if mask.get(i).copied().unwrap_or(0) != 0 {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < data.len() && mask.get(j).copied().unwrap_or(0) == 0 {
+            j += 1;
+        }
+        if j - i > run.len() {
+            run = &data[i..j];
+            k0 = i;
+        }
+        i = j;
+    }
+    let mut out = vec![];
+    if run.len() < 4 {
+        return out;
+    }
+    let finder = memchr::memmem::Finder::new(run);
+    for s in &img.sections {
+        if s.holds_code() || s.uninitialized() {
+            continue;
+        }
+        let raw = img.section_data(s);
+        for p in finder.find_iter(raw) {
+            let at = (s.va as i64) + p as i64 - k0 as i64;
+            if at >= s.va as i64 && masked_equal(img, at as u32, data, mask) {
+                out.push(at as u32);
+                if out.len() >= 2 {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// M.data.content: a data definition M.data.site does not place whose bytes occur in the image's initialised
+/// data at the declared address and nowhere else.
+fn m_data_content(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let confirmed = site_confirmed(ctx, db)?;
+    for d in data_objects(ctx, db)? {
+        let (Some(sym), Some(kind), Some(size)) = (d.symbol(), d.kind(), d.size()) else { continue };
+        if !(kind == "data" || kind == "rdata") || confirmed.get(&(d.f.lo as u32)).map(|s| s.as_str()) == d.f.s("symbol") {
+            continue;
+        }
+        let obj = &d.obj.as_ref().unwrap().0;
+        let Some(sec) = obj.section_of(sym) else { continue };
+        let Some(sdata) = sec.data.as_ref() else { continue };
+        // symbol_bytes, then padding_masked: the zero bytes from the least size on masked too
+        let (a, b) = (sym.value as usize, sym.value as usize + size as usize);
+        let data = &sdata[a.min(sdata.len())..b.min(sdata.len())];
+        let full = sec.mask();
+        let mask = padding_masked(data, &full[a.min(full.len())..b.min(full.len())], least_size(&d).unwrap_or(0) as usize);
+        let unmasked: Vec<usize> = (0..data.len()).filter(|&k| mask.get(k).copied().unwrap_or(0) == 0).collect();
+        if unmasked.len() < 4 || !unmasked.iter().any(|&k| data[k] != 0) {
+            continue;
+        }
+        let hits = content_hits(&img, data, &mask);
+        if hits.len() == 1 && hits[0] as i64 == d.f.lo {
+            let (lo, hi) = data_extent(&d);
+            out.fact(lo, hi, "symbol", global(&d, "content", kind), crate::store::PROVEN);
+        } else if hits.len() == 1 && !masked_equal(&img, d.f.lo as u32, data, &mask) {
+            out.conflict("error", "M.data.content", d.f.lo, d.f.lo + 1,
+                         format!("{}: its bytes occur once in the image, at {:#x}, not at the declared {:#x}",
+                                 d.f.s("symbol").unwrap_or(""), hits[0], d.f.lo), &d.f.by);
+        }
+    }
+    Ok(())
+}
+
+/// M.data.draft: every other data definition with an address owns its declared extent.
+fn m_data_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+    let placed: std::collections::HashSet<i64> =
+        store::los(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?.into_iter().collect();
+    for d in data_objects(ctx, db)? {
+        if placed.contains(&d.f.lo) {
+            continue;
+        }
+        let (lo, hi) = data_extent(&d);
+        out.fact(lo, hi, "symbol", global(&d, "draft", d.kind().unwrap_or("-")), DECLARED);
+    }
+    Ok(())
+}
+
+/// match_data.text_position: (file, line) -> its place in the order the unit's translation unit defines things.
+fn text_position(root: &str, unit: &str) -> impl Fn(&str, i64) -> (i64, i64) {
+    let text = std::fs::read(format!("{root}/src/{unit}.c"))
+        .map(|b| String::from_utf8_lossy(&b).replace("\r\n", "\n").replace('\r', "\n"))
+        .unwrap_or_default();
+    let mut inc: HashMap<String, i64> = HashMap::new();
+    let mut line = 1i64;
+    for l in text.split('\n') {
+        // ^[ \t]*#[ \t]*include[ \t]*["<]([^">]+)[">]
+        let s = l.trim_start_matches([' ', '\t']);
+        if let Some(r) = s.strip_prefix('#') {
+            let r = r.trim_start_matches([' ', '\t']);
+            if let Some(r) = r.strip_prefix("include") {
+                let r = r.trim_start_matches([' ', '\t']);
+                if r.starts_with('"') || r.starts_with('<') {
+                    let body = &r[1..];
+                    if let Some(e) = body.find(['"', '>']) {
+                        if e > 0 {
+                            let name = basename(&body[..e]).to_lowercase();
+                            inc.entry(name).or_insert(line);
+                        }
+                    }
+                }
+            }
+        }
+        line += 1;
+    }
+    let own = format!("src/{unit}.c");
+    move |file: &str, line: i64| {
+        if file == own {
+            (line, 0)
+        } else {
+            (*inc.get(&basename(file).to_lowercase()).unwrap_or(&(1 << 30)), line)
+        }
+    }
+}
+
+fn basename(p: &str) -> &str {
+    p.rsplit(['/', '\\']).next().unwrap_or(p)
+}
+
+/// D1 / D4 / D5 / D6 (D.data).
+fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+    let img = image(&ctx.image)?;
+    let objs = data_objects(ctx, db)?;
+    let mut starts: Vec<i64> = store::los(db, &ctx.db, "symbol", &ctx.needed, |f| {
+        matches!(f.s("skind"), Some("global") | Some("crt.data") | Some("string") | Some("iat"))
+    })
+    .map_err(err)?;
+    starts.extend(objs.iter().map(|d| d.f.lo));
+    starts.sort_unstable();
+    starts.dedup();
+    for d in &objs {
+        let name = d.f.s("symbol").unwrap_or("");
+        if let Some(size) = d.size() {
+            if size > 1 {
+                let i = starts.partition_point(|&s| s <= d.f.lo);
+                if i < starts.len() && starts[i] < d.f.lo + size as i64 {
+                    let least = least_size(d).unwrap_or(0) as i64;
+                    let room = starts[i] - d.f.lo;
+                    if room < least {
+                        out.conflict("error", "D1", d.f.lo, d.f.lo + size as i64,
+                                     format!("{name} at {:#x} ({least} bytes at least) overlaps the symbol at {:#x}", d.f.lo, starts[i]),
+                                     &d.f.by);
+                    } else {
+                        out.conflict("warn", "D1", d.f.lo, d.f.lo + size as i64,
+                                     format!("{name} at {:#x}: the object gives it {size} bytes, the symbol at {:#x} leaves {room}; fine if \
+                                              the last {} are alignment padding", d.f.lo, starts[i], size as i64 - room), &d.f.by);
+                    }
+                }
+            }
+        }
+        if d.symbol().map(|s| s.common()).unwrap_or(false) {
+            let va = d.f.lo as u32;
+            if img.section_of(va).is_some() && img.off(va).is_none() {
+                out.conflict("error", "D5", d.f.lo, d.f.lo + 1,
+                             format!("{name} at {:#x} lies in uninitialised data and is a tentative definition: write it `= 0` so \
+                                      it is placed with its unit", d.f.lo), &d.f.by);
+            }
+        }
+    }
+    // D4: per unit and section kind, in the unit file's text order
+    let mut per: std::collections::BTreeMap<(String, &'static str), Vec<&DataObj>> = std::collections::BTreeMap::new();
+    for d in &objs {
+        if let Some(k) = d.kind() {
+            if k == "data" || k == "rdata" || k == "bss" {
+                per.entry((d.f.s("unit").unwrap_or("").to_string(), k)).or_default().push(d);
+            }
+        }
+    }
+    for ((unit, kind), fs) in &per {
+        let at = text_position(&ctx.root, unit);
+        let mut order: Vec<&&DataObj> = fs.iter().collect();
+        order.sort_by_key(|d| at(d.f.s("file").unwrap_or(""), d.f.value.get("line").and_then(|v| v.as_i64()).unwrap_or(0)));
+        for w in order.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if b.f.lo < a.f.lo {
+                out.conflict2("error", "D4", b.f.lo, b.f.lo + 1,
+                              format!("unit {unit} ({kind}): {} ({:#x}) is defined after {} ({:#x}) but lies before it",
+                                      b.f.s("symbol").unwrap_or(""), b.f.lo, a.f.s("symbol").unwrap_or(""), a.f.lo),
+                              &b.f.by, &a.f.by);
+            }
+        }
+    }
+    // D6: pointer-table entries
+    let (by_name, by_addr) = name_registry(ctx, db)?;
+    for d in &objs {
+        let (Some(sym), Some(size)) = (d.symbol(), d.size()) else { continue };
+        if size == 0 {
+            continue;
+        }
+        let obj = &d.obj.as_ref().unwrap().0;
+        let Some(sec) = obj.section_of(sym) else { continue };
+        if sec.data.is_none() {
+            continue;
+        }
+        for r in &sec.relocs {
+            let (kind, width) = r.kind_width();
+            if !(sym.value <= r.offset && r.offset < sym.value + size) || kind != crate::coff::ABSOLUTE {
+                continue;
+            }
+            let Some(t) = obj.symbol_at(r.symbol_index) else { continue };
+            if !t.named() || t.constant().is_some() {
+                continue;
+            }
+            let site = (d.f.lo as u32).wrapping_add(r.offset - sym.value);
+            let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(sym.secnum as usize, r)) else { continue };
+            let cname = crate::coff::undecorate(t.name.strip_prefix("__imp_").unwrap_or(&t.name));
+            let Some(regs) = by_name.get(&cname) else { continue };
+            if regs.is_empty() || regs.contains_key(&(to as i64)) {
+                continue;
+            }
+            let (b, lvl) = regs.iter().next().unwrap();
+            let others = by_addr.get(&(to as i64)).map(|s| s.iter().cloned().collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let others = if others.is_empty() { "nothing registered".to_string() } else { others };
+            out.conflict(if *lvl == crate::store::PROVEN { "bug" } else { "error" }, "D6", site as i64, (site + width) as i64,
+                         format!("{} +{:#x}: our entry refers to {cname} (registered at {:#x}), the original's to {:#x} ({others})",
+                                 d.f.s("symbol").unwrap_or(""), r.offset - sym.value, b, to), &d.f.by);
+        }
+    }
+    Ok(())
+}
+
 /// Run a native rule: (facts, conflicts, out_hash); recorded unless ctx.record is false (shadow).
 #[pyfunction]
 pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
@@ -534,6 +923,10 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         "M.match" => m_match(&ctx, db, &mut out),
         "M8.reloc" => m8_reloc(&ctx, db, &mut out),
         "M.lint" => m_lint(&ctx, db, &mut out),
+        "M.data.site" => m_data_site(&ctx, db, &mut out),
+        "M.data.content" => m_data_content(&ctx, db, &mut out),
+        "M.data.draft" => m_data_draft(&ctx, db, &mut out),
+        "D.data" => d_data(&ctx, db, &mut out),
         other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
     })?;
     let ms = t0.elapsed().as_millis() as i64;

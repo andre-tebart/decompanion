@@ -13,6 +13,10 @@ impl Section {
     pub fn end(&self) -> u32 {
         self.va + self.vsize.max(self.raw_size)
     }
+    pub fn uninitialized(&self) -> bool {
+        self.chars & 0x80 != 0
+    }
+    /// The file bytes of the section (its raw data, as far as the file holds it).
     pub fn holds_code(&self) -> bool {
         self.chars & 0x20 != 0 || self.chars & 0x2000_0000 != 0
     }
@@ -86,7 +90,7 @@ impl Image {
     }
 
     /// The file offset of a VA and the file bytes available from there, None without file backing.
-    fn off(&self, va: u32) -> Option<(usize, usize)> {
+    pub fn off(&self, va: u32) -> Option<(usize, usize)> {
         match self.section_of(va) {
             None => {
                 if self.base <= va && va < self.base + self.headers_size {
@@ -166,5 +170,14 @@ impl Image {
         }
         out.sort_unstable();
         out
+    }
+}
+
+impl Image {
+    /// Image.section_data: the file bytes of a section (its raw data, without the zero tail the loader adds).
+    pub fn section_data(&self, s: &Section) -> &[u8] {
+        let a = (s.raw_off as usize).min(self.data.len());
+        let b = (s.raw_off as usize + s.raw_size as usize).min(self.data.len());
+        &self.data[a..b]
     }
 }

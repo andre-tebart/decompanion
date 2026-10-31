@@ -1049,3 +1049,11 @@ N1 in progress (2026-10-31):
   srcscan.Spans, FILE_LINE); `native_inputs(project)` on a rule hands a native rule what only Python computes
   (here the units' text hashes of the build plan) as Ctx.extra. Shadow equal over the tests (M5, M7), gildegold
   (4698 M7) and a unit edited without a lint (the stale warning).
+- The data rules are native: M.data.site, M.data.content, M.data.draft, D.data (D1 / D4 / D5 / D6), with the COFF
+  data symbols, the name registry shared with M8.reloc, the image search (memchr) and the unit's include order.
+  Shadow equal over the tests (D4), gildegold (1106 site, 432 content, 713 draft facts, 36 D1 warnings) and
+  temporary edits that provoke each other check (a pointer table's entries swapped: D6; `= 0` dropped from a
+  datum in uninitialised data: D5; an address comment moved off a unique table: M.data.content; an array
+  enlarged over the next symbol: D1 error). ~280 .. 330 ms -> ~90 .. 110 ms for the four. least_size and
+  padding_masked are exposed for tests/test_datafix.py; match_data.py keeps the criteria only.
+  Refresh on gildegold now: a body edit ~0.6 s (1.1 s before N1), a line move ~1.4 s (2.0 s).

@@ -61,6 +61,7 @@ dependencies = [
 name = "dcp_core"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "pyo3",
  "rusqlite",
  "serde_json",

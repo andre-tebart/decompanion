@@ -19,224 +19,47 @@ object of its unit (ObjectFormat data_symbols: data / rdata / bss / common).
 """
 from __future__ import annotations
 
-import bisect
-import re
-from pathlib import Path
-
-from .. import fsmemo
-from ..ledger.fact import Kind, Level, Severity, severity_of
-from ..match import compare as C
-from ..objfmt.base import ABSOLUTE
+from ..ledger.fact import Level
 from .engine import RuleContext, rule
-from ..build import compile as build_compile
-from .match import WALK, compiled_functions, name_registry, starts_of
+from .match import WALK
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
 
 
-def data_objects(ctx):
-    """[(source fact, unit object or None, data symbol or None, kind, size)] of every data definition of the
-    current target with an address (L.src source facts, what: data), the symbol looked up by its C name in the
-    object of its unit."""
-    p, tc = ctx.project, ctx.project.toolchain
-    objs = C.objects(p, ctx.input("objects"))
-    index = {}
-    for u, o in objs.items():
-        idx = {}
-        for s, kind, size in o.data_symbols():
-            idx.setdefault(tc.undecorate(s.name), (s, kind, size))
-        index[u] = (o, idx)
-    out = []
-    for f in sorted(ctx.facts(Kind.source), key=lambda f: (f.lo, f.value["file"])):
-        if f.run != "L.src" or f.value.get("what") != "data":
-            continue
-        o, idx = index.get(f.value["unit"], (None, {}))
-        hit = idx.get(f.value["symbol"])
-        out.append((f, o, hit[0] if hit else None, hit[1] if hit else None, hit[2] if hit else None))
-    return out
-
-
-def site_confirmed(ctx) -> dict[int, str]:
-    """address -> C name of every data address a byte-matched function's relocation confirms (M.data.site)."""
-    img, tc = ctx.image, ctx.project.toolchain
-    funcs, _ = compiled_functions(ctx)
-    out = {}
-    for s, obj, sym, code, c in funcs:
-        if not c.matched:
-            continue
-        for off, r, target in code.relocs:
-            if target is None or not target.named or target.function or target.constant or target.dllimport or r.kind != ABSOLUTE:
-                continue
-            site = s.lo + off
-            to = r.resolve(site, img.read(site, r.width), code.section.addend(r))
-            if to is not None:
-                out.setdefault(to, tc.undecorate(target.name))
-    return out
-
-
-def masked_equal(img, at, data: bytes, mask: bytes) -> bool:
-    have = img.read(at, len(data))
-    return all(mask[k] or data[k] == have[k] for k in range(len(data)))
-
-
-def content_hits(img, data: bytes, mask: bytes, limit: int = 2) -> list[int]:
-    """Addresses of the image's initialised non-code data where data occurs (masked), at most `limit`."""
-    k0 = 0
-    run = b""
-    i = 0
-    while i < len(data):                       # the longest unmasked run anchors the search
-        if mask[i]:
-            i += 1
-            continue
-        j = i
-        while j < len(data) and not mask[j]:
-            j += 1
-        if j - i > len(run):
-            run, k0 = data[i:j], i
-        i = j
-    if len(run) < 4:
-        return []
-    out = []
-    for s in img.sections:
-        if s.holds_code or s.uninitialized:
-            continue
-        raw = img.section_data(s)
-        p = raw.find(run)
-        while p >= 0:
-            at = s.va + p - k0
-            if at >= s.va and masked_equal(img, at, data, mask):
-                out.append(at)
-                if len(out) >= limit:
-                    return out
-            p = raw.find(run, p + 1)
-    return out
-
-
-def padding_masked(data: bytes, mask: bytes, least: int) -> bytes:
-    """The mask with the possible alignment padding masked too: the zero bytes from the least size on (an
-    object's COFF size runs to the next symbol; the padding in front of it is zero in our object, a nonzero
-    byte there is the symbol's own and stays compared)."""
-    m = bytearray(mask)
-    for k in range(max(0, least), len(data)):
-        if data[k] == 0:
-            m[k] = 1
-    return bytes(m)
-
-
-def symbol_bytes(sym, size):
-    """(bytes, mask) of a data symbol of an initialised section."""
-    sec = sym.section
-    if sec is None or sec.data is None:
-        return None, None
-    m = sec.mask()
-    return bytes(sec.data[sym.value:sym.value + size]), bytes(m[sym.value:sym.value + size])
-
-
-def least_size(sym, size):
-    """The fewest bytes the symbol can have. COFF records no sizes: an object's size is the distance to the next
-    symbol of its section (or the section's end), which takes in the alignment padding in front of that next
-    symbol. The padding is less than the alignment of the offset where the distance ends (at most 8: VC6 aligns
-    an object of 8 bytes or more to 8, smaller ones naturally), so the symbol has at least size - (that
-    alignment - 1) bytes, and exactly `size` when the distance ends at an odd offset."""
-    if not size:
-        return size
-    if sym is None:
-        return size
-    end = sym.value + size
-    a = 8 if end % 8 == 0 else 4 if end % 4 == 0 else 2 if end % 2 == 0 else 1
-    return max(1, size - (a - 1))
-
-
-def extent(f, sym, size):
-    """The bytes the definition certainly owns: [address, address + least_size)."""
-    n = least_size(sym, size)
-    return f.lo, f.lo + max(1, n or 1)
-
-
-@rule("M.data.site", version="2", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",),
-      helpers=(data_objects, site_confirmed, compiled_functions, starts_of, extent, least_size, C))
+@rule("M.data.site", version="2", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",), native=True)
 def data_site(ctx: RuleContext):
     """A data definition with an address comment whose address a byte-matched function's absolute relocation
     to the same symbol confirms (the original's site holds exactly that address, Reloc.resolve with our
     addend) is placed: a `global` symbol proven over [address, address + the object's size of the symbol)
-    {name, unit, extent: site}."""
-    confirmed = site_confirmed(ctx)
-    for f, o, sym, kind, size in data_objects(ctx):
-        if confirmed.get(f.lo) == f.value["symbol"]:
-            lo, hi = extent(f, sym, size)
-            yield ctx.fact(lo, hi, Kind.symbol, {"skind": "global", "name": f.value["symbol"], "unit": f.value["unit"],
-                                                "extent": "site", "kind": kind or "-"}, P)
+    {name, unit, extent: site}. Native:
+    native/dcp_core/src/rules.rs."""
+    return ()
 
 
-@rule("M.data.content", version="3", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",),
-      helpers=(data_objects, site_confirmed, compiled_functions, starts_of, content_hits, masked_equal, symbol_bytes, extent,
-               least_size, padding_masked, C))
+@rule("M.data.content", version="3", ceiling=P, outputs=("symbol",), needs=("L.src", *WALK, "M.match"), inputs=("objects",), native=True)
 def data_content(ctx: RuleContext):
     """A data definition with an address comment that M.data.site does not place, defined in an initialised
     section of its object with at least 4 bytes that are no relocated field, no possible alignment padding
     (padding_masked) and not all zero, whose bytes (relocated fields and possible padding masked) equal the image's at the declared address and occur at no other address of the
     image's initialised data sections: a `global` symbol proven {extent: content}. Found elsewhere only once
-    and not at the declared address: an error (M.data.content): the declaration names another object's place."""
-    img = ctx.image
-    confirmed = site_confirmed(ctx)
-    for f, o, sym, kind, size in data_objects(ctx):
-        if sym is None or kind not in ("data", "rdata") or confirmed.get(f.lo) == f.value["symbol"]:
-            continue
-        data, mask = symbol_bytes(sym, size)
-        if data is not None:
-            mask = padding_masked(data, mask, least_size(sym, size))
-        if data is None or sum(1 for k in range(len(data)) if not mask[k]) < 4 or not any(
-                data[k] for k in range(len(data)) if not mask[k]):
-            continue
-        hits = content_hits(img, data, mask)
-        if hits == [f.lo]:
-            lo, hi = extent(f, sym, size)
-            yield ctx.fact(lo, hi, Kind.symbol, {"skind": "global", "name": f.value["symbol"], "unit": f.value["unit"],
-                                                "extent": "content", "kind": kind}, P)
-        elif len(hits) == 1 and not masked_equal(img, f.lo, data, mask):
-            yield ctx.conflict(Severity.error, "M.data.content", f.lo, f.lo + 1,
-                               f"{f.value['symbol']}: its bytes occur once in the image, at {hits[0]:#x}, not at the declared {f.lo:#x}",
-                               a=f.by)
+    and not at the declared address: an error (M.data.content): the declaration names another object's place. Native:
+    native/dcp_core/src/rules.rs."""
+    return ()
 
 
 @rule("M.data.draft", version="2", ceiling=DE, outputs=("symbol",), needs=("L.src", "M.data.site", "M.data.content"),
-      inputs=("objects",), helpers=(data_objects, extent, least_size, C))
+      inputs=("objects",), native=True)
 def data_draft(ctx: RuleContext):
     """Every data definition with an address comment that neither M.data.site nor M.data.content places owns
     its declared extent: a `global` symbol, declared, over [address, address + the object's size) (one byte
-    when its unit has no object or the object lacks the symbol) {extent: draft}."""
-    placed = {f.lo for f in ctx.facts(Kind.symbol)}
-    for f, o, sym, kind, size in data_objects(ctx):
-        if f.lo in placed:
-            continue
-        lo, hi = extent(f, sym, size)
-        yield ctx.fact(lo, hi, Kind.symbol, {"skind": "global", "name": f.value["symbol"], "unit": f.value["unit"],
-                                            "extent": "draft", "kind": kind or "-"}, DE)
-
-
-INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*["<]([^">]+)[">]', re.M)
-
-
-def text_position(root, unit: str):
-    """(file, line) -> a key in the order unit's translation unit defines things: a line of src/<unit>.c, a line
-    of a header at the line of the unit's first #include of it (after everything when the unit does not include
-    it directly)."""
-    p = Path(root) / "src" / f"{unit}.c"
-    text = fsmemo.read_text(p) if p.exists() else ""
-    inc = {}
-    for m in INCLUDE.finditer(text):
-        inc.setdefault(Path(m.group(1)).name.lower(), text.count("\n", 0, m.start()) + 1)
-
-    def at(file: str, line: int) -> tuple:
-        if file == f"src/{unit}.c":
-            return (line, 0)
-        return (inc.get(Path(file).name.lower(), 1 << 30), line)
-    return at
+    when its unit has no object or the object lacks the symbol) {extent: draft}. Native:
+    native/dcp_core/src/rules.rs."""
+    return ()
 
 
 @rule("D.data", version="5", ceiling=P, needs=("L.src", "M.data.site", "M.data.content", "M.data.draft", "S.crt.data",
                                               "S.strings", "S.imports", "S.relocs", "S.sections", "kind:name"),
-      inputs=("objects", "src", "decl"), helpers=(data_objects, name_registry, C, build_compile.plan, least_size, text_position))
+      inputs=("objects", "src", "decl"), native=True)
 def data_checks(ctx: RuleContext):
     """D1: a data definition's extent holds the start of another symbol (a data symbol of the sources, a CRT data
     block, a string, an import slot): an error when even its least size (least_size: the object's size without
@@ -246,62 +69,6 @@ def data_checks(ctx: RuleContext):
     tentative definition (the object holds it as common: the linker allocates it apart from its unit) whose
     declared address lies in the image's uninitialised data (no file bytes): write it `= 0`. D6: an absolute
     relocation inside a definition of ours (a pointer-table entry) whose symbol has a registered address while
-    the original's entry at the same offset holds another one."""
-    img, tc = ctx.image, ctx.project.toolchain
-    objs = data_objects(ctx)
-    starts = sorted({f.lo for f in ctx.facts(Kind.symbol) if f.value.get("skind") in ("global", "crt.data", "string", "iat")}
-                    | {f.lo for f, *_ in objs})
-    for f, o, sym, kind, size in objs:
-        if size and size > 1:
-            i = bisect.bisect_right(starts, f.lo)
-            if i < len(starts) and starts[i] < f.lo + size:
-                least = least_size(sym, size)
-                room = starts[i] - f.lo
-                if room < least:
-                    yield ctx.conflict(Severity.error, "D1", f.lo, f.lo + size,
-                                       f"{f.value['symbol']} at {f.lo:#x} ({least} bytes at least) overlaps the symbol at {starts[i]:#x}",
-                                       a=f.by)
-                else:
-                    yield ctx.conflict(Severity.warn, "D1", f.lo, f.lo + size,
-                                       f"{f.value['symbol']} at {f.lo:#x}: the object gives it {size} bytes, the symbol at "
-                                       f"{starts[i]:#x} leaves {room}; fine if the last {size - room} are alignment padding", a=f.by)
-        if sym is not None and sym.common:
-            sec = img.section_of(f.lo)
-            if sec is not None and img.off(f.lo) is None:
-                yield ctx.conflict(Severity.error, "D5", f.lo, f.lo + 1,
-                                   f"{f.value['symbol']} at {f.lo:#x} lies in uninitialised data and is a tentative definition: "
-                                   f"write it `= 0` so it is placed with its unit", a=f.by)
-    # D4: per unit and section kind, in the unit file's text order (a header's definitions where the unit
-    # includes it)
-    per = {}
-    for f, o, sym, kind, size in objs:
-        if kind in ("data", "rdata", "bss"):
-            per.setdefault((f.value["unit"], kind), []).append(f)
-    for (unit, kind), fs in sorted(per.items()):
-        at = text_position(ctx.project.root, unit)
-        order = sorted(fs, key=lambda f: at(f.value["file"], f.value["line"]))
-        for a, b in zip(order, order[1:]):
-            if b.lo < a.lo:
-                yield ctx.conflict(Severity.error, "D4", b.lo, b.lo + 1,
-                                   f"unit {unit} ({kind}): {b.value['symbol']} ({b.lo:#x}) is defined after {a.value['symbol']} "
-                                   f"({a.lo:#x}) but lies before it", a=b.by, b=a.by)
-    by_name, by_addr = name_registry(ctx)
-    for f, o, sym, kind, size in objs:
-        if sym is None or sym.section is None or sym.section.data is None or not size:
-            continue
-        for r in sym.section.relocs:
-            if not (sym.value <= r.offset < sym.value + size) or r.kind != ABSOLUTE:
-                continue
-            target = o.symbols.get(r.symbol_index)
-            if target is None or not target.named or target.constant:
-                continue
-            site = f.lo + r.offset - sym.value
-            to = r.resolve(site, img.read(site, r.width), sym.section.addend(r))
-            cname = tc.undecorate(target.imported if target.dllimport else target.name)
-            regs = by_name.get(cname)
-            if not regs or to in regs:
-                continue
-            (b, lvl), = sorted(regs.items())[:1]
-            yield ctx.conflict(severity_of(P, lvl), "D6", site, site + r.width,
-                               f"{f.value['symbol']} +{r.offset - sym.value:#x}: our entry refers to {cname} (registered at {b:#x}), "
-                               f"the original's to {to:#x} ({', '.join(sorted(by_addr.get(to, ()))) or 'nothing registered'})", a=f.by)
+    the original's entry at the same offset holds another one. Native:
+    native/dcp_core/src/rules.rs."""
+    return ()

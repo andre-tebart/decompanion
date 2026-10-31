@@ -86,11 +86,11 @@ def test_lis():
 def test_least_size():
     """An object's size runs to the next symbol, padding included: the least size drops what the alignment of
     that end may have added (at most 7 bytes at an 8-aligned end)."""
-    from types import SimpleNamespace
-    from decompanion.rules.match_data import least_size
-    assert least_size(SimpleNamespace(value=0x10), 8) == 1        # int x = 0; followed by an 8-aligned symbol
-    assert least_size(SimpleNamespace(value=0x10), 6) == 5        # ends at 0x16: 2-aligned, at most 1 byte padding
-    assert least_size(SimpleNamespace(value=0x11), 6) == 6        # ends at an odd offset: no padding
+    from decompanion import native
+    least_size = native.core().least_size                        # native/dcp_core rules.rs least (the data rules')
+    assert least_size(0x10, 8) == 1                               # int x = 0; followed by an 8-aligned symbol
+    assert least_size(0x10, 6) == 5                               # ends at 0x16: 2-aligned, at most 1 byte padding
+    assert least_size(0x11, 6) == 6                               # ends at an odd offset: no padding
     assert least_size(None, 8) == 8
 
 
@@ -98,11 +98,11 @@ def test_content_masks_possible_padding():
     """M.data.content: `float x = 1.75f;` whose next symbol is 8-aligned has an object size of 8 (4 bytes of
     padding) and a least size of 1: every zero byte from byte 1 on may be padding and is masked, so the padded
     pattern (which occurs elsewhere) is no longer searched; too few certain bytes remain to prove anything."""
-    from types import SimpleNamespace
-    from decompanion.rules.match_data import least_size, padding_masked
+    from decompanion import native
+    least_size, padding_masked = native.core().least_size, native.core().padding_masked
     data = bytes.fromhex("0000e03f00000000")                 # 1.75f, then 4 zero bytes of padding
     mask = bytes(8)
-    m = padding_masked(data, mask, least_size(SimpleNamespace(value=0x18), 8))
+    m = bytes(padding_masked(data, mask, least_size(0x18, 8)))
     assert m == bytes([0, 1, 0, 0, 1, 1, 1, 1])
     data2 = bytes.fromhex("0000e03f00000040")                 # a nonzero byte in the possible padding is the
-    assert padding_masked(data2, mask, 1)[7] == 0              # symbol's own: compared
+    assert bytes(padding_masked(data2, mask, 1))[7] == 0       # symbol's own: compared

@@ -230,6 +230,11 @@ impl Out {
     }
 
     pub fn conflict(&mut self, severity: &str, check: &str, lo: i64, hi: i64, message: String, a: &str) {
+        self.conflict2(severity, check, lo, hi, message, a, "");
+    }
+
+    /// A conflict naming the producers of both facts.
+    pub fn conflict2(&mut self, severity: &str, check: &str, lo: i64, hi: i64, message: String, a: &str, b: &str) {
         self.conflicts.push(ConflictRow {
             severity: severity.to_string(),
             check: check.to_string(),
@@ -237,7 +242,7 @@ impl Out {
             hi,
             message,
             a: a.to_string(),
-            b: String::new(),
+            b: b.to_string(),
         });
     }
 

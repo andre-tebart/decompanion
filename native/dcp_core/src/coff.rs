@@ -336,3 +336,49 @@ impl Symbol {
         }
     }
 }
+
+impl Symbol {
+    /// A tentative definition: external, no section, the value is its size.
+    pub fn common(&self) -> bool {
+        self.cls == 2 && self.secnum == 0 && self.value > 0
+    }
+}
+
+/// One named data symbol of an object (Obj.data_symbols): the symbol, its kind (data / rdata / bss / common) and
+/// size (to the next named symbol of its section or the section's end; a common's value).
+pub struct DataSym {
+    pub sym: usize,
+    pub kind: &'static str,
+    pub size: u32,
+}
+
+impl Obj {
+    pub fn data_symbols(&self) -> Vec<DataSym> {
+        let mut out = Vec::new();
+        for sec in self.sections.iter().skip(1) {
+            if sec.code() || sec.discard() {
+                continue;
+            }
+            let kind = if sec.data.is_none() { "bss" } else if sec.name.starts_with(".rdata") { "rdata" } else { "data" };
+            let named: Vec<usize> = sec
+                .syms
+                .iter()
+                .copied()
+                .filter(|&k| {
+                    let s = &self.symbols[k];
+                    s.named() && s.constant().is_none() && !s.name.starts_with('$') && !s.name.starts_with('.')
+                })
+                .collect();
+            for (i, &k) in named.iter().enumerate() {
+                let end = if i + 1 < named.len() { self.symbols[named[i + 1]].value } else { sec.size };
+                out.push(DataSym { sym: k, kind, size: end.wrapping_sub(self.symbols[k].value) });
+            }
+        }
+        for (k, s) in self.symbols.iter().enumerate() {
+            if s.common() {
+                out.push(DataSym { sym: k, kind: "common", size: s.value });
+            }
+        }
+        out
+    }
+}
