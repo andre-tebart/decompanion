@@ -29,16 +29,14 @@ main checkout; M1 compares against it, `dcp check --against REV` against its ver
 (`byte+readable -> shape+readable at <commit>: <why>`); promote keeps the column while the function stays below
 the grade it fell from and clears it once it is back.
 
-The queues, the shards and the baseline are the core's (native/dcp_core/src/queues.rs); this module is their face
-and keeps the source edits of the level ladder (set_level, auto_clear).
+The queues, the shards, the baseline and the level ladder's edits are the core's (native/dcp_core/src/queues.rs);
+this module is their face.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
-from .. import fsmemo, native
-from . import srcscan
+from .. import native
 
 _core = native.core()
 HEADER = "target\taddress\tname\tunit\tcode\treadability\tlevel\taccepted"
@@ -83,56 +81,6 @@ def only_missing_statements(reason: str) -> bool:
     """True when every clause of the reason speaks of missing or unwritten statements: reconstruction is base
     work, not a reason to escalate."""
     return _core.grades_only_missing_statements(reason)
-
-
-DEEP = re.compile(r"[ \t]*@deep\b[^@*\n]*")
-STUCK = re.compile(r"[ \t]*@stuck\b[^@*\n]*")
-
-
-def set_level(root: Path, rel: str, level: str | None, reason: str | None, line: int = 1) -> str:
-    """Write `@<level> reason` into the address comment of a function (the comment that starts on `line` of
-    `rel`), replacing a @deep or @stuck tag already there; level None removes either tag. Returns what was
-    done."""
-    p = Path(root) / rel
-    text = p.read_text()
-    S = srcscan.Source(rel, text)
-    c = next((c for c in S.comments if S.line_of(c[0]) == line and not text[text.rfind("\n", 0, c[0]) + 1:c[0]].strip()), None)
-    if c is None or not (srcscan.lead_addrs(c[2]) or srcscan.UNLINKED.match(c[2])):
-        raise ValueError(f"{rel}:{line}: no function's address comment there")
-    cs, ce, body = c
-    raw = text[cs:ce]
-    old = "@deep" if DEEP.search(body) else "@stuck" if STUCK.search(body) else None
-    stripped = STUCK.sub("", DEEP.sub("", body)).rstrip()
-    if level is None:
-        if old is None:
-            return "no @deep or @stuck tag"
-        new_body, action = stripped, f"{old} removed"
-    else:
-        reason = (reason or "").replace("*/", "* /").strip()
-        new_body = stripped + f" @{level} {reason}"
-        action = f"@{level} added" if old is None else (f"@{level} reason replaced" if old == "@" + level else f"{old} -> @{level}")
-    if raw.startswith("/*"):
-        new_raw = "/*" + new_body + " */"
-    else:
-        new_raw = "//" + new_body
-    p.write_text(text[:cs] + new_raw + text[ce:], newline="\n")
-    fsmemo.wrote(p)
-    return action
-
-
-def comment_line(row: dict) -> int:
-    """The line of a graded function's address comment."""
-    return row.get("comment") or 1
-
-
-def auto_clear(project, rows) -> list[str]:
-    """Remove the level tag of every function that reached byte + readable; one line per change."""
-    out = []
-    for r in rows:
-        if r["level"] and r["code"] == "byte" and r["readability"] == "readable":
-            action = set_level(project.root, r["file"], None, None, comment_line(r))
-            out.append(f"auto-clear {r['file']}: {r['name']} is byte + readable, {action}")
-    return out
 
 
 # ------------------------------------------------------------------------------------------------ baseline

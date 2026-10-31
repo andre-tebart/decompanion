@@ -487,3 +487,124 @@ mod tests {
         assert!(!only_missing_statements("register allocation differs"));
     }
 }
+
+// ------------------------------------------------------------------------------------------------ the level ladder
+
+/// Write `@<level> reason` into the address comment of a function (the comment that starts on `line` of `rel`),
+/// replacing a @deep or @stuck tag already there; no level removes either tag. What was done.
+pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str>, line: i64) -> Result<String, String> {
+    use std::sync::LazyLock;
+    static DEEP: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"[ \t]*@deep\b[^@*\n]*").unwrap());
+    static STUCK: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"[ \t]*@stuck\b[^@*\n]*").unwrap());
+    let path = crate::project::py_path(&format!("{root}/{rel}"));
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?.replace("\r\n", "\n");
+    let src = crate::readability::Source::new(&text);
+    let tx = &src.text;
+    let own = |cs: usize| tx[..cs].iter().rposition(|&c| c == '\n').map(|i| i + 1).unwrap_or(0);
+    let c = src.comments.iter().find(|(cs, _, _)| src.line_of(*cs) as i64 == line && tx[own(*cs)..*cs].iter().all(|c| crate::srcscan::py_space(*c)));
+    let Some((cs, ce, body)) = c.filter(|c| !crate::srcscan::lead_addrs(&c.2).0.is_empty() || crate::srcscan::UNLINKED.is_match(&c.2)) else {
+        return Err(format!("{rel}:{line}: no function's address comment there"));
+    };
+    let raw: String = tx[*cs..*ce].iter().collect();
+    let old = if DEEP.is_match(body) { Some("@deep") } else if STUCK.is_match(body) { Some("@stuck") } else { None };
+    let stripped = STUCK.replace_all(&DEEP.replace_all(body, ""), "").trim_end_matches(crate::srcscan::py_space).to_string();
+    let (new_body, action) = match level {
+        None => match old {
+            None => return Ok("no @deep or @stuck tag".into()),
+            Some(o) => (stripped, format!("{o} removed")),
+        },
+        Some(l) => {
+            let reason = crate::srcscan::py_strip(&reason.unwrap_or("").replace("*/", "* /")).to_string();
+            let action = match old {
+                None => format!("@{l} added"),
+                Some(o) if o == format!("@{l}") => format!("@{l} reason replaced"),
+                Some(o) => format!("{o} -> @{l}"),
+            };
+            (format!("{stripped} @{l} {reason}"), action)
+        }
+    };
+    let new_raw = if raw.starts_with("/*") { format!("/*{new_body} */") } else { format!("//{new_body}") };
+    let out: String = tx[..*cs].iter().collect::<String>() + &new_raw + &tx[*ce..].iter().collect::<String>();
+    crate::edit::write(&path, &out)?;
+    Ok(action)
+}
+
+/// The line of a graded function's address comment.
+fn comment_line(r: &Row) -> i64 {
+    r.get("comment").and_then(|v| v.as_i64()).filter(|&c| c != 0).unwrap_or(1)
+}
+
+/// Remove the level tag of every function that reached byte + readable; one line per change.
+#[pyfunction]
+pub fn grades_auto_clear(project: PyRef<'_, crate::project::PyProject>) -> PyResult<Vec<String>> {
+    let p = &project.p;
+    let root = p.root.to_string_lossy().into_owned();
+    let mut out = vec![];
+    for r in function_grades(&p.store_path())? {
+        let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let level = r.get("level").is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
+        if level && s("code") == "byte" && s("readability") == "readable" {
+            let action = set_level(&root, &s("file"), None, None, comment_line(&r)).map_err(PyValueError::new_err)?;
+            out.push(format!("auto-clear {}: {} is byte + readable, {action}", s("file"), s("name")));
+        }
+    }
+    Ok(out)
+}
+
+/// `dcp escalate|stuck NAME --why` (`--clear`): (the lines, the error for stderr, the exit status).
+#[pyfunction]
+#[pyo3(signature = (project, level, name, clear, why))]
+pub fn level_command(project: PyRef<'_, crate::project::PyProject>, level: &str, name: &str, clear: bool, why: Option<String>)
+    -> PyResult<(Vec<String>, Option<String>, i32)> {
+    let p = &project.p;
+    let Some(r) = crate::asmcmd::find_function(&p.store_path(), name)? else {
+        return Ok((vec![], Some(format!("no graded function {name} (dcp build first)")), 1));
+    };
+    let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let root = p.root.to_string_lossy().into_owned();
+    let line = r.as_object().map(comment_line).unwrap_or(1);
+    let action = if clear {
+        set_level(&root, &s("file"), None, None, line)
+    } else {
+        let why = why.unwrap_or_default();
+        if why.trim().is_empty() {
+            return Ok((vec![], Some("a reason is required".into()), 1));
+        }
+        if level == "deep" && only_missing_statements(&why) {
+            return Ok((vec![], Some("refused: the reason names only missing statements; reconstruction is base work (say which leads were tried and what \
+                                     is left)".into()), 1));
+        }
+        set_level(&root, &s("file"), Some(level), Some(&why), line)
+    }.map_err(PyValueError::new_err)?;
+    let addr = r.get("addr").and_then(|v| v.as_i64()).unwrap_or(0);
+    let rec = crate::cliread::record(&[("fn", crate::cliread::Tok::I(addr)), ("name", crate::cliread::Tok::S(s("name"))),
+                                       ("file", crate::cliread::Tok::S(s("file"))), ("action", crate::cliread::Tok::S(action))]);
+    Ok((vec![rec], None, 0))
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+
+    #[test]
+    fn level_ladder() {
+        assert!(only_missing_statements("missing statements"));
+        assert!(only_missing_statements("the loop body is unwritten; two calls are missing"));
+        assert!(!only_missing_statements("register choice ebx/esi after the spell pass; missing statements"));
+        let dir = std::env::temp_dir().join(format!("dcp-level-{}", std::process::id()));
+        let root = dir.to_string_lossy().into_owned();
+        crate::edit::write(&format!("{root}/src/u.c"), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n").unwrap();
+        assert!(set_level(&root, "src/u.c", Some("deep"), Some("the data comment"), 1).is_err());
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("slot order after vargen"), 3).unwrap(), "@deep added");
+        assert!(crate::edit::read(&format!("{root}/src/u.c")).contains("\n/* 0x10001000, does it @deep slot order after vargen */\n"));
+        assert_eq!(set_level(&root, "src/u.c", Some("stuck"), Some("every lead tried"), 3).unwrap(), "@deep -> @stuck");
+        let text = crate::edit::read(&format!("{root}/src/u.c"));
+        if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &text) {
+            let f = &part.functions[0];
+            assert_eq!((f.1 .1.as_deref(), f.1 .0.as_deref(), f.0 .6.as_str(), f.1 .3), (Some("every lead tried"), None, "does it", 3));
+        }
+        assert_eq!(set_level(&root, "src/u.c", None, None, 3).unwrap(), "@stuck removed");
+        assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

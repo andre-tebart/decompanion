@@ -170,22 +170,6 @@ def test_baseline_accept_column():
     assert not G.at_least({"code": "byte", "readability": "draft"}, "shape+readable")
 
 
-def test_level_ladder(tmp_path):
-    assert G.only_missing_statements("missing statements")
-    assert G.only_missing_statements("the loop body is unwritten; two calls are missing")
-    assert not G.only_missing_statements("register choice ebx/esi after the spell pass; missing statements")
-    unit(tmp_path, "u", "int x;  /* 0x10002000 */\n", "/* 0x10001000, does it */\nvoid f(void)\n{\n}\n")
-    with pytest.raises(ValueError):
-        G.set_level(tmp_path, "src/u.c", "deep", "the data comment", 1)
-    assert G.set_level(tmp_path, "src/u.c", "deep", "slot order after vargen", 3) == "@deep added"
-    assert "\n/* 0x10001000, does it @deep slot order after vargen */\n" in (tmp_path / "src/u.c").read_text()
-    assert G.set_level(tmp_path, "src/u.c", "stuck", "every lead tried", 3) == "@deep -> @stuck"
-    fn = srcscan.scan(tmp_path).functions[0]
-    assert fn.stuck == "every lead tried" and fn.deep is None and fn.what == "does it" and fn.comment_line == 3
-    assert G.set_level(tmp_path, "src/u.c", None, None, 3) == "@stuck removed"
-    assert (tmp_path / "src/u.c").read_text() == "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n"
-
-
 # ------------------------------------------------------------------------------------------------ with VC6
 @needs_vc6
 def test_compile_and_byte_match(tiny):

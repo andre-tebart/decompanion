@@ -35,7 +35,7 @@ const ADDR_ITEM: &str = r"(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+";
 static LEAD_ADDRS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"\A\s*({ADDR_ITEM})((?:\s*[,/]\s*{ADDR_ITEM})*)")).unwrap());
 static ONE_ADDR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:([A-Za-z][A-Za-z0-9_-]*):)?(0x[0-9a-fA-F]+)").unwrap());
-static UNLINKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\A\s*unlinked\b\s*,?\s*(.*)").unwrap());
+pub(crate) static UNLINKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\A\s*unlinked\b\s*,?\s*(.*)").unwrap());
 static DEEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@deep\b[ \t]*(.*?)[ \t]*(?:\*/|\n|\z)").unwrap());
 static STUCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@stuck\b[ \t]*(.*?)[ \t]*(?:\*/|\n|\z)").unwrap());
 static ROUGH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@rough\b").unwrap());
@@ -69,7 +69,7 @@ static PTR_CAST: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// srcscan.lead_addrs: the addresses a comment starts with; and where they end.
-fn lead_addrs(body: &str) -> (Addrs, usize) {
+pub(crate) fn lead_addrs(body: &str) -> (Addrs, usize) {
     match LEAD_ADDRS.find(body) {
         None => (vec![], 0),
         Some(m) => (
@@ -610,11 +610,11 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     //! One text scanned alone, as a file no unit holds is (libclang's model of it): skipped without libclang.
     use super::*;
 
-    fn scan_alone(rel: &str, text: &str) -> Option<FilePart> {
+    pub(crate) fn scan_alone(rel: &str, text: &str) -> Option<FilePart> {
         crate::frontend::library(None)?;
         let root = std::env::temp_dir().join(format!("dcp-srcscan-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from . import native
 
-import difflib
 import sys
 from collections import Counter
 from pathlib import Path
@@ -14,7 +13,6 @@ from pathlib import Path
 from .cli import build_target, fmt_addr, open_project, parse_addr, record, refresh, target_names
 from .config import ConfigError, Project
 from .ledger import grades as G
-from .ledger.fact import Kind
 
 
 # ------------------------------------------------------------------------------------------------ lookups
@@ -197,26 +195,16 @@ def cmd_diffclass(args):
 
 # ------------------------------------------------------------------------------------------------ the level ladder
 def cmd_level(args):
-    level = args.level
+    """`dcp escalate` / `dcp stuck`: the level tag of a function's address comment (the core's queues.rs)."""
     p, e = open_project(args)
     refresh(p, e)
-    r = find_function(p, args.name)
-    if r is None:
-        print(f"dcp {level}: no graded function {args.name} (dcp build first)", file=sys.stderr)
-        return 1
-    if args.clear:
-        action = G.set_level(p.root, r["file"], None, None, G.comment_line(r))
-    else:
-        if not (args.why or "").strip():
-            print(f"dcp {level}: a reason is required", file=sys.stderr)
-            return 1
-        if level == "deep" and G.only_missing_statements(args.why):
-            print(f"dcp escalate: refused: the reason names only missing statements; reconstruction is base work "
-                  f"(say which leads were tried and what is left)", file=sys.stderr)
-            return 1
-        action = G.set_level(p.root, r["file"], level, args.why, G.comment_line(r))
-    print(record(fn=r["addr"], name=r["name"], file=r["file"], action=action))
-    return 0
+    lines, error, status = native.core().level_command(p.core, args.level, args.name, bool(args.clear), args.why)
+    for line in lines:
+        print(line)
+    if error:
+        who = "escalate" if error.startswith("refused") else args.level
+        print(f"dcp {who}: {error}", file=sys.stderr)
+    return status
 
 
 # ------------------------------------------------------------------------------------------------ promote

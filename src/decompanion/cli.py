@@ -13,7 +13,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import rules  # noqa: F401  (registers every rule)
-from . import fsmemo, timing
+from . import fsmemo, native, timing
 from .config import ConfigError, Project
 from .ledger import query
 from .ledger.fact import Kind, Level, canonical
@@ -419,7 +419,7 @@ def cmd_build(args):
         if rows:
             c = Counter((r["code"], r["readability"]) for r in rows)
             print("  grades: " + "  ".join(f"{k[0]}+{k[1]}={v}" for k, v in sorted(c.items())))
-        cleared = G.auto_clear(p, rows)
+        cleared = native.core().grades_auto_clear(p.core)
         for line in cleared:
             print("  " + line)
         if cleared:

@@ -686,6 +686,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(units::unit_join, m)?)?;
     m.add_function(wrap_pyfunction!(units::unit_rename, m)?)?;
     m.add_function(wrap_pyfunction!(frontend::clang_library, m)?)?;
+    m.add_function(wrap_pyfunction!(queues::grades_auto_clear, m)?)?;
+    m.add_function(wrap_pyfunction!(queues::level_command, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_stale, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_available, m)?)?;
