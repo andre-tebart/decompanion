@@ -83,7 +83,8 @@ whole if a byte match was still lost). gildegold, 2026-10-30: 616 data errors ->
 Two grades per (function, target), computed by `G.grade` (the core's grade.rs, readability.rs) into `grade` facts:
 
 **code** `draft → shape → byte`
-- B1 byte: M.match holds.
+- B1 byte: M.match holds, and every string literal and floating constant the function references holds the
+  original's bytes where its site refers to (M9 / M10); a match with a differing literal is shape, B1 failing.
 - B2 shape: every differing hunk of the instruction diff is `fill`, `order` (same multiset), or explained by
   the ISA (`regs`, `slots`, `order` after a register renaming, `sib`, `fpu`; x86: `[esp + N]` is compared as it
   was at the hunk's start, so a store moved across a `push` / `pop` is `order`, or `slots` when its slot changed

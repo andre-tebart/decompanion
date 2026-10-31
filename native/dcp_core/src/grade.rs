@@ -185,8 +185,19 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
         let n = size.min(orig_size);
         let nbytes = f.c.diffs.iter().filter(|&&k| (k as i64) < n).count() as i64 + (size - orig_size).abs();
         let (g, why, hunks, dist_ins);
-        if matched.contains(&lo) {
+        let consts = if matched.contains(&lo) {
+            let sites: HashSet<u32> = f.code.relocs.iter().map(|(off, _)| *off).collect();
+            crate::rules::constant_mismatches(&img, f, &sites)
+        } else {
+            vec![]
+        };
+        if matched.contains(&lo) && consts.is_empty() {
             (g, why, hunks, dist_ins) = ("byte".to_string(), vec![], json!({}), 0usize);
+        } else if matched.contains(&lo) {
+            // the bytes match, a literal or a floating constant they reference does not (M9 / M10): no byte, the
+            // instructions are the same
+            (g, hunks, dist_ins) = ("shape".to_string(), json!({}), 0usize);
+            why = consts.into_iter().map(|(_, _, rule, msg)| format!("B1 byte: {rule} {msg}")).collect();
         } else {
             if h.verdict.get().is_none() {
                 let v = diffclass::function_verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o).map_err(e)?;

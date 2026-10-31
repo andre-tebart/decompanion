@@ -118,6 +118,27 @@ def test_compile_and_byte_match(tiny):
 
 
 @needs_vc6
+def test_byte_match_with_a_differing_literal_is_no_byte(tiny):
+    """f2 reads the dword at 0x10002000 (34 12 00 00): `return *(int *)"\\x34\\x12";` compiles to the same bytes,
+    its literal held there, byte; another literal keeps the bytes (M.match) but the literal differs (M9): shape,
+    B1 failing with the M9 message (a match-base report: grade said byte, only check caught it)."""
+    with_vc6(tiny)
+    write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n"
+                                 "0x10001030 boundary end tu=net -- f3 is another unit\n")
+    fn = "/* 0x10001020, reads the counter */\nint get(void)\n{{\n    return *(int *)\"{}\";\n}}\n"
+    unit(tiny, "net", fn.format("\\x34\\x12"))
+    code, out = dcp(tiny, "build")
+    assert code == 0, out
+    code, out = dcp(tiny, "grade", "get")
+    assert "code=byte" in out, out
+    unit(tiny, "net", fn.format("\\x34\\x13"))
+    code, out = dcp(tiny, "build")
+    assert [f.lo for f in Project(tiny).store.facts(Kind.symbol) if f.run == "M.match"] == [0x10001020]
+    code, out = dcp(tiny, "grade", "get")
+    assert "code=shape" in out and "B1 byte: M9" in out and "differs from the original's bytes" in out, out
+
+
+@needs_vc6
 def test_promote_raises_only_and_accept(tiny):
     """promote refuses a fall (nothing written); dcp accept lowers that one entry with its reason and M1 holds the
     function there; promote keeps the note while it stays below, clears it once the function is back; a fall

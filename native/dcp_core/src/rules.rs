@@ -367,9 +367,55 @@ pub fn aligned_sites(dll: &str, ours: &[u8], mask: &[u8], orig: &[u8], va: u32, 
     Ok(out)
 }
 
+/// M9 / M10: the string literals and floating constants a compiled function references at its `aligned` sites
+/// whose bytes the original does not hold where its site refers to: (site, width, rule, message). G.grade reads it
+/// too: a byte match whose literal differs is no byte.
+pub(crate) fn constant_mismatches(img: &crate::pe::Image, x: &Compiled, aligned: &std::collections::HashSet<u32>)
+    -> Vec<(u32, u32, &'static str, String)> {
+    let va = x.src.lo as u32;
+    let (obj, _) = &*x.obj;
+    let unit = x.src.s("unit").unwrap_or("");
+    let mut out = vec![];
+    for (off, r) in &x.code.relocs {
+        let Some(target) = obj.symbol_at(r.symbol_index) else { continue };
+        let (kind, width) = r.kind_width();
+        if !(kind == crate::coff::ABSOLUTE || kind == crate::coff::RELATIVE) || !aligned.contains(off) {
+            continue;
+        }
+        let Some(k) = target.constant() else { continue };
+        let Some(data) = (if target.secnum > 0 { obj.sections.get(target.secnum as usize) } else { None }).and_then(|s| s.data.as_ref()) else {
+            continue;
+        };
+        let site = va.wrapping_add(*off);
+        let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(x.code.secnum, r)) else { continue };
+        let mut lit: &[u8] = data.get(target.value as usize..).unwrap_or(&[]);
+        if k == "string" {
+            if let Some(z) = lit.iter().position(|&c| c == 0) {
+                lit = &lit[..z + 1];
+            }
+        }
+        let have = img.bytes(to, lit.len());
+        if *have != *lit {
+            let mut hint = String::new();
+            let body = latin1(&lit[..lit.len().saturating_sub(1)]).replace('\\', "/");
+            if k == "string" && body.starts_with(&format!("src/{unit}/")) {
+                let z = img.bytes(to, 260);
+                let z = latin1(z.split(|&c| c == 0).next().unwrap_or(&[]));
+                hint = format!("; the unit's original file name? dcp decl add \"{:#010x} file tu={unit} path={z} -- ...\"", to);
+            }
+            let what = if k == "string" { "literal" } else { "constant" };
+            let msg = format!("{} at {:#x}: our {what} {} differs from the original's bytes {} at {:#x}{hint}",
+                              x.src.s("symbol").unwrap_or(""), x.src.lo, py_bytes(&lit[..lit.len().min(40)]),
+                              py_bytes(&have[..have.len().min(40)]), to);
+            out.push((site, width, if k == "string" { "M9" } else { "M10" }, msg));
+        }
+    }
+    out
+}
+
 /// M8 / M9 / M10 (M8.reloc): each relocation of ours whose site lines up with the original's code, resolved against
 /// the image: a registered symbol the original's site does not refer to (M8), a literal or a floating constant
-/// whose bytes the original does not hold there (M9 / M10).
+/// whose bytes the original does not hold there (M9 / M10: constant_mismatches).
 fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
     let (funcs, _) = compiled_functions(ctx, db)?;
@@ -383,45 +429,22 @@ fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
         let sites: Vec<(u32, u32)> = x.code.relocs.iter().map(|(off, r)| (*off, r.kind_width().1)).collect();
         let aligned = aligned_sites(&ctx.capstone, &x.code.data, &x.code.mask, &orig, va, x.c.matched(), &sites)
             .map_err(PyRuntimeError::new_err)?;
+        for (site, width, rule, msg) in constant_mismatches(&img, x, &aligned) {
+            out.conflict("error", rule, site as i64, (site + width) as i64, msg, &x.src.by);
+        }
         let (obj, _) = &*x.obj;
         let symbol = x.src.s("symbol").unwrap_or("");
-        let unit = x.src.s("unit").unwrap_or("");
         for (off, r) in &x.code.relocs {
             let Some(target) = obj.symbol_at(r.symbol_index) else { continue };
             let (kind, width) = r.kind_width();
             if !(kind == crate::coff::ABSOLUTE || kind == crate::coff::RELATIVE) || !aligned.contains(off) {
                 continue;
             }
+            if !target.named() || target.constant().is_some() {
+                continue;
+            }
             let site = va.wrapping_add(*off);
             let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(x.code.secnum, r)) else { continue };
-            let k = target.constant();
-            let tsec = if target.secnum > 0 { obj.sections.get(target.secnum as usize) } else { None };
-            if let (Some(k), Some(data)) = (k, tsec.and_then(|s| s.data.as_ref())) {
-                let mut lit: &[u8] = data.get(target.value as usize..).unwrap_or(&[]);
-                if k == "string" {
-                    if let Some(z) = lit.iter().position(|&c| c == 0) {
-                        lit = &lit[..z + 1];
-                    }
-                }
-                let have = img.bytes(to, lit.len());
-                if *have != *lit {
-                    let mut hint = String::new();
-                    let body = latin1(&lit[..lit.len().saturating_sub(1)]).replace('\\', "/");
-                    if k == "string" && body.starts_with(&format!("src/{unit}/")) {
-                        let z = img.bytes(to, 260);
-                        let z = latin1(z.split(|&c| c == 0).next().unwrap_or(&[]));
-                        hint = format!("; the unit's original file name? dcp decl add \"{:#010x} file tu={unit} path={z} -- ...\"", to);
-                    }
-                    let what = if k == "string" { "literal" } else { "constant" };
-                    let msg = format!("{symbol} at {:#x}: our {what} {} differs from the original's bytes {} at {:#x}{hint}",
-                                      x.src.lo, py_bytes(&lit[..lit.len().min(40)]), py_bytes(&have[..have.len().min(40)]), to);
-                    out.conflict("error", if k == "string" { "M9" } else { "M10" }, site as i64, (site + width) as i64, msg, &x.src.by);
-                }
-                continue;
-            }
-            if !target.named() || k.is_some() {
-                continue;
-            }
             let linker = target.name.strip_prefix("__imp_").unwrap_or(&target.name);
             let cname = crate::coff::undecorate(linker);
             let Some(regs) = by_name.get(&cname) else { continue };
