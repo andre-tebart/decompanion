@@ -256,22 +256,49 @@ pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 
 // ------------------------------------------------------------------------------------------------ the source scan
 
-/// srcscan's items as native_inputs hands them over (srcscan.native_view): values as hex text (a placeholder
-/// may spell more digits than any integer type holds).
+/// The source scan's items the native rules read (one file's: srcscan.rs Piece; the scan's: the pieces of its
+/// files joined): values as hex text (a placeholder may spell more digits than any integer type holds).
+#[derive(Default, Clone)]
+pub(crate) struct ScanView {
+    pub(crate) functions: Vec<(String, i64, i64, Vec<(Option<String>, i64)>)>, // file, comment line, end line, addrs
+    pub(crate) placeholders: Vec<(String, i64, String, String)>,              // file, line, ident, value
+    pub(crate) ptrcasts: Vec<(String, i64, String, String)>,                  // file, line, text, value
+    pub(crate) data: Vec<(String, i64, String, String, Vec<(Option<String>, i64)>)>, // file, line, kind, name, addrs
+    pub(crate) items: ScanItems, // L.src's
+}
+
+impl ScanView {
+    pub(crate) fn extend(&mut self, o: &ScanView) {
+        self.functions.extend_from_slice(&o.functions);
+        self.placeholders.extend_from_slice(&o.placeholders);
+        self.ptrcasts.extend_from_slice(&o.ptrcasts);
+        self.data.extend_from_slice(&o.data);
+        self.items.fns.extend_from_slice(&o.items.fns);
+        self.items.datas.extend_from_slice(&o.items.datas);
+        self.items.views.extend_from_slice(&o.items.views);
+        self.items.errors.extend_from_slice(&o.items.errors);
+    }
+}
+
+/// The scan as native_inputs names it (srcscan.native_view): its files' pieces (srcscan.rs ScanPiece ids) in
+/// file order, the errors of the whole scan (L16) after theirs.
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
-struct ScanView {
-    functions: Vec<(String, i64, i64, Vec<(Option<String>, i64)>)>, // file, comment line, end line, addrs
-    placeholders: Vec<(String, i64, String, String)>,              // file, line, ident, value
-    ptrcasts: Vec<(String, i64, String, String)>,                  // file, line, text, value
-    data: Vec<(String, i64, String, String, Vec<(Option<String>, i64)>)>, // file, line, kind, name, addrs
-    #[serde(flatten)]
-    items: ScanItems, // L.src's
+pub(crate) struct ScanRef {
+    pub(crate) pieces: Vec<u64>,
+    pub(crate) errors: Vec<(String, String, i64, String)>,
 }
 
 /// What the scan rules get from Python: the targets (the default first), the current one, the images' paths.
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
+struct RawInputs {
+    targets: Vec<String>,
+    target: String,
+    images: HashMap<String, String>,
+    scan: ScanRef,
+}
+
 struct ScanInputs {
     targets: Vec<String>,
     target: String,
@@ -288,8 +315,9 @@ fn scan_inputs(ctx: &Ctx) -> PyResult<std::rc::Rc<ScanInputs>> {
     if let Some(x) = SCAN.with(|s| s.borrow().as_ref().filter(|(t, _)| *t == ctx.extra).map(|(_, x)| x.clone())) {
         return Ok(x);
     }
-    let x: ScanInputs = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("{}: native inputs: {e}", ctx.rule)))?;
-    let x = std::rc::Rc::new(x);
+    let r: RawInputs = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("{}: native inputs: {e}", ctx.rule)))?;
+    let scan = crate::srcscan::view(&r.scan)?;
+    let x = std::rc::Rc::new(ScanInputs { targets: r.targets, target: r.target, images: r.images, scan });
     SCAN.with(|s| *s.borrow_mut() = Some((ctx.extra.clone(), x.clone())));
     Ok(x)
 }
@@ -1051,18 +1079,17 @@ pub fn l14_unit_outside(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<(
 
 type Addrs = Vec<(Option<String>, i64)>;
 
-/// srcscan's items L.src reads (srcscan.native_view): every function, datum, view, error of the scan.
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-pub struct ScanItems {
+/// srcscan's items L.src reads: every function, datum, view, error of the scan.
+#[derive(Default, Clone)]
+pub(crate) struct ScanItems {
     // file, line, comment line, end line, unit, name, static, addrs, deep, stuck, rough, what
-    fns: Vec<(String, i64, i64, i64, String, String, bool, Addrs, Option<String>, Option<String>, bool, String)>,
+    pub(crate) fns: Vec<(String, i64, i64, i64, String, String, bool, Addrs, Option<String>, Option<String>, bool, String)>,
     // file, line, unit, name, kind, static, addrs
-    datas: Vec<(String, i64, String, String, String, bool, Addrs)>,
+    pub(crate) datas: Vec<(String, i64, String, String, String, bool, Addrs)>,
     // file, line, unit, name, container, offset, alias, addrs
-    views: Vec<(String, i64, String, String, String, i64, bool, Addrs)>,
+    pub(crate) views: Vec<(String, i64, String, String, String, i64, bool, Addrs)>,
     // check, file, line, message
-    errors: Vec<(String, String, i64, String)>,
+    pub(crate) errors: Vec<(String, String, i64, String)>,
 }
 
 /// L.src: the address comments of the sources for the current target (facts source / name / start, the errors).

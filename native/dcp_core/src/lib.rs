@@ -654,5 +654,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clang::clang_function_headers, m)?)?;
     m.add_class::<clang::Unit>()?;
     m.add_function(wrap_pyfunction!(srcscan::scan_file, m)?)?;
+    m.add_class::<srcscan::ScanPiece>()?;
     Ok(())
 }

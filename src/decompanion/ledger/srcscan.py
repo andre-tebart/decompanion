@@ -164,7 +164,8 @@ class Scan:
     views: list[View] = field(default_factory=list)             # view macros (L15)
     rawobj: list[str] = field(default_factory=list)             # object-like macros dereferencing a cast, no view (Q4)
     models: dict = field(default_factory=dict)                  # file -> its front end model (cparse.model's entry)
-    _native: str | None = field(default=None, repr=False, compare=False)  # native_view's text
+    native: list = field(default_factory=list, repr=False, compare=False)  # its files' pieces in the core (ScanPiece)
+    own_errors: list[ScanError] = field(default_factory=list)   # the errors of the whole scan (L16), after the files'
 
 
 def lead_addrs(body: str) -> list[tuple[str | None, int]]:
@@ -303,8 +304,9 @@ def scan_file(rel: str, text: str, out: Scan, model: dict | None = None, views: 
     definition, and a definition only another target's view holds (under its `#if`) is a function too."""
     from .. import native
     model = model_alone(rel, text) if model is None else model
-    macros, described, functions, data, ptrcasts, views_, rawobj, errors, placeholders = \
+    macros, described, functions, data, ptrcasts, views_, rawobj, errors, placeholders, piece = \
         native.core().scan_file(rel, text, model, list(views.items()) if views else [])
+    out.native.append(piece)
     out.macros += [tuple(x) for x in macros]
     out.described += described
     out.functions += [Function(*a[:4], tuple(a[4]), *a[5:], *b[:6], tuple(b[6])) for a, b in functions]
@@ -553,11 +555,13 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
         out.ptrcasts += piece.ptrcasts
         out.views += piece.views
         out.rawobj += piece.rawobj
+        out.native += piece.native
     for k in [k for k in _files if k[0] == str(root)]:
         del _files[k]
     _files.update(used)
     if default is not None:
-        out.errors += guards(out.functions, [t for t, _ in targets])
+        out.own_errors = guards(out.functions, [t for t, _ in targets])
+        out.errors += out.own_errors
     if tree_hash is not None:
         if len(_cache) > 2:                       # a long-lived process (dcp serve) sees a new tree per edit
             _cache.clear()
@@ -607,27 +611,12 @@ class Spans:
 
 
 def native_view(sc: Scan) -> str:
-    """The items of a scan the native rules read (L5, A1, L13 in native/dcp_core/src/layout.rs), as JSON text:
-    functions with addresses (file, comment line, end line, addrs), placeholders and pointer casts (file, line,
-    text, value as hex: a placeholder may spell more digits than an integer type holds), data declarations
-    (file, line, kind, name, addrs); every function, datum, view and error as L.src reads them; the function definitions of the front end's models (file -> name -> start
-    line, column, end line, column: G.grade's readability, the last definition with a body). Made once per scan (a
-    scan is made once per tree)."""
-    if sc._native is None:
-        import json
-        sc._native = json.dumps({
-            "functions": [(f.file, f.comment_line, f.end_line, f.addrs) for f in sc.functions if f.addrs],
-            "placeholders": [(p.file, p.line, p.ident, format(p.value, "x")) for p in sc.placeholders],
-            "ptrcasts": [(c.file, c.line, c.text, format(c.value, "x")) for c in sc.ptrcasts],
-            "data": [(d.file, d.line, d.kind, d.name, d.addrs) for d in sc.data],
-            "defs": {rel: {d[1]: (*d[3], *(d[5] or (None, None))) for d in m["decls"] if d[0] == "f" and d[6] is not None}
-                     for rel, m in sc.models.items()},
-            "fns": [(f.file, f.line, f.comment_line, f.end_line, f.unit, f.name, f.static, f.addrs, f.deep, f.stuck, f.rough, f.what)
-                    for f in sc.functions],
-            "datas": [(d.file, d.line, d.unit, d.name, d.kind, d.static, d.addrs) for d in sc.data],
-            "views": [(v.file, v.line, v.unit, v.name, v.container, v.offset, v.alias, v.addrs) for v in sc.views],
-            "errors": [(e.check, e.file, e.line, e.message) for e in sc.errors]}, separators=(",", ":"))
-    return sc._native
+    """The scan as the native rules read it (L.src, L5, A1, L13, G.grade in native/dcp_core/src), as JSON text: its
+    files' pieces in the core by id (they hold every item the rules read: native/dcp_core/src/srcscan.rs Piece),
+    the errors of the whole scan (L16). The scan holds its pieces, so they stand while it does."""
+    import json
+    return json.dumps({"pieces": [x.id for x in sc.native],
+                       "errors": [(e.check, e.file, e.line, e.message) for e in sc.own_errors]}, separators=(",", ":"))
 
 
 def function_spans(sc: Scan, target: str, default: str) -> Spans:

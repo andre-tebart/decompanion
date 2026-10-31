@@ -30,16 +30,10 @@ fn rank(c: &str) -> usize {
 struct Inputs {
     raw: Vec<String>,
     described: Vec<i64>,
-    scan: ScanDefs,
+    scan: crate::layout::ScanRef,
     lint_calls: Option<HashMap<String, Vec<(i64, String)>>>,
     linted: Vec<String>,
     function_alignment: i64,
-}
-
-#[derive(Default, serde::Deserialize)]
-#[serde(default)]
-struct ScanDefs {
-    defs: HashMap<String, HashMap<String, (i64, i64, Option<i64>, Option<i64>)>>, // file -> name -> start, end
 }
 
 /// One function's code grade row: (code, why, hunks, dist).
@@ -157,6 +151,7 @@ fn compute_all(env: &Env, todo: &[Task], align: i64) -> Vec<(usize, Computed)> {
 pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
     let x: Inputs = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("G.grade: native inputs: {e}")))?;
+    let scan_defs = crate::srcscan::defs(&x.scan)?;
     let (funcs, missing) = compiled_functions(ctx, db)?;
     let symbols = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
     let matched: HashSet<i64> = symbols.iter().filter(|f| &*f.rule == "M.match").map(|f| f.lo).collect();
@@ -264,7 +259,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
             used_files.insert(file.clone(), held);
         }
         let fh = used_files[&file].clone();
-        let def = x.scan.defs.get(&file).and_then(|d| d.get(name)).map(|&(l, c, el, ec)| (l, c, el.zip(ec)));
+        let def = scan_defs.get(&file).and_then(|d| d.get(name)).map(|&(l, c, el, ec)| (l, c, el.zip(ec)));
         let comment = v.get("comment").and_then(|c| c.as_i64()).unwrap_or(1);
         let fnv = readability::Fn { name, comment, end: v.get("end").and_then(|c| c.as_i64()).unwrap_or(0),
                                     rough: v.get("rough").is_some_and(|r| !r.is_null() && r != &json!(false) && r != &json!("") && r != &json!(0)),

@@ -4,11 +4,14 @@
 //! (clang_tokenize); this module reads the address comments and the macros' bodies. Offsets are byte offsets of
 //! the file's text; the model's (line, column in characters) positions are mapped to them.
 
+use crate::layout::{ScanRef, ScanView};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 type Addrs = Vec<(Option<String>, u64)>;
 type Lc = (i64, i64);
@@ -268,6 +271,62 @@ impl<'a> Src<'a> {
 }
 
 // (file, line, unit, name, addrs, unlinked, what), (deep, stuck, rough, comment line, static, end line, targets)
+/// The function definitions with a body of a file's model: name -> start line, column, end line, column (the last
+/// one with a body; G.grade's readability).
+pub(crate) type Defs = HashMap<String, (i64, i64, Option<i64>, Option<i64>)>;
+
+/// One file's scan as the native rules read it.
+pub(crate) struct Piece {
+    view: ScanView,
+    rel: String,
+    defs: Defs,
+}
+
+/// A file's piece, held by the Python scan that holds the file's scan (srcscan.Scan.native); the native rules
+/// name it by its id (native_view).
+#[pyclass(frozen)]
+pub struct ScanPiece {
+    #[pyo3(get)]
+    id: u64,
+    _piece: Arc<Piece>,
+}
+
+static HELD: LazyLock<Mutex<HashMap<u64, Weak<Piece>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static NEXT: AtomicU64 = AtomicU64::new(1);
+
+fn hold(p: Piece) -> ScanPiece {
+    let piece = Arc::new(p);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut h = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    if h.len() > 4096 {
+        h.retain(|_, w| w.strong_count() > 0);
+    }
+    h.insert(id, Arc::downgrade(&piece));
+    ScanPiece { id, _piece: piece }
+}
+
+fn pieces(ids: &[u64]) -> PyResult<Vec<Arc<Piece>>> {
+    let h = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    ids.iter()
+        .map(|id| h.get(id).and_then(|w| w.upgrade()).ok_or_else(|| PyRuntimeError::new_err(format!("scan piece {id} is no longer held"))))
+        .collect()
+}
+
+/// The scan a ScanRef names: its pieces joined, its own errors after theirs.
+pub(crate) fn view(r: &ScanRef) -> PyResult<ScanView> {
+    let mut v = ScanView::default();
+    for p in pieces(&r.pieces)? {
+        v.extend(&p.view);
+    }
+    v.items.errors.extend_from_slice(&r.errors);
+    Ok(v)
+}
+
+/// file -> its Defs, of the files a ScanRef names.
+pub(crate) fn defs(r: &ScanRef) -> PyResult<HashMap<String, Defs>> {
+    Ok(pieces(&r.pieces)?.iter().map(|p| (p.rel.clone(), p.defs.clone())).collect())
+}
+
 type FnRow = ((String, i64, String, String, Addrs, bool, String), (Option<String>, Option<String>, bool, i64, bool, i64, Vec<String>));
 type DataRow = (String, i64, String, String, String, Addrs, bool, bool);
 type ViewRow = (String, i64, String, String, String, u64, Addrs, bool);
@@ -279,7 +338,7 @@ fn item<'py>(m: &Bound<'py, PyDict>, k: &str) -> PyResult<Bound<'py, PyAny>> {
 
 /// srcscan.scan_file: one file's part of the scan from its text and its model (the default target's) and every
 /// target's view of it ((target or None, model)): (macros, described, functions, data, ptrcasts, views, rawobj,
-/// errors, placeholders), the rows of srcscan's dataclasses.
+/// errors, placeholders), the rows of srcscan's dataclasses, and the file's ScanPiece.
 #[pyfunction]
 pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py, PyDict>, views: Vec<(Option<String>, Bound<'py, PyDict>)>)
                       -> PyResult<Bound<'py, PyTuple>> {
@@ -457,6 +516,28 @@ pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py,
             placeholders.push((rel.to_string(), sf.line_of(m.start()), w.to_string(), v));
         }
     }
+    let ad = |a: &Addrs| a.iter().map(|(t, x)| (t.clone(), *x as i64)).collect::<Vec<_>>();
+    let mut defs_of: Defs = HashMap::new();
+    for d in item(model, "decls")?.extract::<Vec<Bound<PyTuple>>>()? {
+        if d.get_item(0)?.extract::<String>()? == "f" && !d.get_item(6)?.is_none() {
+            let (l, c): Lc = d.get_item(3)?.extract()?;
+            let e: Option<Lc> = d.get_item(5)?.extract()?;
+            defs_of.insert(d.get_item(1)?.extract()?, (l, c, e.map(|e| e.0), e.map(|e| e.1)));
+        }
+    }
+    let view = ScanView {
+        functions: functions.iter().filter(|(a, _)| !a.4.is_empty()).map(|(a, b)| (a.0.clone(), b.3, b.5, ad(&a.4))).collect(),
+        placeholders: placeholders.iter().map(|x| (x.0.clone(), x.1, x.2.clone(), format!("{:x}", x.3))).collect(),
+        ptrcasts: ptrcasts.iter().map(|x| (x.0.clone(), x.1, x.2.clone(), format!("{:x}", x.3))).collect(),
+        data: data.iter().map(|d| (d.0.clone(), d.1, d.4.clone(), d.3.clone(), ad(&d.5))).collect(),
+        items: crate::layout::ScanItems {
+            fns: functions.iter().map(|(a, b)| (a.0.clone(), a.1, b.3, b.5, a.2.clone(), a.3.clone(), b.4, ad(&a.4), b.0.clone(), b.1.clone(), b.2, a.6.clone())).collect(),
+            datas: data.iter().map(|d| (d.0.clone(), d.1, d.2.clone(), d.3.clone(), d.4.clone(), d.7, ad(&d.5))).collect(),
+            views: vrows.iter().map(|v| (v.0.clone(), v.1, v.2.clone(), v.3.clone(), v.4.clone(), v.5 as i64, v.7, ad(&v.6))).collect(),
+            errors: errors.iter().map(|e| (e.2.clone(), e.0.clone(), e.1, e.3.clone())).collect(),
+        },
+    };
+    let piece = hold(Piece { view, rel: rel.to_string(), defs: defs_of });
     PyTuple::new(py, [
         macros.into_pyobject(py)?.into_any(),
         described.into_pyobject(py)?.into_any(),
@@ -467,5 +548,6 @@ pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py,
         rawobj.into_pyobject(py)?.into_any(),
         errors.into_pyobject(py)?.into_any(),
         placeholders.into_pyobject(py)?.into_any(),
+        Bound::new(py, piece)?.into_any(),
     ])
 }
