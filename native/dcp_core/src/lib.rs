@@ -88,9 +88,8 @@ cargo test: over its budget of {ms} ms (DCP_TEST_BUDGET_MS): the run fails");
     static START: extern "C" fn() = start;
 }
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError};
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use rusqlite::{params, Connection};
 use std::rc::Rc;
 use sha2::{Digest, Sha256};
@@ -133,84 +132,6 @@ pub(crate) fn put_str(out: &mut String, s: &str) {
         }
     }
     out.push('"');
-}
-
-/// A Python value as fact.canonical spells it: json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True).
-pub(crate) fn put_value(out: &mut String, v: &Bound<'_, PyAny>) -> PyResult<()> {
-    if v.is_none() {
-        out.push_str("null");
-    } else if v.is_instance_of::<PyBool>() {
-        out.push_str(if v.extract::<bool>()? { "true" } else { "false" });
-    } else if v.is_instance_of::<PyInt>() {
-        match v.extract::<i64>() {
-            Ok(i) => {
-                let _ = write!(out, "{}", i);
-            }
-            Err(_) => out.push_str(&v.call_method0("__index__")?.str()?.to_cow()?),
-        }
-    } else if v.is_instance_of::<PyFloat>() {
-        // float.__repr__, as json.dumps writes a float (nan / inf as NaN / Infinity)
-        let f: f64 = v.extract()?;
-        if f.is_nan() {
-            out.push_str("NaN");
-        } else if f.is_infinite() {
-            out.push_str(if f > 0.0 { "Infinity" } else { "-Infinity" });
-        } else {
-            let py = v.py();
-            out.push_str(&PyFloat::new(py, f).repr()?.to_cow()?);
-        }
-    } else if let Ok(s) = v.cast::<PyString>() {
-        put_str(out, &s.to_cow()?);
-    } else if let Ok(d) = v.cast::<PyDict>() {
-        let mut items: Vec<(String, Bound<'_, PyAny>)> = Vec::with_capacity(d.len());
-        for (k, x) in d.iter() {
-            let key = if let Ok(s) = k.cast::<PyString>() {
-                s.to_cow()?.into_owned()
-            } else {
-                return Err(PyTypeError::new_err(format!("canonical: a dict key that is no str: {}", k.repr()?)));
-            };
-            items.push((key, x));
-        }
-        items.sort_by(|a, b| a.0.cmp(&b.0));
-        out.push('{');
-        for (i, (k, x)) in items.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            put_str(out, k);
-            out.push(':');
-            put_value(out, x)?;
-        }
-        out.push('}');
-    } else if let Ok(l) = v.cast::<PyList>() {
-        out.push('[');
-        for (i, x) in l.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            put_value(out, &x)?;
-        }
-        out.push(']');
-    } else if let Ok(t) = v.cast::<PyTuple>() {
-        out.push('[');
-        for (i, x) in t.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            put_value(out, &x)?;
-        }
-        out.push(']');
-    } else {
-        return Err(PyTypeError::new_err(format!("canonical: no JSON spelling for {}", v.get_type().name()?)));
-    }
-    Ok(())
-}
-
-#[pyfunction]
-fn canonical(v: &Bound<'_, PyAny>) -> PyResult<String> {
-    let mut out = String::new();
-    put_value(&mut out, v)?;
-    Ok(out)
 }
 
 // ------------------------------------------------------------------------------------------------ runs
@@ -600,7 +521,6 @@ pub(crate) fn live_objects(paths: &std::collections::HashSet<String>) {
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
     m.add_function(wrap_pyfunction!(link::link_classify, m)?)?;
@@ -710,10 +630,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<clang::Unit>()?;
     m.add_class::<srcscan::ScanPiece>()?;
     m.add_class::<lint::AllDecls>()?;
-    m.add_function(wrap_pyfunction!(decl::decl_parse_line, m)?)?;
-    m.add_function(wrap_pyfunction!(decl::decl_load, m)?)?;
-    m.add_function(wrap_pyfunction!(decl::decl_text, m)?)?;
-    m.add_function(wrap_pyfunction!(decl::decl_insert, m)?)?;
     Ok(())
 }
 

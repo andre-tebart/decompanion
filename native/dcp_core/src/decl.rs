@@ -6,7 +6,6 @@
 use crate::image;
 use crate::rules::Ctx;
 use crate::store::Out;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use regex::Regex;
 use rusqlite::Connection;
@@ -388,44 +387,6 @@ pub fn lib_units<'a>(decls: &'a [Decl], target: &str, default: &str) -> BTreeMap
 
 // ------------------------------------------------------------------------------------------------ Python's face
 
-type Row = (i64, i64, String, Vec<String>, Vec<(String, Py<PyAny>)>, String, Option<String>, String, i64);
-
-fn row(py: Python<'_>, d: &Decl) -> PyResult<Row> {
-    let keys = d.keys.iter().map(|(k, v)| Ok((k.clone(), match v {
-        KeyVal::Int(i) => i.into_pyobject(py)?.into_any().unbind(),
-        KeyVal::Str(s) => s.into_pyobject(py)?.into_any().unbind(),
-    }))).collect::<PyResult<Vec<_>>>()?;
-    Ok((d.lo, d.hi, d.kind.clone(), d.words.clone(), keys, d.reason.clone(), d.target.clone(), d.file.clone(), d.line))
-}
-
-fn from_row(r: (i64, i64, String, Vec<String>, Vec<(String, Bound<'_, PyAny>)>, String, Option<String>, String, i64)) -> PyResult<Decl> {
-    let keys = r.4.into_iter().map(|(k, v)| Ok((k, if let Ok(i) = v.extract::<i64>() { KeyVal::Int(i) } else { KeyVal::Str(v.extract()?) })))
-        .collect::<PyResult<Vec<_>>>()?;
-    Ok(Decl { lo: r.0, hi: r.1, kind: r.2, words: r.3, keys, reason: r.5, target: r.6, file: r.7, line: r.8 })
-}
-
-/// decl.parse_line: the declaration's row, ValueError with the reason a line is malformed.
-#[pyfunction]
-pub fn decl_parse_line(py: Python<'_>, text: &str, file: &str, line: i64) -> PyResult<Row> {
-    let d = parse_line(text, file, line).map_err(PyValueError::new_err)?;
-    row(py, &d)
-}
-
-/// decl.load: (rows, errors (file, line, lo, message, target)).
-#[pyfunction]
-pub fn decl_load(py: Python<'_>, files: Vec<String>, root: &str, targets: Vec<String>)
-                 -> PyResult<(Vec<Row>, Vec<(String, i64, Option<i64>, String, Option<String>)>)> {
-    let mut paths: Vec<std::path::PathBuf> = files.iter().map(std::path::PathBuf::from).collect();
-    paths.sort_by_key(|p| p.to_string_lossy().to_lowercase());
-    let (ds, es) = load(&paths, root, &targets);
-    Ok((ds.iter().map(|d| row(py, d)).collect::<PyResult<_>>()?, es.into_iter().map(|e| (e.file, e.line, e.lo, e.message, e.target)).collect()))
-}
-
-/// Decl.text of a row.
-#[pyfunction]
-pub fn decl_text(r: (i64, i64, String, Vec<String>, Vec<(String, Bound<'_, PyAny>)>, String, Option<String>, String, i64)) -> PyResult<String> {
-    Ok(from_row(r)?.text())
-}
 
 /// decl.insert: d's canonical line into the sorted file at path, after the last declaration whose sort key is
 /// not larger (before the first larger one when there is none; at the end of an empty file); its line number.
@@ -454,13 +415,6 @@ pub fn insert(path: &std::path::Path, d: &Decl, targets: &[String]) -> std::io::
     }
     std::fs::write(path, lines.join("\n") + "\n")?;
     Ok(at as i64 + 1)
-}
-
-/// decl.insert for Python.
-#[pyfunction]
-pub fn decl_insert(path: &str, r: (i64, i64, String, Vec<String>, Vec<(String, Bound<'_, PyAny>)>, String, Option<String>, String, i64),
-                   targets: Vec<String>) -> PyResult<i64> {
-    insert(std::path::Path::new(path), &from_row(r)?, &targets).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))
 }
 
 // ------------------------------------------------------------------------------------------------ the rules
