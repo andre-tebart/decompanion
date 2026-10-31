@@ -1096,3 +1096,24 @@ verdicts would not beat Python's memoised one):
   bench --verify S1 S3 S5 ok. Still Python: the scan (srcscan, cparse's decoding), lint, the setup rules (S.*,
   C.*), L.decl / L.decl.start / L.analyzer / L.analyze, L3 / L6 / L8, M.compile, M.flags.proven,
   M.bytes.declared, the engine and the CLI commands' cores (asmdiff / diffclass read Python's diffclass).
+- 2026-10-31 (continued): the C front end is the core's (clang.rs: libclang loaded by the core; the clang bindings
+  and dcp_clang.c gone); the scan and the lint of an edit share one parse. The scan's per-file part is the core's
+  (srcscan.rs): comments and literals from clang's tokens, macros from clang's extents (no `#define` regexes),
+  every item held in a ScanPiece the native rules read by id (no JSON). lint's reading is the core's (lint.rs:
+  file-scope declarations, the all-declarations unit, M5, M6/M7). L.src / L5 / A1 / L13 keyed by the scan's
+  items (input `scan`). gildegold: ~770 ms after a body edit, ~940 ms after a line move.
+
+## 21. Python a shallow frontend (planned 2026-10-31, user decision: "dont optimize for time anymore. priority is
+now to get the python/rust split done. python should just be a very shallow frontend. no computation should be
+there")
+
+Python keeps the argument parsing, the daemon / client transport and the printing; every computation is the
+core's. Each step shadows the Python it replaces (the rules: DCP_SHADOW and a forced setup of gildegold; the
+rest: equal results on gildegold and the tests) and then deletes it. Order (each on the one before):
+1. the Python rules: setup (S.*, S.codewalk), checks (C.*, S2, S4, S5, S7), L.decl / L.decl.start /
+   L.analyzer / L.analyze, L3 / L6 / L8, M.bytes.declared, M.compile, M.flags.proven; with them the image
+   (image/pe32.py), the archives' objects (objfmt/coff.py) and the toolchain's tables (toolchains/vc6) they read
+2. the engine (rule order, run keys, input hashes) and the store's readers (query, layoutview, grades, bytemap)
+3. the source side: the scan's orchestration (models, their cache), lint's, headers, datafix, draft, edit, units
+4. the build: compile, link, probe (CL / LINK runs)
+5. the commands' cores (cli*.py): what they print is computed by the core
