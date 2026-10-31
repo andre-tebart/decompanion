@@ -4,17 +4,15 @@
 //! - A rule's run key is sha256(code hash, version, image, plugins, the out_hash of every needed rule's current run,
 //!   the hash of every named input it reads). A run with the same key (in this store, or in the main checkout's
 //!   store under a worktree overlay) is made current instead of running again.
-//! - A rule's code hash is the core's source hash with its id and version (a rule of the Python front end: the hash
-//!   of its Python source, from the hook).
+//! - A rule's code hash is the core's source hash with its id and version.
 //! - A rule whose inputs wait on a human's declaration (Project.waiting_for: `libs` without archives, `toolchain`
 //!   without compiler / linker) does not run its criterion: its run is empty, keyed by what it waits on, so the
 //!   rules that need it run on its (empty) output and the declaration that ends the wait changes the key.
 //! - A native rule's output is checked against its declaration: only its declared outputs, no level above its
 //!   ceiling, declared producers (decl: / src:) only from a loader.
 //!
-//! The front end (Python) is reached through a hook object for what the core does not compute yet: the source
-//! scan's digest and pieces, the tree's raw macros and described addresses, the last lint, the units' text hashes,
-//! and the rules whose code is still Python (`run_python`).
+//! The front end (Python) is reached through a hook object for what the core does not compute yet: the last lint
+//! and the units' text hashes.
 
 use crate::project::{sha256_parts, Project};
 use crate::registry::{RuleDef, RULES};
@@ -166,9 +164,6 @@ impl<'a> Engine<'a> {
     }
 
     pub fn code_hash(&self, r: &RuleDef) -> PyResult<String> {
-        if r.python {
-            return self.hook()?.call_method1("code_hash", (r.id,))?.extract();
-        }
         Ok(native_code_hash(r, &self.core_hash))
     }
 
@@ -301,19 +296,6 @@ impl<'a> Engine<'a> {
                 continue;
             }
             let t0 = std::time::Instant::now();
-            if r.python {
-                let needed_py: Vec<String> = needed.iter().map(|s| s.to_string()).collect();
-                let got = self.hook()?.call_method1("run_python", (r.id, needed_py))?;
-                let (facts, conflicts): (Bound<'_, PyList>, Bound<'_, PyList>) = got.extract()?;
-                let ms = t0.elapsed().as_millis() as i64;
-                let t1 = std::time::Instant::now();
-                let (rows, confl): (Vec<Row>, Vec<ConflictRow>) = (rows_of(&facts)?, conflicts_of(&conflicts)?);
-                let shortcuts = std::env::var_os("DCP_NO_SHORTCUTS").is_none_or(|v| v.is_empty());
-                with_db(&self.db, |db| write_run(db, &self.db, r.id, r.version, &code, &ih, &rows, &confl, ms, shortcuts))?;
-                results.push(Result_ { rule: r.id, ran: true, ms, facts: rows.len(), conflicts: confl.len(), ms_run: ms as f64,
-                                       ms_rec: t1.elapsed().as_secs_f64() * 1000.0, ..Default::default() });
-                continue;
-            }
             let inputs = self.inputs(r)?;
             let ctx = Ctx {
                 rule: r.id.into(), version: r.version.into(), code_hash: code, input_hash: ih, db: self.db.clone(), main: self.main.clone(),
@@ -353,13 +335,13 @@ pub fn engine_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyPr
 }
 
 /// The registry in dependency order (of `ids` and what they need, or all): [(id, version, ceiling, phase, loader,
-/// python, needs resolved, outputs, inputs, doc)].
+/// needs resolved, outputs, inputs, doc)].
 #[pyfunction]
 #[pyo3(signature = (ids=None))]
 #[allow(clippy::type_complexity)]
-pub fn engine_order(ids: Option<Vec<String>>) -> PyResult<Vec<(String, String, i64, String, bool, bool, Vec<String>, Vec<String>, Vec<String>, String)>> {
+pub fn engine_order(ids: Option<Vec<String>>) -> PyResult<Vec<(String, String, i64, String, bool, Vec<String>, Vec<String>, Vec<String>, String)>> {
     order(ids.as_deref())?.into_iter().map(|r| {
-        Ok((r.id.into(), r.version.into(), r.ceiling, r.phase.into(), r.loader, r.python, resolve_needs(r)?.into_iter().map(|s| s.to_string()).collect(),
+        Ok((r.id.into(), r.version.into(), r.ceiling, r.phase.into(), r.loader, resolve_needs(r)?.into_iter().map(|s| s.to_string()).collect(),
             r.outputs.iter().map(|s| s.to_string()).collect(), r.inputs.iter().map(|s| s.to_string()).collect(), r.doc.into()))
     }).collect()
 }

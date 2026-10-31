@@ -58,7 +58,12 @@ pub struct TuRow {
 }
 
 pub fn tu_rows(db: &str) -> PyResult<HashMap<String, TuRow>> {
-    with_db(db, |c| {
+    with_db(db, |c| tu_rows_of(c))
+}
+
+/// tu_rows on a connection the caller holds.
+pub fn tu_rows_of(c: &rusqlite::Connection) -> rusqlite::Result<HashMap<String, TuRow>> {
+    {
         let mut st = c.prepare("SELECT unit, flags, src_hash, obj_hash, ok, log, diags FROM tu")?;
         let rows = st.query_map([], |r| {
             let flags: Value = serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or(Value::Null);
@@ -71,7 +76,7 @@ pub fn tu_rows(db: &str) -> PyResult<HashMap<String, TuRow>> {
             }))
         })?;
         rows.collect()
-    })
+    }
 }
 
 fn canonical(v: &Value) -> String {

@@ -997,6 +997,8 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
         "S.unknown" => crate::setup::s_unknown(ctx, db, &mut out),
         "L.decl" => crate::decl::l_decl(ctx, db, &mut out),
         "S.codewalk" => crate::walk::s_codewalk(ctx, db, &mut out),
+        "M.compile" => crate::mrules::m_compile(ctx, db, &mut out),
+        "M.flags.proven" => crate::mrules::m_flags_proven(ctx, db, &mut out),
         "L.decl.start" => crate::decl::l_decl_start(ctx, db, &mut out),
         "L.analyzer" => crate::layout::l_analyzer(ctx, db, &mut out),
         "L.analyze" => crate::layout::l_analyze(ctx, db, &mut out),
@@ -1050,7 +1052,7 @@ pub(crate) mod testkit {
 
     /// The declaration a test's toy rule name runs under (every output, any level).
     pub static TEST_RULE: crate::registry::RuleDef = crate::registry::RuleDef {
-        id: "T", version: "1", ceiling: 3, phase: "T", loader: true, python: false, needs: &[], outputs: &[
+        id: "T", version: "1", ceiling: 3, phase: "T", loader: true, needs: &[], outputs: &[
             "section", "region", "symbol", "start", "name", "source", "unit", "boundary", "toolchain", "ref", "grade", "build", "evidence"],
         inputs: &[], doc: "",
     };

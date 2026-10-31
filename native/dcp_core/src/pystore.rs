@@ -166,6 +166,35 @@ pub(crate) fn json_py<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'py, Py
     })
 }
 
+/// A Python value (None, bool, int, float, str, list, tuple, dict with str keys) as JSON data.
+pub(crate) fn py_value(v: &Bound<'_, PyAny>) -> PyResult<Value> {
+    use pyo3::types::{PyBool, PyFloat, PyInt, PyString, PyTuple};
+    Ok(if v.is_none() {
+        Value::Null
+    } else if let Ok(b) = v.cast::<PyBool>() {
+        Value::Bool(b.is_true())
+    } else if v.is_instance_of::<PyInt>() {
+        match v.extract::<i64>() {
+            Ok(i) => Value::from(i),
+            Err(_) => Value::from(v.extract::<u64>()?),
+        }
+    } else if v.is_instance_of::<PyFloat>() {
+        Value::from(v.extract::<f64>()?)
+    } else if let Ok(s) = v.cast::<PyString>() {
+        Value::String(s.extract::<String>()?)
+    } else if let Ok(d) = v.cast::<PyDict>() {
+        let mut m = serde_json::Map::new();
+        for (k, x) in d.iter() {
+            m.insert(k.str()?.extract::<String>()?, py_value(&x)?);
+        }
+        Value::Object(m)
+    } else if v.is_instance_of::<PyList>() || v.is_instance_of::<PyTuple>() {
+        Value::Array(v.try_iter()?.map(|x| py_value(&x?)).collect::<PyResult<_>>()?)
+    } else {
+        Value::String(v.str()?.extract::<String>()?)
+    })
+}
+
 fn make(py: Python<'_>, kind: &str, f: &SFact) -> PyResult<Py<StoredFact>> {
     Py::new(py, StoredFact {
         id: f.id, run: f.rule.to_string(), lo: f.lo, hi: f.hi, kind: kind_obj(py, kind)?, value: json_py(py, &f.value)?.unbind(),

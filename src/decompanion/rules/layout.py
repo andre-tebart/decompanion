@@ -35,7 +35,6 @@ from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..source import cparse
 from ..ledger.fact import Level, Severity, min_level
-from .engine import RuleContext, rule
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
 

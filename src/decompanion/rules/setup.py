@@ -14,7 +14,6 @@ from dataclasses import dataclass
 
 from ..ledger.fact import Level
 from ..objfmt.base import ABSOLUTE
-from .engine import RuleContext, rule
 
 P, D, O = Level.proven, Level.derived, Level.open
 

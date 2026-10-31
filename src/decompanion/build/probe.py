@@ -189,47 +189,9 @@ def probe(project, log=None) -> dict:
 
 def analyse(result: dict) -> dict:
     """The best combination and, per group, the anchors that distinguish its flag (module docstring); only user
-    anchors count, the CRT anchors are listed apart."""
-    grid = [(g, tuple(a)) for g, a in result["grid"]]
-    kinds = {a["id"]: a for a in result["anchors"]}
-    by = {tuple(c["flags"]): c for c in result["combos"]}
-    valid = [c for c in result["combos"] if not c["refused"]]
-    if not valid:
-        return {"best": None, "groups": []}
-    declared = {f.lower() for f in result.get("declared") or []}
-    defaults = {f.lower() for f in result.get("defaults") or []}
-
-    def user(c):
-        return [a for a in c["matched"] if kinds[a]["kind"] == "user"]
-    top = max(len(user(c)) for c in valid)
-    tied = [c for c in valid if len(user(c)) == top]
-    best = max(tied, key=lambda c: (sum(1 for f in c["flags"] if f.lower() in declared),
-                                    sum(1 for f in c["flags"] if f.lower() in defaults)))
-    groups = []
-    for k, (g, alts) in enumerate(grid):
-        lost, crt_lost = set(), set()
-        tried, same = 0, []
-        for v in alts:
-            if v == best["flags"][k]:
-                continue
-            other = list(best["flags"])
-            other[k] = v
-            c = by.get(tuple(other))
-            if c is None or c["refused"]:
-                continue
-            tried += 1
-            gone = set(best["matched"]) - set(c["matched"])
-            user_gone = {a for a in gone if kinds[a]["kind"] == "user"}
-            if not user_gone:
-                same.append(v)
-            lost |= user_gone
-            crt_lost |= {a for a in gone if kinds[a]["kind"] == "crt"}
-        unique = tried > 0 and not same
-        groups.append({"group": g, "flag": best["flags"][k], "alternatives": tried, "anchors": sorted(lost) if unique else [],
-                       "units": sorted({kinds[a]["unit"] for a in lost}) if unique else [], "crt_anchors": sorted(crt_lost),
-                       "same_as": same, "ruled_out": sorted(lost)})
-    return {"best": best, "matched": top, "groups": groups,
-            "ranked": sorted(((len(user(c)), c["flags"]) for c in valid), key=lambda x: -x[0])[:5]}
+    anchors count, the CRT anchors are listed apart (the core's: mrules.rs analyse)."""
+    from .. import native
+    return native.core().probe_analyse(result)
 
 
 def report(project, result: dict):

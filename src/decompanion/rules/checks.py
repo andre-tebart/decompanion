@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 from ..ledger.fact import Level
-from .engine import RuleContext, rule
 
 
 def declared_build(decl: str) -> int | None:
