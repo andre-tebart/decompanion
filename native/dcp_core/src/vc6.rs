@@ -137,8 +137,16 @@ impl Tools {
     /// The include set: CL /E and every distinct path its `#line` directives name, resolved against cwd, without
     /// the unit itself; (files, '' or the failure).
     pub fn includes(&self, src: &str, flags: &[String], include_dirs: &[String], cwd: &str) -> Result<(Vec<String>, String), String> {
+        Ok(match self.preprocess(src, flags, include_dirs, cwd)? {
+            Ok(out) => (include_files(&out, src, cwd), String::new()),
+            Err(e) => (vec![], e),
+        })
+    }
+
+    /// CL /E of a unit: its preprocessed text, or the failure.
+    pub fn preprocess(&self, src: &str, flags: &[String], include_dirs: &[String], cwd: &str) -> Result<Result<String, String>, String> {
         if !self.available() {
-            return Ok((vec![], format!("VC6 not found under the toolchain root {}", self.root.as_deref().unwrap_or("None"))));
+            return Ok(Err(format!("VC6 not found under the toolchain root {}", self.root.as_deref().unwrap_or("None"))));
         }
         let mut args: Vec<String> = vec!["/nologo".into(), "/E".into()];
         args.extend(flags.iter().filter(|f| {
@@ -149,26 +157,29 @@ impl Tools {
         args.extend(include_dirs.iter().map(|d| format!("/I{d}")));
         args.push(src.into());
         let (code, out, err) = self.run("CL.EXE", &args, cwd)?;
-        if code != 0 {
-            return Ok((vec![], err.replace("\r\n", "\n")));
-        }
-        static LINE_DIRECTIVE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"(?m)^#line\s+\d+\s+"((?:[^"\\]|\\.)*)""#).unwrap());
-        static ESC: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\\(.)").unwrap());
-        let me = resolved(cwd, src);
-        let mut done = std::collections::HashSet::new();
-        let mut seen: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-        for m in LINE_DIRECTIVE.captures_iter(&out) {
-            let raw = m.get(1).unwrap().as_str();
-            if !done.insert(raw.to_string()) {
-                continue;
-            }
-            let p = resolved(cwd, &ESC.replace_all(raw, "$1"));
-            if p != me {
-                seen.entry(p.to_lowercase()).or_insert(p);
-            }
-        }
-        Ok((seen.into_values().collect(), String::new()))
+        Ok(if code != 0 { Err(err.replace("\r\n", "\n")) } else { Ok(out) })
     }
+}
+
+/// The include set of a unit's preprocessed text: every distinct path its `#line` directives name, resolved against
+/// cwd, without the unit itself.
+pub fn include_files(out: &str, src: &str, cwd: &str) -> Vec<String> {
+    static LINE_DIRECTIVE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"(?m)^#line\s+\d+\s+"((?:[^"\\]|\\.)*)""#).unwrap());
+    static ESC: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\\(.)").unwrap());
+    let me = resolved(cwd, src);
+    let mut done = std::collections::HashSet::new();
+    let mut seen: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for m in LINE_DIRECTIVE.captures_iter(out) {
+        let raw = m.get(1).unwrap().as_str();
+        if !done.insert(raw.to_string()) {
+            continue;
+        }
+        let p = resolved(cwd, &ESC.replace_all(raw, "$1"));
+        if p != me {
+            seen.entry(p.to_lowercase()).or_insert(p);
+        }
+    }
+    seen.into_values().collect()
 }
 
 /// Path(raw) against cwd, resolved (Path.resolve: the file's real spelling when it exists).

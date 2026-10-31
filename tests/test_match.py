@@ -168,6 +168,10 @@ def test_rename_counts_the_errors_of_the_tree_as_from_before(tiny):
     unit(tiny, "net", fn.format("get", "\\x34\\x13"))                  # the edit, not built
     code, out = dcp(tiny, "rename", "get", "read_counter", "--why", "reads the counter")
     assert code == 0 and "renamed=get" in out and "check: 0 new error(s) after the rename, 1 from before" in out, out
+    assert "build: 1 of 1 unit(s) that read the renamed files keep their objects" in out, out    # not compiled again
+    import sqlite3
+    h = sqlite3.connect(Project(tiny).store_path()).execute("SELECT obj_hash FROM tu WHERE unit='net'").fetchone()[0]
+    assert b"_read_counter" in (tiny / "build" / "obj" / f"{h}.obj").read_bytes()
     code, out = dcp(tiny, "rename", "read_counter", "counter_value", "--why", "the store names read_counter")
     assert code == 0 and "check: 0 new error(s) after the rename, 1 from before" in out, out
     unit(tiny, "net", fn.format("counter_value", "\\x34\\x12"))

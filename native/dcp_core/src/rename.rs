@@ -14,6 +14,10 @@
 //!
 //! A symbol with an address is renamed where clang finds it, not where a local, a parameter or a field of the same
 //! name stands (local_refs); a name without one (a type, a field) by its words.
+//!
+//! The rebuild after the write compiles only what the rename changed: a unit that reads a renamed file and whose
+//! preprocessed text (CL /E, before and after the write) differs only by the names keeps its object with the symbols
+//! renamed (compile.rs rename_after); a unit where a name is stringified, pasted or tested by #ifdef compiles.
 
 use crate::cliread::{record, Tok};
 use crate::edit::{self as E, Skip};
@@ -414,6 +418,10 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
     if edits.is_empty() {
         return Ok((x.out, errs, 0));
     }
+    // the units that read a file the rename writes, preprocessed before the write: one whose text changes only by
+    // the names keeps its object with the symbols renamed instead of compiling again (compile.rs rename_after)
+    let touched: Vec<String> = edits.iter().flat_map(|p| p.files.keys().cloned()).filter(|f| !f.starts_with("decl/")).collect();
+    let pre = crate::compile::rename_before(p, &touched).map_err(err)?;
     write_renames(&root, &mut edits).map_err(err)?;
     for pl in &edits {
         E::log_names(&root, &[(pl.a, pl.kind, pl.old.clone(), pl.new.clone())], &pl.why).map_err(err)?;
@@ -434,6 +442,12 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
                                    views.iter().take(8).cloned().collect::<Vec<_>>().join(", ")));
             }
         }
+    }
+    let mapping: BTreeMap<String, String> = edits.iter().map(|p| (p.old.clone(), p.new.clone())).collect();
+    let (read, reused) = (pre.len(), crate::compile::rename_after(p, pre, &mapping).map_err(err)?);
+    if read > 0 {
+        x.out.push(format!("build: {} of {read} unit(s) that read the renamed files keep their objects, the symbols renamed (their preprocessed \
+                            text differs only by the names)", reused.len()));
     }
     rebuild.call0()?;
     // an error from before keeps its rule and address; its message names the new names now (or still the old ones:

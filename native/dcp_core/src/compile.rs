@@ -381,6 +381,160 @@ fn run_threads<T: Sync, R: Send>(n: usize, items: &[T], f: impl Fn(&T) -> R + Sy
     out.into_inner().unwrap().into_iter().map(|r| r.unwrap()).collect()
 }
 
+// ------------------------------------------------------------------------------------------------ a rename's objects
+
+/// A unit a rename touches (its file or a file of its include set), compiled and current before the write: its tu
+/// row and its preprocessed text then.
+pub struct Before {
+    unit: String,
+    flags: Vec<String>,
+    obj_hash: String,
+    log: String,
+    diags: String,
+    text: String,
+}
+
+/// The units of the current target that read one of `touched` (project-relative paths a rename is about to write)
+/// and are compiled and current, each preprocessed (CL /E) as it stands. A unit without a known include set, a failed
+/// or stale one is left to the build.
+pub fn rename_before(p: &Project, touched: &[String]) -> Result<Vec<Before>, String> {
+    let root = p.root.to_string_lossy().into_owned();
+    let db = p.store_path();
+    let tools = Tools::of(p);
+    if touched.is_empty() || !tools.available() {
+        return Ok(vec![]);
+    }
+    let touched: std::collections::HashSet<String> = touched.iter().map(|r| crate::vc6::resolved(&root, r).to_lowercase()).collect();
+    fsmemo::new_epoch();
+    p.forget_input("src");
+    let units = plan::plan(p)?;
+    let rows = tu_rows(&db).map_err(|e| e.to_string())?;
+    let keys = tu_keys(&db).map_err(|e| e.to_string())?;
+    let memo = Memo::default();
+    let mut search = vec![py_path(&format!("{root}/include"))];
+    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { py_path(&format!("{root}/{d}")) }));
+    let mut todo: Vec<(&Tu, Vec<String>)> = vec![];
+    for a in units.iter() {
+        let (Some(row), Some(k)) = (rows.get(&a.unit), keys.get(&a.unit)) else { continue };
+        let flags = plan::compile_flags(p, &a.target, &a.unit)?;
+        let fh = sha256_parts(&[canonical(&json!(flags))]);
+        let key = sha256_parts(&[a.src_hash.clone(), fh.clone(), memo.listing_hash(&search)]);
+        let Some(files) = include_set(&db, &key).map_err(|e| e.to_string())? else { continue };
+        let current = row.ok && k.src_hash == a.src_hash && k.flags_hash == fh && k.include_hash == memo.set(&files) && k.amalg == a.file
+            && Path::new(&obj_path(&root, &k.obj_hash)).exists();
+        let reads = touched.contains(&crate::vc6::resolved(&root, &a.file).to_lowercase()) || files.iter().any(|f| touched.contains(&f.to_lowercase()));
+        if current && reads {
+            todo.push((a, flags));
+        }
+    }
+    let dirs = vec!["include".to_string()];
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let texts = run_threads(n, &todo, |(a, flags)| tools.preprocess(&win(&a.file), flags, &dirs, &root));
+    let mut out = vec![];
+    for ((a, flags), text) in todo.into_iter().zip(texts) {
+        let (Ok(text), Some(row)) = (text?, rows.get(&a.unit)) else { continue };
+        let diags = json!(row.diags.iter().map(|d| json!([d.0, d.1, d.2, d.3, d.4])).collect::<Vec<_>>());
+        out.push(Before { unit: a.unit.clone(), flags, obj_hash: row.obj_hash.clone(), log: row.log.clone(), diags: canonical(&diags), text });
+    }
+    Ok(out)
+}
+
+/// The text with every identifier that is a key of mapping replaced by its value; string and character literals and
+/// numbers stay.
+fn renamed_tokens(text: &str, mapping: &std::collections::BTreeMap<String, String>) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let (mut i, mut last) = (0, 0);
+    while i < b.len() {
+        let c = b[i];
+        if c == b'"' || c == b'\'' {
+            i += 1;
+            while i < b.len() && b[i] != c && b[i] != b'\n' {
+                i += if b[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+        } else if c.is_ascii_digit() {
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
+                i += 1;
+            }
+        } else if c.is_ascii_alphabetic() || c == b'_' {
+            let s = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            if let Some(new) = mapping.get(&text[s..i]) {
+                out.push_str(&text[last..s]);
+                out.push_str(new);
+                last = i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&text[last.min(text.len())..]);
+    out
+}
+
+/// After a rename's write: each unit of `before` whose preprocessed text is now its text then with the old
+/// identifiers replaced by the new ones (and none of the new names occurred then) compiles to the same object but
+/// for the names of the renamed symbols: its object is the one from before with those symbols renamed, its tu row
+/// the one from before with the new hashes (the messages name the new names). A unit whose text changed otherwise
+/// (a name stringified or pasted, a macro tested by #ifdef) is left stale for the build to compile. The units reused.
+pub fn rename_after(p: &Project, before: Vec<Before>, mapping: &std::collections::BTreeMap<String, String>) -> Result<Vec<String>, String> {
+    if before.is_empty() {
+        return Ok(vec![]);
+    }
+    let root = p.root.to_string_lossy().into_owned();
+    let db = p.store_path();
+    let tools = Tools::of(p);
+    fsmemo::new_epoch();
+    p.forget_input("src");
+    let units = plan::plan(p)?;
+    let by_unit: HashMap<&str, &Tu> = units.iter().map(|a| (a.unit.as_str(), a)).collect();
+    let news: Vec<regex::Regex> = mapping.values().map(|n| regex::Regex::new(&format!(r"\b{}\b", regex::escape(n))).unwrap()).collect();
+    let todo: Vec<(&Before, &Tu)> = before.iter()
+        .filter(|b| !news.iter().any(|r| r.is_match(&b.text)))
+        .filter_map(|b| by_unit.get(b.unit.as_str()).map(|a| (b, *a))).collect();
+    let dirs = vec!["include".to_string()];
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let done = run_threads(n, &todo, |(b, a)| -> Result<Option<(Vec<String>, String)>, String> {
+        let Ok(text) = tools.preprocess(&win(&a.file), &b.flags, &dirs, &root)? else { return Ok(None) };
+        if text != renamed_tokens(&b.text, mapping) {
+            return Ok(None);
+        }
+        let Ok(old) = std::fs::read(obj_path(&root, &b.obj_hash)) else { return Ok(None) };
+        let Some(obj) = crate::coff::rename_symbols(&old, mapping) else { return Ok(None) };
+        let obj_hash = fsmemo::hex(&Sha256::digest(&obj));
+        let dest = obj_path(&root, &obj_hash);
+        if !Path::new(&dest).exists() {
+            let tmp = format!("{dest}.{}.tmp", std::process::id());
+            std::fs::write(&tmp, &obj).map_err(|e| format!("{tmp}: {e}"))?;
+            std::fs::rename(&tmp, &dest).map_err(|e| format!("{dest}: {e}"))?;
+        }
+        Ok(Some((crate::vc6::include_files(&text, &win(&a.file), &root), obj_hash)))
+    });
+    let memo = Memo::default();
+    let mut search = vec![py_path(&format!("{root}/include"))];
+    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { py_path(&format!("{root}/{d}")) }));
+    let olds: Vec<(regex::Regex, &String)> = mapping.iter().map(|(o, n)| (regex::Regex::new(&format!(r"\b{}\b", regex::escape(o))).unwrap(), n)).collect();
+    let words = |t: &str| olds.iter().fold(t.to_string(), |t, (r, n)| r.replace_all(&t, regex::NoExpand(n)).into_owned());
+    let mut reused = vec![];
+    for ((b, a), r) in todo.iter().zip(done) {
+        let Some((files, obj_hash)) = r? else { continue };
+        let fh = sha256_parts(&[canonical(&json!(b.flags))]);
+        let key = sha256_parts(&[a.src_hash.clone(), fh.clone(), memo.listing_hash(&search)]);
+        put_include_set(&db, &key, &files).map_err(|e| e.to_string())?;
+        let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        with_db(&db, |c| c.execute(
+            "INSERT OR REPLACE INTO tu (unit, amalg, src_hash, flags, flags_hash, include_hash, obj_hash, ok, log, diags, at) VALUES (?,?,?,?,?,?,?,1,?,?,?)",
+            params![a.unit, a.file, a.src_hash, canonical(&json!(b.flags)), fh, memo.set(&files), obj_hash, words(&b.log), words(&b.diags), at])
+            .map(|_| ())).map_err(|e| e.to_string())?;
+        reused.push(a.unit.clone());
+    }
+    p.forget_input("objects");
+    Ok(reused)
+}
+
 // ------------------------------------------------------------------------------------------------ Python's face
 
 /// compile.ensure: (target, units, compiled, failed, removed, preprocessed, ms, unavailable, log lines).
@@ -391,4 +545,16 @@ pub fn compile_ensure(project: PyRef<'_, crate::project::PyProject>, force: bool
     -> PyResult<(String, usize, Vec<String>, Vec<String>, Vec<String>, usize, i64, bool, Vec<String>)> {
     let r = ensure(&project.p, force, jobs).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
     Ok((r.target, r.units, r.compiled, r.failed, r.removed, r.preprocessed, r.ms, r.unavailable, r.log))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokens_renamed() {
+        let m: std::collections::BTreeMap<String, String> = [("get".to_string(), "read".to_string())].into();
+        let t = "#line 1 \"get.h\"\nint get(void); int getter = 0x1get; char *s = \"get\", c = 'g'; x = get;\n";
+        assert_eq!(renamed_tokens(t, &m), "#line 1 \"get.h\"\nint read(void); int getter = 0x1get; char *s = \"get\", c = 'g'; x = read;\n");
+    }
 }

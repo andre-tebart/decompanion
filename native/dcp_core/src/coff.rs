@@ -602,6 +602,64 @@ pub fn alias_object(aliases: &[(String, String)]) -> Vec<u8> {
     out
 }
 
+/// The object with its symbols renamed: a symbol whose undecorated name (`_f`, `_f@12`, `@f@8`, `f`) is a key of
+/// mapping takes the value, decorated alike; every other byte stays (a long new name is appended to the string
+/// table, whose old strings stay where section names may point). None when the object is not laid out as CL writes
+/// one (the string table ends the file) or names a renamed symbol where no symbol entry is (a .drectve or .debug
+/// section holds the old name).
+pub fn rename_symbols(b: &[u8], mapping: &std::collections::BTreeMap<String, String>) -> Option<Vec<u8>> {
+    if b.len() < 20 {
+        return None;
+    }
+    let nsec = u16_at(b, 2) as usize;
+    let symptr = u32_at(b, 8) as usize;
+    let nsym = u32_at(b, 12) as usize;
+    let optsz = u16_at(b, 16) as usize;
+    let strtab = symptr + 18 * nsym;
+    if strtab + 4 > b.len() || strtab + u32_at(b, strtab) as usize != b.len() {
+        return None;
+    }
+    for k in 0..nsec {
+        let h = 20 + optsz + 40 * k;
+        let name = rstrip_nul(&b[h..h + 8]);
+        if name == b".drectve" || name.starts_with(b".debug") {
+            let (size, raw) = (u32_at(b, h + 16) as usize, u32_at(b, h + 20) as usize);
+            let data = b.get(raw..raw + size)?;
+            if mapping.keys().any(|o| data.windows(o.len()).any(|w| w == o.as_bytes())) {
+                return None;
+            }
+        }
+    }
+    let mut out = b.to_vec();
+    let mut more: Vec<u8> = vec![];
+    let mut i = 0;
+    while i < nsym {
+        let o = symptr + 18 * i;
+        let raw = &b[o..o + 8];
+        let name = if raw[..4] == [0, 0, 0, 0] { cstr(b, strtab + u32_at(raw, 4) as usize) } else { latin1(rstrip_nul(raw)) };
+        let core = undecorate(&name);
+        if let Some(new) = mapping.get(&core) {
+            let at = usize::from(name.starts_with('@') || name.starts_with('_')); // undecorate's prefix
+            let renamed = format!("{}{new}{}", &name[..at], &name[at + core.len()..]);
+            if renamed.len() <= 8 {
+                out[o..o + 8].fill(0);
+                out[o..o + renamed.len()].copy_from_slice(renamed.as_bytes());
+            } else {
+                let off = (b.len() - strtab + more.len()) as u32;
+                more.extend(renamed.as_bytes());
+                more.push(0);
+                out[o..o + 4].fill(0);
+                out[o + 4..o + 8].copy_from_slice(&off.to_le_bytes());
+            }
+        }
+        i += 1 + b[o + 17] as usize;
+    }
+    let size = (b.len() - strtab + more.len()) as u32;
+    out[strtab..strtab + 4].copy_from_slice(&size.to_le_bytes());
+    out.extend(more);
+    Some(out)
+}
+
 // ------------------------------------------------------------------------------------------------ tests
 
 #[cfg(test)]
@@ -750,6 +808,17 @@ mod tests {
         assert!(s.unresolved() && s.dllimport() && s.imported() == Some("_Sleep@4") && s.key("x.obj") == "__imp__Sleep@4");
         let c = Symbol { index: 0, name: "??_C@_05hello".into(), value: 0, secnum: 1, typ: 0, cls: 2 };
         assert_eq!(c.key("x.obj"), "x.obj:??_C@_05hello");
+    }
+
+    #[test]
+    fn symbols_renamed() {
+        let b = alias_object(&[("_a".into(), "_get@4".into()), ("_b".into(), "__x".into())]);
+        let m: std::collections::BTreeMap<String, String> = [("get".to_string(), "read_counter".to_string()), ("_x".into(), "y".into()),
+                                                             ("a".into(), "b2".into())].into();
+        let o = Obj::parse(&rename_symbols(&b, &m).unwrap()).unwrap();
+        let names: Vec<&str> = o.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["_b2", "_b", "_read_counter@4", "_y"]); // short in place, long appended, decoration kept
+        assert!(rename_symbols(&b[..b.len() - 1], &m).is_none()); // the string table does not end the file
     }
 }
 
