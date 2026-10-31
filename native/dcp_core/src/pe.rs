@@ -107,6 +107,17 @@ impl Image {
         }
     }
 
+    /// n bytes at va as a slice of the file when they all lie in one section's file data (the common case),
+    /// else read() (zeros without file backing, several sections).
+    pub fn bytes(&self, va: u32, n: usize) -> std::borrow::Cow<'_, [u8]> {
+        if let Some((o, avail)) = self.off(va) {
+            if n <= avail && o + n <= self.data.len() {
+                return std::borrow::Cow::Borrowed(&self.data[o..o + n]);
+            }
+        }
+        std::borrow::Cow::Owned(self.read(va, n))
+    }
+
     /// n bytes at va, bytes without file backing as zero.
     pub fn read(&self, mut va: u32, mut n: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(n);

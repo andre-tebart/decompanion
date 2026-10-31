@@ -261,9 +261,20 @@ impl Obj {
             .map(|&j| &self.symbols[j])
             .find(|s| start < s.value && s.value < end && s.name.starts_with('$'))
             .map(|s| s.value);
-        let full = sec.mask();
+        // Section.mask()[start:end]: the relocated bytes of the function's range only
         let (lo, hi) = (start as usize, end as usize);
-        let mask = full[lo.min(full.len())..hi.min(full.len())].to_vec();
+        let size = sec.size as usize;
+        let mut mask = vec![0u8; hi.min(size).saturating_sub(lo.min(size))];
+        for r in &sec.relocs {
+            let (_, w) = r.kind_width();
+            if w == 0 {
+                continue;
+            }
+            let (a, b) = (r.offset as usize, (r.offset as usize + w as usize).min(size));
+            for k in a.max(lo)..b.min(hi) {
+                mask[k - lo] = 1;
+            }
+        }
         let d = sec.data.as_ref().unwrap();
         let data = d[lo.min(d.len())..hi.min(d.len())].to_vec();
         let relocs = sec

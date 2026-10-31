@@ -15,10 +15,16 @@ pub struct Compared {
     pub missing_sites: Vec<u32>,
 }
 
-/// Every byte of data belongs to a run of the fill forms (longest form first, greedy); empty: true.
-pub fn is_fill(data: &[u8], forms: &[Vec<u8>]) -> bool {
-    let mut fs: Vec<&Vec<u8>> = forms.iter().collect();
-    fs.sort_by(|a, b| b.len().cmp(&a.len())); // stable, as Python's sorted(key=len, reverse=True)
+/// The fill forms longest first (stable among equal lengths, as Python's sorted(key=len, reverse=True)): the
+/// order is_fill tries them in.
+pub fn fill_order(forms: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let mut fs: Vec<Vec<u8>> = forms.to_vec();
+    fs.sort_by(|a, b| b.len().cmp(&a.len()));
+    fs
+}
+
+/// Every byte of data belongs to a run of the fill forms (`fs` in fill_order, greedy); empty: true.
+pub fn is_fill(data: &[u8], fs: &[Vec<u8>]) -> bool {
     let mut i = 0;
     while i < data.len() {
         match fs.iter().find(|f| !f.is_empty() && data[i..].starts_with(f)) {
@@ -32,9 +38,10 @@ pub fn is_fill(data: &[u8], forms: &[Vec<u8>]) -> bool {
     true
 }
 
+/// `forms`: the fill forms in fill_order.
 pub fn compare(img: &Image, code: &FunctionCode, addr: u32, reloc_sites: Option<&[u32]>, next_start: u32, forms: &[Vec<u8>]) -> Compared {
     let n = code.data.len();
-    let orig = img.read(addr, n);
+    let orig = img.bytes(addr, n);
     let diffs = (0..n)
         .filter(|&k| code.mask.get(k).copied().unwrap_or(0) == 0 && Some(&code.data[k]) != orig.get(k))
         .map(|k| k as u32)
@@ -43,7 +50,7 @@ pub fn compare(img: &Image, code: &FunctionCode, addr: u32, reloc_sites: Option<
     let (mut tail_ok, mut tail) = (true, (0u32, 0u32));
     if next_start > end {
         tail = (end, next_start);
-        tail_ok = is_fill(&img.read(end, (next_start - end) as usize), forms);
+        tail_ok = is_fill(&img.bytes(end, (next_start - end) as usize), forms);
     } else if next_start < end {
         tail = (next_start, end);
         tail_ok = false;

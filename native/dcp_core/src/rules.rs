@@ -4,7 +4,7 @@
 
 use crate::compare::{compare, Compared};
 use crate::store::{self, Out, SFact, DERIVED, OPEN};
-use crate::{image, object, run_hash, with_conn, with_db, write_run};
+use crate::{image, run_hash, with_conn, with_db, write_run};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use rusqlite::Connection;
@@ -102,9 +102,17 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
     starts.dedup();
     let srcs = store::facts(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("func"))
         .map_err(err)?;
+    let forms = crate::compare::fill_order(&ctx.fill_forms);
     let (mut out, mut missing) = (vec![], vec![]);
     // C.objects: each compiled unit's object, read once (not per function)
-    let mut objs: HashMap<String, Option<Rc<(crate::coff::Obj, HashMap<String, usize>)>>> = HashMap::new();
+    let mut objs: HashMap<String, Option<crate::ObjIndex>> = HashMap::new();
+    let current: std::collections::HashSet<String> = ctx
+        .objects
+        .values()
+        .filter(|(h, ok)| *ok && !h.is_empty())
+        .map(|(h, _)| format!("{}/build/obj/{}.obj", ctx.root, h))
+        .collect();
+    crate::live_objects(&current);
     for s in srcs {
         let unit = s.s("unit").unwrap_or("").to_string();
         let name = s.s("symbol").unwrap_or("").to_string();
@@ -112,7 +120,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
             let o = match ctx.objects.get(&unit) {
                 Some((h, true)) if !h.is_empty() => {
                     let path = format!("{}/build/obj/{}.obj", ctx.root, h);
-                    if std::path::Path::new(&path).exists() { Some(Rc::new(object(&path)?)) } else { None }
+                    crate::object_if(&path)?
                 }
                 _ => None,
             };
@@ -132,7 +140,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
         let i = starts.partition_point(|&x| x <= lo);
         let next = if i < starts.len() { starts[i] } else { img.end() };
         let code = obj.0.function_code(k);
-        let c = compare(&img, &code, lo, relocs.as_deref(), next, &ctx.fill_forms);
+        let c = compare(&img, &code, lo, relocs.as_deref(), next, &forms);
         out.push(Compiled { src: s, c, code });
     }
     Ok((out, missing))

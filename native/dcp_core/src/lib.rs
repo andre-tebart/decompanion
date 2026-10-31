@@ -349,18 +349,60 @@ fn record_run(
 
 // ------------------------------------------------------------------------------------------------ objects, image
 
-/// The image at path.
-pub(crate) fn image(path: &str) -> PyResult<pe::Image> {
-    let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
-    pe::Image::parse(data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))
+thread_local! {
+    // a target's binary: the project checks its sha256 against the declaration on every open (a mismatch is
+    // fatal), so the bytes behind a path do not change while it is in use; memory holds the parsed image by path
+    static IMAGES: RefCell<HashMap<String, std::rc::Rc<pe::Image>>> = RefCell::new(HashMap::new());
 }
 
-/// The object at path with its function index.
-pub(crate) fn object(path: &str) -> PyResult<(coff::Obj, HashMap<String, usize>)> {
+/// The image at path, parsed once.
+pub(crate) fn image(path: &str) -> PyResult<std::rc::Rc<pe::Image>> {
+    if let Some(i) = IMAGES.with(|m| m.borrow().get(path).cloned()) {
+        return Ok(i);
+    }
+    let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+    let img = std::rc::Rc::new(pe::Image::parse(data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?);
+    IMAGES.with(|m| m.borrow_mut().insert(path.to_string(), img.clone()));
+    Ok(img)
+}
+
+pub(crate) type ObjIndex = std::rc::Rc<(coff::Obj, HashMap<String, usize>)>;
+
+thread_local! {
+    // build/obj/<content hash>.obj -> the parsed object: a compiled object never changes (a new compile is a new
+    // file), so memory holds it by that identity, as it holds a recorded run's facts; `live` drops the others
+    static OBJS: RefCell<HashMap<String, ObjIndex>> = RefCell::new(HashMap::new());
+}
+
+/// The object at path (build/obj/<content hash>.obj) with its function index, parsed once; None when the file
+/// is missing (C.read_object).
+pub(crate) fn object_if(path: &str) -> PyResult<Option<ObjIndex>> {
+    if let Some(o) = OBJS.with(|m| m.borrow().get(path).cloned()) {
+        return Ok(Some(o));
+    }
+    match std::fs::read(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(PyRuntimeError::new_err(format!("{path}: {e}"))),
+        Ok(_) => object(path).map(Some),
+    }
+}
+
+/// The object at path (build/obj/<content hash>.obj) with its function index, parsed once.
+pub(crate) fn object(path: &str) -> PyResult<ObjIndex> {
+    if let Some(o) = OBJS.with(|m| m.borrow().get(path).cloned()) {
+        return Ok(o);
+    }
     let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
     let obj = coff::Obj::parse(&data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
     let idx = obj.function_index();
-    Ok((obj, idx))
+    let o: ObjIndex = std::rc::Rc::new((obj, idx));
+    OBJS.with(|m| m.borrow_mut().insert(path.to_string(), o.clone()));
+    Ok(o)
+}
+
+/// Keep only the objects of `paths` in memory (the current build's objects).
+pub(crate) fn live_objects(paths: &std::collections::HashSet<String>) {
+    OBJS.with(|m| m.borrow_mut().retain(|k, _| paths.contains(k)));
 }
 
 /// The shadow of match.compiled_functions' compares: for each (object path, C name, address, next start) the
@@ -376,11 +418,12 @@ fn compare_functions(
 ) -> PyResult<Vec<Py<PyAny>>> {
     let img = image(image_path)?;
     let sites = if use_relocs { Some(img.relocations()) } else { None };
+    let forms = compare::fill_order(&fill_forms);
     let mut out = Vec::with_capacity(items.len());
     let mut objs: HashMap<String, std::rc::Rc<(coff::Obj, HashMap<String, usize>)>> = HashMap::new();
     for (path, name, addr, next) in items {
         if !objs.contains_key(&path) {
-            objs.insert(path.clone(), std::rc::Rc::new(object(&path)?));
+            objs.insert(path.clone(), object(&path)?);
         }
         let o = objs[&path].clone();
         let Some(&k) = o.1.get(&name) else {
@@ -388,7 +431,7 @@ fn compare_functions(
             continue;
         };
         let code = o.0.function_code(k);
-        let c = compare::compare(&img, &code, addr, sites.as_deref(), next, &fill_forms);
+        let c = compare::compare(&img, &code, addr, sites.as_deref(), next, &forms);
         let relocs: Vec<(u32, u8, u32)> = code.relocs.iter().map(|(off, r)| (*off, r.kind_width().0, r.kind_width().1)).collect();
         let t = (c.size, c.diffs, c.tail_ok, c.tail, c.abs_ours, c.abs_image, c.sites_ok, c.missing_sites, code.code_len, relocs);
         out.push(t.into_pyobject(py)?.into_any().unbind());
