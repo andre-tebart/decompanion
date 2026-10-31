@@ -128,6 +128,8 @@ api! {
     clang_Cursor_getArgument: fn(CXCursor, c_uint) -> CXCursor;
     clang_getCursorType: fn(CXCursor) -> CXType;
     clang_getCanonicalType: fn(CXType) -> CXType;
+    clang_getArrayElementType: fn(CXType) -> CXType;
+    clang_Type_getSizeOf: fn(CXType) -> i64;
     clang_isExpression: fn(c_int) -> c_uint;
     clang_getInclusions: fn(P, IncVisitor, P);
     clang_getFile: fn(P, *const c_char) -> P;
@@ -508,6 +510,8 @@ pub struct FileModel {
     pub decls: Vec<Decl>,
     pub types: Vec<(i64, String)>,
     pub dead: Vec<(i64, i64)>,
+    #[serde(default)]
+    pub arrays: Vec<(String, i64)>, // (name, element size) of each array variable declared in the file
 }
 
 /// A parse's model: every project file it holds (in the order the parse met them), the files it read, whether an
@@ -713,7 +717,8 @@ fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> PyResult<ModelOut> {
             let name = spelling(a, c);
             let ext = unsafe { (a.clang_getCursorExtent)(c) };
             let sc = unsafe { (a.clang_Cursor_getStorageClass)(c) };
-            let tk = unsafe { (a.clang_getCanonicalType)((a.clang_getCursorType)(c)) }.kind;
+            let ty = unsafe { (a.clang_getCanonicalType)((a.clang_getCursorType)(c)) };
+            let tk = ty.kind;
             let kind = if unsafe { (a.clang_isCursorDefinition)(c) } != 0 || sc != SC_EXTERN { "def" } else { "extern" };
             let ws = w.loc(a, unsafe { (a.clang_getRangeStart)(ext) });
             let n = w.loc(a, unsafe { (a.clang_getCursorLocation)(c) });
@@ -744,6 +749,12 @@ fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> PyResult<ModelOut> {
             let agg = if (ws.1..=e.1).any(|ln| errs.contains(&(ws.0.clone(), ln))) { None } else { Some(aggregate) };
             let f = out.entry(&ws.0);
             f.vars.push((ws.1, ws.2, e.1, e.2, name.clone(), kind.to_string(), stat));
+            if matches!(tk, 112 | 114) {
+                let size = unsafe { (a.clang_Type_getSizeOf)((a.clang_getArrayElementType)(ty)) };
+                if size > 0 {
+                    f.arrays.push((name.clone(), size));
+                }
+            }
             f.decls.push(Decl::V(name, stat, lc(&ws), lc(&n), lc(&e), kind.to_string(), init, agg));
         } else if k == TYPEDEF_DECL || ((k == STRUCT_DECL || k == UNION_DECL || k == ENUM_DECL) && unsafe { (a.clang_isCursorDefinition)(c) } != 0) {
             let name = spelling(a, c);

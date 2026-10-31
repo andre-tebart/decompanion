@@ -352,6 +352,12 @@ def test_q4_view_forms(tiny):
     unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT;\n}\n")
     code, out = dcp(tiny, "grade", "get")
     assert "Q4" not in out, out
+    # an array's name is its address: (*(T *)(array + N)) is a view of its part (a match-base report: flagged)
+    head = "char counter[8] = {0};  /* 0x10002000 */\n#define COUNT_HI (*(int *)(counter + 4))  /* 0x10002004 */\n"
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT_HI;\n}\n")
+    code, out = dcp(tiny, "grade", "get")
+    assert "Q4" not in out, out
+    assert "L15" not in dcp(tiny, "conflicts")[1]
 
 
 @needs_vc6

@@ -108,7 +108,7 @@ macro_rules! re {
 re!(deref_cast_re, r"\*\s*\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*\s*\*+\s*(?:const\s*)?\)");
 
 const Q4_VIEW: &str = "a typed field, struct or symbol instead; a datum read as another type is a view: \
-`#define NAME (*(T *)&datum)  /* 0xADDR */` or `(*(T *)((char *)&datum + OFF))` with the address comment \
+`#define NAME (*(T *)&datum)  /* 0xADDR */`, `(*(T *)((char *)&datum + OFF))` or `(*(T *)(array + N))` with the address comment \
 on its line; `(*(T *)datum)` reads through the datum's value and stays raw";
 
 fn is_word(c: char) -> bool {

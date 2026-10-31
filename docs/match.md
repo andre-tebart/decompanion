@@ -115,7 +115,7 @@ differs only by the constant shift is shape (B2 tolerates stack layout); a varia
 side and in a slot on the other still leaves `code` hunks next to the `frame` ones.
 
 **readability** `draft → readable`: Q1 the name is no placeholder, Q2 no placeholder identifier in the
-definition, Q3 no image address literal, Q4 no `*(T *)` cast or macro hiding one (a view macro with its address comment is no raw access: `(*(T *)&datum)` or `(*(T *)((char *)&datum + OFF))`; `(*(T *)datum)` is; the message states the view form), Q5 no ROUGH / SKELETON /
+definition, Q3 no image address literal, Q4 no `*(T *)` cast or macro hiding one (a view macro with its address comment is no raw access: `(*(T *)&datum)`, `(*(T *)((char *)&datum + OFF))` or `(*(T *)(array + N))` for an array declared in the macro's file; `(*(T *)datum)` is; the message states the view form), Q5 no ROUGH / SKELETON /
 TODO / FIXME / XXX / `@rough`, Q6 the address comment (or another comment) describes the function, Q7 every call
 goes through a prototype (only for units the last `dcp lint` parsed; otherwise not evaluated, and `dcp grade`
 says so), Q8 our code is at least half the original's size (a stub or an unfinished body is no readable function).

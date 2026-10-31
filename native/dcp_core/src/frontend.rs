@@ -30,7 +30,7 @@ pub const ARGS: [&str; 9] = ["--target=i386-pc-windows-msvc", "-fms-compatibilit
                              "-Wimplicit-function-declaration"];
 const DEFAULT_LIBCLANG: &str = "C:/Program Files/LLVM/bin/libclang.dll";
 pub const NOT_FOUND: &str = "libclang not found ([lint] libclang = ... in decompanion.toml, or an LLVM installation: clang on PATH or C:/Program Files/LLVM)";
-const MODEL_VERSION: &str = "19"; // bump when the scan's translation units change
+const MODEL_VERSION: &str = "20"; // bump when the scan's translation units change
 const CPARSE_VERSION: &str = "4";
 const LIVE: usize = 4;
 

@@ -54,6 +54,10 @@ static VIEW_BYTE: LazyLock<Regex> = LazyLock::new(|| {
     ))
     .unwrap()
 });
+// (*(T *)(array + OFF)): an array's name is its address, OFF counts its elements
+static VIEW_ARRAY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"\A\(\s*\*\s*\({TYPEP}\)\s*\(\s*([A-Za-z_]\w*)\s*\+\s*{NUM}\s*\)\s*\)\z")).unwrap()
+});
 static VIEW_WHOLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"\A\(\s*\*\s*\({TYPEP}\)\s*&\s*([A-Za-z_]\w*)\s*\)\z")).unwrap());
 static VIEW_ALIAS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A([A-Za-z_]\w*)\z").unwrap());
 static DEREF_OBJ: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\s*\*\s*\(\s*[A-Za-z_]").unwrap());
@@ -531,6 +535,8 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         let addrs = sf.comments.iter().filter(|c| bol <= c.0 && c.0 < eol).map(|c| lead_addrs(c.2).0).find(|a| !a.is_empty()).unwrap_or_default();
         let view = if let Some(v) = VIEW_BYTE.captures(body) {
             Some((v[2].to_string(), literal_value(&v[3]), false))
+        } else if let Some((v, size)) = VIEW_ARRAY.captures(body).and_then(|v| model.arrays.iter().find(|a| a.0 == v[1]).map(|a| (v, a.1))) {
+            Some((v[1].to_string(), literal_value(&v[2]).map(|n| n * size as u64), false))
         } else if let Some(v) = VIEW_WHOLE.captures(body) {
             Some((v[1].to_string(), Some(0), false))
         } else {
@@ -637,15 +643,20 @@ pub(crate) mod tests {
                     #define rec_Bad (*(int *)((char *)&records + 0x8))  /* 0x1000200c */\n\
                     #define rec_Elem (*(int *)(table + 1))  /* 0x10002004 */\n\
                     #define LOCAL (*(int *)&p)\n\
-                    #define SIZE 0x10  /* 0x10, the record size */\n";
+                    #define SIZE 0x10  /* 0x10, the record size */\n\
+                    extern char names[72]; extern int words[4]; extern int *ptr;\n\
+                    #define rec_Book (*(int *)(names + 0x44))  /* 0x10002054 */\n\
+                    #define rec_Word (*(short *)(words + 2))  /* 0x10002068 */\n\
+                    #define rec_Ptr (*(int *)(ptr + 1))\n";
         let Some(part) = scan_alone("include/views.h", text) else { return };
         let got: Vec<(&str, &str, u64, Vec<(Option<String>, u64)>, bool)> =
             part.views.iter().map(|v| (v.3.as_str(), v.4.as_str(), v.5, v.6.clone(), v.7)).collect();
         let a = |x: u64| vec![(None, x)];
         assert_eq!(got, [("rec_Count", "records", 4, a(0x10002004), false), ("rec_Names", "table", 8, a(0x10002008), false),
                          ("rec_All", "records", 0, a(0x10002000), false), ("rec_Alias", "records", 0, a(0x10002000), true),
-                         ("rec_Bad", "records", 8, a(0x1000200c), false)]);
-        assert_eq!(part.rawobj, ["rec_Elem", "LOCAL"]);
+                         ("rec_Bad", "records", 8, a(0x1000200c), false), ("rec_Book", "names", 0x44, a(0x10002054), false),
+                         ("rec_Word", "words", 8, a(0x10002068), false)]);
+        assert_eq!(part.rawobj, ["rec_Elem", "LOCAL", "rec_Ptr"]); // an array's name is its address, a pointer's is not
         assert_eq!(part.errors.iter().map(|e| (e.2.as_str(), e.1)).collect::<Vec<_>>(), [("L15", 6)]); // an address comment, no byte offset
     }
 
