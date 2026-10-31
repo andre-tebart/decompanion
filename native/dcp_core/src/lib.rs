@@ -10,6 +10,7 @@ mod coff;
 mod decl;
 mod crt;
 mod compare;
+mod compile;
 mod cs;
 mod diffclass;
 mod difflib;
@@ -33,6 +34,7 @@ mod setup;
 mod srcscan;
 mod store;
 mod toolchain;
+mod vc6;
 mod walk;
 mod x86;
 
@@ -627,6 +629,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
+    m.add_function(wrap_pyfunction!(compile::compile_ensure, m)?)?;
     m.add_function(wrap_pyfunction!(plan::plan_units, m)?)?;
     m.add_function(wrap_pyfunction!(plan::plan_flags_for, m)?)?;
     m.add_function(wrap_pyfunction!(plan::plan_compile_flags, m)?)?;
