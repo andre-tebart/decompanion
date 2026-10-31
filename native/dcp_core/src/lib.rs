@@ -23,6 +23,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use rusqlite::{params, Connection};
+use std::rc::Rc;
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -308,6 +309,50 @@ fn sync_facts(tx: &rusqlite::Transaction, run_id: i64, rows: &[Row]) -> rusqlite
     Ok(())
 }
 
+/// sync_facts against the run as memory holds it (the store's rows of the run, with their ids): no read of the
+/// store; the run as written, for memory.
+fn sync_facts_held(tx: &rusqlite::Transaction, run_id: i64, rows: &[Row], held: &store::RunFacts) -> rusqlite::Result<store::RunFacts> {
+    type Key<'a> = (i64, i64, &'a str, &'a str, i64, &'a str, Option<&'a str>);
+    let mut have: HashMap<Key, std::collections::VecDeque<&Rc<store::SFact>>> = HashMap::new();
+    let mut all: Vec<(&str, &Rc<store::SFact>)> = held.by_kind.iter().flat_map(|(k, v)| v.iter().map(move |f| (k.as_str(), f))).collect();
+    all.sort_by_key(|(_, f)| f.id);
+    for (kind, f) in &all {
+        have.entry((f.lo, f.hi, kind, &f.text, f.level, &f.by, f.reason.as_deref())).or_default().push_back(f);
+    }
+    let rule: Rc<str> = Rc::from(held.rule.as_str());
+    let mut by_kind: HashMap<String, store::Facts> = HashMap::new();
+    let mut add = Vec::new();
+    for r in rows {
+        match have.get_mut(&(r.lo, r.hi, r.kind.as_str(), r.value.as_str(), r.level, r.by.as_str(), r.reason.as_deref())).and_then(|q| q.pop_front()) {
+            Some(f) => by_kind.entry(r.kind.clone()).or_default().push(f.clone()),
+            None => add.push(r),
+        }
+    }
+    {
+        let mut st = tx.prepare_cached("DELETE FROM fact WHERE id=?")?;
+        for q in have.values() {
+            for f in q {
+                st.execute([f.id])?;
+            }
+        }
+    }
+    let mut st = tx.prepare_cached("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
+    for r in add {
+        st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
+        by_kind.entry(r.kind.clone()).or_default().push(Rc::new(fact_of(tx.last_insert_rowid(), &rule, r)));
+    }
+    for v in by_kind.values_mut() {
+        v.sort_by_key(|f| f.id);
+    }
+    Ok(store::RunFacts { rule: held.rule.clone(), by_kind })
+}
+
+/// A written row as memory holds a fact.
+fn fact_of(id: i64, rule: &Rc<str>, r: &Row) -> store::SFact {
+    store::SFact { id, rule: rule.clone(), lo: r.lo, hi: r.hi, text: r.value.clone(), value: serde_json::from_str(&r.value).unwrap_or(serde_json::Value::Null),
+                   level: r.level, by: r.by.clone(), reason: r.reason.clone() }
+}
+
 /// The same for a run's conflicts (M.lint's thousands of M7 lines are the same from one run to the next).
 fn sync_conflicts(tx: &rusqlite::Transaction, run_id: i64, confl: &[ConflictRow]) -> rusqlite::Result<()> {
     let mut have: HashMap<ConflictKey, std::collections::VecDeque<i64>> = HashMap::new();
@@ -366,6 +411,7 @@ fn drop_runs(tx: &rusqlite::Transaction, rule: &str, keep: Option<i64>) -> rusql
 /// a new run written whole.
 pub(crate) fn write_run(
     db: &mut Connection,
+    db_path: &str,
     rule: &str,
     version: &str,
     code_hash: &str,
@@ -378,24 +424,28 @@ pub(crate) fn write_run(
     let out = run_hash(rows, confl);
     let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let tx = db.transaction()?;
-    let cur: Option<(i64, String)> = if shortcuts {
-        tx.query_row("SELECT id, out_hash FROM run WHERE rule=? AND current=1", [rule], |r| Ok((r.get(0)?, r.get(1)?))).ok()
+    let cur: Option<(i64, String, f64)> = if shortcuts {
+        tx.query_row("SELECT id, out_hash, at FROM run WHERE rule=? AND current=1", [rule], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).ok()
     } else {
         None
     };
     let run_id;
+    let mut written: Option<store::RunFacts> = None; // the run's facts as the store now has them, when known
     match cur {
-        Some((id, h)) if h == out => {
+        Some((id, h, _)) if h == out => {
             run_id = id;
             drop_runs(&tx, rule, Some(run_id))?;
             tx.execute("UPDATE run SET version=?, code_hash=?, input_hash=?, ms=? WHERE id=?",
                        params![version, code_hash, input_hash, ms, run_id])?;
             sync_conflicts(&tx, run_id, confl)?;
         }
-        Some((id, _)) => {
+        Some((id, _, cur_at)) => {
             run_id = id;
             drop_runs(&tx, rule, Some(run_id))?;
-            sync_facts(&tx, run_id, rows)?;
+            match store::held_run(db_path, run_id, cur_at) {
+                Some(held) => written = Some(sync_facts_held(&tx, run_id, rows, &held)?),
+                None => sync_facts(&tx, run_id, rows)?,
+            }
             sync_conflicts(&tx, run_id, confl)?;
             tx.execute("UPDATE run SET version=?, code_hash=?, input_hash=?, out_hash=?, current=1, ms=?, at=? WHERE id=?",
                        params![version, code_hash, input_hash, out, ms, at, run_id])?;
@@ -408,9 +458,13 @@ pub(crate) fn write_run(
             )?;
             run_id = tx.last_insert_rowid();
             let mut st = tx.prepare("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
+            let rc: Rc<str> = Rc::from(rule);
+            let mut by_kind: HashMap<String, store::Facts> = HashMap::new();
             for r in rows {
                 st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
+                by_kind.entry(r.kind.clone()).or_default().push(Rc::new(fact_of(tx.last_insert_rowid(), &rc, r)));
             }
+            written = Some(store::RunFacts { rule: rule.to_string(), by_kind });
             let mut st = tx.prepare("INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
             for c in confl {
                 st.execute(params![run_id, c.severity, c.check, c.lo, c.hi, c.message, c.a, c.b])?;
@@ -418,6 +472,9 @@ pub(crate) fn write_run(
         }
     }
     tx.commit()?;
+    if let Some(w) = written {
+        store::put_run(db_path, run_id, at, w);
+    }
     Ok((run_id, out))
 }
 
@@ -438,7 +495,7 @@ fn record_run(
 ) -> PyResult<(i64, String)> {
     let rows = rows_of(facts)?;
     let confl = conflicts_of(conflicts)?;
-    py.detach(|| with_db(db_path, |db| write_run(db, rule, version, code_hash, input_hash, &rows, &confl, ms, shortcuts)))
+    py.detach(|| with_db(db_path, |db| write_run(db, db_path, rule, version, code_hash, input_hash, &rows, &confl, ms, shortcuts)))
 }
 
 // ------------------------------------------------------------------------------------------------ objects, image

@@ -265,6 +265,8 @@ struct ScanView {
     placeholders: Vec<(String, i64, String, String)>,              // file, line, ident, value
     ptrcasts: Vec<(String, i64, String, String)>,                  // file, line, text, value
     data: Vec<(String, i64, String, String, Vec<(Option<String>, i64)>)>, // file, line, kind, name, addrs
+    #[serde(flatten)]
+    items: ScanItems, // L.src's
 }
 
 /// What the scan rules get from Python: the targets (the default first), the current one, the images' paths.
@@ -1041,6 +1043,165 @@ pub fn l14_unit_outside(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<(
         .map_err(err)?.iter().map(|s| (s.lo, s.s("unit").unwrap_or("").to_string(), s.s("symbol").unwrap_or("").to_string(), s.by.clone())).collect();
     for (check, lo, hi, message, a, b) in outside_unit_issues(&units, &srcs, &declared, game, &libs) {
         out.conflict2("error", &check, lo, hi, message, &a, &b);
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------------------------ L.src
+
+type Addrs = Vec<(Option<String>, i64)>;
+
+/// srcscan's items L.src reads (srcscan.native_view): every function, datum, view, error of the scan.
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ScanItems {
+    // file, line, comment line, end line, unit, name, static, addrs, deep, stuck, rough, what
+    fns: Vec<(String, i64, i64, i64, String, String, bool, Addrs, Option<String>, Option<String>, bool, String)>,
+    // file, line, unit, name, kind, static, addrs
+    datas: Vec<(String, i64, String, String, String, bool, Addrs)>,
+    // file, line, unit, name, container, offset, alias, addrs
+    views: Vec<(String, i64, String, String, String, i64, bool, Addrs)>,
+    // check, file, line, message
+    errors: Vec<(String, String, i64, String)>,
+}
+
+/// L.src: the address comments of the sources for the current target (facts source / name / start, the errors).
+pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let x = scan_inputs(ctx)?;
+    let targets = &x.targets;
+    let default = targets.first().cloned().unwrap_or_default();
+    let cur = &x.target;
+    let base = img.base as i64;
+    let in_image = |a: i64| base <= a && a < img.end() as i64;
+    let sc = &x.scan.items;
+    let err = |out: &mut Out, check: &str, lo: i64, msg: String, a: &str, b: &str| out.conflict2("error", check, lo, lo + 1, msg, a, b);
+    if *cur == default {
+        for (check, file, line, message) in &sc.errors {
+            err(out, check, base, format!("{file}:{line}: {message}"), &format!("src:{file}:{line}"), "");
+        }
+    }
+    let code = code_ranges(&img);
+    let mut defs_at: std::collections::BTreeMap<i64, Vec<String>> = std::collections::BTreeMap::new();
+    // (name, unit of a static or None) -> address -> by
+    let mut names_at: HashMap<(String, Option<String>), Vec<(i64, String)>> = HashMap::new();
+    let mut name_at = |key: (String, Option<String>), a: i64, by: &str| {
+        let at = names_at.entry(key).or_default();
+        match at.iter_mut().find(|(x, _)| *x == a) {
+            Some(e) => e.1 = by.to_string(),
+            None => at.push((a, by.to_string())),
+        }
+    };
+    let mut data_at: HashMap<(String, Option<String>), i64> = HashMap::new();
+    let unknown_prefix = |out: &mut Out, addrs: &Addrs, by: &str| {
+        if *cur != default {
+            return;
+        }
+        let mut bad: Vec<&str> = addrs.iter().filter_map(|(t, _)| t.as_deref()).filter(|t| !targets.iter().any(|x| x == t)).collect();
+        bad.sort();
+        bad.dedup();
+        for t in bad {
+            err(out, "L.src", base, format!("{}: unknown target prefix {t}: (targets: {})", &by[4..], targets.join(", ")), by, "");
+        }
+    };
+    let decl = |out: &mut Out, a: i64, kind: &str, v: serde_json::Value, by: &str, reason: &str| out.declared(a, a + 1, kind, v, by, reason);
+    for (file, line, cline, end, unit, name, stat, addrs, deep, stuck, rough, what) in &sc.fns {
+        let by = format!("src:{file}:{cline}");
+        unknown_prefix(out, addrs, &by);
+        let Some(a) = address_for(addrs, cur, &default) else { continue };
+        if !code.iter().any(|&(lo, hi)| lo <= a && a < hi) {
+            let at = if in_image(a) { a } else { base };
+            err(out, "L.src", at, format!("{file}: function {name} at {:#x}, outside every code section", a), &by, "");
+            continue;
+        }
+        let mut v = serde_json::json!({"file": file, "line": line, "comment": cline, "end": end, "unit": unit, "symbol": name, "what": "func"});
+        if let Some(d) = deep {
+            v["deep"] = serde_json::json!(d);
+        }
+        if let Some(s) = stuck {
+            v["stuck"] = serde_json::json!(s);
+        }
+        if *rough {
+            v["rough"] = serde_json::json!(true);
+        }
+        let reason = if what.is_empty() { "address comment" } else { what.as_str() };
+        defs_at.entry(a).or_default().push(by.clone());
+        name_at((name.clone(), if *stat { Some(unit.clone()) } else { None }), a, &by);
+        decl(out, a, "source", v, &by, reason);
+        decl(out, a, "name", serde_json::json!({"name": name, "origin": "source"}), &by, reason);
+        decl(out, a, "start", serde_json::json!({"skind": "func", "how": "source"}), &by, reason);
+    }
+    for (file, line, unit, name, kind, stat, addrs) in &sc.datas {
+        let by = format!("src:{file}:{line}");
+        unknown_prefix(out, addrs, &by);
+        let Some(a) = address_for(addrs, cur, &default) else { continue };
+        if !in_image(a) {
+            err(out, "L.src", base, format!("{file}:{line}: {name} at {:#x}, outside the image", a), &by, "");
+            continue;
+        }
+        let reason = format!("data address comment ({kind})");
+        let key = (name.clone(), if *stat { Some(unit.clone()) } else { None });
+        name_at(key.clone(), a, &by);
+        if kind == "def" {
+            defs_at.entry(a).or_default().push(by.clone());
+            decl(out, a, "source", serde_json::json!({"file": file, "line": line, "unit": unit, "symbol": name, "what": "data"}), &by, &reason);
+        }
+        decl(out, a, "name", serde_json::json!({"name": name, "origin": "source"}), &by, &reason);
+        data_at.entry(key).or_insert(a);
+    }
+    let mut pending = vec![];
+    for v in &sc.views {
+        let by = format!("src:{}:{}", v.0, v.1);
+        unknown_prefix(out, &v.7, &by);
+        if let Some(a) = address_for(&v.7, cur, &default) {
+            pending.push((v, a, by));
+        }
+    }
+    while !pending.is_empty() {                        // a view may be the container of another view
+        let mut rest = vec![];
+        let n = pending.len();
+        for (v, a, by) in pending {
+            let (file, line, unit, name, container, offset, _, _) = v;
+            let ca = data_at.get(&(container.clone(), Some(unit.clone()))).or_else(|| data_at.get(&(container.clone(), None))).copied();
+            let Some(ca) = ca else {
+                rest.push((v, a, by));
+                continue;
+            };
+            if ca + offset != a {
+                err(out, "L15", a, format!("{file}:{line}: view {name} at {:#x}, but {container} ({:#x}) + {} is {:#x}", a, ca,
+                                           crate::x86::py_hex(*offset), ca + offset), &by, "");
+                continue;
+            }
+            data_at.entry((name.clone(), None)).or_insert(a);
+            name_at((name.clone(), None), a, &by);
+            decl(out, a, "name", serde_json::json!({"name": name, "origin": "source", "view": container}), &by,
+                 &format!("view of {container} +{}", crate::x86::py_hex(*offset)));
+        }
+        if rest.len() == n {
+            for (v, a, by) in &rest {
+                if !v.6 {                              // an alias of no data declaration is no view
+                    err(out, "L15", *a, format!("{}:{}: view {}: its container {} has no data declaration with an address", v.0, v.1, v.3, v.4), by, "");
+                }
+            }
+            break;
+        }
+        pending = rest;
+    }
+    for (a, bys) in &defs_at {
+        if bys.len() > 1 {
+            err(out, "L.src", *a, format!("{} definitions at {:#x}: {}", bys.len(), a, bys.iter().map(|b| &b[4..]).collect::<Vec<_>>().join(", ")),
+                &bys[0], &bys[1]);
+        }
+    }
+    let mut names_at: Vec<_> = names_at.into_iter().collect();
+    names_at.sort_by(|x, y| (&x.0 .0, x.0 .1.as_deref().unwrap_or("")).cmp(&(&y.0 .0, y.0 .1.as_deref().unwrap_or(""))));
+    for ((name, _), at) in &names_at {
+        if at.len() > 1 {
+            let mut s = at.clone();
+            s.sort();
+            err(out, "N2", s[0].0, format!("{name} at {} addresses: {}", s.len(), s.iter().map(|x| format!("{:#x}", x.0)).collect::<Vec<_>>().join(", ")),
+                &s[0].1, &s[1].1);
+        }
     }
     Ok(())
 }

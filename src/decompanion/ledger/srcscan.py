@@ -835,7 +835,7 @@ def native_view(sc: Scan) -> str:
     """The items of a scan the native rules read (L5, A1, L13 in native/dcp_core/src/layout.rs), as JSON text:
     functions with addresses (file, comment line, end line, addrs), placeholders and pointer casts (file, line,
     text, value as hex: a placeholder may spell more digits than an integer type holds), data declarations
-    (file, line, kind, name, addrs); the function definitions of the front end's models (file -> name -> start
+    (file, line, kind, name, addrs); every function, datum, view and error as L.src reads them; the function definitions of the front end's models (file -> name -> start
     line, column, end line, column: G.grade's readability, the last definition with a body). Made once per scan (a
     scan is made once per tree)."""
     if sc._native is None:
@@ -846,7 +846,12 @@ def native_view(sc: Scan) -> str:
             "ptrcasts": [(c.file, c.line, c.text, format(c.value, "x")) for c in sc.ptrcasts],
             "data": [(d.file, d.line, d.kind, d.name, d.addrs) for d in sc.data],
             "defs": {rel: {d[1]: (*d[3], *(d[5] or (None, None))) for d in m["decls"] if d[0] == "f" and d[6] is not None}
-                     for rel, m in sc.models.items()}}, separators=(",", ":"))
+                     for rel, m in sc.models.items()},
+            "fns": [(f.file, f.line, f.comment_line, f.end_line, f.unit, f.name, f.static, f.addrs, f.deep, f.stuck, f.rough, f.what)
+                    for f in sc.functions],
+            "datas": [(d.file, d.line, d.unit, d.name, d.kind, d.static, d.addrs) for d in sc.data],
+            "views": [(v.file, v.line, v.unit, v.name, v.container, v.offset, v.alias, v.addrs) for v in sc.views],
+            "errors": [(e.check, e.file, e.line, e.message) for e in sc.errors]}, separators=(",", ":"))
     return sc._native
 
 

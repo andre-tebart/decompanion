@@ -321,7 +321,7 @@ def load_decl_starts(ctx: RuleContext):
 
 
 @rule("L.src", version="5", ceiling=DE, outputs=("source", "name", "start"), inputs=("src", "targets"),
-      loader=True, helpers=(srcscan, cparse))         # the front end decides what the scan sees
+      loader=True, helpers=(srcscan, cparse), native=True, native_inputs=lambda p: scan_inputs(p))   # the front end decides what the scan sees
 def load_src(ctx: RuleContext):
     """The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function
     with an address gives a `source` fact {file, line, comment (the address comment's line), end (the
@@ -337,107 +337,9 @@ def load_src(ctx: RuleContext):
     declaration with an address; a view gives a `name` fact {view: container}). Errors of the text itself (the
     scan's, an unknown target prefix) are reported in the default target's store; errors about an address in the
     store of its target.
-    A function or datum whose comment lists another target's address only is no fact of this target."""
-    p, img = ctx.project, ctx.image
-    targets = [t["name"] for t in ctx.input("targets")]
-    default, cur = targets[0], p.target_name
-    sc = srcscan.scan(ctx.input("src"), p.input_hash("src"))
-    base = img.base
-    if cur == default:
-        for e in sc.errors:
-            yield ctx.conflict(Severity.error, e.check, base, base + 1, f"{e.file}:{e.line}: {e.message}", a=f"src:{e.file}:{e.line}")
-    code = code_ranges(img)
-    defs_at: dict[int, list[str]] = defaultdict(list)
-    names_at: dict[tuple, dict[int, str]] = defaultdict(dict)    # (name, unit of a static or None) -> address -> by
-    data_at: dict[tuple, int] = {}                                 # (name, unit of a static or None) -> address
-
-    def unknown_prefix(addrs, by):
-        if cur != default:
-            return []
-        bad = sorted({t for t, _ in addrs if t is not None and t not in targets})
-        return [ctx.conflict(Severity.error, "L.src", base, base + 1, f"{by[4:]}: unknown target prefix {t}: (targets: {', '.join(targets)})", a=by)
-                for t in bad]
-
-    for f in sc.functions:
-        by = f"src:{f.file}:{f.comment_line}"
-        yield from unknown_prefix(f.addrs, by)
-        a = srcscan.address_for(f.addrs, cur, default)
-        if a is None:
-            continue
-        if not in_ranges(a, code):
-            yield ctx.conflict(Severity.error, "L.src", a if img.in_image(a) else base, (a if img.in_image(a) else base) + 1,
-                               f"{f.file}: function {f.name} at {a:#x}, outside every code section", a=by)
-            continue
-        v = {"file": f.file, "line": f.line, "comment": f.comment_line, "end": f.end_line, "unit": f.unit, "symbol": f.name,
-             "what": "func"}
-        if f.deep is not None:
-            v["deep"] = f.deep
-        if f.stuck is not None:
-            v["stuck"] = f.stuck
-        if f.rough:
-            v["rough"] = True
-        reason = f.what or "address comment"
-        defs_at[a].append(by)
-        names_at[(f.name, f.unit if f.static else None)][a] = by
-        yield ctx.declared(a, a + 1, Kind.source, v, by, reason)
-        yield ctx.declared(a, a + 1, Kind.name, {"name": f.name, "origin": "source"}, by, reason)
-        yield ctx.declared(a, a + 1, Kind.start, {"skind": "func", "how": "source"}, by, reason)
-    for d in sc.data:
-        by = f"src:{d.file}:{d.line}"
-        yield from unknown_prefix(d.addrs, by)
-        a = srcscan.address_for(d.addrs, cur, default)
-        if a is None:
-            continue
-        if not img.in_image(a):
-            yield ctx.conflict(Severity.error, "L.src", base, base + 1, f"{d.file}:{d.line}: {d.name} at {a:#x}, outside the image", a=by)
-            continue
-        reason = f"data address comment ({d.kind})"
-        names_at[(d.name, d.unit if d.static else None)][a] = by
-        if d.kind == "def":
-            defs_at[a].append(by)
-            yield ctx.declared(a, a + 1, Kind.source, {"file": d.file, "line": d.line, "unit": d.unit, "symbol": d.name, "what": "data"}, by, reason)
-        yield ctx.declared(a, a + 1, Kind.name, {"name": d.name, "origin": "source"}, by, reason)
-        data_at.setdefault((d.name, d.unit if d.static else None), a)
-    pending = []
-    for v in sc.views:
-        by = f"src:{v.file}:{v.line}"
-        yield from unknown_prefix(v.addrs, by)
-        a = srcscan.address_for(v.addrs, cur, default)
-        if a is not None:
-            pending.append((v, a, by))
-    while pending:                                    # a view may be the container of another view
-        rest = []
-        for v, a, by in pending:
-            ca = data_at.get((v.container, v.unit), data_at.get((v.container, None)))
-            if ca is None:
-                rest.append((v, a, by))
-                continue
-            if ca + v.offset != a:
-                yield ctx.conflict(Severity.error, "L15", a, a + 1,
-                                   f"{v.file}:{v.line}: view {v.name} at {a:#x}, but {v.container} ({ca:#x}) + {v.offset:#x} "
-                                   f"is {ca + v.offset:#x}", a=by)
-                continue
-            data_at.setdefault((v.name, None), a)
-            names_at[(v.name, None)][a] = by
-            yield ctx.declared(a, a + 1, Kind.name, {"name": v.name, "origin": "source", "view": v.container}, by,
-                               f"view of {v.container} +{v.offset:#x}")
-        if len(rest) == len(pending):
-            for v, a, by in rest:
-                if not v.alias:                       # an alias of no data declaration is no view
-                    yield ctx.conflict(Severity.error, "L15", a, a + 1,
-                                       f"{v.file}:{v.line}: view {v.name}: its container {v.container} has no data declaration "
-                                       f"with an address", a=by)
-            break
-        pending = rest
-    for a, bys in sorted(defs_at.items()):
-        if len(bys) > 1:
-            yield ctx.conflict(Severity.error, "L.src", a, a + 1, f"{len(bys)} definitions at {a:#x}: " + ", ".join(b[4:] for b in bys),
-                               a=bys[0], b=bys[1])
-    for (name, _), at in sorted(names_at.items(), key=lambda x: (x[0][0], x[0][1] or "")):
-        if len(at) > 1:
-            (a1, b1), (a2, b2) = sorted(at.items())[:2]
-            yield ctx.conflict(Severity.error, "N2", a1, a1 + 1, f"{name} at {len(at)} addresses: " + ", ".join(f"{x:#x}" for x in sorted(at)),
-                               a=b1, b=b2)
+    A function or datum whose comment lists another target's address only is no fact of this target. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 @rule("L.analyzer", version="3", ceiling=DE, outputs=("start",), inputs=("drafts",), loader=True)
@@ -651,7 +553,7 @@ def scan_inputs(p) -> str:
 
 
 @rule("L5.placeholder", version="3", ceiling=P, inputs=("src", "targets"), needs=("kind:start", "S.sections", "S.codewalk", "S.crt.code"),
-      native=True, native_inputs=scan_inputs)
+      helpers=(srcscan,), native=True, native_inputs=scan_inputs)
 def placeholder(ctx: RuleContext):
     """L5: an identifier that spells an address (`Unk<hex>`, `FUN_<hex>`, `DAT_<hex>`, `<name>_<6-8 hex with a
     digit>`, in any .c / .h of src/ and include/) names a real address: on a line of the current target (inside
@@ -665,7 +567,7 @@ def placeholder(ctx: RuleContext):
 
 
 @rule("A1.addr.cast", version="1", ceiling=P, inputs=("src", "targets"), needs=("kind:name", "kind:symbol"),
-      native=True, native_inputs=scan_inputs)
+      helpers=(srcscan,), native=True, native_inputs=scan_inputs)
 def addr_cast(ctx: RuleContext):
     """A1: an integer literal cast to a pointer type in the sources (srcscan.PTR_CAST: `(void (*)(void))0x5de470`,
     `(char *)0x6f242c`, `(T *)(unsigned)0x...`; the cast's type spells its `*`, a typedef'd pointer name is not
@@ -682,7 +584,7 @@ def addr_cast(ctx: RuleContext):
 
 @rule("L13.data.code", version="1", ceiling=P, inputs=("src", "targets"),
       needs=("kind:name", "kind:start", "S.codewalk", "S.crt.code", "S.thunk", "M.match", "L.decl"),
-      native=True, native_inputs=scan_inputs)
+      helpers=(srcscan,), native=True, native_inputs=scan_inputs)
 def data_at_code(ctx: RuleContext):
     """L13: a data declaration of the sources (a definition or an `extern` with an address comment, srcscan Data)
     whose address, for the current target, is a known function start (a `start` fact above declared: the walk,

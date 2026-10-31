@@ -971,6 +971,7 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         "M1.baseline" => crate::layout::m1_baseline(&ctx, db, &mut out),
         "G.grade" => crate::grade::g_grade(&ctx, db, &mut out),
         "L1.src.start" => crate::layout::l1_src_start(&ctx, db, &mut out),
+        "L.src" => crate::layout::l_src(&ctx, db, &mut out),
         "L4.boundary" => crate::layout::l4_boundary(&ctx, db, &mut out),
         "L10.unexplained" => crate::layout::l10_unexplained(&ctx, db, &mut out),
         "L14.unit.outside" => crate::layout::l14_unit_outside(&ctx, db, &mut out),
@@ -983,7 +984,7 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         return Ok((nf, nc, run_hash(&rows, &confl)));
     }
     let (_, h) = with_db(&ctx.db, |db| {
-        write_run(db, &ctx.rule, &ctx.version, &ctx.code_hash, &ctx.input_hash, &rows, &confl, ms, ctx.shortcuts)
+        write_run(db, &ctx.db, &ctx.rule, &ctx.version, &ctx.code_hash, &ctx.input_hash, &rows, &confl, ms, ctx.shortcuts)
     })?;
     Ok((nf, nc, h))
 }

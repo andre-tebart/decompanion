@@ -101,7 +101,7 @@ def grade_inputs(p) -> str:
 
 
 @rule("G.grade", version="5", ceiling=P, outputs=("grade",), needs=("L.src", "M.match", "L.unit.extent", "L.src.extent", *WALK),
-      inputs=("objects", "src", "lint"), native=True, native_inputs=grade_inputs)
+      inputs=("objects", "src", "lint"), helpers=(srcscan, context), native=True, native_inputs=grade_inputs)
 def grade(ctx: RuleContext):
     """The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8
     and the unit grades of rules/grade.py's module docstring), as `grade` facts: a function's at its address

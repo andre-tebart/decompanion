@@ -29,6 +29,7 @@ pub struct SFact {
     pub value: Value,
     pub level: i64,
     pub by: String,
+    pub reason: Option<String>,
 }
 
 impl SFact {
@@ -40,9 +41,9 @@ impl SFact {
 pub type Facts = Vec<Rc<SFact>>;
 
 /// One recorded run's facts by kind, in row order.
-struct RunFacts {
-    rule: String,
-    by_kind: HashMap<String, Facts>,
+pub(crate) struct RunFacts {
+    pub(crate) rule: String,
+    pub(crate) by_kind: HashMap<String, Facts>,
 }
 
 impl RunFacts {
@@ -62,7 +63,7 @@ thread_local! {
 fn load_run(db: &Connection, rid: i64, rule: &str, before: Option<&RunFacts>) -> rusqlite::Result<RunFacts> {
     let rule_rc: Rc<str> = Rc::from(rule);
     let known = before.map(|b| b.by_id()).unwrap_or_default();
-    let mut st = db.prepare_cached("SELECT id, kind, lo, hi, value, level, by FROM fact WHERE run_id=? ORDER BY id")?;
+    let mut st = db.prepare_cached("SELECT id, kind, lo, hi, value, level, by, reason FROM fact WHERE run_id=? ORDER BY id")?;
     let mut q = st.query([rid])?;
     let mut by_kind: HashMap<String, Facts> = HashMap::new();
     while let Some(r) = q.next()? {
@@ -71,19 +72,37 @@ fn load_run(db: &Connection, rid: i64, rule: &str, before: Option<&RunFacts>) ->
         let (lo, hi, level): (i64, i64, i64) = (r.get(2)?, r.get(3)?, r.get(5)?);
         let text = r.get_ref(4)?.as_str()?;
         let by = r.get_ref(6)?.as_str()?;
+        let reason = r.get_ref(7)?.as_str_or_null()?;
         let same = known.get(&id).filter(|(k, f)| {
-            *k == kind && f.lo == lo && f.hi == hi && f.level == level && f.text == text && f.by == by
+            *k == kind && f.lo == lo && f.hi == hi && f.level == level && f.text == text && f.by == by && f.reason.as_deref() == reason
         });
         let f = match same {
             Some((_, f)) => (*f).clone(),
             None => {
                 let value: Value = serde_json::from_str(text).unwrap_or(Value::Null);
-                Rc::new(SFact { id, rule: rule_rc.clone(), lo, hi, text: text.to_string(), value, level, by: by.to_string() })
+                Rc::new(SFact { id, rule: rule_rc.clone(), lo, hi, text: text.to_string(), value, level, by: by.to_string(),
+                                reason: reason.map(|s| s.to_string()) })
             }
         };
         by_kind.entry(kind).or_default().push(f);
     }
     Ok(RunFacts { rule: rule.to_string(), by_kind })
+}
+
+/// The run memory holds for this store and run id when it is the one of time `at` (the run as the store has it).
+pub(crate) fn held_run(db_path: &str, run_id: i64, at: f64) -> Option<Rc<RunFacts>> {
+    MEM.with(|m| m.borrow().get(db_path).and_then(|h| h.get(&(run_id, at.to_bits())).cloned()))
+}
+
+/// A run as just written (its facts with their row ids), held as the store now has it: the next reader needs
+/// no read of the store.
+pub(crate) fn put_run(db_path: &str, run_id: i64, at: f64, run: RunFacts) {
+    MEM.with(|m| {
+        let mut m = m.borrow_mut();
+        let held = m.entry(db_path.to_string()).or_default();
+        held.retain(|k, _| k.0 != run_id);
+        held.insert((run_id, at.to_bits()), Rc::new(run));
+    })
 }
 
 /// The current runs of the store in run order, each with its facts (loaded if memory does not hold it yet).
@@ -258,6 +277,13 @@ impl Out {
         let mut text = String::new();
         canon(&mut text, &value);
         self.rows.push(Row { lo, hi, kind: kind.to_string(), value: text, level, by: self.by.clone(), reason: None });
+    }
+
+    /// A declared fact of a loader rule: its producer a line of typed state (src:<file>:<line>), with a reason.
+    pub fn declared(&mut self, lo: i64, hi: i64, kind: &str, value: Value, by: &str, reason: &str) {
+        let mut text = String::new();
+        canon(&mut text, &value);
+        self.rows.push(Row { lo, hi, kind: kind.to_string(), value: text, level: DECLARED, by: by.to_string(), reason: Some(reason.to_string()) });
     }
 
     pub fn conflict(&mut self, severity: &str, check: &str, lo: i64, hi: i64, message: String, a: &str) {
