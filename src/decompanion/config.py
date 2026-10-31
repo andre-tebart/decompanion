@@ -43,7 +43,7 @@ from pathlib import Path
 from . import analyzers as analyzer_plugins
 from . import image as image_plugins
 from . import isa as isa_plugins
-from . import native, objfmt as objfmt_plugins
+from . import native
 from . import toolchains as toolchain_plugins
 from . import fsmemo, timing
 from .ledger.store import Store
@@ -177,14 +177,6 @@ class Project:
             raise ConfigError(f"unknown analyzer plugin {key!r} (known: {', '.join(analyzer_plugins.ANALYZERS)}); "
                               f"name one with [analyzer] plugin = ...")
         return plugin(cfg, self.expand)
-
-    @cached_property
-    def objfmt(self):
-        """The object-format plugin of the toolchain's objects and archives (objfmt/)."""
-        plugin = objfmt_plugins.get(self.toolchain.object_format)
-        if plugin is None:
-            raise ConfigError(f"toolchain {self.toolchain.key}: unknown object format {self.toolchain.object_format!r}")
-        return plugin
 
     def image_of(self, name: str):
         """The image of any target (the current one's is `image`); checked against its declared sha256."""

@@ -329,6 +329,22 @@ pub fn of(key: &str) -> Option<Box<dyn Toolchain>> {
     }
 }
 
+fn named(key: &str) -> pyo3::PyResult<Box<dyn Toolchain>> {
+    of(key).ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("no toolchain {key}")))
+}
+
+/// The declaration spelling of a Rich compiler or linker entry ('cl 12.00.9044', 'link 6.00.8447').
+#[pyo3::pyfunction]
+pub fn tc_declare(key: &str, tool: &str, family: &str, build: u32) -> pyo3::PyResult<String> {
+    Ok(named(key)?.declare(tool, family, build))
+}
+
+/// A human name for a tool build ('' when unknown).
+#[pyo3::pyfunction]
+pub fn tc_build_name(key: &str, family: &str, build: u32) -> pyo3::PyResult<String> {
+    Ok(named(key)?.build_name(family, build).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,5 +375,13 @@ mod tests {
         assert_eq!(t.import_library_name("KERNEL32.dll"), "kernel32.lib");
         assert_eq!(t.crt_user_entry("_WinMainCRTStartup"), "_WinMain@16");
         assert_eq!(t.user_entry_names().len(), 5);
+        assert_eq!(t.crt_user_entry("__DllMainCRTStartup@12"), "_DllMain@12");
+        assert_eq!(t.crt_user_entry("_wWinMainCRTStartup"), "_wWinMain@16");
+        let names: std::collections::BTreeMap<&str, &str> = t.user_entry_names().into_iter().collect();
+        assert_eq!(names, [("_DllMain@12", "DllMain"), ("_WinMain@16", "WinMain"), ("_main", "main"), ("_wWinMain@16", "wWinMain"), ("_wmain", "wmain")]
+            .into_iter().collect());
+        // a truncated stub at the end is no stub
+        assert_eq!(t.import_stubs(b"\xcc\xff\x25\x00\x20\x00\x10\xff\x25\x04\x20\x00\x10\xff\x25\x00"), vec![(1, 0x1000_2000), (7, 0x1000_2004)]);
+        assert_eq!((t.import_stub_size(), t.function_alignment()), (6, 16));
     }
 }

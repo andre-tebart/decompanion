@@ -15,7 +15,6 @@ from decompanion.build import link as L
 from decompanion.config import Project
 from decompanion.ledger import srcscan
 from decompanion.ledger.fact import Level
-from decompanion.objfmt import coff
 from decompanion.rules import layout as LY
 from decompanion.source import cparse
 
@@ -191,11 +190,6 @@ def build_symlib(path: Path, symbols: list[str]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"!<arch>\n" + hdr + body + (b"\n" if len(body) & 1 else b""))
     return path
-
-
-def test_archive_symbol_table(tmp_path):
-    p = build_symlib(tmp_path / "x.lib", ["_IID_Foo", "_bar@4"])
-    assert coff.archive_symbol_table(p.read_bytes()) == ["_IID_Foo", "_bar@4"]
 
 
 def test_link_library_class(tiny):

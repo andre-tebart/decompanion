@@ -77,32 +77,3 @@ def test_declared_start_and_file(guild):
     assert syms[0x4eba80].level is Level.declared and syms[0x4eb480].hi <= 0x4eba80
     assert syms[0x4eb480].level is Level.derived
     assert not [c for c in p.store.conflicts() if c.check == "L.decl"]
-
-
-def test_import_library_from_the_image(guild, tmp_path):
-    """mss32.dll has no import library in any installation: one is built from the exe's import directory, its
-    members import the decorated names exactly (name type NAME) with the exe's hints."""
-    import struct
-    from decompanion.config import Project
-    from decompanion.toolchains.vc6.implib import short_members
-    p = Project(guild, "exe")
-    imports = [i for i in p.image.imports() if i.dll.lower() == "mss32.dll"]
-    out = tmp_path / "mss32.lib"
-    assert p.toolchain.make_import_library("mss32.dll", imports, out) is None
-    lib = out.read_bytes()
-    members = {lib[d + 20:lib.index(b"\0", d + 20)].decode(): d for d in short_members(lib)}
-    assert len(imports) == 31 and set(members) == {i.name for i in imports}
-    for i in imports:
-        d = members[i.name]
-        assert (struct.unpack_from("<H", lib, d + 18)[0] >> 2) & 7 == 1                  # IMPORT_NAME
-        assert struct.unpack_from("<H", lib, d + 16)[0] == i.hint
-    # a library unit's object joins the archive (decl `libunit`): its code member next to the import members
-    src = tmp_path / "member.c"
-    src.write_text("int MSS_auto_cleanup(void)\n{\n    return 0;\n}\n", newline="\n")
-    res = p.toolchain.compile(src, tmp_path / "member.obj", ["/O2", "/Gy"], [], tmp_path)
-    assert res.ok, res.log
-    assert p.toolchain.add_library_members(out, [tmp_path / "member.obj"]) is None
-    from decompanion.objfmt.coff import archive_members
-    names = [n for n, _ in archive_members(out)]
-    assert any(n.endswith("member.obj") for n in names)
-    assert len(short_members(out.read_bytes())) == 31                                 # the import members stay

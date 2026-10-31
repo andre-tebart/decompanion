@@ -418,3 +418,64 @@ pub fn module_definition(name: &str, exports: &[&crate::pe::Export]) -> String {
     }
     lines.join("\n") + "\n"
 }
+
+#[cfg(test)]
+mod real_tests {
+    //! Against the real game and VC6 (`cargo test -- --ignored`, the e2e tier): skipped where either is missing.
+    use super::*;
+
+    const EXE: &str = "C:/Program Files/GOG Galaxy/Games/The Guild Gold/GildeGold.exe";
+    const ROOT: &str = "C:/Tools/MSVC600-SP5PP";
+
+    /// (offset of the member's data, its stored symbol) of every short import member (signature 0 / 0xffff).
+    fn short_members(lib: &[u8]) -> Vec<(usize, String)> {
+        let mut out = vec![];
+        let mut i = 8usize;
+        while i + 60 <= lib.len() {
+            let size: usize = String::from_utf8_lossy(&lib[i + 48..i + 58]).trim().parse().unwrap_or(0);
+            let d = i + 60;
+            if lib.get(d..d + 4) == Some(&b"\0\0\xff\xff"[..]) {
+                let end = lib[d + 20..].iter().position(|&b| b == 0).unwrap();
+                out.push((d, String::from_utf8_lossy(&lib[d + 20..d + 20 + end]).into_owned()));
+            }
+            i += 60 + size + (size & 1);
+        }
+        out
+    }
+
+    /// mss32.dll has no import library in any installation: one is built from the exe's import directory, its
+    /// members import the decorated names exactly (name type NAME) with the exe's hints; a library unit's object
+    /// joins the archive next to the import members.
+    #[test]
+    #[ignore]
+    fn import_library_from_the_image() {
+        if !Path::new(EXE).exists() || !Path::new(ROOT).join("VC98/Bin/CL.EXE").exists() {
+            return;
+        }
+        let img = crate::pe::Image::parse(std::fs::read(EXE).unwrap()).unwrap();
+        let imports: Vec<crate::pe::Import> = img.imports().into_iter().filter(|i| i.dll.eq_ignore_ascii_case("mss32.dll")).collect();
+        let dir = std::env::temp_dir().join(format!("dcp-implib-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("mss32.lib").to_string_lossy().into_owned();
+        let tools = Tools { root: Some(ROOT.into()), extra_include: vec![], extra_lib: vec![] };
+        assert_eq!(tools.make_import_library("mss32.dll", &imports, &out).unwrap(), None);
+        let lib = std::fs::read(&out).unwrap();
+        let members = short_members(&lib);
+        assert_eq!(imports.len(), 31);
+        let names: std::collections::BTreeSet<&str> = members.iter().map(|m| m.1.as_str()).collect();
+        assert_eq!(names, imports.iter().map(|i| i.name.as_deref().unwrap()).collect());
+        for i in &imports {
+            let d = members.iter().find(|m| Some(m.1.as_str()) == i.name.as_deref()).unwrap().0;
+            assert_eq!((u16::from_le_bytes([lib[d + 18], lib[d + 19]]) >> 2) & 7, 1); // IMPORT_NAME
+            assert_eq!(Some(u16::from_le_bytes([lib[d + 16], lib[d + 17]])), i.hint);
+        }
+        let cwd = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("member.c"), "int MSS_auto_cleanup(void)\n{\n    return 0;\n}\n").unwrap();
+        let r = tools.compile("member.c", "member.obj", &["/O2".into(), "/Gy".into()], &[], &cwd).unwrap();
+        assert!(r.ok, "{}", r.log);
+        assert_eq!(tools.add_library_members(&out, &[dir.join("member.obj").to_string_lossy().into_owned()]).unwrap(), None);
+        let lib = std::fs::read(&out).unwrap();
+        assert!(crate::coff::archive_members(&lib).unwrap().iter().any(|m| m.0.ends_with("member.obj")));
+        assert_eq!(short_members(&lib).len(), 31); // the import members stay
+    }
+}

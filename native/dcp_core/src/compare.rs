@@ -81,3 +81,40 @@ pub fn compare(img: &Image, code: &FunctionCode, addr: u32, reloc_sites: Option<
     }
     c
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coff::Reloc;
+    use crate::pe::testpe::{build, BASE, DATA, TEXT};
+
+    /// f2 of the synthetic dll (`mov eax, [.data]; ret` at 0x10001020, its address relocated), as our object holds it.
+    fn ours(data: &[u8], relocs: &[u32]) -> FunctionCode {
+        let mut mask = vec![0u8; data.len()];
+        for &o in relocs {
+            mask[o as usize..o as usize + 4].fill(1);
+        }
+        FunctionCode { secnum: 1, data: data.to_vec(), mask, relocs: relocs.iter().map(|&o| (o, Reloc { offset: o, symbol_index: 0, typ: 0x06 })).collect(),
+                       code_len: None, start: 0 }
+    }
+
+    #[test]
+    fn masked_compare_tail_and_aid() {
+        let img = Image::parse(build(None)).unwrap();
+        let forms = fill_order(&[b"\x90".to_vec(), b"\xcc".to_vec()]);
+        let f2 = BASE + TEXT + 0x20;
+        let code = ours(b"\xa1\x00\x00\x00\x00\xc3", &[1]);
+        let c = compare(&img, &code, f2, Some(&[f2 + 1]), f2 + 0x10, &forms);
+        assert!(c.diffs.is_empty() && c.tail_ok && c.abs_image == Some(1) && c.abs_ours == 1 && c.matched());
+        // a relocated field of ours where the original has a plain number: the aid fails
+        let c = compare(&img, &code, f2, Some(&[]), f2 + 0x10, &forms);
+        assert!(c.diffs.is_empty() && !c.aid_ok() && c.abs_image == Some(0) && !c.matched() && c.why().contains("no base relocation"));
+        // the original continues after our end (f3 follows at +0x10): no match although the prefix is equal
+        let c = compare(&img, &code, f2, None, f2 + 0x20, &forms);
+        assert!(c.diffs.is_empty() && !c.tail_ok && !c.matched() && c.abs_image.is_none());
+        // one differing byte
+        let c = compare(&img, &ours(b"\xa1\x00\x00\x00\x00\xc2", &[1]), f2, Some(&[f2 + 1]), f2 + 0x10, &forms);
+        assert!(c.diffs == [5] && !c.matched());
+        assert_eq!(&img.bytes(f2 + 1, 4)[..], &(BASE + DATA).to_le_bytes()[..]);
+    }
+}

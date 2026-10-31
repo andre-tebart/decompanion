@@ -672,6 +672,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(datafix::data_map, m)?)?;
     m.add_function(wrap_pyfunction!(datafix::data_fix, m)?)?;
     m.add_function(wrap_pyfunction!(headers::headers_conflicts, m)?)?;
+    m.add_function(wrap_pyfunction!(toolchain::tc_declare, m)?)?;
+    m.add_function(wrap_pyfunction!(toolchain::tc_build_name, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_stale, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_available, m)?)?;

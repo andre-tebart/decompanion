@@ -757,3 +757,33 @@ mod tests {
         assert_eq!(c.key("x.obj"), "x.obj:??_C@_05hello");
     }
 }
+
+#[cfg(test)]
+mod reloc_tests {
+    use super::*;
+
+    #[test]
+    fn reloc_view() {
+        let r = |typ| Reloc { offset: 0, symbol_index: 0, typ };
+        assert_eq!((r(0x06).kind_width(), r(0x14).kind_width().0, r(0x07).kind_width().0), ((ABSOLUTE, 4), RELATIVE, ABSOLUTE_RVA));
+        assert_eq!(r(0x0b).kind_width(), (0, 0)); // SECREL: no image bytes
+        let site = 0x401010u32;
+        // absolute: the image holds target + addend
+        assert_eq!(r(0x06).resolve(site, &0x405008u32.to_le_bytes(), 8), Some(0x405000));
+        // relative: the image holds target - (site + 4) + addend
+        let disp = 0x402000u32.wrapping_sub(site + 4);
+        assert_eq!(r(0x14).resolve(site, &disp.to_le_bytes(), 0), Some(0x402000));
+        assert_eq!(r(0x07).resolve(site, &[0, 0, 0, 0], 0), None);
+    }
+
+    #[test]
+    fn section_mask_and_addend() {
+        let data: Vec<u8> = [&[0xe8u8][..], &(-4i32).to_le_bytes(), &[0xa1], &0x10u32.to_le_bytes(), &[0xc3]].concat();
+        let relocs = vec![Reloc { offset: 1, symbol_index: 0, typ: 0x14 }, Reloc { offset: 6, symbol_index: 0, typ: 0x06 }, Reloc { offset: 0, symbol_index: 0, typ: 0x0b }];
+        let sec = Section { name: ".text".into(), chars: 0x6000_0020, size: data.len() as u32, data: Some(data), relocs: relocs.clone(), syms: vec![] };
+        assert_eq!(sec.mask(), [0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0]);
+        let obj = Obj { name: String::new(), sections: vec![Section { name: String::new(), chars: 0, data: None, size: 0, relocs: vec![], syms: vec![] }, sec],
+                        symbols: vec![], by_index: Default::default() };
+        assert_eq!((obj.addend(1, &relocs[1]), obj.addend(1, &relocs[0])), (0x10, 0xffff_fffc));
+    }
+}

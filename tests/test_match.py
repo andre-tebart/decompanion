@@ -13,9 +13,6 @@ from decompanion.ledger import grades as G
 from decompanion.ledger import srcscan
 from decompanion.ledger.fact import Fact, Kind, Level
 from decompanion.ledger.store import Store
-from decompanion.match import compare as C
-from decompanion.objfmt.base import FunctionCode
-from decompanion.objfmt.coff import DIR32, Reloc
 from decompanion.rules.grade import falls, parse_baseline
 from decompanion.source import cparse
 
@@ -79,51 +76,6 @@ def test_unit_targets(tiny2):
     unit(tiny2, "lone", "#ifdef DCP_TARGET_tiny\n/* other:0x10001040, the wrong guard */\nvoid lone(void)\n{\n}\n#endif\n")
     msgs = sorted(e.message for e in srcscan.scan(tiny2).errors if e.check == "L16")
     assert len(msgs) == 2 and "lists other, whose compile does not hold it" in msgs[1], msgs
-
-
-# ------------------------------------------------------------------------------------------------ compare
-class Img:
-    """A stand-in image: `code` at 0x1000, base relocations at `relocs`."""
-    base, end = 0x1000, 0x3000
-
-    def __init__(self, code, relocs=()):
-        self.code, self._relocs = code, list(relocs)
-
-    def read(self, va, n):
-        o = va - 0x1000
-        return (self.code[o:o + n] + bytes(n))[:n]
-
-    def relocations(self):
-        return self._relocs
-
-
-def fcode(data, relocs=()):
-    mask = bytearray(len(data))
-    rs = []
-    for off in relocs:
-        for k in range(off, off + 4):
-            mask[k] = 1
-        rs.append((off, Reloc(off, 0, DIR32), None))
-    return FunctionCode(None, None, 0, data, bytes(mask), tuple(rs))
-
-
-FILL = (b"\x90", b"\xcc")
-
-
-def test_compare_masked_and_aid():
-    orig = b"\xa1\x00\x20\x00\x00\xc3" + b"\x90" * 10 + b"\x55"      # mov eax,[0x2000]; ret; fill; next function
-    ours = fcode(b"\xa1\x00\x00\x00\x00\xc3", relocs=[1])
-    c = C.compare(Img(orig, [0x1001]), ours, 0x1000, [0x1001], 0x1010, FILL)
-    assert c.bytes_equal and c.tail_ok and c.aid == "1/1" and c.matched
-    # a relocated field of ours where the original has a plain number: the aid fails
-    c = C.compare(Img(orig, []), ours, 0x1000, [], 0x1010, FILL)
-    assert c.bytes_equal and not c.aid_ok and c.aid == "1/0" and not c.matched and "no base relocation" in c.why()
-    # the original continues after our end: no match although the prefix is equal
-    c = C.compare(Img(b"\xa1\x00\x20\x00\x00\xc3\x40\xc3"), ours, 0x1000, None, 0x1010, FILL)
-    assert c.bytes_equal and not c.tail_ok and not c.matched and c.aid == "-"
-    # one differing byte
-    c = C.compare(Img(orig, [0x1001]), fcode(b"\xa1\x00\x00\x00\x00\xc2", relocs=[1]), 0x1000, [0x1001], 0x1010, FILL)
-    assert c.diffs == [5] and not c.matched
 
 
 def test_aligned_sites():
