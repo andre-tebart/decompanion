@@ -28,6 +28,7 @@ mod layout;
 mod layoutview;
 mod pe;
 mod plan;
+mod probe;
 mod project;
 mod pyimage;
 mod pystore;
@@ -296,6 +297,26 @@ pub(crate) fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite
         let db = map.get_mut(path).unwrap();
         f(db).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))
     })
+}
+
+/// f over the items on the machine's threads (an external process each, typically), results in the items' order.
+pub(crate) fn compile_threads<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(items.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let out: std::sync::Mutex<Vec<Option<R>>> = std::sync::Mutex::new((0..items.len()).map(|_| None).collect());
+    std::thread::scope(|s| {
+        for _ in 0..n {
+            s.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if k >= items.len() {
+                    break;
+                }
+                let r = f(&items[k]);
+                out.lock().unwrap()[k] = Some(r);
+            });
+        }
+    });
+    out.into_inner().unwrap().into_iter().map(|r| r.unwrap()).collect()
 }
 
 /// Close this thread's connection to a store (its file is replaced or removed).
@@ -634,6 +655,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
+    m.add_function(wrap_pyfunction!(probe::probe_run, m)?)?;
     m.add_function(wrap_pyfunction!(libcand::libs_candidates, m)?)?;
     m.add_class::<pyimage::PeImage>()?;
     m.add_function(wrap_pyfunction!(pyimage::pe_open, m)?)?;
