@@ -5,14 +5,15 @@ from __future__ import annotations
 
 import shutil
 import sys
-from collections import Counter
 from pathlib import Path
 
-from .cli import build_target, fmt_addr, record
+from . import native
+from .cli import build_target, record
 from .config import Project
 from .ledger.fact import Kind
 
 SKILLS = Path(__file__).resolve().parents[2] / "skills"      # the repository's skills/ (decompanion is installed by path)
+MINUTES = 30                                                  # the length of a session (the core's session.rs)
 
 
 def err(cmd: str, msg: str) -> int:
@@ -21,15 +22,8 @@ def err(cmd: str, msg: str) -> int:
 
 
 def state(p) -> dict:
-    """The counts a session report compares: functions, units, grades, errors."""
-    from .ledger import grades as G
-    rows = G.function_grades(p.store)
-    units = [f for f in p.store.facts(Kind.unit) if "status" in f.value]
-    return {"functions": len(rows), "byte": sum(1 for r in rows if r["code"] == "byte"),
-            "readable": sum(1 for r in rows if r["readability"] == "readable"),
-            "units": len(units), "separated": sum(1 for f in units if f.value["status"] == "separated"),
-            "errors": sum(1 for x in p.store.conflicts() if x.severity.value in ("bug", "error")),
-            "grades": dict(Counter(f"{r['code']}+{r['readability']}" for r in rows))}
+    """The counts a session report compares: functions, units, grades, errors (the core's session.rs)."""
+    return native.core().session_state(p.core)
 
 
 def gate(args, quiet=False) -> tuple[bool, list, dict]:
@@ -70,33 +64,8 @@ def gate(args, quiet=False) -> tuple[bool, list, dict]:
 
 def overview(p):
     """The unit table summary, the first open function, the toolchain level and the analyzer of one target."""
-    from .ledger import layoutview as LV
-    v = LV.View.load(p, p.store)
-    rows = LV.unit_rows(v)
-    c = Counter(r["status"] for r in rows)
-    glo, ghi, _ = v.game
-    covered = sum(r["range"][1] - r["range"][0] for r in rows)
-    funcs = [lo for lo, _, _ in v.funcs if glo <= lo < ghi]
-    drafted = sum(1 for a in funcs if a in v.sources)
-    print(record(target=p.target_name, units=len(rows), separated=c.get("separated", 0), open=c.get("open", 0),
-                 game=(glo, ghi), unassigned=f"{(ghi - glo) - covered:#x}", functions=len(funcs), drafted=drafted))
-    for r in rows[-3:]:
-        print("  " + record(unit=r["unit"], range=r["range"], status=r["status"], named_by=r["named_by"],
-                            undrafted=r["undrafted"], open_bytes=r["open_bytes"]))
-    recs = LV.next_records(v, 1)
-    if recs:
-        r = recs[0]
-        print("  " + record(next=r["addr"], kind=r["kind"], size=r["size"], unit=r["unit"], analyzed=r["analyzed"]))
-    else:
-        print("  next: nothing open in the game code (layout complete when every unit is separated and named)")
-    decl = p.toolchain_decl
-    probed = [f for f in p.store.facts(Kind.toolchain) if f.run == "M.flags.proven"]
-    proven = sorted(f.value["flag"] for f in probed if f.level.name == "proven")
-    print("  " + record(toolchain=decl.get("compiler") or None, cflags=" ".join(decl.get("cflags") or []) or None,
-                        level="declared" if not proven else "proven:" + ",".join(proven)))
-    from .ledger import drafts
-    n = len(drafts.entries(p.store))
-    print("  " + (record(analyzer=p.analyzer.key) if p.analyzer.key == "none" and not n else record(analyzer=p.analyzer.key, drafts=n)))
+    for line in native.core().session_overview(p.core, p.analyzer.key):
+        print(line)
 
 
 def cmd_session_start(args):
@@ -104,13 +73,12 @@ def cmd_session_start(args):
     error conflict, every link ok; then per target the overview (units, the first open function, the toolchain
     level) and the status tail (the open obligations: the analyzer, layout, match). Records .dcp/session.json
     (the base commit) for `dcp session wrap`. Exit 1 when the gate fails."""
-    from .repo import session as S
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
-    root = p0.root
-    head = S.git(root, "rev-parse", "HEAD").strip()
+    root = str(p0.root)
+    head = native.core().session_head(root)
     if not head:
         return err("session start", "no commit yet: commit the project first (git add -A && git commit)")
-    d = S.dirty(root)
+    d = native.core().session_dirty(root)
     print(record(session="start", checkout=("worktree" if p0.main_build_dir() else "main"), base=head[:8], clean=not d))
     for line in d[:10]:
         print("  dirty " + line)
@@ -124,116 +92,45 @@ def cmd_session_start(args):
     for name, p, lr in targets:
         overview(p)
         status_tail(p)
-    S.save(root, {"base": head, "started": S.now(), "states": states})
-    print(f"gate: ok. The session clock runs ({S.MINUTES} minutes): `dcp session status`, and the first line of "
+    native.core().session_save(root, head, states)
+    print(f"gate: ok. The session clock runs ({MINUTES} minutes): `dcp session status`, and the first line of "
           "`dcp layout next`; wrap up once it says over=yes.")
     return 0
 
 
 def cmd_session_status(args):
-    """The session's clock (repo/session.py clock): base commit, start time, minutes elapsed and left of
+    """The session's clock (the core's session.rs): base commit, start time, minutes elapsed and left of
     --minutes; `over=yes` once they are used up."""
-    from .repo import session as S
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
-    c = S.clock(p0.root, args.minutes)
+    c = native.core().session_clock(str(p0.root), args.minutes)
     if c is None:
         return err("session status", "no session started (dcp session start)")
-    print(record(**c))
+    print(c[0])
     return 0
 
 
 def cmd_session_wrap(args):
     """Build, link and check every target, promote the grade baseline (main checkout only), then print the
-    computed report (repo/session.py) and write it to build/session/report.md. Exit 1 when the gate fails."""
+    computed report (the core's session.rs) and write it to build/session/report.md. Exit 1 when the gate fails."""
+    import contextlib
+    import io
     from .cli_match import cmd_promote
-    from .ledger import grades as G
-    from .ledger import layoutview as LV
-    from .repo import session as S
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
-    root = p0.root
-    rec = S.load(root) or {}
-    base = rec.get("base") or S.git(root, "rev-parse", "HEAD").strip()
-    print(record(session="wrap", base=base[:8], started=rec.get("started")))
+    root = str(p0.root)
+    base, started = native.core().session_record(root)
+    base = base or native.core().session_head(root)
+    print(record(session="wrap", base=base[:8], started=started))
     ok, targets, states = gate(args)
     promoted, refused = None, False
     if ok and p0.main_build_dir() is None:          # the gate passed M1, so promote finds no fall; it still checks
-        import contextlib
-        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             refused = cmd_promote(args) != 0
         promoted = buf.getvalue().strip()
         ok = ok and not refused
-    c = S.changes(root, base)
-    out = [f"# session {S.now()[:10]} (base {c.base}, head {c.head}, {c.commits} commits)", ""]
-    for name, p, lr in targets:
-        b, a = (rec.get("states") or {}).get(name, {}), states[name]
-        out.append(f"target {name}: errors {b.get('errors', '?')} -> {a['errors']}, functions {b.get('functions', '?')} -> "
-                   f"{a['functions']}, byte {b.get('byte', '?')} -> {a['byte']}, readable {b.get('readable', '?')} -> {a['readable']}, "
-                   f"units {b.get('units', '?')} -> {a['units']} (separated {b.get('separated', '?')} -> {a['separated']}), "
-                   f"link {'ok' if lr is None or lr.ok else 'FAILED'}"
-                   + (f" ({len(lr.unresolved.get('undrafted', []))} undrafted externals)" if lr is not None else ""))
-    out.append("")
-    unit_events = [l for l in c.names if " unit " in l]
-    joined = [l for l in unit_events if "why:join:" in l]
-    renamed = [l for l in unit_events if l not in joined]
-    out.append(f"units: declared {len(c.units_new)} ({', '.join(c.units_new) or '-'}), joined {len(joined)}, renamed {len(renamed)}, "
-               f"gone {len(c.units_gone)} ({', '.join(c.units_gone) or '-'})")
-    for l in joined + renamed:
-        out.append("  " + l)
-    for l in c.decl_added:
-        out.append("  decl + " + l)
-    for l in c.decl_removed:
-        out.append("  decl - " + l)
-    out.append("")
-    p = targets[0][1]
-    rows = {r["addr"]: r for r in G.function_grades(p.store)}
-    out.append(f"functions drafted: {len(c.drafted)}")
-    for unit, a, f in sorted(c.drafted, key=lambda t: t[1]):
-        r = rows.get(a)
-        g = f"{r['code']} + {r['readability']}  {r['name']}" if r else "no grade (not compiled)"
-        out.append(f"  {a:#010x}  {unit:<16} {g}")
-    graded_units = set()
-    for name, tp, _ in targets:                       # the grades against the baseline at the base commit
-        ch = S.grade_changes(root, base, name, G.function_grades(tp.store))
-        drafted = {a for _, a, _ in c.drafted}
-        ch = [x for x in ch if x[0] not in drafted or x[3] is not None]
-        graded_units |= {x[1] for x in ch}
-        out.append(f"grades changed ({name}): {len(ch)}")
-        for a, unit, fname, b, aft in ch:
-            out.append(f"  {a:#010x}  {unit:<16} {fname}: {b or 'new'} -> {aft or 'gone'}")
-    other = [l for l in c.names if " unit " not in l]
-    out.append(f"renames: {len(other)}")
-    for l in other:
-        out.append("  " + l)
-    out.append("")
-    v = LV.View.load(p, p.store)
-    touched = set(c.units_new) | {u for u, _, _ in c.drafted} | {l.split(" -> ")[1].split()[0] for l in unit_events} | graded_units
-    out.append("units touched:")
-    for r in LV.unit_rows(v):
-        if r["unit"] in touched:
-            out.append(f"  {r['unit']:<16} {fmt_addr(r['range'][0])}..{fmt_addr(r['range'][1])}  {r['status']:<9} start {r['start']} "
-                       f"end {r['end']}  named_by {r['named_by'] or '-'}  functions {r['functions']} undrafted {r['undrafted']} "
-                       f"open_bytes {r['open_bytes']}")
-    recs = LV.next_records(v, 1)
-    out.append("")
-    if recs:
-        out.append(f"next: {fmt_addr(recs[0]['addr'])} {recs[0]['kind']} {recs[0]['size']} bytes, unit {recs[0]['unit'] or '-'}")
-    else:                                            # layout complete: the next item of the base queue (dcp next)
-        q = G.queue(p.store, "base")
-        out.append("next: nothing open in the game code; " + (
-            f"base queue {fmt_addr(q[0]['addr'])} {q[0]['name']} ({q[0]['unit']}, {q[0]['code']} + {q[0]['readability']}), "
-            f"{len(q)} items" if q else "the base queue is empty"))
-    if promoted:
-        out.append("baseline: " + promoted.splitlines()[0] + (" (nothing written: dcp accept each fall wanted on purpose, "
-                   "then dcp promote)" if refused else " (commit ledger/grades.tsv with the session)"))
-        out += promoted.splitlines()[1:] if refused else []
-    out.append("gate: " + ("ok" if ok else "FAIL"))
-    text = "\n".join(out) + "\n"
-    rp = root / "build" / "session" / "report.md"
-    rp.parent.mkdir(parents=True, exist_ok=True)
-    rp.write_text(text, newline="\n")
-    print(text, end="")
+    links = [(name, p.core, None if lr is None else lr.ok, None if lr is None else len((lr.unresolved or {}).get("undrafted", [])))
+             for name, p, lr in targets]
+    print(native.core().session_report(root, base, links, states, promoted, refused, ok), end="")
     return 0 if ok else 1
 
 

@@ -549,10 +549,9 @@ def cmd_layout_next(args):
         for r in recs:
             print(json.dumps(jsonable(r)))
         return
-    from .repo import session as S
-    c = S.clock(p.root)
+    c = native.core().session_clock(str(p.root))
     if c is not None:
-        print(record(**c) + ("  (session over: finish or revert the function in progress, then wrap up)" if c["over"] else ""))
+        print(c[0] + ("  (session over: finish or revert the function in progress, then wrap up)" if c[1] else ""))
     print(record(target=p.target_name, game=v.game[:2], units=len(v.units), undrafted_in_units=len(und), shown=len(recs)))
     if not recs:
         print("nothing open: every function of the game code has a source")
