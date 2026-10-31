@@ -219,6 +219,17 @@ pub fn only_missing_statements(reason: &str) -> bool {
     !clauses.is_empty() && clauses.iter().all(|c| MISSING.is_match(c) && STATEMENTS.is_match(c))
 }
 
+/// The words of a reason that admit a part of the function not read against the original yet (not reconciled, not
+/// checked, not compared, not verified, hard to judge): reading the whole function is base work. A word for what the
+/// code does (`the parameter is not read`, `cm_SendUnchecked`) is no admission: only these phrasings count.
+pub fn admits_unread(reason: &str) -> Option<String> {
+    use std::sync::LazyLock;
+    static UNREAD: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(un(?:reconciled|checked|verified|examined|compared)|not\s+(?:yet\s+|been\s+|fully\s+)*(?:reconciled|checked|verified|examined|compared)|not\s+yet\s+(?:read|looked\s+at)|(?:did|could|have|has)\s+not\s+(?:yet\s+)?(?:read|check|compare|reconcile)|left\s+unread|unread\s+(?:part|rest|tail|span|half|code|hunks?)|hard\s+to\s+judge)\b").unwrap()
+    });
+    UNREAD.find(reason).map(|m| m.as_str().split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
 // ------------------------------------------------------------------------------------------------ the baseline
 
 /// One baseline entry: name, unit, code, readability, level, accepted.
@@ -571,6 +582,10 @@ pub fn level_command(project: PyRef<'_, crate::project::PyProject>, level: &str,
             return Ok((vec![], Some("refused: the reason names only missing statements; reconstruction is base work (say which leads were tried and what \
                                      is left)".into()), 1));
         }
+        if let Some(w) = admits_unread(&why).filter(|_| level == "deep") {
+            return Ok((vec![], Some(format!("refused: the reason admits a part not read against the original (`{w}`); reading and reconciling the \
+                                             whole function is base work: finish it, then escalate what is left")), 1));
+        }
         set_level(&root, &s("file"), Some(level), Some(&why), line)
     }.map_err(PyValueError::new_err)?;
     let addr = r.get("addr").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -588,6 +603,11 @@ mod level_tests {
         assert!(only_missing_statements("missing statements"));
         assert!(only_missing_statements("the loop body is unwritten; two calls are missing"));
         assert!(!only_missing_statements("register choice ebx/esi after the spell pass; missing statements"));
+        // a match-base report: the part after +0x5c7 was admitted as not reconciled and escalate took it
+        assert_eq!(admits_unread("frame 0x3bc vs 0x3b8. The part after +0x5c7 (summary page) is not yet reconciled and is hard to judge").as_deref(),
+                   Some("not yet reconciled"));
+        assert_eq!(admits_unread("the store order and the 0x5a paths unverified").as_deref(), Some("unverified"));
+        assert_eq!(admits_unread("bpp is not read; cm_SendMoveGoodsUnchecked's slots; read to the end, only ebx/esi left"), None);
         let dir = std::env::temp_dir().join(format!("dcp-level-{}", std::process::id()));
         let root = dir.to_string_lossy().into_owned();
         crate::edit::write(&format!("{root}/src/u.c"), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n").unwrap();
