@@ -747,7 +747,9 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
     files = project_files(root)
     targets = target_defines(root)
     default = targets[0][0]
-    per_target = {t: models(root, files, d) for t, d in targets}
+    from .. import timing
+    with timing.phase("scan.models"):
+        per_target = {t: models(root, files, d) for t, d in targets}
     ms = out.models = per_target[default]
     for rel, p in files:
         m = ms.get(rel, EMPTY)
@@ -760,7 +762,8 @@ def scan(root: Path, tree_hash: str | None = None) -> Scan:
             piece = disk.get(key)
         if piece is None:
             piece = Scan()
-            scan_file(rel, fsmemo.read_text(p), piece, m, views)
+            with timing.phase("scan.file"):
+                scan_file(rel, fsmemo.read_text(p), piece, m, views)
             changed = True
         _files[key] = used[key] = piece
         out.files += 1

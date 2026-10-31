@@ -49,7 +49,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import fsmemo
+from .. import fsmemo, timing
 from ..build import compile as B
 from ..ledger import srcscan
 from ..ledger.fact import canonical
@@ -837,7 +837,8 @@ def lint(project, log=None) -> dict:
             keys.append((a.unit, key))
         else:
             results[a.unit] = hit
-    ad = alldecls(root, defines)
+    with timing.phase("lint.alldecls"):
+        ad = alldecls(root, defines)
     text = ad.text
     akey = sha256("alldecls", VERSION, *clang, text, *defines,
                   *(fsmemo.sha256(p) for p in sorted((Path(root) / "include").glob("*.h"))) if (Path(root) / "include").exists() else "")
@@ -848,7 +849,10 @@ def lint(project, log=None) -> dict:
         out.write_text(text, newline="\n")
         jobs.append((out.relative_to(root), root, sysdirs, [Path(root) / "include"], defines, True, None))
         keys.append((None, akey))
-    for (unit, key), diags in zip(keys, cparse.many(jobs) if jobs else []):
+    with timing.phase("lint.parse"):
+        parsed = cparse.many(jobs) if jobs else []
+    timing.add("lint.jobs", len(jobs))
+    for (unit, key), diags in zip(keys, parsed):
         st.put_blob_json(key, "lint", diags)
         if unit is None:
             cross = diags
@@ -868,7 +872,8 @@ def lint(project, log=None) -> dict:
                 callee, how = c
                 calls.setdefault(d["file"], []).append((d["line"], f"{callee}() at line {d['line']}" if how == "proto" else
                                                                      f"{callee} (undeclared) at line {d['line']}"))
-    conflicts = cross_conflicts(ad, cross, lines)
+    with timing.phase("lint.cross"):
+        conflicts = cross_conflicts(ad, cross, lines)
     conflicts += private_violations(root, private_headers(root))
     res = {"units": {a.unit: a.src_hash for a in units_},
            "includes": {a.unit: (tus.get(a.unit) or {}).get("include_hash", "") for a in units_}, "errors": sorted(set(errors)), "cross": sorted(set(conflicts)),

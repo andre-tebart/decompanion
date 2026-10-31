@@ -197,7 +197,10 @@ def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> R
         search = [Path(root, d) if not Path(d).is_absolute() else Path(d) for d in tc.include_search_dirs(dirs)]
         key = sha256(a.src_hash, sha256(canonical(flags)), listing_hash(search))
         work[a.unit] = (a, flags, dirs, key)
-        if st.include_set(key) is None:
+        row = rows.get(a.unit)
+        # the include set decides only whether a unit of unchanged text is stale: a changed text compiles anyway,
+        # its include set read beside its compile
+        if st.include_set(key) is None and row is not None and row["src_hash"] == a.src_hash and not force:
             todo_pre.append(a.unit)
 
     def ours(a) -> set[str]:
