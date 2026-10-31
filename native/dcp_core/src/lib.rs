@@ -19,6 +19,7 @@ mod engine;
 mod fsmemo;
 mod frontend;
 mod grade;
+mod libcand;
 mod lint;
 mod lintrun;
 mod mrules;
@@ -633,6 +634,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
+    m.add_function(wrap_pyfunction!(libcand::libs_candidates, m)?)?;
     m.add_class::<pyimage::PeImage>()?;
     m.add_function(wrap_pyfunction!(pyimage::pe_open, m)?)?;
     m.add_function(wrap_pyfunction!(x86::x86_disasm, m)?)?;
