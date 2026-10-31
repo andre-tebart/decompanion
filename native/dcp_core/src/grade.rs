@@ -108,6 +108,52 @@ thread_local! {
     static FILES: std::cell::RefCell<(Stamp, HashMap<String, Rc<FileHeld>>)> = std::cell::RefCell::new(Default::default());
 }
 
+/// One function to compute: its code, its object, address, next start, the walk's end, whether it byte-matches.
+struct Task<'a> {
+    i: usize, // its index among the compiled functions
+    code: &'a crate::coff::FunctionCode,
+    obj: &'a crate::coff::Obj,
+    lo: i64,
+    next: u32,
+    whi: Option<i64>,
+    matched: bool,
+}
+
+type Computed = Result<(i64, i64, i64, diffclass::Original, Option<Verdict>), String>;
+
+/// A function's code size, extent, slot, original and (no byte match) its verdict.
+fn compute(env: &Env, t: &Task, align: i64) -> Computed {
+    let (cd, cm) = t.code.code();
+    let size = diffclass::code_size(env, cd, cm, t.lo as u32)?;
+    let extent = t.whi.map(|h| h - t.lo).unwrap_or(size);
+    let slot = extent.max(t.next as i64 - t.lo);
+    let o = diffclass::original(env, t.lo as u32, extent, slot, align)?;
+    let v = if t.matched { None } else { Some(diffclass::function_verdict(env, t.obj, t.code, t.lo as u32, &o)?) };
+    Ok((size, extent, slot, o, v))
+}
+
+/// compute over the tasks on every core: (index, result).
+fn compute_all(env: &Env, todo: &[Task], align: i64) -> Vec<(usize, Computed)> {
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(todo.len().max(1));
+    if n <= 1 || todo.len() < 32 {
+        return todo.iter().map(|t| (t.i, compute(env, t, align))).collect();
+    }
+    // each thread takes the next task: the functions differ widely in size
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        let parts: Vec<_> = (0..n).map(|_| s.spawn(|| {
+            let mut out = vec![];
+            loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(t) = todo.get(k) else { break };
+                out.push((t.i, compute(env, t, align)));
+            }
+            out
+        })).collect();
+        parts.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+    })
+}
+
 pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
     let x: Inputs = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("G.grade: native inputs: {e}")))?;
@@ -130,20 +176,25 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
         held = (world, HashMap::new());
     }
     let mut used: HashMap<Key, Rc<Held>> = HashMap::new();
-    for f in &funcs {
+    let keys: Vec<Key> = funcs.iter().map(|f| key_of(f, walk.get(&f.src.lo))).collect();
+    // the functions not held (all of them after a start): computed on every core, each independent of the others
+    let todo: Vec<Task> = funcs.iter().zip(&keys).enumerate().filter(|(_, (_, k))| !held.1.contains_key(*k)).map(|(i, (f, _))| Task {
+        i, code: &f.code, obj: &f.obj.0, lo: f.src.lo, next: f.next, whi: walk.get(&f.src.lo).map(|w| w.hi), matched: matched.contains(&f.src.lo),
+    }).collect();
+    let mut fresh: HashMap<usize, Rc<Held>> = HashMap::new();
+    for (i, r) in compute_all(&env, &todo, x.function_alignment) {
+        let (size, extent, slot, o, v) = r.map_err(e)?;
+        let verdict = std::cell::OnceCell::new();
+        if let Some(v) = v {
+            let _ = verdict.set(v);
+        }
+        fresh.insert(i, Rc::new(Held { size, extent, slot, o, verdict }));
+    }
+    for (i, (f, key)) in funcs.iter().zip(keys).enumerate() {
         let lo = f.src.lo;
-        let w = walk.get(&lo);
-        let key = key_of(f, w);
         let h = match held.1.get(&key) {
             Some(h) => h.clone(),
-            None => {
-                let (cd, cm) = f.code.code();
-                let size = diffclass::code_size(&env, cd, cm, lo as u32).map_err(e)?;
-                let extent = w.map(|w| w.hi - lo).unwrap_or(size);
-                let slot = extent.max(f.next as i64 - lo);
-                let o = diffclass::original(&env, lo as u32, extent, slot, x.function_alignment).map_err(e)?;
-                Rc::new(Held { size, extent, slot, o, verdict: std::cell::OnceCell::new() })
-            }
+            None => fresh[&i].clone(),
         };
         used.insert(key, h.clone());
         let (size, extent, slot) = (h.size, h.extent, h.slot);
