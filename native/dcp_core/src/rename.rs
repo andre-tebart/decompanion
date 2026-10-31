@@ -7,7 +7,8 @@
 //! name, OLD occurs nowhere, or only inside string literals / #include lines; when NEW is no C identifier or equals
 //! OLD; when NEW occurs already and is not OLD's own (the ledger names another address NEW, or OLD has no address):
 //! NEW written by hand in part for OLD's address is completed; when the pairs of a call chain or repeat. A success
-//! prints per pair the rename record (files, replacements, decl lines) and one line per changed file. names.log
+//! prints per pair the rename record (files, replacements, decl lines) and one line per changed file, with its first
+//! changed lines (`LINE: text` as it reads now, 4 per file, `(+N more line(s))`). names.log
 //! records each event, with the address the ledger knows for OLD. The rename done by hand already (OLD nowhere,
 //! NEW the ledger's name of OLD's address) is only recorded. The views of OLD (OLD with an upper-case view suffix)
 //! keep their names: a note lists them.
@@ -209,6 +210,7 @@ struct Plan {
     skip: Option<Skip>,
     files: BTreeMap<String, usize>,
     decl_lines: usize,
+    lines: BTreeMap<String, Vec<(usize, String)>>, // file -> (line, its text after the write) of each changed line
 }
 
 impl Plan {
@@ -218,6 +220,9 @@ impl Plan {
 }
 
 type Refusal = (String, String, String);
+
+/// The changed lines printed per file of a pair.
+const LINES: usize = 4;
 
 struct Ctx<'a> {
     p: &'a Project,
@@ -266,7 +271,7 @@ fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> PyResult<Res
         .filter(|p| pat.is_match(&std::fs::read_to_string(p).unwrap_or_default()).unwrap_or(false)).collect();
     let used = E::uses(&x.root, &old);
     let mut plan = Plan { old: old.clone(), new: new.to_string(), why: why.to_string(), a, kind, decls, recorded: false, used, skip: None,
-                          files: BTreeMap::new(), decl_lines: 0 };
+                          files: BTreeMap::new(), decl_lines: 0, lines: BTreeMap::new() };
     if plan.used.is_empty() && plan.decls.is_empty() {
         let mine = a.is_some_and(|a| x.names.by_name.iter().any(|n| n.0 == new && n.1.contains(&a)));
         if mine {
@@ -323,8 +328,22 @@ fn check_renames(x: &mut Ctx, plans: &mut [&mut Plan]) -> Result<Vec<Refusal>, S
     Ok(out)
 }
 
+/// Each line of new that differs from old's, given to the plans whose OLD word old's line holds: (line, text).
+fn changed_lines(rel: &str, old: &str, new: &str, plans: &mut [&mut Plan]) {
+    let words: Vec<regex::Regex> = plans.iter().map(|p| regex::Regex::new(&format!(r"\b{}\b", regex::escape(&p.old))).unwrap()).collect();
+    for (i, (a, b)) in old.lines().zip(new.lines()).enumerate() {
+        if a != b {
+            for (p, w) in plans.iter_mut().zip(&words) {
+                if w.is_match(a) {
+                    p.lines.entry(rel.to_string()).or_default().push((i + 1, b.trim().to_string()));
+                }
+            }
+        }
+    }
+}
+
 /// Write the checked pairs: one pass over src/ and include/ for all of them (the skip positions were taken on the
-/// text before any write), then each pair's decl/*.dcl lines.
+/// text before any write), then each pair's decl/*.dcl lines. Each plan's changed lines are kept.
 fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
     let mut skip: Skip = HashMap::new();
     for p in plans.iter() {
@@ -333,7 +352,12 @@ fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
         }
     }
     let mapping: BTreeMap<String, String> = plans.iter().map(|p| (p.old.clone(), p.new.clone())).collect();
+    let files: BTreeSet<String> = plans.iter().flat_map(|p| p.files.keys().cloned()).collect();
+    let old: Vec<(String, String)> = files.into_iter().map(|rel| { let t = E::read(&py_path(&format!("{root}/{rel}"))); (rel, t) }).collect();
     E::rename_words(root, &mapping, false, Some(&skip))?;
+    for (rel, text) in &old {
+        changed_lines(rel, text, &E::read(&py_path(&format!("{root}/{rel}"))), plans);
+    }
     for p in plans.iter_mut() {
         p.decl_lines = 0;
         let pat = decl_name(&p.old);
@@ -345,6 +369,7 @@ fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
                 E::write(&path, &new)?;
                 p.decl_lines += k;
                 let rel = Path::new(&path).strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or(path.clone());
+                changed_lines(&rel, &t, &new, std::slice::from_mut(p));
                 p.files.insert(rel, k);
             }
         }
@@ -430,6 +455,15 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
                             ("decl", Tok::I(pl.decl_lines as i64))]));
         for (f, k) in &pl.files {
             x.out.push(format!("  {}", record(&[("file", s(f.clone())), ("replacements", Tok::I(*k as i64))])));
+            // the changed lines as they read now: which declarations, prototypes and uses the rename reached
+            let lines = pl.lines.get(f).map(|v| v.as_slice()).unwrap_or(&[]);
+            for (n, t) in lines.iter().take(LINES) {
+                let t: String = if t.chars().count() > 110 { t.chars().take(107).collect::<String>() + "..." } else { t.clone() };
+                x.out.push(format!("    {n}: {t}"));
+            }
+            if lines.len() > LINES {
+                x.out.push(format!("    (+{} more line(s))", lines.len() - LINES));
+            }
         }
         if crate::srcscan::placeholder_whole(&pl.old).is_some() {
             let mut views: Vec<String> = E::words_with_prefix(&root, &pl.old).into_iter().filter(|w| {

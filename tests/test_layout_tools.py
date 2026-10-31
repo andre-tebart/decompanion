@@ -420,8 +420,9 @@ def test_rename_collides_only_with_code(tiny):
 
 def test_rename_reports_every_outcome(tiny, capsys):
     """Every refused rename prints an error record (stdout) and exits 1 without writing; every rename prints what
-    it changed: the record, then one line per file with its replacements (a rename that silently did nothing
-    was a match-base report: a name only inside a string literal counted as found)."""
+    it changed: the record, then one line per file with its replacements and its changed lines as they read now
+    (a rename that silently did nothing was a match-base report: a name only inside a string literal counted as
+    found; another: which declarations it reached could not be told)."""
     write(tiny, "include/a.h", "int a_HdrOnly(void);  /* 0x10001050 */\nextern int a_Unk10002000;  /* 0x10002000 */\n"
                                "#define a_Unk10002000B (*(short *)&a_Unk10002000)  /* 0x10002000 */\n")
     unit(tiny, "a", '#include "a.h"\n',
@@ -444,7 +445,8 @@ def test_rename_reports_every_outcome(tiny, capsys):
     # a data name: every file listed; its view keeps its own name, a note says so
     code, out = dcp(tiny, "rename", "a_Unk10002000", "a_Counter", "--why", "the counter")
     assert code == 0 and "kind=data  at=0x10002000  files=3  replacements=4" in out, out
-    assert "file=src/d.c  replacements=1" in out and "file=include/a.h  replacements=2" in out
+    assert "file=src/d.c  replacements=1\n    1: int a_Counter = 0x1234;  /* 0x10002000 */\n" in out, out
+    assert "file=include/a.h  replacements=2\n    2: extern int a_Counter;  /* 0x10002000 */\n" in out, out
     assert "the views of a_Unk10002000 keep their names: a_Unk10002000B" in out
     # the view by its own name
     code, out = dcp(tiny, "rename", "a_Unk10002000B", "a_CounterLo", "--why", "the low half")
@@ -468,7 +470,7 @@ def test_rename_reports_every_outcome(tiny, capsys):
     # a name declared only in decl/*.dcl: the declaration line is renamed
     write(tiny, "decl/data.dcl", "# data\n0x10002040 name a_Table -- the pointer table\n")
     code, out = dcp(tiny, "rename", "a_Table", "a_Handlers", "--why", "x")
-    assert code == 0 and "decl=1" in out and "file=decl/data.dcl  replacements=1" in out, out
+    assert code == 0 and "decl=1" in out and "file=decl/data.dcl  replacements=1\n    2: 0x10002040 name a_Handlers -- the pointer table" in out, out
     assert "0x10002040 name a_Handlers -- the pointer table" in (tiny / "decl/data.dcl").read_text()
 
 
