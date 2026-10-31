@@ -1117,3 +1117,13 @@ rest: equal results on gildegold and the tests) and then deletes it. Order (each
 3. the source side: the scan's orchestration (models, their cache), lint's, headers, datafix, draft, edit, units
 4. the build: compile, link, probe (CL / LINK runs)
 5. the commands' cores (cli*.py): what they print is computed by the core
+
+Step 0 (tests and iteration first; user decisions: "a full test run should run under 2s", "make the tests fail if
+they take more than 2s to run", "tests that belong to rust should also be written in rust", "e2e tests are not the
+way to go. most of the tests should be fast in memory tests. maybe have one e2e test if necessary but then make it
+not default as the ghidra analyzer test"), done 2026-10-31: the default run is the in-memory tests (91, ~1.5 s) and
+fails past 2 s (tests/conftest.py BUDGET); conftest marks e2e every test that runs a dcp command, stands on a real
+binary or spawns a process (88, `uv run pytest -m "e2e and not ghidra"`); native.py builds the dev profile
+(opt-level 1, ~2 s a change; DCP_NATIVE_PROFILE=release for timing). Each later step replaces the e2e coverage of
+what it moves with in-memory tests (Rust `cargo test` for the core's code); the e2e tier shrinks to one test at
+most.
