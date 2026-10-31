@@ -4,7 +4,7 @@
 
 use crate::compare::{compare, Compared};
 use crate::store::{self, Out, SFact, DECLARED, DERIVED, OPEN};
-use crate::{image, run_hash, with_conn, with_db, write_run};
+use crate::{image, with_conn};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use rusqlite::Connection;
@@ -372,7 +372,6 @@ pub fn aligned_sites(dll: &str, ours: &[u8], mask: &[u8], orig: &[u8], va: u32, 
 /// the image: a registered symbol the original's site does not refer to (M8), a literal or a floating constant
 /// whose bytes the original does not hold there (M9 / M10).
 fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
-    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
     let (funcs, _) = compiled_functions(ctx, db)?;
     let (by_name, by_addr) = name_registry(ctx, db)?;
@@ -1024,6 +1023,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
 #[cfg(test)]
 pub(crate) mod testkit {
     //! A store in a temporary directory with an image beside it; rules run on it as the engine runs them.
+    use crate::{with_db, write_run};
     use super::*;
     use crate::{ConflictRow, Row};
     use std::sync::atomic::{AtomicUsize, Ordering};

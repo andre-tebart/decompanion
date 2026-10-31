@@ -20,8 +20,8 @@ decompanion.toml
   [analyzer]     plugin = "ghidra"  root = "C:/Tools/ghidra_12.1.4_PUBLIC"  java_home = "..."  timeout = 60
                  (the third-party analyzer `dcp setup` runs for drafts; default: ghidra; "none" exports nothing)
 
-The plugins (image format, toolchain, object format, instruction set, analyzer) come from the registries of
-their packages; this module names none of them.
+The plugins (image format, toolchain, object format, instruction set, analyzer) are the core's; this module
+names none of them.
 
 The single-table form `[target]` of milestone 1 is still read (one target named after the file's stem); `dcp
 target add` rewrites it into the list form.
@@ -30,8 +30,8 @@ Every target has its own store, build/<target>.sqlite: facts are intervals of on
 target column. A worktree made by `dcp wt new` names the main checkout's build directory in .dcp/main_store;
 its stores overlay main's store of the same target (lookups go overlay first, then main).
 
-The configuration, the declarations and the input hashes are the core's (native/dcp_core/src/project.rs); this
-module adds the plugins' objects (image, toolchain, object format, instruction set, analyzer) and the store.
+The configuration, the declarations, the input hashes and the checked image are the core's
+(native/dcp_core/src/project.rs); this module is their face with the store.
 """
 from __future__ import annotations
 
@@ -39,9 +39,6 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-from . import analyzers as analyzer_plugins
-from . import image as image_plugins
-from . import isa as isa_plugins
 from . import native
 from . import fsmemo, timing
 from .ledger.store import Store
@@ -110,18 +107,6 @@ class Project:
         """The same project with another target selected (its own image and store)."""
         return Project(self.root, name)
 
-    @property
-    def image_path(self) -> Path:
-        return self.target().path
-
-    @property
-    def declared_sha(self) -> str:
-        return self.target().sha256
-
-    @property
-    def image_format(self) -> str:
-        return self.target().image
-
     def store_path(self, name: str | None = None) -> Path:
         return self.build_dir / f"{self.target(name).name}.sqlite"
 
@@ -137,50 +122,22 @@ class Project:
     # ------------------------------------------------------------------ objects
     @cached_property
     def image(self):
-        t = self.target()
-        fmt = image_plugins.FORMATS.get(t.image)
-        if fmt is None:
-            raise ConfigError(f"target {t.name}: unknown image format {t.image!r} (known: {', '.join(image_plugins.FORMATS)})")
-        if not t.path.exists():
-            raise ConfigError(f"target {t.name}: {t.path} does not exist")
-        img = fmt(t.path)
-        if t.sha256 and img.sha256 != t.sha256:
-            raise ConfigError(f"target {t.name}: {t.path} has sha256 {img.sha256}, the declared one is {t.sha256}")
-        return img
+        """The current target's image (the core's PE32 reader), checked against its declared sha256."""
+        return self.core.image()
+
+    @cached_property
+    def isa(self) -> str:
+        """The current target's instruction set: its `isa` key, else what the image's machine type implies."""
+        return self.core.isa()
 
     @property
-    def isa_name(self) -> str | None:
-        """The current target's instruction set: its `isa` key, else what the image's machine type implies."""
-        return self.target().isa or self.image.default_isa
-
-    @cached_property
-    def isa(self):
-        """The current target's instruction-set plugin (isa/)."""
-        key = self.isa_name
-        plugin = isa_plugins.get(key) if key else None
-        if plugin is None:
-            raise ConfigError(f"target {self.target_name}: unknown instruction set {key!r} (known: {', '.join(isa_plugins.ISAS)}); "
-                              f"declare isa = ... in its [[target]] table")
-        return plugin
-
-    @cached_property
-    def analyzer(self):
-        """The analyzer of [analyzer] plugin = ... (the core's analyzers.rs; default: ghidra)."""
-        cfg = self.cfg.get("analyzer") or {}
-        key = cfg.get("plugin") or analyzer_plugins.DEFAULT
-        if key not in analyzer_plugins.ANALYZERS:
-            raise ConfigError(f"unknown analyzer plugin {key!r} (known: {', '.join(analyzer_plugins.ANALYZERS)}); "
-                              f"name one with [analyzer] plugin = ...")
-        return analyzer_plugins.Analyzer(self, key)
+    def analyzer_key(self) -> str:
+        """The analyzer of [analyzer] plugin = ... (default: ghidra)."""
+        return self.core.analyzer_key()
 
     def image_of(self, name: str):
         """The image of any target (the current one's is `image`); checked against its declared sha256."""
-        if name == self.target_name:
-            return self.image
-        cache = self.__dict__.setdefault("_images", {})
-        if name not in cache:
-            cache[name] = Project(self.root, name).image
-        return cache[name]
+        return self.image if name == self.target_name else Project(self.root, name).image
 
     @cached_property
     def store(self) -> Store:

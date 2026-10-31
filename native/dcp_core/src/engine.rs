@@ -16,10 +16,10 @@ use crate::project::{sha256_parts, Project};
 use crate::registry::{RuleDef, RULES};
 use crate::rules::{dispatch, Ctx, Inputs};
 use crate::store::DECLARED;
-use crate::{rows_of, conflicts_of, with_db, write_run, ConflictRow, Row};
+use crate::{with_db, write_run, Row};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyList;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -326,18 +326,6 @@ pub fn engine_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyPr
     results_py(py, res)
 }
 
-/// The registry in dependency order (of `ids` and what they need, or all): [(id, version, ceiling, phase, loader,
-/// needs resolved, outputs, inputs, doc)].
-#[pyfunction]
-#[pyo3(signature = (ids=None))]
-#[allow(clippy::type_complexity)]
-pub fn engine_order(ids: Option<Vec<String>>) -> PyResult<Vec<(String, String, i64, String, bool, Vec<String>, Vec<String>, Vec<String>, String)>> {
-    order(ids.as_deref())?.into_iter().map(|r| {
-        Ok((r.id.into(), r.version.into(), r.ceiling, r.phase.into(), r.loader, resolve_needs(r)?.into_iter().map(|s| s.to_string()).collect(),
-            r.outputs.iter().map(|s| s.to_string()).collect(), r.inputs.iter().map(|s| s.to_string()).collect(), r.doc.into()))
-    }).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +384,10 @@ mod tests {
         let d = rule("S.unknown").unwrap();
         assert!(check_output(d, &[row("symbol", d.ceiling + 1, "rule:x")]).is_err());
         assert!(check_output(r, &[row("section", 1, "decl:decl/text.dcl:3")]).is_err());
+        // a loader's declared fact carries its reason
+        let l = rule("L.decl").unwrap();
+        let k = l.outputs[0];
+        assert!(check_output(l, &[row(k, 1, "decl:decl/text.dcl:3")]).is_err());
+        assert!(check_output(l, &[Row { reason: Some("a leaked path".into()), ..row(k, 1, "decl:decl/text.dcl:3") }]).is_ok());
     }
 }

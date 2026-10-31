@@ -45,12 +45,6 @@ CREATE TABLE IF NOT EXISTS tu (
 CREATE TABLE IF NOT EXISTS include_set (key TEXT PRIMARY KEY, files TEXT NOT NULL);
 ";
 
-/// (version, tables) of the store.
-#[pyo3::pyfunction]
-pub fn store_schema() -> (&'static str, &'static str) {
-    (SCHEMA_VERSION, SCHEMA)
-}
-
 pub const OPEN: i64 = 0;
 pub const DECLARED: i64 = 1;
 pub const DERIVED: i64 = 2;

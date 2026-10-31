@@ -387,7 +387,12 @@ pub fn accept_command(project: Option<PyRef<'_, PyProject>>, name: &str, to: Opt
 /// `dcp check`, the undrafted externals, the gate's detail lines of a failed link).
 #[pyfunction]
 pub fn link_command(project: PyRef<'_, PyProject>) -> PyResult<(Vec<String>, bool, Option<String>, usize, Vec<String>)> {
-    let r = crate::link::full_link(&project.p).map_err(err)?;
+    link_lines(&project.p)
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn link_lines(p: &crate::project::Project) -> PyResult<(Vec<String>, bool, Option<String>, usize, Vec<String>)> {
+    let r = crate::link::full_link(p).map_err(err)?;
     let n: usize = r.unresolved.iter().map(|(_, v)| v.len()).sum();
     let mut head = record(&[("link", s(r.target.clone())), ("ok", Tok::B(r.ok)), ("objects", Tok::I(r.objects as i64)), ("includes", Tok::I(r.includes as i64)),
                             ("unresolved", Tok::I(n as i64)), ("errors", Tok::I(r.errors.len() as i64)), ("out", os(Some(r.out.clone()).filter(|o| !o.is_empty()))),

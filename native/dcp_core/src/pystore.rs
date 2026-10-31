@@ -8,7 +8,7 @@
 //! row is the one made before.
 
 use crate::store::{self, py_float, SFact, SCHEMA, SCHEMA_VERSION};
-use crate::{hash_parts, put_value, with_db};
+use crate::{hash_parts, with_db};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
@@ -73,10 +73,13 @@ impl StoredFact {
         Ok((self.lo, self.hi, self.kind.bind(py).getattr("value")?.extract()?, self.text.clone()))
     }
 
-    /// The one-line spelling `dcp facts` prints (Fact.line).
-    fn line(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        Ok(fact_module(py)?.getattr("Fact")?.getattr("line")?.call1((slf,))?.unbind())
+    /// The one-line spelling `dcp facts` prints.
+    fn line(&self, py: Python<'_>) -> PyResult<String> {
+        let f = SFact { id: self.id, rule: Rc::from(self.run.as_str()), lo: self.lo, hi: self.hi, text: self.text.clone(),
+                        value: serde_json::from_str(&self.text).unwrap_or(Value::Null), level: self.level.bind(py).extract()?, by: self.by.clone(),
+                        reason: self.reason.clone() };
+        let kind: String = self.kind.bind(py).getattr("value")?.extract()?;
+        Ok(crate::clicmd::fact_line(&kind, &f))
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
@@ -344,12 +347,6 @@ pub fn st_meta(path: &str, key: &str) -> PyResult<Option<String>> {
     with_db(path, |db| db.query_row("SELECT value FROM meta WHERE key=?", [key], |r| r.get(0)).optional())
 }
 
-/// A meta value that holds JSON, as Python objects (None when there is none).
-#[pyfunction]
-pub fn st_meta_json<'py>(py: Python<'py>, path: &str, key: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
-    st_meta(path, key)?.map(|m| json_py(py, &serde_json::from_str(&m).unwrap_or(Value::Null))).transpose()
-}
-
 #[pyfunction]
 pub fn st_set_meta(path: &str, key: &str, value: &str) -> PyResult<()> {
     with_db(path, |db| db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [key, value]).map(|_| ()))
@@ -363,11 +360,6 @@ pub fn st_main_meta(path: &str, main: &str, key: &str) -> PyResult<Option<String
         }
         db.query_row("SELECT value FROM main_store.meta WHERE key=?", [key], |r| r.get(0)).optional()
     })
-}
-
-#[pyfunction]
-pub fn st_note_input(path: &str, key: &str, hash: &str) -> PyResult<()> {
-    with_db(path, |db| db.execute("INSERT OR REPLACE INTO input (key, hash) VALUES (?, ?)", [key, hash]).map(|_| ()))
 }
 
 /// (id, input_hash, out_hash) of the rule's current run in this store.
@@ -423,16 +415,6 @@ pub(crate) fn make_current(db: &Connection, main: &str, rule: &str, place: &str,
     Ok(run_id)
 }
 
-/// [(rule, version, input_hash, out_hash, current, ms, at)] of every run in this store.
-#[pyfunction]
-pub fn st_runs(path: &str) -> PyResult<Vec<(String, String, String, String, i64, i64, f64)>> {
-    with_db(path, |db| {
-        let mut st = db.prepare("SELECT rule, version, input_hash, out_hash, current, ms, at FROM run ORDER BY rule")?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?;
-        rows.collect()
-    })
-}
-
 /// (facts, ms) of a run.
 #[pyfunction]
 pub fn st_run_stats(path: &str, run_id: i64) -> PyResult<(i64, i64)> {
@@ -445,39 +427,12 @@ pub fn st_run_stats(path: &str, run_id: i64) -> PyResult<(i64, i64)> {
 
 // ------------------------------------------------------------------------------------------------ blobs
 
-#[pyfunction]
-pub fn st_blob<'py>(py: Python<'py>, path: &str, main: &str, hash: &str) -> PyResult<Option<Bound<'py, PyBytes>>> {
-    let data: Option<Vec<u8>> = with_db(path, |db| {
-        let row: Option<Vec<u8>> = db.query_row("SELECT data FROM blob WHERE hash=?", [hash], |r| r.get(0)).optional()?;
-        if row.is_none() && ensure_main(db, main)? {
-            return db.query_row("SELECT data FROM main_store.blob WHERE hash=?", [hash], |r| r.get(0)).optional();
-        }
-        Ok(row)
-    })?;
-    Ok(data.map(|d| PyBytes::new(py, &d)))
-}
-
 /// Store a blob: content-addressed blobs never change (INSERT OR IGNORE); one keyed by something else is
 /// replaced when `replace`.
 #[pyfunction]
 pub fn st_put_blob(path: &str, hash: &str, kind: &str, data: &[u8], replace: bool) -> PyResult<()> {
     let verb = if replace { "INSERT OR REPLACE" } else { "INSERT OR IGNORE" };
     with_db(path, |db| db.execute(&format!("{verb} INTO blob (hash, kind, data) VALUES (?, ?, ?)"), params![hash, kind, data]).map(|_| ()))
-}
-
-/// A JSON blob's value (None when there is no such blob).
-#[pyfunction]
-pub fn st_blob_json<'py>(py: Python<'py>, path: &str, main: &str, hash: &str) -> PyResult<Option<Bound<'py, PyAny>>> {
-    let data = st_blob(py, path, main, hash)?;
-    data.map(|d| json_py(py, &serde_json::from_slice(d.as_bytes()).unwrap_or(Value::Null))).transpose()
-}
-
-/// A value stored as its canonical JSON.
-#[pyfunction]
-pub fn st_put_blob_json(path: &str, hash: &str, kind: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
-    let mut s = String::new();
-    put_value(&mut s, value)?;
-    st_put_blob(path, hash, kind, s.as_bytes(), false)
 }
 
 #[pyfunction]
@@ -513,80 +468,6 @@ pub fn st_blobs<'py>(py: Python<'py>, path: &str, main: &str, kind: &str) -> PyR
 
 // ------------------------------------------------------------------------------------------------ translation units
 
-const TU_COLS: [&str; 11] = ["unit", "amalg", "src_hash", "flags", "flags_hash", "include_hash", "obj_hash", "ok", "log", "diags", "at"];
-const TU_KEYS: [&str; 7] = ["unit", "amalg", "src_hash", "flags_hash", "include_hash", "obj_hash", "ok"];
-
-fn tu_rows<'py>(py: Python<'py>, path: &str, cols: &[&str]) -> PyResult<Bound<'py, PyDict>> {
-    let rows: Vec<Vec<rusqlite::types::Value>> = with_db(path, |db| {
-        let mut st = db.prepare(&format!("SELECT {} FROM tu ORDER BY unit", cols.join(", ")))?;
-        let rows = st.query_map([], |r| (0..cols.len()).map(|i| r.get::<_, rusqlite::types::Value>(i)).collect())?;
-        rows.collect()
-    })?;
-    let out = PyDict::new(py);
-    for row in rows {
-        let d = PyDict::new(py);
-        for (c, v) in cols.iter().zip(row) {
-            use rusqlite::types::Value as V;
-            let o: Bound<'py, PyAny> = match (*c, v) {
-                ("flags" | "diags", V::Text(t)) => json_py(py, &serde_json::from_str(&t).unwrap_or(Value::Null))?,
-                ("ok", V::Integer(i)) => pyo3::types::PyBool::new(py, i != 0).to_owned().into_any(),
-                (_, V::Integer(i)) => i.into_pyobject(py)?.into_any(),
-                (_, V::Real(f)) => f.into_pyobject(py)?.into_any(),
-                (_, V::Text(t)) => t.into_pyobject(py)?.into_any(),
-                (_, V::Blob(b)) => PyBytes::new(py, &b).into_any(),
-                (_, V::Null) => py.None().into_bound(py),
-            };
-            d.set_item(*c, o)?;
-        }
-        out.set_item(d.get_item("unit")?.unwrap(), d)?;
-    }
-    Ok(out)
-}
-
-/// unit -> its tu row (flags and diags decoded).
-#[pyfunction]
-pub fn st_tus<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
-    tu_rows(py, path, &TU_COLS)
-}
-
-/// unit -> its tu row's keys and outcome only (no log, flags or diagnostics).
-#[pyfunction]
-pub fn st_tu_keys<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
-    tu_rows(py, path, &TU_KEYS)
-}
-
-#[pyfunction]
-pub fn st_put_tu(path: &str, row: &Bound<'_, PyDict>) -> PyResult<()> {
-    let s = |k: &str| -> PyResult<String> { row.get_item(k)?.ok_or_else(|| PyRuntimeError::new_err(format!("tu row without {k}")))?.extract() };
-    let canon = |k: &str| -> PyResult<String> {
-        let v = row.get_item(k)?.ok_or_else(|| PyRuntimeError::new_err(format!("tu row without {k}")))?;
-        let mut out = String::new();
-        put_value(&mut out, &PyList::new(row.py(), v.try_iter()?.collect::<PyResult<Vec<_>>>()?)?.into_any())?;
-        Ok(out)
-    };
-    let ok = row.get_item("ok")?.map(|v| v.is_truthy()).transpose()?.unwrap_or(false) as i64;
-    let at: f64 = match row.get_item("at")? {
-        Some(v) => v.extract()?,
-        None => std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0),
-    };
-    let vals = (s("unit")?, s("amalg")?, s("src_hash")?, canon("flags")?, s("flags_hash")?, s("include_hash")?, s("obj_hash")?, ok, s("log")?, canon("diags")?, at);
-    with_db(path, |db| {
-        db.execute("INSERT OR REPLACE INTO tu (unit, amalg, src_hash, flags, flags_hash, include_hash, obj_hash, ok, log, diags, at) \
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                   params![vals.0, vals.1, vals.2, vals.3, vals.4, vals.5, vals.6, vals.7, vals.8, vals.9, vals.10]).map(|_| ())
-    })
-}
-
-#[pyfunction]
-pub fn st_drop_tu(path: &str, unit: &str) -> PyResult<()> {
-    with_db(path, |db| db.execute("DELETE FROM tu WHERE unit=?", [unit]).map(|_| ()))
-}
-
-/// The hash of every tu row's inputs and outcome: the `objects` input of the match rules.
-#[pyfunction]
-pub fn st_tu_hash(path: &str) -> PyResult<String> {
-    tu_hash(path)
-}
 
 pub(crate) fn tu_hash(path: &str) -> PyResult<String> {
     let rows: Vec<String> = with_db(path, |db| {
@@ -603,19 +484,6 @@ pub(crate) fn tu_hash(path: &str) -> PyResult<String> {
         rows.collect()
     })?;
     Ok(hash_parts(rows.into_iter()))
-}
-
-#[pyfunction]
-pub fn st_include_set(path: &str, key: &str) -> PyResult<Option<Vec<String>>> {
-    let t: Option<String> = with_db(path, |db| db.query_row("SELECT files FROM include_set WHERE key=?", [key], |r| r.get(0)).optional())?;
-    Ok(t.map(|t| serde_json::from_str(&t).unwrap_or_default()))
-}
-
-#[pyfunction]
-pub fn st_put_include_set(path: &str, key: &str, files: Vec<String>) -> PyResult<()> {
-    let mut s = String::new();
-    store::canon(&mut s, &Value::Array(files.into_iter().map(Value::String).collect()));
-    with_db(path, |db| db.execute("INSERT OR REPLACE INTO include_set (key, files) VALUES (?, ?)", [key, &s]).map(|_| ()))
 }
 
 // ------------------------------------------------------------------------------------------------ the byte map
@@ -749,34 +617,4 @@ pub(crate) fn bytemap_rows(db: &mut Connection, path: &str, lo: Option<i64>, hi:
     let mut st = db.prepare_cached("SELECT lo, hi, cls, level, symbol, unit, source, section FROM bytemap WHERE hi>? AND lo<? ORDER BY lo")?;
     let rows = st.query_map([lo, hi], map_row)?;
     rows.collect()
-}
-
-/// Bytes per section per class and per level: ({section: {class: bytes}}, {section: {level: bytes}}), sections in
-/// map order.
-#[pyfunction]
-pub fn st_summary<'py>(py: Python<'py>, path: &str) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyDict>)> {
-    const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
-    let (rows, secs) = with_db(path, |db| {
-        let rows = bytemap_rows(db, path, None, None)?;
-        let secs: HashMap<i64, String> = store::facts_of(db, path, "section", None, |_| true)?.iter()
-            .map(|f| (f.id, f.value.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string())).collect();
-        Ok((rows, secs))
-    })?;
-    let (by_sec, by_level) = (PyDict::new(py), PyDict::new(py));
-    for (lo, hi, cls, level, _, _, _, sec) in rows {
-        let name = sec.and_then(|s| secs.get(&s)).map(|s| s.as_str()).unwrap_or("(headers)");
-        for (d, k) in [(&by_sec, cls.as_str()), (&by_level, LEVEL_NAMES.get(level as usize).copied().unwrap_or("open"))] {
-            let inner = match d.get_item(name)? {
-                Some(x) => x.cast_into::<PyDict>()?,
-                None => {
-                    let x = PyDict::new(py);
-                    d.set_item(name, &x)?;
-                    x
-                }
-            };
-            let n: i64 = inner.get_item(k)?.map(|v| v.extract()).transpose()?.unwrap_or(0);
-            inner.set_item(k, n + hi - lo)?;
-        }
-    }
-    Ok((by_sec, by_level))
 }

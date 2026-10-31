@@ -10,7 +10,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use regex::Regex;
 use rusqlite::Connection;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 

@@ -335,7 +335,7 @@ pub fn project_files(root: &str) -> Vec<(String, String)> {
 /// A scanned tree: every file's part joined (the files' parts in file order), the scan's own errors (L16), the
 /// models it was scanned with.
 pub struct Scan {
-    pub parts: Vec<Rc<FilePart>>,
+    pub(crate) parts: Vec<Rc<FilePart>>,
     pub own_errors: Vec<srcscan::ErrRow>,
     pub files: usize,
     pub models: HashMap<String, Arc<FileModel>>,

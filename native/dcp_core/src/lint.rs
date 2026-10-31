@@ -5,10 +5,9 @@
 //! Python in characters.
 
 use crate::srcscan::{py_space, py_strip, py_words, Src};
-use pyo3::exceptions::PyRuntimeError;
 use crate::clang::FileModel;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::LazyLock;
@@ -118,11 +117,6 @@ impl Decl {
         }
     }
 
-    /// The row lint.Decl is made of (`at` in characters).
-    fn row(&self) -> (String, i64, i64, String, String, String, i64, bool, String) {
-        let at = if self.at == usize::MAX { -1 } else { self.stmt[..self.at].chars().count() as i64 };
-        (self.file.clone(), self.line, self.last, self.name.clone(), self.kind.clone(), self.stmt.clone(), at, self.init, self.proto.clone())
-    }
 }
 
 /// lint._name_at: the offset of the declared name in a collapsed declaration: the occurrence followed by a

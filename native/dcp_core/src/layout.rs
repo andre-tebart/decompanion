@@ -691,7 +691,6 @@ pub fn compute_units(game: (i64, i64, i64), bounds: &[Bound], srcs: &[SrcFn], fu
     (units, issues)
 }
 
-type UnitRow = (String, i64, i64, i64, i64, String, String, Option<String>);
 
 const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
 

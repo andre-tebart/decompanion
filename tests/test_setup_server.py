@@ -26,7 +26,7 @@ def project(tmp_path_factory):
 def test_pe_facts(project):
     img = project.image
     assert img.is_dll and img.base == 0x10000000
-    assert {e.name for e in img.exports()} == {"Init", "Exit"}
+    assert {e[1] for e in img.exports()} == {"Init", "Exit"}
     assert len(img.relocations()) == 3099
     assert (48, 9044, 37) in img.rich()
 
@@ -49,7 +49,7 @@ def test_setup_total_map(project):
     assert names["_DllMain@12"] == 0x10008cb0 and names["DllMain"] == 0x10008cb0
     assert names["_malloc"] and names["__DllMainCRTStartup@12"] == img.entry
     bad = [c for c in project.store.conflicts() if c.severity.value in ("bug", "error")]
-    assert not bad, [c.line() for c in bad][:5]
+    assert not bad, bad[:5]
     tc = project.store.facts(Kind.toolchain)[0].value
     comps = {(c["tool"], c["build"]): c for c in tc["compilers"]}
     assert comps[("Utc12_2_C", 9044)]["count"] == 37 and comps[("Utc12_2_C", 9044)]["archive_objects"] == 0

@@ -13,14 +13,6 @@ pub enum Tag {
 }
 
 impl Tag {
-    pub fn name(self) -> &'static str {
-        match self {
-            Tag::Replace => "replace",
-            Tag::Delete => "delete",
-            Tag::Insert => "insert",
-            Tag::Equal => "equal",
-        }
-    }
 }
 
 pub type Opcode = (Tag, usize, usize, usize, usize);

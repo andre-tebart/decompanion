@@ -96,7 +96,7 @@ def cmd_draft(args):
     p, e = open_project(args)
     refresh(p, e)
     return report("draft", native.core().draft_command(p.core, capstone_dll(), args.addr, bool(args.next), bool(args.show), args.unit,
-                                                        p.analyzer.key))
+                                                        p.analyzer_key))
 
 
 # ------------------------------------------------------------------------------------------------ rename

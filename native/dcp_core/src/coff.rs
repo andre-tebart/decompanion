@@ -397,17 +397,14 @@ impl Obj {
 
 // ------------------------------------------------------------------------------------------------ symbols, sections
 
-const SCN_LNK_COMDAT: u32 = 0x1000;
 pub const IMPORT_PREFIX: &str = "__imp_"; // the pointer symbol of a dllimport reference (its IAT slot)
 pub const COMP_ID: &str = "@comp.id"; // the absolute symbol MSVC-era tools stamp every object with
 // String literals and float constants are COMDATs that VC6's LINK keeps per object: they resolve per object.
+
+/// Names of the compiler's constants (string literals, floating constants): no object's own symbol.
+#[cfg(test)]
 const CONSTANT_PREFIXES: [&str; 2] = ["??_C@", "__real@"];
 
-impl Section {
-    pub fn comdat(&self) -> bool {
-        self.chars & SCN_LNK_COMDAT != 0
-    }
-}
 
 impl Symbol {
     pub fn external(&self) -> bool {
@@ -421,10 +418,12 @@ impl Symbol {
     pub fn dllimport(&self) -> bool {
         self.name.starts_with(IMPORT_PREFIX)
     }
+    #[cfg(test)]
     /// The linker symbol a dllimport reference imports (`__imp__Sleep@4` -> `_Sleep@4`).
     pub fn imported(&self) -> Option<&str> {
         self.name.strip_prefix(IMPORT_PREFIX)
     }
+    #[cfg(test)]
     /// The name the link resolves: an external's own (not a constant's), else `<object>:<name>`.
     pub fn key(&self, obj: &str) -> String {
         if self.external() && !CONSTANT_PREFIXES.iter().any(|p| self.name.starts_with(p)) {
@@ -446,11 +445,6 @@ impl Obj {
     /// The section numbers of the code sections with data.
     pub fn code_sections(&self) -> Vec<usize> {
         (1..self.sections.len()).filter(|&k| self.sections[k].code() && self.sections[k].data.as_ref().is_some_and(|d| !d.is_empty())).collect()
-    }
-
-    /// The section numbers of the data sections (not code, not discarded).
-    pub fn data_sections(&self) -> Vec<usize> {
-        (1..self.sections.len()).filter(|&k| !self.sections[k].code() && !self.sections[k].discard()).collect()
     }
 
     /// The value of the `@comp.id` symbol (the tool that built the object), None without one.
@@ -519,6 +513,7 @@ pub fn archive_objects(b: &[u8]) -> Result<Vec<Obj>, String> {
     Ok(out)
 }
 
+#[cfg(test)]
 /// symbol -> (dll, import name or `#ordinal`) of an import library's short members.
 pub fn import_symbols(b: &[u8]) -> Result<Vec<(String, String, String)>, String> {
     let mut out = vec![];

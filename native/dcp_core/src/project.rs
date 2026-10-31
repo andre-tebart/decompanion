@@ -27,6 +27,7 @@ const TOOLCHAIN_KEYS: [&str; 3] = ["compiler", "linker", "cflags"];
 const TARGET_KEYS: [&str; 10] = ["name", "path", "sha256", "image", "isa", "archives", "compiler", "linker", "cflags", "reason"];
 const REASON_KEYS: [&str; 6] = ["compiler", "linker", "cflags", "archives", "root", "plugin"];
 pub const IMAGE_FORMATS: [&str; 1] = ["pe32"];
+pub const ISAS: [&str; 1] = ["x86"];
 pub const TOOLCHAINS: [&str; 1] = ["vc6"];
 
 pub(crate) fn cfg_err(msg: String) -> PyErr {
@@ -595,6 +596,42 @@ impl PyProject {
 
     fn main_build_dir(&self) -> Option<String> {
         self.p.main_build_dir().map(|p| p.to_string_lossy().into_owned())
+    }
+
+    /// The current target's image, checked: a known format, the file exists, its sha256 is the declared one.
+    fn image(&self) -> PyResult<crate::pyimage::PeImage> {
+        let t = self.p.target(None).map_err(cfg_err)?;
+        if let Some(f) = t.image.as_ref().filter(|f| !IMAGE_FORMATS.contains(&f.as_str())) {
+            return Err(cfg_err(format!("target {}: unknown image format {} (known: {})", t.name, crate::decl::py_repr(f), IMAGE_FORMATS.join(", "))));
+        }
+        if !Path::new(&t.path).exists() {
+            return Err(cfg_err(format!("target {}: {} does not exist", t.name, t.path)));
+        }
+        let img = crate::pyimage::pe_open(&t.path)?;
+        let sha = img.sha256();
+        if !t.sha256.is_empty() && sha != t.sha256 {
+            return Err(cfg_err(format!("target {}: {} has sha256 {sha}, the declared one is {}", t.name, t.path, t.sha256)));
+        }
+        Ok(img)
+    }
+
+    /// The current target's instruction set: its `isa` key, else what the image's machine type implies.
+    fn isa(&self) -> PyResult<String> {
+        let t = self.p.target(None).map_err(cfg_err)?;
+        let key = match &t.isa {
+            Some(k) => Some(k.clone()),
+            None => self.image()?.default_isa().map(|k| k.to_string()),
+        };
+        match key {
+            Some(k) if ISAS.contains(&k.as_str()) => Ok(k),
+            k => Err(cfg_err(format!("target {}: unknown instruction set {} (known: {}); declare isa = ... in its [[target]] table", self.p.target_name,
+                                     k.map(|k| crate::decl::py_repr(&k)).unwrap_or_else(|| "None".into()), ISAS.join(", ")))),
+        }
+    }
+
+    /// The analyzer's key ([analyzer] plugin, default ghidra).
+    fn analyzer_key(&self) -> PyResult<String> {
+        crate::analyzers::Analyzer::of(&self.p).map(|a| a.key).map_err(cfg_err)
     }
 
     fn toolchain_root(&self) -> Option<String> {

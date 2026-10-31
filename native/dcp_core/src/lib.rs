@@ -236,43 +236,6 @@ pub(crate) struct ConflictRow {
     pub b: String,
 }
 
-pub(crate) fn rows_of(facts: &Bound<'_, PyList>) -> PyResult<Vec<Row>> {
-    let mut rows = Vec::with_capacity(facts.len());
-    for f in facts.iter() {
-        let mut value = String::new();
-        put_value(&mut value, &f.getattr("value")?)?;
-        rows.push(Row {
-            lo: f.getattr("lo")?.extract()?,
-            hi: f.getattr("hi")?.extract()?,
-            kind: f.getattr("kind")?.getattr("value")?.extract()?,
-            value,
-            level: f.getattr("level")?.extract()?,
-            by: f.getattr("by")?.extract()?,
-            reason: f.getattr("reason")?.extract()?,
-        });
-    }
-    // record_run's order: by fact.key() = (lo, hi, kind, canonical(value))
-    rows.sort_by(|a, b| (a.lo, a.hi, &a.kind, &a.value).cmp(&(b.lo, b.hi, &b.kind, &b.value)));
-    Ok(rows)
-}
-
-pub(crate) fn conflicts_of(conflicts: &Bound<'_, PyList>) -> PyResult<Vec<ConflictRow>> {
-    let mut rows = Vec::with_capacity(conflicts.len());
-    for c in conflicts.iter() {
-        rows.push(ConflictRow {
-            severity: c.getattr("severity")?.getattr("value")?.extract()?,
-            check: c.getattr("check")?.extract()?,
-            lo: c.getattr("lo")?.extract()?,
-            hi: c.getattr("hi")?.extract()?,
-            message: c.getattr("message")?.extract()?,
-            a: c.getattr("a")?.extract()?,
-            b: c.getattr("b")?.extract()?,
-        });
-    }
-    rows.sort_by(|x, y| (x.lo, x.hi, &x.check, &x.message).cmp(&(y.lo, y.hi, &y.check, &y.message)));
-    Ok(rows)
-}
-
 /// store.sha256(*parts): each part followed by a NUL.
 pub(crate) fn hash_parts<'a>(parts: impl Iterator<Item = String>) -> String {
     let mut h = Sha256::new();
@@ -316,11 +279,6 @@ pub(crate) fn run_hash(rows: &[Row], conflicts: &[ConflictRow]) -> String {
         s
     });
     hash_parts(facts.chain(confl))
-}
-
-#[pyfunction]
-fn out_hash(facts: &Bound<'_, PyList>, conflicts: &Bound<'_, PyList>) -> PyResult<String> {
-    Ok(run_hash(&rows_of(facts)?, &conflicts_of(conflicts)?))
 }
 
 thread_local! {
@@ -582,26 +540,6 @@ pub(crate) fn write_run(
     Ok((run_id, out))
 }
 
-/// Store.record_run in native code: (run id, out_hash). `shortcuts` false is DCP_NO_SHORTCUTS (always write).
-#[pyfunction]
-#[pyo3(signature = (db_path, rule, version, code_hash, input_hash, facts, conflicts, ms, shortcuts=true))]
-fn record_run(
-    py: Python<'_>,
-    db_path: &str,
-    rule: &str,
-    version: &str,
-    code_hash: &str,
-    input_hash: &str,
-    facts: &Bound<'_, PyList>,
-    conflicts: &Bound<'_, PyList>,
-    ms: i64,
-    shortcuts: bool,
-) -> PyResult<(i64, String)> {
-    let rows = rows_of(facts)?;
-    let confl = conflicts_of(conflicts)?;
-    py.detach(|| with_db(db_path, |db| write_run(db, db_path, rule, version, code_hash, input_hash, &rows, &confl, ms, shortcuts)))
-}
-
 // ------------------------------------------------------------------------------------------------ objects, image
 
 thread_local! {
@@ -669,7 +607,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(probe::probe_run, m)?)?;
     m.add_function(wrap_pyfunction!(libcand::libs_candidates_lines, m)?)?;
     m.add_class::<pyimage::PeImage>()?;
-    m.add_function(wrap_pyfunction!(pyimage::pe_open, m)?)?;
     m.add_function(wrap_pyfunction!(cliread::read_command, m)?)?;
     m.add_function(wrap_pyfunction!(cliread::read_resolve, m)?)?;
     m.add_function(wrap_pyfunction!(datafix::data_map, m)?)?;
@@ -693,6 +630,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(clicmd::build_summary, m)?)?;
     m.add_function(wrap_pyfunction!(clicmd::check_conflicts, m)?)?;
     m.add_function(wrap_pyfunction!(clicmd::fn_command, m)?)?;
+    m.add_function(wrap_pyfunction!(clicmd::gate_target, m)?)?;
     m.add_function(wrap_pyfunction!(clicmd::target_list, m)?)?;
     m.add_function(wrap_pyfunction!(clicmd::decl_add, m)?)?;
     m.add_function(wrap_pyfunction!(clicmd::decl_conflicts, m)?)?;
@@ -732,7 +670,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(session::session_overview, m)?)?;
     m.add_function(wrap_pyfunction!(session::session_report, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_step, m)?)?;
-    m.add_function(wrap_pyfunction!(analyzers::analyzer_available, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_default, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_keys, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_available, m)?)?;
@@ -744,7 +681,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(queues::grades_regressions, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_baseline_at, m)?)?;
     m.add_function(wrap_pyfunction!(engine::engine_run, m)?)?;
-    m.add_function(wrap_pyfunction!(engine::engine_order, m)?)?;
     m.add("RuleError", m.py().get_type::<engine::RuleError>())?;
     m.add_function(wrap_pyfunction!(project::config_targets, m)?)?;
     m.add_function(wrap_pyfunction!(project::config_target_name_of, m)?)?;
@@ -756,33 +692,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pystore::st_conflicts, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_open, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_close, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_meta, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_meta_json, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_set_meta, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_main_meta, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_note_input, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_current_run, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_find_run, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_make_current, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_runs, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_run_stats, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_blob, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_blob_json, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_put_blob, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_put_blob_json, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_drop_blobs, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_blobs, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_tus, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_tu_keys, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_put_tu, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_drop_tu, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_tu_hash, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_include_set, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_put_include_set, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_ensure_bytemap, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_bytemap_at, m)?)?;
     m.add_function(wrap_pyfunction!(pystore::st_bytemap_rows, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_summary, m)?)?;
     m.add_function(wrap_pyfunction!(fsmemo::fs_new_epoch, m)?)?;
     m.add_function(wrap_pyfunction!(fsmemo::fs_epoch, m)?)?;
     m.add_function(wrap_pyfunction!(fsmemo::fs_exists, m)?)?;
@@ -794,9 +707,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fsmemo::fs_attach, m)?)?;
     m.add_function(wrap_pyfunction!(fsmemo::fs_flush, m)?)?;
     m.add_function(wrap_pyfunction!(fsmemo::fs_forget_all, m)?)?;
-    m.add_function(wrap_pyfunction!(out_hash, m)?)?;
-    m.add_function(wrap_pyfunction!(record_run, m)?)?;
-    m.add_function(wrap_pyfunction!(store::store_schema, m)?)?;
     m.add_class::<clang::Unit>()?;
     m.add_class::<srcscan::ScanPiece>()?;
     m.add_class::<lint::AllDecls>()?;
@@ -805,4 +715,54 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decl::decl_text, m)?)?;
     m.add_function(wrap_pyfunction!(decl::decl_insert, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests_runs {
+    use super::*;
+
+    fn rows(tag: &str) -> Vec<Row> {
+        (0..3).map(|i| Row { lo: 0x1000 + i, hi: 0x1001 + i, kind: "symbol".into(), value: format!("{{\"name\":\"f{i}{tag}\",\"skind\":\"func\"}}"),
+                             level: 2, by: "rule:T@1".into(), reason: None }).collect()
+    }
+
+    fn warn(a: &str) -> Vec<ConflictRow> {
+        vec![ConflictRow { severity: "warn".into(), check: "X".into(), lo: 1, hi: 2, message: "m".into(), a: a.into(), b: String::new() }]
+    }
+
+    /// (fact ids, run time, conflict producers, input hash) of the rule's current run.
+    fn state(db: &str) -> (Vec<i64>, f64, Vec<String>, String) {
+        with_db(db, |c| {
+            let (id, at, input): (i64, f64, String) = c.query_row("SELECT id, at, input_hash FROM run WHERE rule='T' AND current=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            let ids = c.prepare("SELECT id FROM fact WHERE run_id=? ORDER BY lo")?.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+            let a = c.prepare("SELECT a FROM conflict WHERE run_id=?")?.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok((ids, at, a, input))
+        }).unwrap()
+    }
+
+    /// The same output recorded again keeps the run, its facts and their ids (and its time) and takes the new key;
+    /// the conflicts are written again; another output is a new run time; without shortcuts every run is written.
+    #[test]
+    fn same_output_keeps_the_run() {
+        let k = crate::rules::testkit::Kit::new(&crate::pe::testpe::build(None));
+        let write = |input: &str, r: &[Row], c: &[ConflictRow], shortcuts: bool| {
+            with_db(&k.db, |db| write_run(db, &k.db, "T", "1", "c", input, r, c, 5, shortcuts)).unwrap()
+        };
+        let (rid, _) = write("in1", &rows("x"), &warn("a:1"), true);
+        let before = state(&k.db);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let (rid2, _) = write("in2", &rows("x"), &warn("a:2"), true);
+        let after = state(&k.db);
+        assert_eq!((rid2, &after.0, after.1, &after.2, after.3.as_str()), (rid, &before.0, before.1, &vec!["a:2".to_string()], "in2"));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write("in3", &rows("y"), &[], true);
+        let changed = state(&k.db);
+        assert!(changed.1 != after.1 && changed.2.is_empty());
+        let names: Vec<String> = with_db(&k.db, |c| c.prepare("SELECT value FROM fact f JOIN run r ON r.id=f.run_id WHERE r.rule='T' AND r.current=1 ORDER BY lo")?
+            .query_map([], |r| r.get(0))?.collect()).unwrap();
+        assert!(names.iter().all(|v| v.contains("y\"")), "{names:?}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write("in4", &rows("y"), &[], false);
+        assert!(state(&k.db).1 != changed.1);
+    }
 }

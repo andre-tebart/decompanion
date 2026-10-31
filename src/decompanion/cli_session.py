@@ -9,7 +9,6 @@ from pathlib import Path
 from . import native
 from .cli import build_target, record
 from .config import Project
-from .ledger.fact import Kind
 
 DCP_ROOT = Path(__file__).resolve().parents[2]      # the decompanion repository (installed by path): its skills/
 MINUTES = 30                                                  # the length of a session (the core's session.rs)
@@ -27,37 +26,23 @@ def state(p) -> dict:
 
 def gate(args, quiet=False) -> tuple[bool, list, dict]:
     """No open toolchain or libs obligation (decide.rs); then build, check and link every target: (ok,
-    [(target, project, link report)], {target: state})."""
-    from .cli_decide import gate_failures
+    [(target, project, link ok or None, undrafted externals or None)], {target: state}) (the core's gate_target)."""
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
     ok, out, states = True, [], {}
     for t in p0.targets:
         p, e, rep = build_target(args, t.name, quiet=True)
-        obls = gate_failures(p)
-        bad_builds = [f.value["tu"] for f in p.store.facts(Kind.build) if not f.value["ok"]]
-        errors = [x for x in p.store.conflicts() if x.severity.value in ("bug", "error")]
-        lr = native.core().link_command(p.core) if p.store.facts(Kind.build) and p.core.toolchain_available() else None
-        good = not obls and not bad_builds and not errors and (lr is None or lr[1])
+        lines, good, link_ok, undrafted = native.core().gate_target(p.core, rep.units, quiet)
+        for line in lines:
+            print(line)
         ok = ok and good
         states[t.name] = state(p)
-        out.append((t.name, p, lr))
-        if not quiet:
-            print("  " + record(target=t.name, built=rep.units, failed=",".join(bad_builds) or None, errors=len(errors),
-                                link=("skipped" if lr is None else ("ok" if lr[1] else "failed")),
-                                undrafted=lr[3] if lr else None,
-                                obligations=len(obls) or None, gate="ok" if good else "FAIL"))
-            for o in obls:
-                print("    " + o)
-            for x in errors[:10]:
-                print("    " + x.line())
-            for line in lr[4] if lr is not None else ():
-                print(line)
+        out.append((t.name, p, link_ok, undrafted))
     return ok, out, states
 
 
 def overview(p):
     """The unit table summary, the first open function, the toolchain level and the analyzer of one target."""
-    for line in native.core().session_overview(p.core, p.analyzer.key):
+    for line in native.core().session_overview(p.core, p.analyzer_key):
         print(line)
 
 
@@ -82,7 +67,7 @@ def cmd_session_start(args):
               "above, then start again)")
         return 1
     from .cli_decide import status_tail
-    for name, p, lr in targets:
+    for name, p, *_ in targets:
         overview(p)
         status_tail(p)
     native.core().session_save(root, head, states)
@@ -121,8 +106,7 @@ def cmd_session_wrap(args):
             refused = cmd_promote(args) != 0
         promoted = buf.getvalue().strip()
         ok = ok and not refused
-    links = [(name, p.core, None if lr is None else lr[1], None if lr is None else lr[3])
-             for name, p, lr in targets]
+    links = [(name, p.core, link_ok, undrafted) for name, p, link_ok, undrafted in targets]
     print(native.core().session_report(root, base, links, states, promoted, refused, ok), end="")
     return 0 if ok else 1
 

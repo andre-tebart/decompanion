@@ -25,16 +25,6 @@ class Install:
     java_home: str | None
 
 
-class Analyzer:
-    """The configured analyzer of a project."""
-
-    def __init__(self, project, key: str):
-        self.project, self.key = project, key
-
-    def available(self) -> Install:
-        return Install(**native.core().analyzer_available(self.project.core))
-
-
 def default_install() -> Install:
     """The default analyzer without configuration and what it finds (`dcp init`)."""
     return Install(**native.core().analyzer_default())

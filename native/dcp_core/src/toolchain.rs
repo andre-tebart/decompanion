@@ -52,8 +52,7 @@ pub trait Toolchain {
     fn declare(&self, tool: &str, family: &str, build: u32) -> String;
     /// (prodid, build) -> objects, from the archives' tool stamps (raw stamp -> objects).
     fn archive_tools(&self, stamps: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<(u32, u32), u32>;
-    /// CRT entry symbol -> what it starts (dll / gui / console).
-    fn crt_entry_symbols(&self) -> Vec<(&'static str, &'static str)>;
+    #[cfg(test)]
     /// The decorated user entry a CRT entry calls, "" when none.
     fn crt_user_entry(&self, entry: &str) -> &'static str;
     /// The decorated user entries -> their C names.
@@ -406,9 +405,7 @@ impl Toolchain for Vc6 {
         }
         out
     }
-    fn crt_entry_symbols(&self) -> Vec<(&'static str, &'static str)> {
-        ENTRIES.iter().map(|e| (e.0, e.1)).collect()
-    }
+    #[cfg(test)]
     fn crt_user_entry(&self, entry: &str) -> &'static str {
         ENTRIES.iter().find(|e| e.0 == entry).map(|e| e.2).unwrap_or("")
     }

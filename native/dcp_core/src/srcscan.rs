@@ -8,7 +8,7 @@ use crate::layout::{ScanRef, ScanView};
 use pyo3::exceptions::PyRuntimeError;
 use crate::clang::FileModel;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};

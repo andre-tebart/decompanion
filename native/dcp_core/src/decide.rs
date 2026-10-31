@@ -631,7 +631,11 @@ pub fn decide_status(project: PyRef<'_, PyProject>, shown: Vec<String>, work: bo
 /// The open toolchain and libs obligations of the current target (the session and check gate), as records.
 #[pyfunction]
 pub fn decide_gate(project: PyRef<'_, PyProject>) -> PyResult<Vec<String>> {
-    let c = Ctx::new(&project.p)?;
+    gate_records(&project.p)
+}
+
+pub(crate) fn gate_records(p: &Project) -> PyResult<Vec<String>> {
+    let c = Ctx::new(p)?;
     Ok(setup_obligations(&c)?.iter().filter(|o| o.gate()).map(|o| o.record()).collect())
 }
 

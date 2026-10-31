@@ -215,11 +215,6 @@ pub(crate) fn load(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The loaded libclang's path, if one is.
-pub(crate) fn loaded() -> Option<String> {
-    LIB.get().map(|l| l.0.clone())
-}
-
 /// The loaded libclang's version text.
 #[pyfunction]
 pub fn clang_version() -> PyResult<String> {
@@ -794,7 +789,7 @@ fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> PyResult<ModelOut> {
     }
     let deps: Vec<String> = includes(a, tu).iter().map(|f| resolve(f)).collect::<BTreeSet<_>>().into_iter().collect();
     // a file's casts and dead ranges, mapped by the file's own lines
-    let mut file_parts = |w: &mut Where, out: &mut Files, fname: &str, data: &[u8], rel: Option<&str>| -> PyResult<()> {
+    let file_parts = |w: &mut Where, out: &mut Files, fname: &str, data: &[u8], rel: Option<&str>| -> PyResult<()> {
         let cf = cstr(fname)?;
         let f = unsafe { (a.clang_getFile)(tu, cf.as_ptr()) };
         let found = casts_of(a, tu, f, data);

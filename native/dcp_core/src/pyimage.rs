@@ -1,4 +1,4 @@
-//! The original binary as Python reads it (image/pe32.py is its face): the core's PE32 reader (pe.rs) over one
+//! The original binary as Python reads it (config.Project.image, the tests): the core's PE32 reader (pe.rs) over one
 //! file's bytes.
 
 use crate::pe::Image;
@@ -42,7 +42,41 @@ impl PeImage {
         self.img.directories.iter().map(|d| (d.index, d.name.to_string(), d.va, d.size)).collect()
     }
 
-    fn sha256(&self) -> String {
+    /// The image format's key.
+    #[getter]
+    fn key(&self) -> &'static str {
+        "pe32"
+    }
+
+    #[getter]
+    fn base(&self) -> u32 {
+        self.img.base
+    }
+
+    #[getter]
+    fn entry(&self) -> u32 {
+        self.img.entry
+    }
+
+    #[getter]
+    fn is_dll(&self) -> bool {
+        self.img.is_dll
+    }
+
+    /// One past the image's last byte.
+    #[getter]
+    fn end(&self) -> u32 {
+        self.img.end()
+    }
+
+    /// The instruction set the machine type implies (None: unknown machine).
+    #[getter]
+    pub fn default_isa(&self) -> Option<&'static str> {
+        self.img.default_isa()
+    }
+
+    #[getter]
+    pub fn sha256(&self) -> String {
         self.sha.get_or_init(|| crate::fsmemo::hex(&Sha256::digest(&self.img.data))).clone()
     }
 

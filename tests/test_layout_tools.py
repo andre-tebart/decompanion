@@ -142,7 +142,7 @@ def test_unit_new_draft_rename(tiny, tmp_path):
     assert text.index("/* 0x10001020") < text.index("/* 0x10001030")
     code, out = dcp(tiny, "draft", "0x10001030")
     assert code == 1                                          # drafted already
-    assert len(errors(tiny)) == n_err, [c.line() for c in errors(tiny)]
+    assert len(errors(tiny)) == n_err, errors(tiny)
     assert not [c for c in Project(tiny).store.conflicts() if c.check in ("L5", "L.src", "L1", "L7")]
     # rename: whole words, names.log, collision refused, the check count unchanged
     code, out = dcp(tiny, "rename", "net_10001020", "GetCounter", "--why", "returns the counter")

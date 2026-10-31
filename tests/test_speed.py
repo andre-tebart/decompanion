@@ -1,6 +1,6 @@
-"""The speed machinery keeps every answer the same: a rule run recorded again with the same output, the plans
-memoised per process, and the daemon (`dcp serve`) against the in-process run. (The persisted file hashes are
-tested in the core: fsmemo.rs.)"""
+"""The speed machinery keeps every answer the same: the byte map after a rerun with the same output, and the daemon
+(`dcp serve`) against the in-process run. (A run recorded again with the same output and the persisted file hashes
+are tested in the core: lib.rs, fsmemo.rs.)"""
 from __future__ import annotations
 
 import os
@@ -13,42 +13,6 @@ import pytest
 
 from conftest import dcp
 
-from decompanion.ledger.fact import Conflict, Fact, Kind, Level, Severity
-from decompanion.ledger.store import Store
-
-
-def _facts(n=3, tag="x"):
-    return [Fact(0x1000 + i, 0x1001 + i, Kind.symbol, {"skind": "func", "name": f"f{i}{tag}"}, Level.derived, "rule:T@1")
-            for i in range(n)]
-
-
-def _at(st, rule):
-    return next(r[6] for r in st.runs() if r[0] == rule and r[4])
-
-
-def test_same_output_keeps_the_facts_and_their_ids(tmp_path):
-    st = Store(tmp_path / "s.sqlite")
-    rid = st.record_run("T", "1", "c", "in1", _facts(), [Conflict(Severity.warn, "X", 1, 2, "m", "a:1")], 5)
-    ids, at = [f.id for f in st.facts(Kind.symbol)], _at(st, "T")
-    time.sleep(0.01)
-    rid2 = st.record_run("T", "1", "c", "in2", _facts(), [Conflict(Severity.warn, "X", 1, 2, "m", "a:2")], 7)
-    assert rid2 == rid and _at(st, "T") == at and [f.id for f in st.facts(Kind.symbol)] == ids
-    assert st.find_run("T", "in2") is not None and st.find_run("T", "in1") is None
-    assert [c.a for c in st.conflicts()] == ["a:2"]                 # conflicts are written again (a / b)
-    time.sleep(0.01)
-    st.record_run("T", "1", "c", "in3", _facts(tag="y"), [], 1)
-    # SQLite may give the new run the old id (the old row is deleted first): the run time tells them apart
-    assert _at(st, "T") != at and [f.value["name"] for f in st.facts(Kind.symbol)] == ["f0y", "f1y", "f2y"]
-
-
-def test_same_output_off_without_shortcuts(tmp_path, monkeypatch):
-    monkeypatch.setenv("DCP_NO_SHORTCUTS", "1")
-    st = Store(tmp_path / "s.sqlite")
-    st.record_run("T", "1", "c", "in1", _facts(), [], 5)
-    at = _at(st, "T")
-    time.sleep(0.01)
-    st.record_run("T", "1", "c", "in2", _facts(), [], 5)
-    assert _at(st, "T") != at
 
 
 def test_bytemap_names_current_facts_after_same_output_rerun(tiny):

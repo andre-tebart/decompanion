@@ -23,7 +23,7 @@ use crate::store;
 use crate::with_db;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
+use pyo3::types::PyList;
 use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};
 

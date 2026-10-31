@@ -547,12 +547,6 @@ pub fn original(env: &Env, addr: u32, extent: i64, slot: i64, align: i64) -> Res
     Ok(Original { code, tables })
 }
 
-impl Original {
-    pub fn to_json(&self) -> Value {
-        json!({"code": self.code, "tables": self.tables.iter().map(|t| json!([t.0, t.1, t.2])).collect::<Vec<_>>()})
-    }
-}
-
 // ------------------------------------------------------------------------------------------------ the tables, the compare
 
 fn block(l: &[Line], i: usize) -> Vec<&str> {

@@ -757,6 +757,33 @@ pub fn check_conflicts(project: PyRef<'_, PyProject>, strict: bool) -> PyResult<
     Ok((out, reasons))
 }
 
+/// The session gate of one target after its build (`dcp session start` / `wrap`): no open toolchain or libs
+/// obligation, no failed unit, no bug / error conflict, and (built, the toolchain installed) the full link resolves.
+/// (lines unless `quiet`, good, the link's ok (None: skipped), its undrafted externals).
+#[pyfunction]
+pub fn gate_target(project: PyRef<'_, PyProject>, units: i64, quiet: bool) -> PyResult<(Vec<String>, bool, Option<bool>, Option<usize>)> {
+    let p = &project.p;
+    let db = opened(p)?;
+    let obls = crate::decide::gate_records(p)?;
+    let builds = all(&db, "build")?;
+    let bad: Vec<String> = builds.iter().filter(|f| !f.value.get("ok").and_then(|x| x.as_bool()).unwrap_or(false)).map(|f| py_str(&f.value["tu"])).collect();
+    let errors: Vec<ConflictRow> = conflicts(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
+    let link = if !builds.is_empty() && p.toolchain_available() { Some(crate::matchcmd::link_lines(p)?) } else { None };
+    let good = obls.is_empty() && bad.is_empty() && errors.is_empty() && link.as_ref().is_none_or(|l| l.1);
+    let mut out = vec![];
+    if !quiet {
+        out.push(format!("  {}", record(&[("target", s(p.target_name.clone())), ("built", Tok::I(units)), ("failed", os(Some(bad.join(",")).filter(|x| !x.is_empty()))),
+                                          ("errors", Tok::I(errors.len() as i64)),
+                                          ("link", s(match &link { None => "skipped", Some(l) if l.1 => "ok", Some(_) => "failed" })),
+                                          ("undrafted", link.as_ref().map(|l| Tok::I(l.3 as i64)).unwrap_or(Tok::No)),
+                                          ("obligations", if obls.is_empty() { Tok::No } else { Tok::I(obls.len() as i64) }), ("gate", s(if good { "ok" } else { "FAIL" }))])));
+        out.extend(obls.iter().map(|o| format!("    {o}")));
+        out.extend(errors.iter().take(10).map(|c| format!("    {}", conflict_line(c))));
+        out.extend(link.iter().flat_map(|l| l.4.iter().cloned()));
+    }
+    Ok((out, good, link.as_ref().map(|l| l.1), link.as_ref().map(|l| l.3)))
+}
+
 // ------------------------------------------------------------------------------------------------ fn
 
 /// `dcp fn KEY`: one function of the sources, a record with its file and lines (its address comment to the end of its

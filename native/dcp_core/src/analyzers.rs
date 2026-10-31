@@ -415,13 +415,6 @@ pub fn analyzer_step(py: Python<'_>, project: PyRef<'_, crate::project::PyProjec
     Ok((out, errs, true, st("status") == "exported"))
 }
 
-/// The analyzer of a project and what `available()` found: {key, ok, where, reason, note, root, java_home}.
-#[pyfunction]
-pub fn analyzer_available<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>) -> PyResult<Bound<'py, PyAny>> {
-    let az = Analyzer::of(&project.p).map_err(crate::project::cfg_err)?;
-    install_py(py, &az.key, &az.available())
-}
-
 fn install_py<'py>(py: Python<'py>, key: &str, i: &Install) -> PyResult<Bound<'py, PyAny>> {
     crate::pystore::json_py(py, &json!({"key": key, "ok": i.ok(), "where": i.at, "reason": i.reason, "note": i.note, "root": i.root, "java_home": i.java_home}))
 }
