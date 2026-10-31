@@ -7,6 +7,7 @@
 
 mod clang;
 mod coff;
+mod decl;
 mod crt;
 mod compare;
 mod cs;
@@ -681,5 +682,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lint::lint_cross, m)?)?;
     m.add_function(wrap_pyfunction!(lint::lint_units, m)?)?;
     m.add_class::<lint::AllDecls>()?;
+    m.add_function(wrap_pyfunction!(decl::decl_parse_line, m)?)?;
+    m.add_function(wrap_pyfunction!(decl::decl_load, m)?)?;
+    m.add_function(wrap_pyfunction!(decl::decl_text, m)?)?;
+    m.add_function(wrap_pyfunction!(decl::decl_insert, m)?)?;
     Ok(())
 }

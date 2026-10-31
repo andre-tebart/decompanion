@@ -29,12 +29,12 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 
-from .. import fsmemo, native
+from .. import native
 from ..build import tu as build_tu
 from ..ledger import decl as decl_mod
 from ..ledger import srcscan
 from ..source import cparse
-from ..ledger.fact import Kind, Level, Severity, min_level
+from ..ledger.fact import Level, Severity, min_level
 from .engine import RuleContext, rule
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
@@ -232,8 +232,19 @@ def leak_issues(units: list[UnitX], leaks: list[Leak]) -> list[Issue]:
 
 
 # ------------------------------------------------------------------------------------------------ loaders
+def decl_inputs(p) -> dict:
+    """What the native rules that read decl/*.dcl get of the configuration: the targets (the default first), the
+    current one (the core reads the declarations itself: native/dcp_core/src/decl.rs)."""
+    return {"targets": [t["name"] for t in p.input("targets")], "target": p.target_name}
+
+
+def toolchain_key(p) -> dict:
+    return {"toolchain": p.toolchain.key}
+
+
 @rule("L.decl", version="4", ceiling=DE, outputs=("boundary", "symbol", "name"), inputs=("decl", "targets", "src"),
-      loader=True, helpers=(decl_mod, build_tu))
+      loader=True, helpers=(decl_mod, build_tu), native=True,
+      native_inputs=decl_inputs)
 def load_decl(ctx: RuleContext):
     """Every line of decl/*.dcl that belongs to the current target becomes one declared fact, producer
     decl:<file>:<line>, reason = the text after `--` (grammar: ledger/decl.py). boundary -> boundary fact
@@ -245,79 +256,17 @@ def load_decl(ctx: RuleContext):
     unknown target prefix, an unsorted file, a duplicate key, an address outside the image or a range across
     sections, a text.dcl line outside a code section or a data.dcl line inside one. An error is reported in
     the store of the target its line names (a line whose target is unknown: the default target's)."""
-    p, img = ctx.project, ctx.image
-    targets = [t["name"] for t in ctx.input("targets")]
-    decls, errors = decl_mod.load(ctx.input("decl"), p.root, targets)
-    for e in errors:
-        if (e.target or targets[0]) != p.target_name:
-            continue
-        lo = e.lo if e.lo is not None and img.in_image(e.lo) else img.base
-        yield ctx.conflict(Severity.error, "L.decl", lo, lo + 1, f"{e.file}:{e.line}: {e.message}", a=f"decl:{e.file}:{e.line}")
-    code = code_ranges(img)
-    file_of: dict[str, str] = {}
-    for d in decls:
-        if (d.target or targets[0]) != p.target_name:
-            continue
-        s_lo, s_hi = img.section_of(d.lo), img.section_of(d.hi - 1)
-        if s_lo is None or s_lo is not s_hi:
-            yield ctx.conflict(Severity.error, "L.decl", d.lo if img.in_image(d.lo) else img.base, (d.lo if img.in_image(d.lo) else img.base) + 1,
-                               f"{d.file}:{d.line}: {d.lo:#x}..{d.hi:#x} is not inside one section of the image", a=d.by)
-            continue
-        is_code = in_ranges(d.lo, code)
-        name = d.file.rsplit("/", 1)[-1]
-        if (name == "text.dcl" and not is_code) or (name == "data.dcl" and is_code):
-            yield ctx.conflict(Severity.error, "L.decl", d.lo, d.lo + 1,
-                               f"{d.file}:{d.line}: {d.lo:#x} lies in {s_lo.name}; text.dcl holds code sections, data.dcl the rest", a=d.by)
-        k = d.kind
-        if k == "boundary":
-            v = {"side": d.words[0], "tu": d.keys["tu"]}
-            if "by" in d.keys:
-                v["named_by"] = d.keys["by"]
-            yield ctx.declared(d.lo, d.lo + 1, Kind.boundary, v, d.by, d.reason)
-        elif k == "bytes":
-            yield ctx.declared(d.lo, d.hi, Kind.symbol, {"skind": "dead", "extent": "declared"}, d.by, d.reason)
-        elif k in ("jumptable", "idxtable"):
-            yield ctx.declared(d.lo, d.hi, Kind.symbol, {"skind": k, "fn": d.keys["fn"], "extent": "declared"}, d.by, d.reason)
-        elif k == "foreign":
-            yield ctx.declared(d.lo, d.hi, Kind.symbol, {"skind": "foreign", "what": d.keys["kind"], "extent": "declared"}, d.by, d.reason)
-        elif k == "fptr":
-            yield ctx.declared(d.lo, d.hi, Kind.symbol, {"skind": "fptr", "extent": "declared"}, d.by, d.reason)
-        elif k == "name":
-            yield ctx.declared(d.lo, d.lo + 1, Kind.name, {"name": d.words[0], "origin": "decl"}, d.by, d.reason)
-        elif k == "file":
-            want = d.keys["path"].encode("latin-1") + b"\0"
-            have = img.read(d.lo, len(want))
-            if have != want:
-                yield ctx.conflict(Severity.error, "L.decl", d.lo, d.lo + 1,
-                                   f"{d.file}:{d.line}: the image holds {have!r} at {d.lo:#x}, not the declared file name {want!r}", a=d.by)
-            tu = d.keys["tu"]
-            if tu in file_of:
-                yield ctx.conflict(Severity.error, "L.decl", d.lo, d.lo + 1,
-                                   f"{d.file}:{d.line}: unit {tu} already has the file name {file_of[tu]}", a=d.by)
-            file_of.setdefault(tu, d.keys["path"])
-            src = p.root / "src" / f"{tu}.c"
-            named = [m.group(2).replace("\\\\", "\\") for m in build_tu.LINE.finditer(fsmemo.read_text(src))
-                     if m.group(2) is not None] if src.exists() else None
-            if named is not None and d.keys["path"] not in named:
-                esc = d.keys["path"].replace("\\", "\\\\")
-                yield ctx.conflict(Severity.error, "L.decl", d.lo, d.lo + 1,
-                                   f"{d.file}:{d.line}: src/{tu}.c names no file {d.keys['path']} in a `#line` directive "
-                                   f"(its __FILE__ is the file's own name): add `#line 1 \"{esc}\"` at its top", a=d.by)
+    return ()                                      # native: native/dcp_core/src/decl.rs
 
 
-@rule("L.decl.start", version="1", ceiling=DE, outputs=("start",), inputs=("decl", "targets"), loader=True, helpers=(decl_mod,))
+@rule("L.decl.start", version="1", ceiling=DE, outputs=("start",), inputs=("decl", "targets"), loader=True, helpers=(decl_mod,), native=True,
+      native_inputs=decl_inputs)
 def load_decl_starts(ctx: RuleContext):
     """The `start` lines of decl/*.dcl for the current target, inside a code section, as declared start facts
     (how decl). Its own loader so that the setup walk, which takes them as roots, reruns only when a start
     declaration changes, not on every boundary edit (the run key follows this rule's output). Malformed lines
     are L.decl's errors."""
-    p, img = ctx.project, ctx.image
-    targets = [t["name"] for t in ctx.input("targets")]
-    decls, _ = decl_mod.load(ctx.input("decl"), p.root, targets)
-    code = code_ranges(img)
-    for d in decls:
-        if d.kind == "start" and (d.target or targets[0]) == p.target_name and in_ranges(d.lo, code):
-            yield ctx.declared(d.lo, d.lo + 1, Kind.start, {"skind": "func", "how": "decl"}, d.by, d.reason)
+    return ()                                      # native: native/dcp_core/src/decl.rs
 
 
 @rule("L.src", version="5", ceiling=DE, outputs=("source", "name", "start"), inputs=("scan", "targets"),
@@ -342,7 +291,7 @@ def load_src(ctx: RuleContext):
     return ()
 
 
-@rule("L.analyzer", version="3", ceiling=DE, outputs=("start",), inputs=("drafts",), loader=True)
+@rule("L.analyzer", version="3", ceiling=DE, outputs=("start",), inputs=("drafts",), loader=True, native=True)
 def load_analyzer(ctx: RuleContext):
     """Every draft of the analyzer (`dcp setup` runs its export; analyzers/) whose entry lies in a code section is
     a declared function start (how = the analyzer's key, by decl:analyzer:<key>:<file>, reason "<key>
@@ -350,15 +299,7 @@ def load_analyzer(ctx: RuleContext):
     tool's function discovery is a claim, so it is a declaration, never a computed fact. A function the
     analyzer made at one of our own starts on our request (seeded: Ghidra's export creates one where it has
     none) is no claim of the analyzer's and gives no start fact."""
-    code = code_ranges(ctx.image)
-    for e in ctx.input("drafts"):
-        if in_ranges(e.start, code) and not e.seeded:
-            v = {"skind": "func", "how": e.analyzer}
-            if e.name:
-                v["name"] = e.name
-            if e.size is not None:
-                v["size"] = e.size
-            yield ctx.declared(e.start, e.start + 1, Kind.start, v, f"decl:analyzer:{e.analyzer}:{e.source}", f"{e.analyzer} analysis")
+    return ()                                      # native: native/dcp_core/src/layout.rs
 
 
 # ------------------------------------------------------------------------------------------------ L.analyze
@@ -380,7 +321,8 @@ def container(funcs):
 
 
 @rule("L.analyze", version="1", ceiling=P, outputs=("evidence",),
-      needs=("S.sections", "S.relocs", "S.codewalk", "S.crt.code", "S.thunk", "S.strings", "S.fill"))
+      needs=("S.sections", "S.relocs", "S.codewalk", "S.crt.code", "S.thunk", "S.strings", "S.fill"), native=True,
+      native_inputs=toolchain_key)
 def analyze(ctx: RuleContext):
     """Boundary evidence, computed once per image.
     lit (B-LIT): for every string symbol reached by a relocation site inside a function, its first user = the
@@ -395,66 +337,7 @@ def analyze(ctx: RuleContext):
     leak (B-LEAK): a string whose text holds a path with a .c / .cpp / .h suffix (an __FILE__ of assert or a
     log call), at every function that references it: the function was compiled from that file (.c / .cpp:
     names the unit; .h: an inline from a header, names nothing)."""
-    img = ctx.image
-    secs = {(f.lo, f.hi): f.value["name"] for f in ctx.facts(Kind.section)}
-    code = code_ranges(img)
-    syms = ctx.facts(Kind.symbol)
-    funcs = functions_of(syms)
-    at = container(funcs)
-    strings = [f for f in syms if f.value.get("skind") == "string"]
-    slos = [s.lo for s in strings]
-    users = defaultdict(set)
-    data_refs = defaultdict(int)
-    for r in ctx.facts(Kind.ref):
-        if r.value["rkind"] != "reloc":
-            continue
-        t = r.value["to"]
-        i = bisect.bisect_right(slos, t) - 1
-        if i < 0 or not (strings[i].lo <= t < strings[i].hi):
-            continue
-        s = strings[i]
-        if in_ranges(r.lo, code):
-            fn = at(r.lo)
-            if fn is not None:
-                users[s.lo].add(fn[0])
-        else:
-            data_refs[s.lo] += 1
-    fn_at = {lo: (lo, hi, f) for lo, hi, f in funcs}
-    for s in strings:
-        us = [fn_at[a] for a in sorted(users.get(s.lo, ()))]
-        if not us:
-            continue
-        first = us[0]
-        lvl = min_level(s.level, *(u[2].level for u in us), ceiling=D)
-        sec = next((n for (lo, hi), n in secs.items() if lo <= s.lo < hi), "")
-        yield ctx.fact(s.lo, s.hi, Kind.evidence, {"ekind": "lit", "first": first[0], "users": len(us), "data_refs": data_refs[s.lo],
-                                                   "section": sec}, lvl)
-        text = img.cstr(s.lo).decode("latin-1")
-        for m in LEAK.finditer(text):
-            path, stem, ext = m.group(1).strip(), m.group(2), m.group(3).lower()
-            for u in us:
-                yield ctx.fact(u[0], u[0] + 1, Kind.evidence, {"ekind": "leak", "path": path, "stem": stem.lower(), "header": ext == "h",
-                                                               "string": s.lo}, min_level(lvl, u[2].level, ceiling=P))
-    ends = {}
-    for f in syms:
-        if f.level > O and f.value.get("skind") != "fill":
-            ends.setdefault(f.hi, f)
-    fills = {f.hi: f for f in syms if f.value.get("skind") == "fill"}
-    opens = {f.hi for f in syms if f.level == O}
-    for lo, hi, f in funcs:
-        if not in_ranges(lo, code):
-            continue
-        if lo in fills:
-            fl = fills[lo]
-            pre = ctx.project.toolchain.fill_origin(img.read(fl.lo, fl.hi - fl.lo))
-            v = {"ekind": "fill", "pre": pre, "run": fl.hi - fl.lo}
-        elif lo in ends:
-            v = {"ekind": "fill", "pre": "none", "run": 0}
-        elif lo in opens:
-            v = {"ekind": "fill", "pre": "unknown", "run": 0}
-        else:
-            continue
-        yield ctx.fact(lo, lo + 1, Kind.evidence, v, min_level(f.level, ceiling=D))
+    return ()                                      # native: native/dcp_core/src/layout.rs
 
 
 # ------------------------------------------------------------------------------------------------ L.unit.extent
@@ -472,16 +355,9 @@ def unit_status(start_level: Level, end_level: Level, open_bytes: int, walk_conf
     return "separated" if start_level >= DE and end_level >= DE and not open_bytes and not walk_conflicts else "open"
 
 
-def lib_unit_names(p) -> dict:
-    """What L.unit.extent reads that only Python computes: {libs: the units declared `libunit` for the current target}."""
-    targets = [t["name"] for t in p.input("targets")]
-    decls, _ = decl_mod.load(p.input("decl"), p.root, targets)
-    return {"libs": sorted(decl_mod.lib_units(decls, p.target_name, targets[0]))}
-
-
 @rule("L.unit.extent", version="3", ceiling=DE, outputs=("unit",),
       needs=("L.decl", "L.src", "S.sections", "S.crt.code", "S.thunk", "S.codewalk", "S.unknown"),
-      inputs=("decl", "targets"), native=True, native_inputs=lib_unit_names)
+      inputs=("decl", "targets"), native=True, native_inputs=decl_inputs)
 def unit_extent(ctx: RuleContext):
     """The units of the game code (compute_units in rules/layout.py: a unit runs from its declared start
     boundary or first source to its declared end, the next unit's start or the end of the game code; the
@@ -597,15 +473,8 @@ def data_at_code(ctx: RuleContext):
     return ()
 
 
-def lib_unit_ranges(p) -> dict:
-    """What L14 reads that only Python computes: {libs: unit -> [lo, hi, by] of its `libunit` declaration}."""
-    targets = [t["name"] for t in p.input("targets")]
-    decls, _ = decl_mod.load(p.input("decl"), p.root, targets)
-    return {"libs": {u: [d.lo, d.hi, d.by] for u, d in decl_mod.lib_units(decls, p.target_name, targets[0]).items()}}
-
-
 @rule("L14.unit.outside", version="2", ceiling=DE, needs=("L.unit.extent", "L.src", "L.decl", "S.crt.code", "S.thunk"),
-      inputs=("decl", "targets"), native=True, native_inputs=lib_unit_ranges)
+      inputs=("decl", "targets"), native=True, native_inputs=decl_inputs)
 def source_outside_unit(ctx: RuleContext):
     """L14 (outside_unit_issues in rules/layout.py): a sourced function outside the game code (in the library
     code after it) whose unit has a declared boundary (`boundary start|end tu=UNIT` in decl/text.dcl) and an

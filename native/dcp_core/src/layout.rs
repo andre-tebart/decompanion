@@ -56,6 +56,7 @@ struct Draft {
     ranges: Vec<(i64, i64)>,
     source: String,
     analyzer: String,
+    seeded: bool, // made by the tool at one of our starts on our request: no claim of the tool's
 }
 
 /// ledger/drafts.entries: every draft blob, the main store's first (ctx.main: a worktree's overlay), sorted by start.
@@ -716,8 +717,9 @@ const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
 /// L.unit.extent: the units of the game code as `unit` facts, the L7 issues of their computation.
 pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
-    let extra: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
-    let libs: HashSet<&str> = extra["libs"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
+    let lib_decls = crate::decl::lib_units(&decls, &target, targets.first().map(|s| s.as_str()).unwrap_or(""));
+    let libs: HashSet<&str> = lib_decls.keys().map(|s| s.as_str()).collect();
     let fs = |kind: &str| store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
     let syms = fs("symbol")?;
     let lib_starts = lib_starts_of(&syms);
@@ -1056,10 +1058,9 @@ pub fn py_outside_unit_issues(units: Vec<UnitExt>, srcs: Vec<SrcFn>, declared: H
 /// L14.unit.outside: a sourced function of a declared unit (or a library unit) outside its extent.
 pub fn l14_unit_outside(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let img = image(&ctx.image)?;
-    let extra: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
-    let mut libs: Vec<LibUnit> = extra["libs"].as_object().map(|m| m.iter().map(|(k, v)| {
-        (k.clone(), v[0].as_i64().unwrap_or(0), v[1].as_i64().unwrap_or(0), v[2].as_str().unwrap_or("").to_string())
-    }).collect()).unwrap_or_default();
+    let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
+    let mut libs: Vec<LibUnit> = crate::decl::lib_units(&decls, &target, targets.first().map(|s| s.as_str()).unwrap_or(""))
+        .into_iter().map(|(k, d)| (k, d.lo, d.hi, d.by())).collect();
     libs.sort();
     let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
     let game = game_range(&img, &lib_starts_of(&syms));
@@ -1446,4 +1447,121 @@ mod tests_2b {
         let (_, c) = k.run("L6.declared", &["L.decl", "S.codewalk", "S.crt.code", "S.thunk", "S.relocs", "S.sections"], "");
         assert_eq!(c.iter().map(|x| (x.lo - t, x.hi - t)).collect::<Vec<_>>(), [(0x18, 0x20)]);
     }
+}
+
+// ------------------------------------------------------------------------------------------------ L.analyzer, L.analyze
+
+/// L.analyzer: every draft of the analyzer whose entry lies in a code section (and the analyzer made on its own)
+/// is a declared function start.
+pub fn l_analyzer(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let code = code_ranges(&img);
+    for e in drafts(ctx, db)? {
+        if code.iter().any(|&(lo, hi)| lo <= e.start && e.start < hi) && !e.seeded {
+            let mut v = serde_json::json!({"skind": "func", "how": e.analyzer});
+            if !e.name.is_empty() {
+                v["name"] = serde_json::json!(e.name);
+            }
+            if let Some(s) = e.size {
+                v["size"] = serde_json::json!(s);
+            }
+            out.declared(e.start, e.start + 1, "start", v, &format!("decl:analyzer:{}:{}", e.analyzer, e.source), &format!("{} analysis", e.analyzer));
+        }
+    }
+    Ok(())
+}
+
+/// layout.LEAK: a path with a .c / .cpp / .h suffix in a string (an __FILE__).
+static LEAK: std::sync::LazyLock<fancy_regex::Regex> =
+    std::sync::LazyLock::new(|| fancy_regex::Regex::new(r"(?i)(?<![%\w])((?:[a-z]:)?[\w.\/ -]*?([\w-]{2,})\.(cpp|c|h))(?![\w.])").unwrap());
+
+/// L.analyze: boundary evidence (lit, leak, fill) once per image.
+pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    use crate::store::{DERIVED, PROVEN};
+    let img = image(&ctx.image)?;
+    let x: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
+    let tc = crate::toolchain::of(x["toolchain"].as_str().unwrap_or("")).ok_or_else(|| PyRuntimeError::new_err("L.analyze: no toolchain"))?;
+    let fs = |kind: &str| store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
+    let secs: Vec<(i64, i64, String)> = fs("section")?.iter().map(|f| (f.lo, f.hi, f.s("name").unwrap_or("").to_string())).collect();
+    let code = code_ranges(&img);
+    let in_code = |a: i64| code.iter().any(|&(lo, hi)| lo <= a && a < hi);
+    let syms = fs("symbol")?;
+    let mut funcs: Vec<&std::rc::Rc<SFact>> = syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).collect();
+    funcs.sort_by_key(|f| (f.lo, f.hi));
+    let at = |a: i64| {
+        let i = funcs.partition_point(|f| f.lo <= a);
+        (i > 0 && a < funcs[i - 1].hi).then(|| funcs[i - 1])
+    };
+    let strings: Vec<&std::rc::Rc<SFact>> = syms.iter().filter(|f| f.s("skind") == Some("string")).collect();
+    let mut users: HashMap<i64, std::collections::BTreeSet<i64>> = HashMap::new();
+    let mut data_refs: HashMap<i64, i64> = HashMap::new();
+    for r in fs("ref")?.iter().filter(|r| r.s("rkind") == Some("reloc")) {
+        let t = r.value.get("to").and_then(|v| v.as_i64()).unwrap_or(-1);
+        let i = strings.partition_point(|s| s.lo <= t);
+        if i == 0 || !(strings[i - 1].lo <= t && t < strings[i - 1].hi) {
+            continue;
+        }
+        let s = strings[i - 1];
+        if in_code(r.lo) {
+            if let Some(f) = at(r.lo) {
+                users.entry(s.lo).or_default().insert(f.lo);
+            }
+        } else {
+            *data_refs.entry(s.lo).or_insert(0) += 1;
+        }
+    }
+    let mut fn_at: HashMap<i64, &std::rc::Rc<SFact>> = HashMap::new();
+    for f in &funcs {
+        fn_at.insert(f.lo, f);
+    }
+    for s in &strings {
+        let us: Vec<&std::rc::Rc<SFact>> = users.get(&s.lo).into_iter().flatten().map(|a| fn_at[a]).collect();
+        let Some(first) = us.first() else { continue };
+        let lvl = us.iter().map(|u| u.level).chain([s.level, DERIVED]).min().unwrap();
+        let sec = secs.iter().find(|(lo, hi, _)| *lo <= s.lo && s.lo < *hi).map(|x| x.2.clone()).unwrap_or_default();
+        out.fact(s.lo, s.hi, "evidence", serde_json::json!({"ekind": "lit", "first": first.lo, "users": us.len(), "data_refs": data_refs.get(&s.lo).copied().unwrap_or(0),
+                                                            "section": sec}), lvl);
+        let text: String = img.cstr(s.lo as u32).iter().map(|&c| c as char).collect();
+        for m in LEAK.captures_iter(&text) {
+            let m = m.map_err(|e| PyRuntimeError::new_err(format!("L.analyze: {e}")))?;
+            let path = m.get(1).unwrap().as_str().trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c));
+            let stem = m.get(2).unwrap().as_str().to_lowercase();
+            let header = m.get(3).unwrap().as_str().eq_ignore_ascii_case("h");
+            for u in &us {
+                out.fact(u.lo, u.lo + 1, "evidence", serde_json::json!({"ekind": "leak", "path": path, "stem": stem, "header": header, "string": s.lo}),
+                         lvl.min(u.level).min(PROVEN));
+            }
+        }
+    }
+    let mut ends: HashSet<i64> = HashSet::new();
+    let mut fills: HashMap<i64, &std::rc::Rc<SFact>> = HashMap::new();
+    let mut opens: HashSet<i64> = HashSet::new();
+    for f in &syms {
+        if f.level > OPEN && f.s("skind") != Some("fill") {
+            ends.insert(f.hi);
+        }
+        if f.s("skind") == Some("fill") {
+            fills.insert(f.hi, f);
+        }
+        if f.level == OPEN {
+            opens.insert(f.hi);
+        }
+    }
+    for f in &funcs {
+        if !in_code(f.lo) {
+            continue;
+        }
+        let v = if let Some(fl) = fills.get(&f.lo) {
+            let pre = tc.fill_origin(&img.read(fl.lo as u32, (fl.hi - fl.lo) as usize));
+            serde_json::json!({"ekind": "fill", "pre": pre, "run": fl.hi - fl.lo})
+        } else if ends.contains(&f.lo) {
+            serde_json::json!({"ekind": "fill", "pre": "none", "run": 0})
+        } else if opens.contains(&f.lo) {
+            serde_json::json!({"ekind": "fill", "pre": "unknown", "run": 0})
+        } else {
+            continue;
+        };
+        out.fact(f.lo, f.lo + 1, "evidence", v, f.level.min(DERIVED));
+    }
+    Ok(())
 }
