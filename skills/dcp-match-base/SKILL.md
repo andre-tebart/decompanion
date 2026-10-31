@@ -65,6 +65,8 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
   registers on our side. Run it first on every big `code` hunk: a pure register rotation reads as `code`.
   `--symbols` prints the call targets, data and string literals by name instead of `X`; `!` marks an equal
   instruction that names another symbol or literal than the original's (a wrong callee, datum or string).
+  Frames of other sizes are aligned as diffclass aligns them (`frame=0x3bc/0x3b8`): a line that differs only
+  by the shift is equal (`~`), so only the real differences show; `--plain` diffs the texts as they are.
 - `uv run dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`, `fpu`,
   `frame` (all explained: shape) and `code` (the rest: a meaning difference until shown otherwise). `frame`:
   the two frames differ in size (`frame: ours 0xcc, the original's 0xc8`) and these lines differ only by the

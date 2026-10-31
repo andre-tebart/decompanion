@@ -198,13 +198,78 @@ fn tables_tokens(t: &crate::diffclass::Tables) -> String {
     record(&[("tables", s(if t.diffs.is_empty() { "equal" } else { "differ" })), ("entries", Tok::I(t.entries)), ("index_bytes", Tok::I(t.bytes))])
 }
 
+/// asmdiff's diff: (the differing lines, the frames when aligned, the printed lines). a / b the texts compared, pa /
+/// pb the texts printed (named with --symbols).
+#[allow(clippy::too_many_arguments)]
+fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b: &[String], pa: &[String], pb: &[String], plain: bool, all: bool)
+    -> (usize, Option<(i64, i64)>, Vec<String>) {
+    // the frames differ: align with the stack offsets masked; an aligned pair that differs only by the shift is equal
+    let frame = if plain { None } else { crate::x86::frame_delta(&a, &b) };
+    let ops = match frame {
+        Some(f) => crate::difflib::opcodes(&crate::x86::stack_mask(&a, f), &crate::x86::stack_mask(&b, f)),
+        None => crate::difflib::opcodes(&a, &b),
+    };
+    use crate::difflib::Tag;
+    // an aligned pair: 0 the same text, 1 the same text naming other symbols (--symbols), 2 shifted by the frame,
+    // 3 differing
+    let kind = |i: usize, j: usize| -> u8 {
+        if a[i] == b[j] {
+            if pa[i] == pb[j] { 0 } else { 1 }
+        } else if frame.is_some_and(|f| crate::x86::frame_explain(&a[i..=i], &b[j..=j], f).is_some()) {
+            2
+        } else {
+            3
+        }
+    };
+    let n: usize = ops.iter().map(|o| if o.0 != Tag::Equal { o.2 - o.1 + o.4 - o.3 } else { (o.1..o.2).filter(|&i| kind(i, o.3 + i - o.1) == 3).count() * 2 })
+        .sum();
+    let mut out = vec![];
+    for (tag, i1, i2, j1, j2) in ops {
+        if tag == Tag::Equal {
+            // runs of lines that print alike (equal or shifted by the frame: folded when long); a line whose names
+            // differ (--symbols) is always printed, `!`, ours | the original's; a line the frame does not explain
+            // is a difference
+            let mut i = i1;
+            while i < i2 {
+                let group = |i: usize| match kind(i, j1 + i - i1) { 2 => 0, k => k };
+                let mut e = i + 1;
+                while e < i2 && group(e) == group(i) {
+                    e += 1;
+                }
+                match group(i) {
+                    1 => out.extend((i..e).map(|k| format!("!  {:#010x}  {}   | {}", la[k].addr, pa[k], pb[j1 + k - i1]))),
+                    3 => {
+                        out.extend((i..e).map(|k| format!("-  {:#010x}  {}", la[k].addr, pa[k])));
+                        out.extend((i..e).map(|k| format!("+  {:#010x}  {}", lb[j1 + k - i1].addr, pb[j1 + k - i1])));
+                    }
+                    _ if e - i > 6 && !all => {
+                        let shifted = (i..e).filter(|&k| kind(k, j1 + k - i1) == 2).count();
+                        let tail = if shifted > 0 { format!(", {shifted} shifted by the frame") } else { String::new() };
+                        out.push(format!("     ... {} equal instructions{tail} ...", e - i));
+                    }
+                    _ => out.extend((i..e).map(|k| format!("{}  {:#010x}  {}", if kind(k, j1 + k - i1) == 2 { "~" } else { " " }, la[k].addr, pa[k]))),
+                }
+                i = e;
+            }
+            continue;
+        }
+        out.extend((i1..i2).map(|i| format!("-  {:#010x}  {}", la[i].addr, pa[i])));
+        out.extend((j1..j2).map(|j| format!("+  {:#010x}  {}", lb[j].addr, pb[j])));
+    }
+    (n, frame, out)
+}
+
 /// `dcp asmdiff`: the instruction diff of one function, ours ('-') against the original ('+'), both listed at the
 /// original address (numbers that are image addresses and our relocated fields read X); `regs` renames registers
 /// of ours (`eax=ecx,ecx=eax`). `symbols`: the lines print the names for X (our relocations' symbols, the ledger's
-/// labels of the original's addresses, else the number); the alignment still compares the X texts.
+/// labels of the original's addresses, else the number); the alignment still compares the X texts. When the frames
+/// differ in size (diffclass's frame alignment), the lines are aligned with their stack offsets masked and a line
+/// that differs from the original's only by the frame's shift counts as equal (`~` when printed); `plain`: the
+/// diff of the texts as they are.
 #[pyfunction]
-#[pyo3(signature = (project, capstone, name, regs, all, symbols=false))]
-pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str, regs: Option<String>, all: bool, symbols: bool) -> PyResult<Out> {
+#[pyo3(signature = (project, capstone, name, regs, all, symbols=false, plain=false))]
+pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str, regs: Option<String>, all: bool, symbols: bool,
+                       plain: bool) -> PyResult<Out> {
     let r = match reading(&project, capstone, name, "asmdiff", symbols)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
@@ -222,16 +287,21 @@ pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str
     let b: Vec<String> = r.lb.iter().map(|x| x.text.clone()).collect();
     // what a line prints: its X text, or with --symbols its named text
     let (pa, pb) = if r.named.is_some() { (&sa, &sb) } else { (&a, &b) };
-    let ops = crate::difflib::opcodes(&a, &b);
-    use crate::difflib::Tag;
-    let n: usize = ops.iter().filter(|o| o.0 != Tag::Equal).map(|o| o.2 - o.1 + o.4 - o.3).sum();
+    let (n, frame, body) = diff_lines(&r.la, &r.lb, &a, &b, pa, pb, plain, all);
     let row = r.row.as_object().cloned().unwrap_or_default();
     let mut head = record(&[("fn", Tok::I(int(&row, "addr"))), ("name", vt(row.get("name"))), ("code", vt(row.get("code"))), ("ours", Tok::I(a.len() as i64)),
                             ("original", Tok::I(b.len() as i64)), ("differing", Tok::I(n as i64))]);
+    if let Some((fa, fb)) = frame {
+        head += &format!("  {}", record(&[("frame", s(format!("{fa:#x}/{fb:#x}")))]));
+    }
     if let Some(t) = &r.tables {
         head += &format!("  {}", tables_tokens(t));
     }
     let mut out = vec![head];
+    if let Some((fa, fb)) = frame {
+        out.push(format!("  frame: ours {fa:#x}, the original's {fb:#x}: stack offsets aligned, a line that differs only by the shift counts \
+                          as equal ('~' ours); --plain diffs the texts as they are"));
+    }
     if n > 0 {
         out.push("  legend: '-' ours (our object), '+' the original (the image)".into());
     }
@@ -239,31 +309,7 @@ pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str
         out.push("  symbols: ours by our relocations, the original's by the ledger; '!' the same instruction naming another symbol \
                   (ours | the original's)".into());
     }
-    for (tag, i1, i2, j1, j2) in ops {
-        if tag == Tag::Equal {
-            // runs of lines that print alike (without --symbols the whole run); a line whose names differ
-            // (--symbols) is always printed, `!`, ours | the original's
-            let mut i = i1;
-            while i < i2 {
-                let same = |i: usize| pa[i] == pb[j1 + i - i1];
-                let mut e = i + 1;
-                while e < i2 && same(e) == same(i) {
-                    e += 1;
-                }
-                if !same(i) {
-                    out.extend((i..e).map(|k| format!("!  {:#010x}  {}   | {}", r.la[k].addr, pa[k], pb[j1 + k - i1])));
-                } else if e - i > 6 && !all {
-                    out.push(format!("     ... {} equal instructions ...", e - i));
-                } else {
-                    out.extend((i..e).map(|k| format!("   {:#010x}  {}", r.la[k].addr, pa[k])));
-                }
-                i = e;
-            }
-            continue;
-        }
-        out.extend((i1..i2).map(|i| format!("-  {:#010x}  {}", r.la[i].addr, pa[i])));
-        out.extend((j1..j2).map(|j| format!("+  {:#010x}  {}", r.lb[j].addr, pb[j])));
-    }
+    out.extend(body);
     Ok((out, None, 0))
 }
 
@@ -562,4 +608,30 @@ pub fn lint_command(project: PyRef<'_, PyProject>) -> PyResult<(Vec<String>, boo
         }
     }
     Ok((out, !errors.is_empty() || !cross.is_empty()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame 4 bytes larger shifts every stack offset: aligned, only the store that differs otherwise is a
+    /// difference (a match-base report: hundreds of lines differed by the shift alone).
+    #[test]
+    fn asmdiff_aligns_frames() {
+        let body = ["sub esp, {f}", "mov eax, dword ptr [esp + {arg}]", "mov dword ptr [esp + 0x10], eax", "mov ecx, 3", "mov edx, 4",
+                    "lea ecx, [esp + {loc}]", "push ecx", "call X", "{st}", "add esp, {f}", "ret"];
+        let f = |fr: &str, arg: &str, loc: &str, st: &str| -> (Vec<crate::x86::Line>, Vec<String>) {
+            let ts: Vec<String> = body.iter().map(|t| t.replace("{f}", fr).replace("{arg}", arg).replace("{loc}", loc).replace("{st}", st)).collect();
+            (ts.iter().enumerate().map(|(k, t)| crate::x86::Line { addr: 0x1000 + k as u32, size: 1, text: t.clone(), fill: false, target: None }).collect(), ts)
+        };
+        let (la, a) = f("0xcc", "0xd0", "0x7c", "mov dword ptr [esp + 0x14], ecx");
+        let (lb, b) = f("0xc8", "0xcc", "0x78", "mov dword ptr [esp + 0x14], 0");
+        let (n, frame, out) = diff_lines(&la, &lb, &a, &b, &a, &b, false, true);
+        assert_eq!((n, frame), (2, Some((0xcc, 0xc8))));
+        assert_eq!(out.iter().filter(|l| l.starts_with('-') || l.starts_with('+')).collect::<Vec<_>>(),
+                   ["-  0x00001008  mov dword ptr [esp + 0x14], ecx", "+  0x00001008  mov dword ptr [esp + 0x14], 0"]);
+        assert!(out.contains(&"~  0x00001001  mov eax, dword ptr [esp + 0xd0]".to_string()) && out.contains(&"   0x00001003  mov ecx, 3".to_string()));
+        let (n, frame, _) = diff_lines(&la, &lb, &a, &b, &a, &b, true, true);
+        assert_eq!((n, frame), (10, None)); // --plain: the shifted lines differ
+    }
 }
