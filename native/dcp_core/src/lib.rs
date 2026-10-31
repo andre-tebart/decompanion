@@ -681,4 +681,20 @@ mod tests_runs {
         write("in4", &rows("y"), &[], false);
         assert!(state(&k.db).1 != changed.1);
     }
+
+    /// A derived value is made once per state of the current runs and made again when a run changes.
+    #[test]
+    fn derived_follows_the_runs() {
+        let k = crate::rules::testkit::Kit::new(&crate::pe::testpe::build(None));
+        let write = |input: &str, tag: &str| with_db(&k.db, |db| write_run(db, &k.db, "T", "1", "c", input, &rows(tag), &[], 5, true)).unwrap();
+        let made = std::cell::Cell::new(0);
+        let get = || store::derived(&k.db, "test", || { made.set(made.get() + 1); Ok(made.get()) }).unwrap();
+        write("in1", "x");
+        assert_eq!((*get(), *get(), made.get()), (1, 1, 1));
+        write("in2", "x"); // the same output: the run and its time stay
+        assert_eq!(*get(), 1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write("in3", "y");
+        assert_eq!((*get(), made.get()), (2, 2));
+    }
 }

@@ -110,7 +110,7 @@ pub fn grade_command(project: PyRef<'_, PyProject>, what: Option<String>, q7: &s
             let (d, rd) = (n("draft"), n("readable"));
             out.push(format!("  {code:<8} {d:>7} {rd:>9} {:>7}", d + rd));
         }
-        for u in &units {
+        for u in units.iter() {
             out.push(format!("  {}", record(&[("unit", vt(u.get("unit"))), ("range", Tok::R(int(u, "lo"), int(u, "hi"))), ("code", vt(u.get("code"))),
                                               ("readability", vt(u.get("readability"))), ("functions", vt(u.get("functions"))),
                                               ("named_by", vt(u.get("named_by")))])));

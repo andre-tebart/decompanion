@@ -25,6 +25,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use serde_json::{Map, Value};
+use std::rc::Rc;
 use sha1::{Digest, Sha1};
 
 const CODE: [&str; 3] = ["draft", "shape", "byte"];
@@ -41,7 +42,11 @@ fn s<'a>(r: &'a Row, k: &str) -> &'a str {
 }
 
 /// The function grade rows (the value with addr and by), by address.
-pub fn function_grades(db: &str) -> PyResult<Vec<Row>> {
+pub fn function_grades(db: &str) -> PyResult<Rc<Vec<Row>>> {
+    store::derived(db, "grades.function", || function_rows(db))
+}
+
+fn function_rows(db: &str) -> PyResult<Vec<Row>> {
     let facts = with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("function")))?;
     let mut out: Vec<Row> = facts.iter().map(|f| {
         let mut m = f.value.as_object().cloned().unwrap_or_default();
@@ -53,7 +58,11 @@ pub fn function_grades(db: &str) -> PyResult<Vec<Row>> {
     Ok(out)
 }
 
-pub fn unit_grades(db: &str) -> PyResult<Vec<Row>> {
+pub fn unit_grades(db: &str) -> PyResult<Rc<Vec<Row>>> {
+    store::derived(db, "grades.unit", || unit_rows(db))
+}
+
+fn unit_rows(db: &str) -> PyResult<Vec<Row>> {
     let facts = with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("unit")))?;
     let mut out: Vec<Row> = facts.iter().map(|f| {
         let mut m = f.value.as_object().cloned().unwrap_or_default();
@@ -113,10 +122,14 @@ fn tagged(r: &Row, unit: &str, section: &str) -> Row {
 }
 
 /// The items of the base / deep / names queue in order (module docstring).
-pub fn queue(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> PyResult<Vec<Row>> {
+pub fn queue(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> PyResult<Rc<Vec<Row>>> {
+    store::derived(db, &format!("queue {which} {shard:?} {unit:?}"), || queue_rows(db, which, shard, unit))
+}
+
+fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> PyResult<Vec<Row>> {
     let rows = function_grades(db)?;
     let mut by_unit: Vec<(String, Vec<&Row>)> = vec![];
-    for r in &rows {
+    for r in rows.iter() {
         let u = s(r, "unit");
         match by_unit.iter_mut().find(|x| x.0 == u) {
             Some(x) => x.1.push(r),
@@ -307,7 +320,7 @@ pub fn baseline_text(targets: &[(String, String)], old: &str, accept_falls: bool
     let base = parse_baseline(old);
     let mut rows = vec![];
     for (t, db) in targets {
-        for r in function_grades(db)? {
+        for r in function_grades(db)?.iter() {
             let a = r["addr"].as_i64().unwrap_or(0);
             let mut e = entry_of(&r);
             if let Some((_, o)) = base.iter().find(|x| x.0 .0 == *t && x.0 .1 == a) {
@@ -332,7 +345,7 @@ pub fn baseline_text(targets: &[(String, String)], old: &str, accept_falls: bool
 pub fn regressions(target: &str, db: &str, text: &str) -> PyResult<Vec<String>> {
     let mut base: Vec<(i64, Entry)> = parse_baseline(text).into_iter().filter(|x| x.0 .0 == target).map(|x| (x.0 .1, x.1)).collect();
     base.sort_by_key(|x| x.0);
-    let now: std::collections::HashMap<i64, Row> = function_grades(db)?.into_iter().map(|r| (r["addr"].as_i64().unwrap_or(0), r)).collect();
+    let now: std::collections::HashMap<i64, Row> = function_grades(db)?.iter().cloned().map(|r| (r["addr"].as_i64().unwrap_or(0), r)).collect();
     let mut out = vec![];
     for (a, r) in base {
         let n = now.get(&a).map(|x| (s(x, "code"), s(x, "readability")));
@@ -359,7 +372,7 @@ fn rows_py<'py>(py: Python<'py>, rows: Vec<Row>) -> PyResult<Bound<'py, PyList>>
 
 #[pyfunction]
 pub fn grades_function<'py>(py: Python<'py>, db: &str) -> PyResult<Bound<'py, PyList>> {
-    rows_py(py, function_grades(db)?)
+    rows_py(py, (*function_grades(db)?).clone())
 }
 
 /// The baseline text with one function's entry lowered to code + readability and its accepted column set.
@@ -524,7 +537,7 @@ pub fn grades_auto_clear(project: PyRef<'_, crate::project::PyProject>) -> PyRes
     let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];
-    for r in function_grades(&p.store_path())? {
+    for r in function_grades(&p.store_path())?.iter() {
         let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let level = r.get("level").is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
         if level && s("code") == "byte" && s("readability") == "readable" {

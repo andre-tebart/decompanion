@@ -69,7 +69,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
     let img = Python::attach(|_| crate::image(&target.path)).map_err(|e| e.to_string())?;
     let all_combos = combos();
     let rows: Vec<serde_json::Map<String, Value>> = crate::queues::function_grades(&db).map_err(|e| e.to_string())?
-        .into_iter().filter(|r| r["code"] == "byte").collect();
+        .iter().cloned().filter(|r| r["code"] == "byte").collect();
     let plan = crate::plan::plan(p)?;
     let units: HashMap<&str, &crate::plan::Tu> = plan.iter().map(|a| (a.unit.as_str(), a)).collect();
     let mut jobs: Vec<Job> = vec![];

@@ -28,7 +28,7 @@ fn py_int0(s: &str) -> Option<i64> {
 /// The function grade row named `key` (a function name or an address).
 pub fn find_function(db: &str, key: &str) -> PyResult<Option<Value>> {
     let a = if key.to_lowercase().starts_with("0x") { py_int0(key) } else { None };
-    Ok(crate::queues::function_grades(db)?.into_iter()
+    Ok(crate::queues::function_grades(db)?.iter().cloned()
         .find(|r| r.get("name").and_then(|v| v.as_str()) == Some(key) || (a.is_some() && r["addr"].as_i64() == a))
         .map(Value::Object))
 }

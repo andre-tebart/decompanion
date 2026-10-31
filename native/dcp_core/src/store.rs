@@ -86,6 +86,29 @@ impl RunFacts {
 thread_local! {
     // store path -> (run id, run time) -> its facts
     static MEM: RefCell<HashMap<String, HashMap<(i64, u64), Rc<RunFacts>>>> = RefCell::new(HashMap::new());
+    // (store path, what) -> (the current runs it was made of, the value)
+    static MADE: RefCell<HashMap<(String, String), (Vec<(i64, u64)>, Rc<dyn std::any::Any>)>> = RefCell::new(HashMap::new());
+}
+
+/// The identity of the store's current runs: (id, time) of each, by id.
+pub fn runs_key(db: &Connection) -> rusqlite::Result<Vec<(i64, u64)>> {
+    let mut st = db.prepare_cached("SELECT id, at FROM run WHERE current=1 ORDER BY id")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?.to_bits())))?;
+    rows.collect()
+}
+
+/// A value made from the store's current facts (`what` names it with everything else it depends on), made once per
+/// state of the current runs: a run's facts never change under its (id, time), so the same runs give the same value.
+pub fn derived<T: 'static>(db_path: &str, what: &str, make: impl FnOnce() -> pyo3::PyResult<T>) -> pyo3::PyResult<Rc<T>> {
+    let key = crate::with_db(db_path, |c| runs_key(c))?;
+    let id = (db_path.to_string(), what.to_string());
+    let hit = MADE.with(|m| m.borrow().get(&id).filter(|e| e.0 == key).and_then(|e| e.1.clone().downcast::<T>().ok()));
+    if let Some(v) = hit {
+        return Ok(v);
+    }
+    let v = Rc::new(make()?);
+    MADE.with(|m| m.borrow_mut().insert(id, (key, v.clone() as Rc<dyn std::any::Any>)));
+    Ok(v)
 }
 
 /// A run's facts read from the store. `before`: the same run as memory held it before it was recorded again in

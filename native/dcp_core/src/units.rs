@@ -335,7 +335,7 @@ fn view_units(p: &crate::project::Project) -> PyResult<Vec<String>> {
 
 /// ({function address: code grade}, the number of bug / error conflicts).
 fn byte_state(db: &str) -> PyResult<(BTreeMap<i64, Option<String>>, usize)> {
-    let grades = crate::queues::function_grades(db)?.into_iter()
+    let grades = crate::queues::function_grades(db)?.iter().cloned()
         .filter_map(|r| Some((r.get("addr")?.as_i64()?, r.get("code").and_then(|c| c.as_str()).map(|c| c.to_string())))).collect();
     let errors = crate::pystore::st_conflicts(db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
     Ok((grades, errors))

@@ -725,7 +725,7 @@ pub fn build_summary(project: PyRef<'_, PyProject>, compile: (i64, i64, i64, i64
     let rows = crate::queues::function_grades(&db)?;
     if !rows.is_empty() {
         let mut c: BTreeMap<(String, String), usize> = BTreeMap::new();
-        for r in &rows {
+        for r in rows.iter() {
             let g = |k: &str| r.get(k).map(py_str).unwrap_or_default();
             *c.entry((g("code"), g("readability"))).or_default() += 1;
         }
@@ -1008,7 +1008,7 @@ pub fn layout_units(project: PyRef<'_, PyProject>, verbose: bool, json: bool) ->
     } else {
         (vec![], vec![], None)
     };
-    for r in &rows {
+    for r in rows.iter() {
         let mut row: Vec<(String, J)> = ["unit", "range", "status", "start", "end", "named_by", "open_bytes", "functions", "sourced", "undrafted"].iter()
             .map(|k| (k.to_string(), get(r, k))).collect();
         let leaks = get(r, "leaks");

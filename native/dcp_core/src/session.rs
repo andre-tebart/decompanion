@@ -86,7 +86,7 @@ fn state(p: &Project) -> PyResult<Value> {
     let str_of = |r: &Map<String, Value>, k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let units = crate::with_db(&db, |c| crate::store::facts_of(c, &db, "unit", None, |f| f.value.get("status").is_some()))?;
     let mut grades: BTreeMap<String, i64> = BTreeMap::new();
-    for r in &rows {
+    for r in rows.iter() {
         *grades.entry(format!("{}+{}", str_of(r, "code"), str_of(r, "readability"))).or_default() += 1;
     }
     let errors = crate::pystore::st_conflicts(&db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
@@ -163,11 +163,14 @@ pub(crate) fn unit_rows(v: &crate::layoutview::View) -> Vec<UnitRow> {
     }).collect()
 }
 
-pub(crate) fn view_of(p: &Project) -> PyResult<crate::layoutview::View> {
+/// The layout view of a target's store, made once per state of its current runs (and of the drafts it reads).
+pub(crate) fn view_of(p: &Project) -> PyResult<std::rc::Rc<crate::layoutview::View>> {
     let db = p.store_path();
     let main = p.main_uri();
     crate::pystore::st_open(&db, &main)?;
-    crate::layoutview::View::load(&db, &main, &p.target(None).map_err(err)?.path)
+    let image = p.target(None).map_err(err)?.path.clone();
+    let drafts = (crate::pystore::st_meta(&db, "drafts")?, crate::pystore::st_main_meta(&db, &main, "drafts")?);
+    crate::store::derived(&db, &format!("view {main} {image} {drafts:?}"), || crate::layoutview::View::load(&db, &main, &image))
 }
 
 /// The unit table summary, the first open function, the toolchain level and the analyzer of one target.
