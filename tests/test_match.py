@@ -131,24 +131,25 @@ def test_compare_masked_and_aid():
 
 
 def test_aligned_sites():
-    x86 = isa_plugins.get("x86")
+    """Native (native/dcp_core rules.rs aligned_sites, what M8.reloc reads)."""
+    from decompanion import native
+    from decompanion.rules.engine import capstone_dll
     ours = b"\x55\x8b\xec\xe8\x00\x00\x00\x00\x5d\xc3"           # push ebp; mov ebp,esp; call f; pop ebp; ret
     mask = bytes([0, 0, 0, 0, 1, 1, 1, 1, 0, 0])
     site = [(4, 4)]
 
-    def cmp(orig):
-        c = C.Compared(0x1000, len(ours), ours, mask, orig)
-        c.diffs = [k for k in range(len(ours)) if not mask[k] and ours[k] != orig[k]]
-        return c
+    def aligned(orig):
+        matched = all(mask[k] or ours[k] == orig[k] for k in range(len(ours)))
+        return native.core().aligned_sites(capstone_dll(), ours, mask, orig, 0x1000, matched, site)
 
     # a draft whose call sits where the original's does: the site lines up although the function differs
-    assert C.aligned_sites(x86, cmp(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5e\xc3"), site) == {4}
+    assert aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5e\xc3") == {4}
     # one more instruction before the call (push ecx): the original's bytes at our site are no call target
-    assert C.aligned_sites(x86, cmp(b"\x55\x8b\xec\x51\xe8\x10\x00\x00\x00\xc3"), site) == set()
+    assert aligned(b"\x55\x8b\xec\x51\xe8\x10\x00\x00\x00\xc3") == set()
     # the same size and offset but another instruction (mov eax, imm32): no line-up either
-    assert C.aligned_sites(x86, cmp(b"\x55\x8b\xec\xb8\x10\x00\x00\x00\x5d\xc3"), site) == set()
+    assert aligned(b"\x55\x8b\xec\xb8\x10\x00\x00\x00\x5d\xc3") == set()
     # a match lines up everywhere
-    assert C.aligned_sites(x86, cmp(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5d\xc3"), site) == {4}
+    assert aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5d\xc3") == {4}
 
 
 # ------------------------------------------------------------------------------------------------ diffclass

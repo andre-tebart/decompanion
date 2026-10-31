@@ -88,6 +88,7 @@ pub struct Obj {
 }
 
 pub struct FunctionCode {
+    pub secnum: usize, // the function's section
     pub data: Vec<u8>,
     pub mask: Vec<u8>,
     pub relocs: Vec<(u32, Reloc)>, // (offset from the function start, relocation)
@@ -283,6 +284,55 @@ impl Obj {
             .filter(|r| start <= r.offset && r.offset < end)
             .map(|r| (r.offset - start, *r))
             .collect();
-        FunctionCode { data, mask, relocs, code_len: table.map(|t| t - start) }
+        FunctionCode { secnum: sym.secnum as usize, data, mask, relocs, code_len: table.map(|t| t - start) }
+    }
+}
+
+impl Obj {
+    /// The symbol of a symbol-table index (None for an auxiliary record or an index past the table).
+    pub fn symbol_at(&self, index: u32) -> Option<&Symbol> {
+        self.by_index.get(&(index as usize)).map(|&k| &self.symbols[k])
+    }
+
+    /// Section.addend: the 4 bytes a relocation of width 4 rewrites, as the object holds them (0 otherwise).
+    pub fn addend(&self, secnum: usize, r: &Reloc) -> u32 {
+        let (_, w) = r.kind_width();
+        match self.sections.get(secnum).and_then(|s| s.data.as_ref()) {
+            Some(d) if w == 4 && (r.offset as usize) + 4 <= d.len() => {
+                let o = r.offset as usize;
+                u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]])
+            }
+            _ => 0,
+        }
+    }
+}
+
+impl Reloc {
+    /// Reloc.resolve: the address the linked site refers to (ABSOLUTE: value - addend; RELATIVE: the field's end +
+    /// value - addend), None for the other kinds.
+    pub fn resolve(&self, site_va: u32, site: &[u8], addend: u32) -> Option<u32> {
+        let (kind, w) = self.kind_width();
+        if w != 4 || site.len() < 4 {
+            return None;
+        }
+        let v = u32::from_le_bytes([site[0], site[1], site[2], site[3]]);
+        match kind {
+            ABSOLUTE => Some(v.wrapping_sub(addend)),
+            RELATIVE => Some(site_va.wrapping_add(w).wrapping_add(v).wrapping_sub(addend)),
+            _ => None,
+        }
+    }
+}
+
+impl Symbol {
+    /// "string" for a string literal COMDAT (`??_C@`), "float" for a floating constant (`__real@`).
+    pub fn constant(&self) -> Option<&'static str> {
+        if self.name.starts_with("??_C@") {
+            Some("string")
+        } else if self.name.starts_with("__real@") {
+            Some("float")
+        } else {
+            None
+        }
     }
 }

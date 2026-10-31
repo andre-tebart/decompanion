@@ -491,5 +491,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compare_functions, m)?)?;
     m.add_function(wrap_pyfunction!(rules::run_rule, m)?)?;
     m.add_function(wrap_pyfunction!(lde_selftest, m)?)?;
+    m.add_function(wrap_pyfunction!(rules::py_aligned_sites, m)?)?;
     Ok(())
 }

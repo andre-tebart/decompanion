@@ -142,27 +142,3 @@ def compare(img, code, addr: int, reloc_sites: list[int] | None, next_start: int
         c.missing_sites = [s for s in abs_sites if s not in have]
         c.sites_ok = not c.missing_sites
     return c
-
-
-def aligned_sites(isa, c: Compared, sites) -> set[int]:
-    """The offsets of `sites` ((offset, width) of our relocated fields) that line up with the original's code:
-    our bytes and the original's bytes at the function's address, each decoded straight from the first byte
-    (Isa.disasm), both have an instruction starting at the same offset that holds the field, of the same size,
-    and the two agree in every byte our relocations do not mask. Only there does the original's field hold
-    what our field stands for; anywhere else it holds unrelated bytes. A match lines up everywhere."""
-    if c.matched:
-        return {off for off, _ in sites}
-    ours = isa.disasm(bytes(c.ours), c.addr)
-    starts = [ln.addr - c.addr for ln in ours]
-    theirs = {ln.addr - c.addr: ln.size for ln in isa.disasm(bytes(c.orig), c.addr)}
-    out = set()
-    for off, width in sites:
-        i = bisect.bisect_right(starts, off) - 1
-        if i < 0:
-            continue
-        o, n = starts[i], ours[i].size
-        if off + width > o + n or theirs.get(o) != n:
-            continue
-        if all(c.mask[k] or c.ours[k] == c.orig[k] for k in range(o, o + n)):
-            out.add(off)
-    return out

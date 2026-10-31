@@ -1039,3 +1039,9 @@ N1 in progress (2026-10-31):
   so a result is capstone's. Checked: 20M random byte strings (the tables answer 92 %, no mismatch: the first runs
   found segment registers 6 / 7, `mov cs`, DC D0..DF and F3 66 90) and every function of gildegold decoded whole
   from our objects and from the image (9336 blobs, equal). M.match 53 ms -> 20 ms per run.
+- M8.reloc is native (aligned sites from the length decoder, the name registry, Reloc.resolve with the object's
+  addend, Python's bytes repr in the messages). Neither the tests nor gildegold had an M8 / M9 / M10 conflict, so
+  the shadow was also run on three temporary edits of gildegold's ch.c that keep the functions byte-matched (a
+  global swapped for another of its type, a float constant and a string literal changed): the three conflicts
+  appear and the native out_hash equals Python's. 26 .. 28 ms per run (Python 70 .. 240 ms). The Python body and
+  compare.aligned_sites are deleted; tests/test_match.py's aligned-sites cases run against the native function.

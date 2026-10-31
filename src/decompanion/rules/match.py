@@ -20,10 +20,9 @@ import re
 
 from ..build import compile as build_compile
 from ..ledger import srcscan
-from ..ledger.fact import Kind, Level, Severity, severity_of
+from ..ledger.fact import Kind, Level, Severity
 from ..ledger.store import sha256
 from ..match import compare as C
-from ..objfmt.base import ABSOLUTE, RELATIVE
 from .engine import RuleContext, rule
 
 P, D, DE, O = Level.proven, Level.derived, Level.declared, Level.open
@@ -227,12 +226,11 @@ def name_registry(ctx) -> tuple[dict, dict]:
     return by_name, by_addr
 
 
-@rule("M8.reloc", version="2", ceiling=P, needs=("L.src", *WALK, "kind:name"), inputs=("objects",),
-      helpers=(compiled_functions, starts_of, name_registry, C))
+@rule("M8.reloc", version="2", ceiling=P, needs=("L.src", *WALK, "kind:name"), inputs=("objects",), native=True)
 def reloc_checks(ctx: RuleContext):
     """For every compiled function that is a byte match, or whose bytes differ while the DLL aid holds (every
     absolute site of ours is a base-relocation site and the counts agree), each absolute or relative
-    relocation of ours whose site lines up with the original's code (compare.aligned_sites: the same
+    relocation of ours whose site lines up with the original's code (rules.rs aligned_sites: the same
     instruction at the same offset, equal outside our relocated fields; the aid alone says nothing about
     relative sites, and a function without absolute sites passes it trivially) is resolved against the image
     (the address the original's site refers to, Reloc.resolve with our addend). A site that does not line up
@@ -242,49 +240,9 @@ def reloc_checks(ctx: RuleContext):
     holds the address registered to Y (severity from the two levels).
     M9: we reference a string literal and the original's bytes at the resolved address differ from our
     literal's bytes (text or terminator).
-    M10: we reference a floating constant and the original's bytes there differ from its bits."""
-    img, isa, tc = ctx.image, ctx.project.isa, ctx.project.toolchain
-    funcs, _ = compiled_functions(ctx, [f for f in ctx.facts(Kind.source) if f.value.get("what") == "func" and f.run == "L.src"])
-    by_name, by_addr = name_registry(ctx)
-    for s, obj, sym, code, c in funcs:
-        if not (c.matched or (c.abs_image is not None and c.aid_ok)):
-            continue
-        aligned = C.aligned_sites(isa, c, [(off, r.width) for off, r, _ in code.relocs])
-        for off, r, target in code.relocs:
-            if target is None or r.kind not in (ABSOLUTE, RELATIVE) or off not in aligned:
-                continue
-            site = s.lo + off
-            to = r.resolve(site, img.read(site, r.width), code.section.addend(r))
-            if to is None:
-                continue
-            k = target.constant
-            if k in ("string", "float") and target.section is not None and target.section.data is not None:
-                lit = bytes(target.section.data[target.value:])
-                if k == "string":
-                    z = lit.find(b"\0")
-                    lit = lit[:z + 1] if z >= 0 else lit
-                have = img.read(to, len(lit))
-                if have != lit:
-                    hint = ""
-                    if k == "string" and lit[:-1].decode("latin-1").replace("\\", "/").startswith(f"src/{s.value['unit']}/"):
-                        z = img.read(to, 260).split(b"\0")[0].decode("latin-1")    # our __FILE__ against the original's
-                        hint = (f"; the unit's original file name? dcp decl add \"{to:#010x} file tu={s.value['unit']} "
-                                f"path={z} -- ...\"")
-                    yield ctx.conflict(Severity.error, "M9" if k == "string" else "M10", site, site + r.width,
-                                       f"{s.value['symbol']} at {s.lo:#x}: our {'literal' if k == 'string' else 'constant'} "
-                                       f"{lit[:40]!r} differs from the original's bytes {have[:40]!r} at {to:#x}{hint}", a=s.by)
-                continue
-            if not target.named or k is not None:
-                continue
-            cname = tc.undecorate(target.imported if target.dllimport else target.name)
-            regs = by_name.get(cname)
-            if not regs or to in regs:
-                continue
-            (b, lvl), = sorted(regs.items())[:1]
-            others = ", ".join(sorted(by_addr.get(to, ()))) or "nothing registered"
-            yield ctx.conflict(severity_of(P, lvl), "M8", site, site + r.width,
-                               f"{s.value['symbol']} at {s.lo:#x}: our object references {cname} (registered at {b:#x}) where the "
-                               f"original's site refers to {to:#x} ({others})", a=s.by)
+    M10: we reference a floating constant and the original's bytes there differ from its bits. Native:
+    native/dcp_core/src/rules.rs m8_reloc."""
+    return ()
 
 
 # ------------------------------------------------------------------------------------------------ M.flags.proven

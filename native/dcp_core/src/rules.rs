@@ -35,6 +35,7 @@ pub struct Ctx {
 
 /// One sourced function with its compiled code compared (match.compiled_functions' rows).
 pub struct Compiled {
+    pub obj: crate::ObjIndex,
     pub src: Rc<SFact>,
     pub c: Compared,
     pub code: crate::coff::FunctionCode,
@@ -142,7 +143,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
         let next = if i < starts.len() { starts[i] } else { img.end() };
         let code = obj.0.function_code(k);
         let c = compare(&img, &code, lo, relocs.as_deref(), next, &forms);
-        out.push(Compiled { src: s, c, code });
+        out.push(Compiled { obj: obj.clone(), src: s, c, code });
     }
     Ok((out, missing))
 }
@@ -242,6 +243,166 @@ fn m_match(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     Ok(())
 }
 
+/// Python's repr of a bytes object: b'..' (b".." when it holds ' and no "), \\ \t \n \r and the quote escaped,
+/// printable ASCII as is, every other byte \xhh.
+fn py_bytes(b: &[u8]) -> String {
+    let q = if b.contains(&b'\'') && !b.contains(&b'"') { b'"' } else { b'\'' };
+    let mut s = String::from("b");
+    s.push(q as char);
+    for &c in b {
+        match c {
+            b'\\' => s.push_str("\\\\"),
+            b'\t' => s.push_str("\\t"),
+            b'\n' => s.push_str("\\n"),
+            b'\r' => s.push_str("\\r"),
+            _ if c == q => {
+                s.push('\\');
+                s.push(c as char);
+            }
+            0x20..=0x7e => s.push(c as char),
+            _ => s.push_str(&format!("\\x{:02x}", c)),
+        }
+    }
+    s.push(q as char);
+    s
+}
+
+fn latin1(b: &[u8]) -> String {
+    b.iter().map(|&c| c as char).collect()
+}
+
+/// compare.aligned_sites: the offsets of `sites` ((offset, width) of our relocated fields) whose instruction
+/// starts at the same offset with the same size on both sides and agrees in every unmasked byte (all of them for
+/// a match).
+pub fn aligned_sites(dll: &str, ours: &[u8], mask: &[u8], orig: &[u8], va: u32, matched: bool, sites: &[(u32, u32)])
+    -> Result<std::collections::HashSet<u32>, String> {
+    if matched {
+        return Ok(sites.iter().map(|s| s.0).collect());
+    }
+    let lines = crate::lde::lengths(dll, ours, va)?;
+    let theirs: HashMap<u32, u32> = crate::lde::lengths(dll, orig, va)?.into_iter().map(|(a, n)| (a - va, n)).collect();
+    let starts: Vec<u32> = lines.iter().map(|l| l.0 - va).collect();
+    let mut out = std::collections::HashSet::new();
+    for &(off, width) in sites {
+        let i = starts.partition_point(|&s| s <= off);
+        if i == 0 {
+            continue;
+        }
+        let (o, n) = (starts[i - 1], lines[i - 1].1);
+        if off + width > o + n || theirs.get(&o) != Some(&n) {
+            continue;
+        }
+        if (o..o + n).all(|k| {
+            let k = k as usize;
+            mask.get(k).copied().unwrap_or(0) != 0 || ours.get(k) == orig.get(k)
+        }) {
+            out.insert(off);
+        }
+    }
+    Ok(out)
+}
+
+/// aligned_sites for Python (tests/test_match.py).
+#[pyfunction]
+#[pyo3(name = "aligned_sites")]
+pub fn py_aligned_sites(dll: &str, ours: Vec<u8>, mask: Vec<u8>, orig: Vec<u8>, va: u32, matched: bool, sites: Vec<(u32, u32)>)
+    -> PyResult<std::collections::HashSet<u32>> {
+    aligned_sites(dll, &ours, &mask, &orig, va, matched, &sites).map_err(PyRuntimeError::new_err)
+}
+
+/// M8 / M9 / M10 (M8.reloc): each relocation of ours whose site lines up with the original's code, resolved against
+/// the image: a registered symbol the original's site does not refer to (M8), a literal or a floating constant
+/// whose bytes the original does not hold there (M9 / M10).
+fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+    let img = image(&ctx.image)?;
+    let (funcs, _) = compiled_functions(ctx, db)?;
+    // name_registry: C name -> {address: the producer's best level}, address -> {C names}
+    let mut by_name: HashMap<String, std::collections::BTreeMap<i64, i64>> = HashMap::new();
+    let mut by_addr: HashMap<i64, std::collections::BTreeSet<String>> = HashMap::new();
+    for f in store::facts(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?.iter() {
+        let raw = f.s("name").unwrap_or("");
+        let origin = f.s("origin");
+        for n in raw.split('|') {
+            let n = match origin {
+                Some("import") => n.split_once('!').map(|x| x.1).unwrap_or(n).to_string(),
+                Some("lib") => crate::coff::undecorate(n),
+                _ => n.to_string(),
+            };
+            let e = by_name.entry(n.clone()).or_default().entry(f.lo).or_insert(OPEN);
+            *e = (*e).max(f.level);
+            by_addr.entry(f.lo).or_default().insert(n);
+        }
+    }
+    for x in &funcs {
+        if !(x.c.matched() || (x.c.abs_image.is_some() && x.c.aid_ok())) {
+            continue;
+        }
+        let va = x.src.lo as u32;
+        let orig = img.bytes(va, x.code.data.len());
+        let sites: Vec<(u32, u32)> = x.code.relocs.iter().map(|(off, r)| (*off, r.kind_width().1)).collect();
+        let aligned = aligned_sites(&ctx.capstone, &x.code.data, &x.code.mask, &orig, va, x.c.matched(), &sites)
+            .map_err(PyRuntimeError::new_err)?;
+        let (obj, _) = &*x.obj;
+        let symbol = x.src.s("symbol").unwrap_or("");
+        let unit = x.src.s("unit").unwrap_or("");
+        for (off, r) in &x.code.relocs {
+            let Some(target) = obj.symbol_at(r.symbol_index) else { continue };
+            let (kind, width) = r.kind_width();
+            if !(kind == crate::coff::ABSOLUTE || kind == crate::coff::RELATIVE) || !aligned.contains(off) {
+                continue;
+            }
+            let site = va.wrapping_add(*off);
+            let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(x.code.secnum, r)) else { continue };
+            let k = target.constant();
+            let tsec = if target.secnum > 0 { obj.sections.get(target.secnum as usize) } else { None };
+            if let (Some(k), Some(data)) = (k, tsec.and_then(|s| s.data.as_ref())) {
+                let mut lit: &[u8] = data.get(target.value as usize..).unwrap_or(&[]);
+                if k == "string" {
+                    if let Some(z) = lit.iter().position(|&c| c == 0) {
+                        lit = &lit[..z + 1];
+                    }
+                }
+                let have = img.bytes(to, lit.len());
+                if *have != *lit {
+                    let mut hint = String::new();
+                    let body = latin1(&lit[..lit.len().saturating_sub(1)]).replace('\\', "/");
+                    if k == "string" && body.starts_with(&format!("src/{unit}/")) {
+                        let z = img.bytes(to, 260);
+                        let z = latin1(z.split(|&c| c == 0).next().unwrap_or(&[]));
+                        hint = format!("; the unit's original file name? dcp decl add \"{:#010x} file tu={unit} path={z} -- ...\"", to);
+                    }
+                    let what = if k == "string" { "literal" } else { "constant" };
+                    let msg = format!("{symbol} at {:#x}: our {what} {} differs from the original's bytes {} at {:#x}{hint}",
+                                      x.src.lo, py_bytes(&lit[..lit.len().min(40)]), py_bytes(&have[..have.len().min(40)]), to);
+                    out.conflict("error", if k == "string" { "M9" } else { "M10" }, site as i64, (site + width) as i64, msg, &x.src.by);
+                }
+                continue;
+            }
+            if !target.named() || k.is_some() {
+                continue;
+            }
+            let linker = target.name.strip_prefix("__imp_").unwrap_or(&target.name);
+            let cname = crate::coff::undecorate(linker);
+            let Some(regs) = by_name.get(&cname) else { continue };
+            if regs.is_empty() || regs.contains_key(&(to as i64)) {
+                continue;
+            }
+            let (b, lvl) = regs.iter().next().unwrap();
+            let others = by_addr.get(&(to as i64)).map(|s| s.iter().cloned().collect::<Vec<_>>().join(", "));
+            let others = match others {
+                Some(o) if !o.is_empty() => o,
+                _ => "nothing registered".to_string(),
+            };
+            let sev = if *lvl == crate::store::PROVEN { "bug" } else { "error" };
+            let msg = format!("{symbol} at {:#x}: our object references {cname} (registered at {:#x}) where the original's site \
+                               refers to {:#x} ({others})", x.src.lo, b, to);
+            out.conflict(sev, "M8", site as i64, (site + width) as i64, msg, &x.src.by);
+        }
+    }
+    Ok(())
+}
+
 /// Run a native rule: (facts, conflicts, out_hash); recorded unless ctx.record is false (shadow).
 #[pyfunction]
 pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
@@ -250,6 +411,7 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
     with_conn(&ctx.db, |db| match ctx.rule.as_str() {
         "M.draft" => m_draft(&ctx, db, &mut out),
         "M.match" => m_match(&ctx, db, &mut out),
+        "M8.reloc" => m8_reloc(&ctx, db, &mut out),
         other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
     })?;
     let ms = t0.elapsed().as_millis() as i64;
