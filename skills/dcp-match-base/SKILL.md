@@ -113,7 +113,9 @@ work, however long.
   `dcp refs` first; OLD may be `0xADDR` / `exe:0xADDR` for the ledger's name). Several names at once:
   `uv run dcp rename OLD1 NEW1 OLD2 NEW2 ... --why "..."` or `--from FILE` (one `OLD NEW [why]` per line): one
   rebuild for all of them, and nothing is written unless every pair passes; collect the names of a function
-  and rename them in one call. Rename first, then edit: the rename writes the new name everywhere and logs it (a name already written by hand in some places is
+  and rename them in one call. names.log keeps the why as dcp received it; Git Bash passes `\\` in an argument
+  as `\` (and `\"` inside double quotes as `"`): a why with backslashes (`Menu\CHOOSEPLAYER`) goes in single
+  quotes with single backslashes, or in a `--from FILE` line. Rename first, then edit: the rename writes the new name everywhere and logs it (a name already written by hand in some places is
   completed by the rename, not refused). It prints every changed file with its replacements; a refusal is an
   `error=` record with exit 1 and nothing written: read it, never assume the rename happened. A view
   (`ai_Unk7603a0B`) keeps its name when its datum is renamed (the note lists it): rename it on its own.

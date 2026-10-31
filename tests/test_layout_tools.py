@@ -500,9 +500,11 @@ def test_rename_several_pairs(tiny, capsys):
     assert code == 1 and "pairs expected" in out, out
     capsys.readouterr()
     # two pairs on the command line and one from a file (its own why): one call, one record per pair
-    write(tiny, "pairs.txt", "# the table\n0x10001020 a_Sum the sum of both\n")
+    # (a why keeps its backslashes as written: names.log is no escaped format)
+    why_file, why_arg = r'the sum of both ("Menu\SUM", \\server\x)', r'the entry "Menu\CHOOSEPLAYER" \\server\ end' + "\\"
+    write(tiny, "pairs.txt", f"# the table\n0x10001020 a_Sum {why_file}\n")
     code, out = dcp(tiny, "rename", "a_10001000", "a_Main", "a_Unk10002000", "a_Counter", "--from", str(tiny / "pairs.txt"),
-                    "--why", "the entry")
+                    "--why", why_arg)
     assert code == 0, out
     assert "renamed=a_10001000  to=a_Main  kind=func  at=0x10001000  files=2  replacements=4" in out, out
     assert "renamed=a_Unk10002000  to=a_Counter  kind=data  at=0x10002000  files=3" in out, out
@@ -510,8 +512,8 @@ def test_rename_several_pairs(tiny, capsys):
     a = (tiny / "src/a.c").read_text()
     assert "return a_Main() + a_Counter;" in a and "int a_Sum(void)" in a and "a_10001000" not in a
     events = [l.split(" ", 1)[1] for l in log.read_text().splitlines()[-3:]]
-    assert events[0].startswith("0x10001000 func a_10001000 -> a_Main") and "why:the entry" in events[0]
-    assert events[2].startswith("0x10001020 func a_10001020 -> a_Sum") and "why:the sum of both" in events[2]
+    assert events[0].startswith("0x10001000 func a_10001000 -> a_Main") and events[0].endswith("why:" + why_arg), events
+    assert events[2].startswith("0x10001020 func a_10001020 -> a_Sum") and events[2].endswith("why:" + why_file), events
 
 
 def test_disasm_inside_an_instruction(tiny):
