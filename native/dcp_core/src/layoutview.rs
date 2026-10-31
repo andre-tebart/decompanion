@@ -127,6 +127,12 @@ impl View {
         })
     }
 
+    /// The hows of the starts at an address (`-` when none).
+    pub(crate) fn start_hows(&self, a: i64) -> String {
+        let hows: BTreeSet<&str> = self.starts.get(&a).into_iter().flatten().filter_map(|s| s.s("how")).collect();
+        if hows.is_empty() { "-".to_string() } else { hows.into_iter().collect::<Vec<_>>().join(",") }
+    }
+
     pub(crate) fn unit_index(&self, a: i64) -> Option<usize> {
         layout::unit_at(&self.units, a)
     }
@@ -450,33 +456,6 @@ impl View {
             }
         }
         Ok(out)
-    }
-
-    /// The first open item of the game code (what `dcp layout next` shows first, without its evidence lines):
-    /// {addr, kind, size, unit, how (its starts' hows), analyzed}, None when there is none.
-    fn first_open<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let items = self.items_of();
-        let mut starts: Vec<i64> = items.iter().filter(|t| t.2 == "func" || t.2 == "start").map(|t| t.0).collect();
-        starts.push(self.game.1);
-        starts.sort();
-        starts.dedup();
-        for (lo, hi, what, _) in &items {
-            if (*what == "func" || *what == "start") && self.sources.contains_key(lo) {
-                continue;
-            }
-            let k = starts.partition_point(|x| x <= lo);
-            let nxt = starts.get(k).copied().unwrap_or(self.game.1);
-            let hows: BTreeSet<&str> = self.starts.get(lo).into_iter().flatten().filter_map(|s| s.s("how")).collect();
-            let d = PyDict::new(py);
-            d.set_item("addr", lo)?;
-            d.set_item("kind", what)?;
-            d.set_item("size", if *what != "unknown" { nxt - lo } else { hi - lo })?;
-            d.set_item("unit", self.unit_index(*lo).map(|i| self.units[i].tu.clone()))?;
-            d.set_item("how", if hows.is_empty() { "-".to_string() } else { hows.into_iter().collect::<Vec<_>>().join(",") })?;
-            d.set_item("analyzed", self.drafted.contains(lo))?;
-            return Ok(Some(d));
-        }
-        Ok(None)
     }
 
     /// L2: function starts inside game units without a source (informational).

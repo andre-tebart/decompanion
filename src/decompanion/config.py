@@ -43,7 +43,6 @@ from . import analyzers as analyzer_plugins
 from . import image as image_plugins
 from . import isa as isa_plugins
 from . import native
-from . import toolchains as toolchain_plugins
 from . import fsmemo, timing
 from .ledger.store import Store
 
@@ -88,8 +87,6 @@ class Project:
         self.targets = [Target(n, Path(p), sha, img, legacy, tuple(tc), tuple(a) if a is not None else None, isa, tuple(r))
                         for n, p, sha, img, legacy, tc, a, isa, r in self.core.targets()]
         self.target_name = self.core.target_name
-        tc = self.cfg.get("toolchain") or {}
-        self.toolchain = toolchain_plugins.TOOLCHAINS[self.core.toolchain_key()](self.expand(tc["root"]) if tc.get("root") else None, tc)
         self.build_dir = self.root / "build"
         fsmemo.attach(self.root)
 
@@ -211,7 +208,7 @@ class Project:
         return self.core.archives_decl(name)
 
     def waiting(self, name: str) -> tuple[str, ...]:
-        """The obligations (obligations.py) an external input waits on: absent until a human declares it."""
+        """The obligations (decide.rs) an external input waits on: absent until a human declares it."""
         return tuple(self.core.waiting(name))
 
     def waiting_for(self, inputs) -> tuple[str, ...]:

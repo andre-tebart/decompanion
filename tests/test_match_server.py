@@ -39,7 +39,7 @@ DECL = ("0x10008cb0 boundary start by=guess tu=dllmain -- DllMain, Init and Exit
 
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
-    from decompanion.init import init_project
+    from conftest import init_project
     d = tmp_path_factory.mktemp("m3-server")
     init_project(d, SERVER, target_name="server")
     declare_vc6(d, ("LIBCMT",))

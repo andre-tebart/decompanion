@@ -262,6 +262,16 @@ def dcp(root: Path, *args) -> tuple[int, str]:
     return code, buf.getvalue()
 
 
+def init_project(d: Path, binary: Path, target_name: str | None = None):
+    """`dcp init D BINARY [--target-name NAME]`, its output swallowed."""
+    import contextlib
+    import io
+
+    from decompanion.cli import main
+    with contextlib.redirect_stdout(io.StringIO()):
+        main(["init", str(d), str(binary), *(["--target-name", target_name] if target_name else [])])
+
+
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
 
 

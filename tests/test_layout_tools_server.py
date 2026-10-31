@@ -20,7 +20,7 @@ def ghidra_ready() -> bool:
 
 @pytest.fixture(scope="module")
 def srv(tmp_path_factory):
-    from decompanion.init import init_project
+    from conftest import init_project
     root = tmp_path_factory.mktemp("srv") / "proj"
     init_project(root, SERVER, target_name="server")
     declare_vc6(root, ("LIBCMT",))

@@ -10,7 +10,7 @@ import pytest
 
 from conftest import dcp, unit
 
-from decompanion import obligations
+from decompanion.cli_decide import gate_failures
 from decompanion.build import link as L
 from decompanion.config import Project
 from decompanion.ledger.fact import Level
@@ -164,8 +164,8 @@ def test_link_library_class(tiny):
     d = tiny / "build" / "link" / "tiny"
     d.mkdir(parents=True, exist_ok=True)
     (d / "link.json").write_text(json.dumps({"unresolved": out}), newline="\n")
-    obl = [o for o in obligations.gate_failures(Project(tiny)) if o.id == "libs.archives"]
-    assert len(obl) == 1 and "1 unresolved name(s)" in obl[0].missing and "guids.lib defines 1: _IID_Foo" in obl[0].evidence
+    obl = [o for o in gate_failures(Project(tiny)) if "obligation=libs.archives" in o]
+    assert len(obl) == 1 and "1 unresolved name(s)" in obl[0] and "guids.lib defines 1: _IID_Foo" in obl[0]
 
 
 @pytest.mark.skipif(not (VC6 / "VC98" / "Lib").exists() or not (DX6 / "dxguid.lib").exists(), reason="VC6 or the DX 6.1 SDK not installed")

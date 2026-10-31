@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.skipif(not (SERVER.exists() and EXE.e
 
 @pytest.fixture(scope="module")
 def guild(tmp_path_factory):
-    from decompanion.init import init_project
+    from conftest import init_project
     d = tmp_path_factory.mktemp("guild")
     init_project(d, SERVER, target_name="server")
     assert dcp(d, "target", "add", "exe", str(EXE))[0] == 0

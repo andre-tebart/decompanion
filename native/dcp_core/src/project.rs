@@ -96,7 +96,7 @@ fn canonical(v: &Value) -> String {
 }
 
 /// The reason a table gives for one of its keys: `reason.<key>`, or the older form `reason = "..."`; '' when none.
-fn reason_of(table: Option<&toml::Table>, key: &str) -> String {
+pub(crate) fn reason_of(table: Option<&toml::Table>, key: &str) -> String {
     let r = match table.and_then(|t| t.get("reason")) {
         Some(toml::Value::Table(t)) => t.get(key).cloned(),
         Some(v) => Some(v.clone()),
@@ -129,7 +129,7 @@ pub fn target_name_of(path: &str) -> String {
     if n.chars().next().is_some_and(|c| c.is_alphabetic()) { n } else { format!("t{n}") }
 }
 
-fn is_identifier(name: &str) -> bool {
+pub(crate) fn is_identifier(name: &str) -> bool {
     let mut c = name.chars();
     c.next().is_some_and(|f| f.is_ascii_alphabetic()) && c.all(|x| x.is_ascii_alphanumeric() || x == '_' || x == '-')
 }
@@ -139,7 +139,7 @@ pub struct Project {
     pub cfg: toml::Table,
     pub targets: Vec<Target>,
     pub target_name: String,
-    core_hash: String,
+    pub(crate) core_hash: String,
     hashes: Mutex<HashMap<String, String>>,
     waits: Mutex<HashMap<String, Vec<String>>>,
 }
@@ -168,7 +168,7 @@ impl Project {
         Ok(p)
     }
 
-    fn table(&self, name: &str) -> Option<&toml::Table> {
+    pub(crate) fn table(&self, name: &str) -> Option<&toml::Table> {
         self.cfg.get(name).and_then(|v| v.as_table())
     }
 
@@ -597,6 +597,10 @@ impl PyProject {
         self.p.main_build_dir().map(|p| p.to_string_lossy().into_owned())
     }
 
+    fn toolchain_root(&self) -> Option<String> {
+        self.p.toolchain_root()
+    }
+
     fn toolchain_available(&self) -> bool {
         self.p.toolchain_available()
     }
@@ -690,10 +694,15 @@ reason = "S.rich"
 /// The targets (name, path) a configuration's text declares, paths as written relative to root.
 #[pyfunction]
 pub fn config_targets(root: &str, text: &str) -> PyResult<Vec<(String, String)>> {
-    let cfg: toml::Table = text.parse().map_err(|e: toml::de::Error| cfg_err(format!("{CONFIG_NAME}: {}", e.message())))?;
+    targets_of(root, text).map_err(cfg_err)
+}
+
+/// The targets (name, path) a configuration's text declares.
+pub fn targets_of(root: &str, text: &str) -> Result<Vec<(String, String)>, String> {
+    let cfg: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{CONFIG_NAME}: {}", e.message()))?;
     let p = Project { root: PathBuf::from(root), cfg, targets: vec![], target_name: String::new(), core_hash: String::new(),
                       hashes: Mutex::new(HashMap::new()), waits: Mutex::new(HashMap::new()) };
-    Ok(p.parse_targets().map_err(cfg_err)?.into_iter().map(|t| (t.name, t.path)).collect())
+    Ok(p.parse_targets()?.into_iter().map(|t| (t.name, t.path)).collect())
 }
 
 /// The default name of a target binary (its stem reduced to [a-z0-9_-]).

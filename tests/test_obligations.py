@@ -140,7 +140,7 @@ def test_session_start_fails_on_an_open_obligation(fresh):
 def server(tmp_path_factory):
     if not (SERVER.exists() and VC6.exists()):
         pytest.skip("server.dll or VC6 not installed")
-    from decompanion.init import init_project
+    from conftest import init_project
     root = tmp_path_factory.mktemp("obl") / "proj"
     init_project(root, SERVER, target_name="server")
     assert dcp(root, "setup", "--no-analyzer")[0] == 0

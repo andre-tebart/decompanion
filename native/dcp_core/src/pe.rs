@@ -305,6 +305,11 @@ impl Image {
         self.base <= va && va < self.end()
     }
 
+    /// The instruction set the machine type implies (None: unknown machine).
+    pub fn default_isa(&self) -> Option<&'static str> {
+        (self.machine == 0x14c).then_some("x86")
+    }
+
     /// dll (the DLL characteristic), gui (subsystem 2), console (3), else exe.
     pub fn kind(&self) -> &'static str {
         if self.is_dll {

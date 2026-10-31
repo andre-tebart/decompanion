@@ -138,20 +138,20 @@ pub fn session_record(root: &str) -> (Option<String>, Option<String>) {
 }
 
 /// One row of the unit table.
-struct UnitRow {
-    unit: String,
-    lo: i64,
-    hi: i64,
-    status: String,
-    start: String,
-    end: String,
-    named_by: Option<String>,
-    functions: i64,
-    undrafted: i64,
-    open_bytes: i64,
+pub(crate) struct UnitRow {
+    pub(crate) unit: String,
+    pub(crate) lo: i64,
+    pub(crate) hi: i64,
+    pub(crate) status: String,
+    pub(crate) start: String,
+    pub(crate) end: String,
+    pub(crate) named_by: Option<String>,
+    pub(crate) functions: i64,
+    pub(crate) undrafted: i64,
+    pub(crate) open_bytes: i64,
 }
 
-fn unit_rows(v: &crate::layoutview::View) -> Vec<UnitRow> {
+pub(crate) fn unit_rows(v: &crate::layoutview::View) -> Vec<UnitRow> {
     let mut ufs: Vec<_> = v.unit_facts.iter().collect();
     ufs.sort_by_key(|f| f.lo);
     ufs.iter().map(|f| {
@@ -163,7 +163,7 @@ fn unit_rows(v: &crate::layoutview::View) -> Vec<UnitRow> {
     }).collect()
 }
 
-fn view_of(p: &Project) -> PyResult<crate::layoutview::View> {
+pub(crate) fn view_of(p: &Project) -> PyResult<crate::layoutview::View> {
     let db = p.store_path();
     let main = p.main_uri();
     crate::pystore::st_open(&db, &main)?;

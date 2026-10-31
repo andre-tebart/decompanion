@@ -361,7 +361,7 @@ pub fn analyzer_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::Py
         let ours: BTreeSet<i64> = starts.iter().copied().collect();
         !prev.split(',').filter(|x| !x.is_empty()).filter_map(|x| i64::from_str_radix(x, 16).ok()).all(|a| ours.contains(&a))
     });
-    let isa = target.isa.clone().unwrap_or_else(|| if img.machine == 0x14c { "x86".to_string() } else { String::new() });
+    let isa = target.isa.clone().unwrap_or_else(|| img.default_isa().unwrap_or("").to_string());
     let out_dir = py_path(&format!("{}/build/{}/{}", p.root.to_string_lossy(), az.key, p.target_name));
     let ex = match py.detach(|| az.export(&inst, &target.path, &isa, &starts, &out_dir, fresh)) {
         Ok(ex) => ex,

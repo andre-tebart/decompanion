@@ -137,7 +137,7 @@ fn isdigit(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '\u{b2}' || c == '\u{b3}' || c == '\u{b9}')
 }
 
-/// toolchains/vc6 undecorate: `_f` (cdecl) and `_f@12` (stdcall) -> f, `@f@8` (fastcall) -> f; `?..` (C++) stays.
+/// undecorate: `_f` (cdecl) and `_f@12` (stdcall) -> f, `@f@8` (fastcall) -> f; `?..` (C++) stays.
 pub fn undecorate(symbol: &str) -> String {
     if symbol.starts_with('?') {
         return symbol.to_string();

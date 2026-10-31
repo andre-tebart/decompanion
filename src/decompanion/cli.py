@@ -106,7 +106,7 @@ def target_names(args) -> list[str | None]:
 def cmd_setup(args):
     """Run every rule (a rule whose input is not declared yet waits: rules/engine.py); then, unless --no-analyzer,
     the configured analyzer's export when its key is stale (or --analyzer-force) and the rules again (L.analyzer
-    and what reads its facts); then the report and the status tail (the open obligations, obligations.py). A
+    and what reads its facts); then the report and the status tail (the open obligations, the core's decide.rs). A
     missing analyzer is a warning line, not a failure; a failed export exits 1 after the report."""
     failed = False
     for i, name in enumerate(target_names(args)):
@@ -140,12 +140,6 @@ def run_analyzer(p, e, args) -> bool:
     if o["note"]:
         print(f"analyzer={o['analyzer']}: {o['note']}", file=sys.stderr)
     return True
-
-
-def candidate_entry(tc, e) -> str:
-    """One Rich candidate as `dcp toolchain` prints it."""
-    extra = f", {e['archive_objects']} archive objects" if e.get("archive_objects") else ""
-    return f"{tc.declare(e)} ({e['tool']} {e['language'] or '-'} x{e['count']}{extra})"
 
 
 def cmd_report(args, p=None, e=None):
@@ -277,7 +271,7 @@ def cmd_conflicts(args):
 def cmd_check(args):
     """The gate, per target (every target unless --target): the stale units compile (dcp build), every rule
     ran (the loaders included), no bug / error conflicts (M.compile, M.gen, M1, M8.. among them), no open
-    toolchain or libs obligation (obligations.py), and, once
+    toolchain or libs obligation (decide.rs), and, once
     the target has a source, the full link resolves every external. --against REV: no function grade fell
     against ledger/grades.tsv at that git revision. Each target ends with its verdict line (`gate=ok` or
     `gate=FAIL` and the failing parts), the same verdict `dcp session wrap` prints. Exit 1 otherwise."""
@@ -309,7 +303,7 @@ def cmd_check(args):
                     print(x.line())
             if conf and not bad:
                 reasons.append(f"strict={len(conf)}")
-        if p.store.facts(Kind.build) and p.toolchain.available():
+        if p.store.facts(Kind.build) and p.core.toolchain_available():
             lr = L.full_link(p)
             print_link(lr)
             if not lr.ok:
@@ -317,10 +311,10 @@ def cmd_check(args):
                                + (f",errors={len(lr.errors)}" if lr.errors else ""))
         elif p.store.facts(Kind.build):
             print(record(link=name, skipped="the toolchain is not available"))
-        from .obligations import gate_failures
+        from .cli_decide import gate_failures
         open_ = gate_failures(p)            # after the link: libs.archives reads the link's `library` class
         for o in open_:
-            print(record(**o.fields()))
+            print(o)
         if open_:
             reasons.insert(0, f"obligations={len(open_)}")
         if against is not None:
@@ -447,9 +441,13 @@ def cmd_fn(args):
 
 
 def cmd_init(args):
-    """Create the project: the [[target]] computed from the binary, nothing declared (init.py)."""
-    from .init import init_project
-    init_project(Path(args.dir), Path(args.target_path), args.name, args.target_name)
+    """Create the project: the [[target]] computed from the binary, nothing declared (the core's init.rs)."""
+    from .cli_session import DCP_ROOT
+    lines, error = native.core().init_project(args.dir, args.target_path, args.name, args.target_name, str(DCP_ROOT))
+    if error:
+        raise SystemExit(error)
+    for line in lines:
+        print(line)
 
 
 # ------------------------------------------------------------------------------------------------- targets
@@ -478,14 +476,12 @@ def cmd_target_list(args):
 
 
 def cmd_target_add(args):
-    from .init import add_target
     p = Project(Path(args.root) if args.root else None)
-    text = add_target(p.root, args.name, Path(args.path))
-    print(f"added to {p.config_path.name}:")
-    for line in text.splitlines():
-        print("  " + line)
-    p2 = Project(p.root, args.name)
-    print(f"target={args.name}  store={p2.store_path().relative_to(p2.root).as_posix()}  (run `dcp setup --target {args.name}`)")
+    lines, error = native.core().target_add(str(p.root), args.name, args.path)
+    if error:
+        raise SystemExit(error)
+    for line in lines:
+        print(line)
 
 
 # ------------------------------------------------------------------------------------------------- declarations

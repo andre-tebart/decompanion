@@ -13,7 +13,7 @@ analyzers are Ghidra and none (the core's analyzers.rs).
 |---|---|---|---|
 | Image | `image/base.py` | `[[target]] image =` (default: the only registered format; `dcp init` opens the binary with each) | `image/pe32.py` |
 | ObjectFormat | `objfmt/base.py` | `Toolchain.object_format` | `objfmt/coff.py` |
-| Toolchain | `toolchains/base.py` | `[toolchain] plugin =` (default: the only registered one) | `toolchains/vc6/` |
+| Toolchain | the core's `toolchain.rs` (trait `Toolchain`) | `[toolchain] plugin =` (default: the only registered one) | `vc6` (`toolchain.rs`, `vc6.rs`) |
 | Isa | `isa/base.py` | `[[target]] isa =` (default: `Image.default_isa`, the machine type's) | `isa/x86.py` (capstone) |
 | Analyzer | `analyzers/__init__.py` (the core's `analyzers.rs`) | `[analyzer] plugin =` (default: `ghidra`; `dcp init` writes the installation it finds, else `none`) | `ghidra`, `none` |
 
@@ -52,7 +52,7 @@ stores its entries (ledger/drafts.py); the rules read the stored entries through
   `float`: a compiler literal), `common`, `imported` (the linker symbol a dllimport reference imports);
   `import_symbols(lib)`; `alias_object(path, [(alias, canonical)])` (COFF: weak externals, search alias)
 
-### Toolchain (toolchains/base.py)
+### Toolchain (the core's toolchain.rs)
 
 - `object_format`: the ObjectFormat key of its objects
 - `fill_forms`: the alignment fill byte forms; `fill_origin(run)`: names a fill run (VC6: `cc` / `nop` / `mixed`)
@@ -83,7 +83,7 @@ stores its entries (ledger/drafts.py); the rules read the stored entries through
     cache); `library_search_dirs()`
   - `undecorate(symbol)` (`_f@12` -> `f`), `data_symbol(cname)` (`f` -> `_f`)
   - `link(LinkJob)` -> LinkResult (`ok`, `log`, `unresolved`, `errors`, `args`): one linker process (VC6:
-    `LINK.EXE @response file`, toolchains/vc6/link.py)
+    `LINK.EXE @response file`, the core's vc6.rs)
   - `default_libraries(kind)`, `entry_object(kind, dir, user_entry)` (a generated stub when the sources name
     the user entry otherwise), `module_definition(name, exports)` (the .def text with ordinals)
   - `probe_grid()` -> [(group, alternatives)], `probe_defaults()` (the tie-break)
@@ -158,7 +158,7 @@ Our starts are every start fact but L.analyzer's and every walked or placed func
 decompanion guides the user through every decision of the decompilation and takes none of them. `dcp init`
 declares nothing: it writes the `[[target]]` with what the file gives (name, path, sha256, image format, ISA) and
 the `[analyzer]` table with the plugin this machine has (ghidra when found, else none), unconfirmed. Every human
-decision is an **obligation** (`obligations.py`), computed on every call from the configuration and the store,
+decision is an **obligation** (the core's `decide.rs`), computed on every call from the configuration and the store,
 never stored:
 
 | id | open while | evidence | resolved by | checked by |
@@ -166,13 +166,13 @@ never stored:
 | `toolchain.compiler` / `.linker` | no build declared, or no reason | the Rich candidates (S.rich), the PE linker version, the time stamp, the CRT strings | `dcp toolchain declare compiler= linker=` | C.toolchain (the build is a Rich candidate) |
 | `toolchain.root` | no root declared, or no reason | the installs found (Toolchain.installs: versions, which declared or Rich builds each makes) | `dcp toolchain declare root=` | M.compile (warns when nothing compiles) |
 | `toolchain.cflags` | no flags declared, or no reason | the wizard's flags; the probe | `dcp toolchain declare cflags=` | M.flags.proven (`dcp toolchain probe`) |
-| `libs.archives` (due once the root is declared) | no archives declared, or no reason | `dcp libs candidates` (build/libcand.py: every run-time archive placed on its own, cached per image and archive) | `dcp libs declare ARCHIVE...` | S.crt.code places the members, S2 / S5 count what is missing |
+| `libs.archives` (due once the root is declared) | no archives declared, or no reason | `dcp libs candidates` (libcand.rs: every run-time archive placed on its own, cached per image and archive) | `dcp libs declare ARCHIVE...` | S.crt.code places the members, S2 / S5 count what is missing |
 | `analyzer` | `[analyzer]` has no reason | the plugin, whether it is installed, the drafts | `dcp analyzer declare` | L.analyzer, L9 |
 | `layout` | functions without a source, open units | the first open function | `dcp session start`, `dcp layout next` | L1..L10, L13..L16 |
 | `match` | functions below byte + readable | the first item of the base queue | `dcp next` | the grades |
 
 A declaration always carries a reason (`--why`, refused without one) and lands in decompanion.toml as `key =
-value` plus `reason.<key> = "..."` in the same table (`tomledit.py`, a line editor that keeps the comments); it is
+value` plus `reason.<key> = "..."` in the same table (the core's `tomledit.rs`, a line editor that keeps the comments); it is
 level declared, and the rules raise it. The older one-reason form `reason = "..."` still reads as the reason of
 every key of its table. `dcp status` prints the phase (setup / layout / match / done), whether the gate is blocked,
 then one numbered step per open obligation in order: its target, what is missing, the evidence so far, the command
@@ -226,7 +226,7 @@ Walk (rules/walk.py, derived level):
   table]`; the bound is the first `cmp reg, imm` (0 <= imm < 0x400) found scanning back at most 11 instructions,
   the index table the first byte load with a base or index register whose displacement lies in the code.
 
-Thunk (S.thunk, derived level; toolchains/vc6):
+Thunk (S.thunk, derived level; toolchain.rs):
 - LINK's import stub is `FF 25 <slot>` (`jmp dword ptr [slot]`), 6 bytes.
 - CL emits the same bytes for `return f(...)` of a dllimport f, so the bytes are a candidate only.
 - LINK places every library contribution after the objects of the command line, and packs the stubs of one

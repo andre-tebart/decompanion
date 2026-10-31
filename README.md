@@ -36,7 +36,7 @@ second iteration. Design and milestones: [docs/plan.md](docs/plan.md). Declarati
   main's store of the same target. Each target declares its own toolchain (`compiler`, `linker`, `cflags`,
   `archives`, each with `reason.<key>`; `[toolchain]` holds the plugin, the root and defaults a target
   inherits).
-- **Obligations** (`obligations.py`): decompanion takes no decision of the decompilation. `dcp init` declares
+- **Obligations** (the core's `decide.rs`): decompanion takes no decision of the decompilation. `dcp init` declares
   nothing; every human decision (the compiler and linker builds, the toolchain root, the flags, the static
   libraries, the analyzer) is an obligation computed from the configuration and the store, named by `dcp
   status` when it is due with the evidence known so far and the command that resolves it. A declaration (`dcp

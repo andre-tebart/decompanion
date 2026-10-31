@@ -3,7 +3,6 @@ check, promote, the computed report), skills install. Same output contract as cl
 """
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 
@@ -12,7 +11,7 @@ from .cli import build_target, record
 from .config import Project
 from .ledger.fact import Kind
 
-SKILLS = Path(__file__).resolve().parents[2] / "skills"      # the repository's skills/ (decompanion is installed by path)
+DCP_ROOT = Path(__file__).resolve().parents[2]      # the decompanion repository (installed by path): its skills/
 MINUTES = 30                                                  # the length of a session (the core's session.rs)
 
 
@@ -27,10 +26,10 @@ def state(p) -> dict:
 
 
 def gate(args, quiet=False) -> tuple[bool, list, dict]:
-    """No open toolchain or libs obligation (obligations.py); then build, check and link every target: (ok,
+    """No open toolchain or libs obligation (decide.rs); then build, check and link every target: (ok,
     [(target, project, link report)], {target: state})."""
     from .build import link as L
-    from .obligations import gate_failures
+    from .cli_decide import gate_failures
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
     ok, out, states = True, [], {}
     for t in p0.targets:
@@ -38,7 +37,7 @@ def gate(args, quiet=False) -> tuple[bool, list, dict]:
         obls = gate_failures(p)
         bad_builds = [f.value["tu"] for f in p.store.facts(Kind.build) if not f.value["ok"]]
         errors = [x for x in p.store.conflicts() if x.severity.value in ("bug", "error")]
-        lr = L.full_link(p) if p.store.facts(Kind.build) and p.toolchain.available() else None
+        lr = L.full_link(p) if p.store.facts(Kind.build) and p.core.toolchain_available() else None
         good = not obls and not bad_builds and not errors and (lr is None or lr.ok)
         ok = ok and good
         states[t.name] = state(p)
@@ -49,7 +48,7 @@ def gate(args, quiet=False) -> tuple[bool, list, dict]:
                                 undrafted=len((lr.unresolved or {}).get("undrafted", [])) if lr else None,
                                 obligations=len(obls) or None, gate="ok" if good else "FAIL"))
             for o in obls:
-                print("    " + record(**o.fields()))
+                print("    " + o)
             for x in errors[:10]:
                 print("    " + x.line())
             if lr is not None and not lr.ok:
@@ -135,26 +134,10 @@ def cmd_session_wrap(args):
 
 
 # ------------------------------------------------------------------------------------------------ skills
-def install_skills(root: Path, force: bool = False) -> list[str]:
-    """Copy the shipped skills (skills/<name>/SKILL.md of the decompanion repository) into <root>/.claude/skills/; the paths written."""
-    out = []
-    if not SKILLS.exists():
-        return out
-    for d in sorted(p for p in SKILLS.iterdir() if p.is_dir()):
-        for f in sorted(q for q in d.rglob("*") if q.is_file()):
-            dst = Path(root) / ".claude" / "skills" / d.name / f.relative_to(d)
-            if dst.exists() and not force and dst.read_bytes() == f.read_bytes():
-                continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(f, dst)
-            out.append(dst.relative_to(root).as_posix())
-    return out
-
-
 def cmd_skills_install(args):
     """Install (or update) the decompanion skills into the project's .claude/skills/."""
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
-    written = install_skills(p0.root, force=args.force)
+    written = native.core().skills_install(str(DCP_ROOT), str(p0.root), args.force)
     print(record(skills=len(written), into=".claude/skills"))
     for w in written:
         print("  wrote " + w)

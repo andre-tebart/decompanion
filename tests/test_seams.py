@@ -4,21 +4,21 @@ import pytest
 
 from conftest import build_pe, dcp
 
-from decompanion import image, isa, toolchains
+from decompanion import image, isa
 from decompanion.config import ConfigError, Project
 
 
 # ------------------------------------------------------------------------------------------------ registries
 def test_registries():
-    assert "pe32" in image.FORMATS and "vc6" in toolchains.TOOLCHAINS
+    assert "pe32" in image.FORMATS
     assert "x86" in isa.ISAS
-    assert toolchains.default_key() == "vc6" and image.default_key() == "pe32"
+    assert image.default_key() == "pe32"
 
 
 def test_project_plugins(tiny):
     p = Project(tiny)
     assert p.image.key == "pe32" and p.image.default_isa == "x86"
-    assert p.isa.key == "x86" and p.toolchain.key == "vc6"
+    assert p.isa.key == "x86" and p.core.toolchain_key() == "vc6"
 
 
 def test_declared_isa(tiny):
@@ -30,14 +30,6 @@ def test_declared_isa(tiny):
         Project(tiny).isa
 
 
-# ------------------------------------------------------------------------------------------------ toolchain
-def test_vc6_decisions():
-    tc = toolchains.TOOLCHAINS["vc6"](None, {})
-    assert tc.wizard_cflags() == ["/O2", "/Gy"] and tc.archive_spec("libcmt") == "{toolchain.root}/VC98/Lib/LIBCMT.LIB"
-    assert tc.archive_spec("C:/x/my.lib") == "C:/x/my.lib"
-    assert tc.declare({"tool": "Utc12_2_C", "family": "compiler", "build": 9044}) == "cl 12.00.9044"
-
-
 # ------------------------------------------------------------------------------------------------ init
 def test_init_names_plugins(tmp_path):
     pe = build_pe(tmp_path / "t.dll")
@@ -46,7 +38,7 @@ def test_init_names_plugins(tmp_path):
     text = (tmp_path / "proj" / "decompanion.toml").read_text()
     assert 'image = "pe32"\nisa = "x86"\n' in text          # computed from the file; nothing is declared
     p = Project(tmp_path / "proj")
-    assert p.toolchain.key == "vc6"                         # the only registered plugin, without a [toolchain] table
+    assert p.core.toolchain_key() == "vc6"                  # the only registered plugin, without a [toolchain] table
     assert p.target().isa == "x86" and p.isa.key == "x86"
     code, out = dcp(tmp_path / "proj", "target", "list")
     assert "isa=x86" in out

@@ -1,5 +1,6 @@
-//! The toolchain seam (toolchains/base.py is its Python face): the conventions of a compiler and linker the rules
-//! rest on, as data. VC6 (cl 12.00, link 6.00) is the one implementation (toolchains/vc6/__init__.py, rich.py).
+//! The toolchain seam: the conventions of a compiler and linker the rules rest on, as data, and the evidence the
+//! guided decisions ask for (decide.rs; the plugin hands over evidence, it never declares anything). VC6 (cl 12.00,
+//! link 6.00) is the one implementation.
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -14,8 +15,29 @@ pub struct RichProduct {
     pub language: &'static str,
 }
 
+/// One installation of a toolchain: its root (posix), the versions of its tools in their order, the compiler and
+/// linker builds it makes (what a Rich entry and a declaration name; None when unknown), whether it can run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Install {
+    pub root: String,
+    pub versions: Vec<(&'static str, String)>,
+    pub compiler_build: Option<u32>,
+    pub linker_build: Option<u32>,
+    pub ok: bool,
+}
+
 pub trait Toolchain {
     fn key(&self) -> &'static str;
+    // the evidence of the guided decisions
+    /// Every installation found on this machine (the plugin knows its usual places).
+    fn installs(&self) -> Vec<Install>;
+    /// What one installation root holds: the versions its tools report and the builds they make.
+    fn install(&self, root: &str) -> Install;
+    /// The decompanion.toml spelling of an archive a human names (`dcp libs declare NAME`): a path stays a path,
+    /// a bare name is the toolchain's archive of that name under `{toolchain.root}`.
+    fn archive_spec(&self, name: &str) -> String;
+    /// The flags the toolchain's project wizard writes for a release build: evidence for toolchain.cflags.
+    fn wizard_cflags(&self) -> &'static [&'static str];
     /// The alignment fill between functions.
     fn fill_forms(&self) -> &'static [&'static [u8]];
     fn function_alignment(&self) -> u32;
@@ -211,6 +233,56 @@ const ENTRIES: &[(&str, &str, &str, &str)] = &[
     ("_wmainCRTStartup", "console", "_wmain", "wmain"),
 ];
 const LIB_DIR: [&str; 2] = ["VC98", "Lib"];
+/// The release flags of a VC6 project wizard (/O2: maximise speed; /Gy: function-level linking): evidence for the
+/// cflags obligation until `dcp toolchain probe` distinguishes them; never written by the tool.
+const WIZARD_CFLAGS: &[&str] = &["/O2", "/Gy"];
+/// The tools whose versions an installation reports (version resources, VS_FIXEDFILEINFO; the files are read, never
+/// run): CL.EXE is only the driver; the build a Rich compiler entry records is the back end's (C2.DLL: SP5 +
+/// Processor Pack 13.00.9044, SP6 12.00.9782), the linker entry LINK.EXE's.
+const TOOL_FILES: [(&str, &str); 4] = [("cl", "VC98/Bin/CL.EXE"), ("c1", "VC98/Bin/C1.DLL"), ("c2", "VC98/Bin/C2.DLL"), ("link", "VC98/Bin/LINK.EXE")];
+const FIXED_FILE_INFO: &[u8] = b"\xbd\x04\xef\xfe"; // VS_FIXEDFILEINFO.dwSignature
+
+/// major.minor(2 digits).build of a PE file's version resource, None when it has none.
+pub fn file_version(path: &Path) -> Option<String> {
+    let b = std::fs::read(path).ok()?;
+    let i = memchr::memmem::find(&b, FIXED_FILE_INFO)?;
+    if i + 16 > b.len() {
+        return None;
+    }
+    let u = |o: usize| b.get(o..o + 4).map(|x| u32::from_le_bytes(x.try_into().unwrap()));
+    let (ms, ls) = (u(i + 8)?, u(i + 12)?);
+    Some(format!("{}.{:02}.{}", ms >> 16, ms & 0xffff, ls >> 16))
+}
+
+/// Every root of the places VC6 lives that holds VC98/Bin/CL.EXE, in the order of the places, once each:
+/// $VC6_ROOT; C:/Tools/* (the convention of this project's machines); <Program Files>/Microsoft Visual Studio and
+/// <Program Files (x86)>/Microsoft Visual Studio (the installer's default).
+fn vc6_roots() -> Vec<String> {
+    let posix = |s: &str| s.replace('\\', "/");
+    let mut roots: Vec<String> = vec![];
+    if let Some(r) = std::env::var("VC6_ROOT").ok().filter(|v| !v.is_empty()) {
+        roots.push(posix(&r));
+    }
+    if let Ok(rd) = std::fs::read_dir("C:/Tools") {
+        let mut subs: Vec<String> = rd.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        subs.sort_by_key(|s| s.to_lowercase());
+        roots.extend(subs.into_iter().map(|s| format!("C:/Tools/{s}")));
+    }
+    for (var, default) in [("ProgramFiles", "C:/Program Files"), ("ProgramFiles(x86)", "C:/Program Files (x86)")] {
+        let base = std::env::var(var).unwrap_or_else(|_| default.to_string());
+        roots.push(format!("{}/Microsoft Visual Studio", posix(base.trim_end_matches(['/', '\\']))));
+    }
+    let mut out = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for r in roots {
+        let key = std::fs::canonicalize(&r).map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| r.clone()).to_lowercase();
+        if !Path::new(&r).join("VC98").join("Bin").join("CL.EXE").is_file() || !seen.insert(key) {
+            continue;
+        }
+        out.push(r);
+    }
+    out
+}
 /// Strings of VC6's C run time: evidence that an image links the static CRT.
 const CRT_STRINGS: &[&str] = &["Microsoft Visual C++ Runtime Library", "__MSVCRT_HEAP_SELECT", "runtime error "];
 
@@ -239,6 +311,29 @@ pub struct Vc6;
 impl Toolchain for Vc6 {
     fn key(&self) -> &'static str {
         "vc6"
+    }
+    fn installs(&self) -> Vec<Install> {
+        vc6_roots().iter().map(|r| self.install(r)).collect()
+    }
+    /// The versions of CL.EXE, C1.DLL, C2.DLL and LINK.EXE; the compiler build is C2's, the linker build LINK's.
+    fn install(&self, root: &str) -> Install {
+        let versions: Vec<(&'static str, String)> = TOOL_FILES.iter()
+            .filter_map(|(k, rel)| file_version(&Path::new(root).join(rel)).map(|v| (*k, v))).collect();
+        let build = |k: &str| versions.iter().find(|(x, _)| *x == k).and_then(|(_, v)| v.rsplit_once('.')).and_then(|(_, b)| b.parse().ok());
+        Install { root: root.replace('\\', "/"), compiler_build: build("c2"), linker_build: build("link"), ok: versions.iter().any(|(k, _)| *k == "cl"),
+                  versions }
+    }
+    /// LIBCMT or LIBCMT.LIB -> {toolchain.root}/VC98/Lib/LIBCMT.LIB; a name with a slash is a path.
+    fn archive_spec(&self, name: &str) -> String {
+        if name.contains('/') || name.contains('\\') {
+            return name.replace('\\', "/");
+        }
+        let n = name.to_uppercase();
+        let n = if n.ends_with(".LIB") { n } else { format!("{n}.LIB") };
+        format!("{{toolchain.root}}/{}/{}/{n}", LIB_DIR[0], LIB_DIR[1])
+    }
+    fn wizard_cflags(&self) -> &'static [&'static str] {
+        WIZARD_CFLAGS
     }
     fn keywords(&self) -> &'static [&'static str] {
         &["__cdecl", "__stdcall", "__fastcall", "__thiscall", "__int64", "__declspec", "__asm"]
@@ -396,6 +491,27 @@ mod tests {
         assert_eq!(comp, ["Utc12_C", "Utc12_2_C"]); // by count first
         assert_eq!(r["linkers"][0]["tool"], "Linker600");
         assert_eq!(t.build_name("compiler", 9044), "VC6 SP5 and SP5 + Processor Pack (cl 12.00.9044, C2 13.00.9044)");
+    }
+
+    #[test]
+    fn evidence() {
+        let t = Vc6;
+        assert_eq!(t.wizard_cflags(), ["/O2", "/Gy"]);
+        assert_eq!(t.archive_spec("libcmt"), "{toolchain.root}/VC98/Lib/LIBCMT.LIB");
+        assert_eq!(t.archive_spec("LIBC.LIB"), "{toolchain.root}/VC98/Lib/LIBC.LIB");
+        assert_eq!(t.archive_spec("C:\\x\\my.lib"), "C:/x/my.lib");
+        let d = std::env::temp_dir().join(format!("dcp-tc-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("VC98/Bin")).unwrap();
+        let mut res = vec![0u8; 8];
+        res.extend(FIXED_FILE_INFO);
+        res.extend(0u32.to_le_bytes());
+        res.extend(((13u32 << 16) | 0).to_le_bytes());
+        res.extend(((9044u32 << 16) | 1).to_le_bytes());
+        std::fs::write(d.join("VC98/Bin/C2.DLL"), &res).unwrap();
+        std::fs::write(d.join("VC98/Bin/CL.EXE"), b"no resource").unwrap();
+        let i = t.install(&d.to_string_lossy());
+        assert_eq!((i.versions.clone(), i.compiler_build, i.linker_build, i.ok), (vec![("c2", "13.00.9044".to_string())], Some(9044), None, false));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

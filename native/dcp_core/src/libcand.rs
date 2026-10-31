@@ -131,11 +131,33 @@ pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, V
     Ok((summary, log))
 }
 
-/// libcand.candidates: (summary, log lines).
+/// `dcp libs candidates`: (the lines, the log lines): per archive members, placed members and bytes (sorted by
+/// bytes), whether the target declares it, the archive pairs that conflict.
 #[pyfunction]
 #[pyo3(signature = (project, core_hash, force=false))]
-pub fn libs_candidates<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, core_hash: &str, force: bool)
-    -> PyResult<(Bound<'py, PyAny>, Vec<String>)> {
-    let (v, log) = candidates(&project.p, core_hash, force).map_err(PyRuntimeError::new_err)?;
-    Ok((crate::pystore::json_py(py, &v)?, log))
+pub fn libs_candidates_lines(project: PyRef<'_, crate::project::PyProject>, core_hash: &str, force: bool) -> PyResult<(Vec<String>, Vec<String>)> {
+    use crate::cliread::{record, Tok};
+    let p = &project.p;
+    let (v, log) = candidates(p, core_hash, force).map_err(PyRuntimeError::new_err)?;
+    let declared: Vec<String> = p.archives_decl(None).map_err(PyRuntimeError::new_err)?.0.unwrap_or_default().iter()
+        .map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a).to_uppercase()).collect();
+    let i = |x: &Value| Tok::I(x.as_i64().unwrap_or(0));
+    let st = |x: &Value| Tok::S(x.as_str().unwrap_or("").to_string());
+    let mut out = vec![record(&[("target", Tok::S(p.target_name.clone())), ("root", st(&v["root"])), ("archives", Tok::I(v["archives"].as_array().map_or(0, |a| a.len()) as i64)),
+                                ("cached", i(&v["cached"])), ("ms", i(&v["ms"]))])];
+    for r in v["archives"].as_array().into_iter().flatten() {
+        let name = r["archive"].as_str().unwrap_or("");
+        out.push(format!("  {}", record(&[("archive", st(&r["archive"])), ("members", i(&r["members"])), ("placed", i(&r["placed"])), ("bytes", i(&r["bytes"])),
+                                          ("declared", if declared.contains(&name.to_uppercase()) { Tok::S("yes".into()) } else { Tok::No })])));
+    }
+    let conflicts = v["conflicts"].as_array().cloned().unwrap_or_default();
+    for c in &conflicts {
+        out.push(format!("  {}", record(&[("conflict", Tok::S(format!("{},{}", c["a"].as_str().unwrap_or(""), c["b"].as_str().unwrap_or("")))),
+                                          ("overlaps", i(&c["overlaps"])), ("first", c["first"].as_i64().map(Tok::I).unwrap_or(Tok::No))])));
+    }
+    if conflicts.is_empty() {
+        out.push("  conflicts: none".into());
+    }
+    out.push("resolve: dcp libs declare ARCHIVE... --why \"...\" (the evidence above)".into());
+    Ok((out, log))
 }

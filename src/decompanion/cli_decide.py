@@ -1,156 +1,76 @@
-"""dcp: the guided decisions (obligations.py): `dcp status` (the phase, the gate and the numbered steps in order,
-with the next command; --json for the records), the evidence views (`dcp toolchain`, `dcp libs candidates`) and the
-declarations (`dcp toolchain declare`, `dcp libs declare`, `dcp analyzer declare`). A declaration always carries a
-reason (`--why`, refused without one), lands in decompanion.toml as `key = value` with `reason.<key> = "..."`, is
-level declared, and reruns the rules at once so the next obligation shows. The tool never declares anything on its
-own. The other commands keep the output contract of cli.py.
+"""dcp: the guided decisions (the core's decide.rs): `dcp status` (the phase, the gate and the numbered steps in
+order, with the next command; --json for the records), the evidence views (`dcp toolchain`, `dcp libs candidates`)
+and the declarations (`dcp toolchain declare`, `dcp libs declare`, `dcp analyzer declare`). A declaration always
+carries a reason (`--why`, refused without one), lands in decompanion.toml as `key = value` with `reason.<key> =
+"..."`, is level declared, and reruns the rules at once so the next obligation shows. The tool never declares
+anything on its own. This module parses the arguments, reruns the rules and prints what the core returns.
 """
 from __future__ import annotations
 
-import json
 import sys
-import textwrap
-from collections import Counter
 from pathlib import Path
 
-from .cli import candidate_entry, jsonable, open_project, record, refresh
+from . import native
+from .cli import open_project, refresh
 from .config import Project
-from .ledger.fact import Kind
-from . import obligations as OB
-from . import tomledit as TE
+
+_core = native.core()
 
 
-def err(cmd: str, msg: str, code: int = 1) -> int:
-    print(f"dcp {cmd}: {msg}", file=sys.stderr)
+def report(cmd: str, lines, error, code: int) -> int:
+    for line in lines:
+        print(line)
+    if error:
+        print(f"dcp {cmd}: {error}", file=sys.stderr)
     return code
 
 
+def project(args, name=None) -> Project:
+    return Project(Path(args.root) if args.root else None, name or getattr(args, "target", None))
+
+
 # ------------------------------------------------------------------------------------------------ status
-DETAIL = "    "          # a step's detail lines start here
-WRAP = 100               # the width of a status line
-
-
-def detail(label: str, text: str):
-    """One labelled detail line of a step, wrapped under its own column (`need`, `seen`, `run`, ...)."""
-    first = f"{DETAIL}{label:<6}"
-    print(textwrap.fill(text, width=WRAP, initial_indent=first, subsequent_indent=" " * len(first)))
-
-
-def print_status(p, view=None, shown: set | None = None, work: bool = True, as_json: bool = False) -> list:
-    """The status tail of one target. Human output: the phase, whether the gate is blocked, then one numbered
-    step per open obligation (target, what is missing, the evidence, the command that resolves it), and a `next:`
-    line for the first one to do. `shown`: ids of project-wide obligations already printed (multi-target output
-    prints them once). `as_json`: the records of the output contract instead (status header + one per obligation).
-    Returns the obligations."""
-    obls = OB.compute(p, view, work=work)
-    shown = shown if shown is not None else set()
-    rows = [o for o in obls if not (o.target is None and o.id in shown)]
-    if as_json:
-        print(json.dumps(jsonable({"status": p.target_name, "phase": OB.phase(obls), "open": len(obls)})))
-        for o in rows:
-            print(json.dumps(jsonable(o.fields())))
-            if o.target is None:
-                shown.add(o.id)
-        return obls
-
-    waiting = sum(1 for o in obls if o.waits)
-    gates = sum(1 for o in obls if o.gate)
-    print(f"dcp status: {p.target_name}")
-    print(f"  phase  {OB.phase(obls)}")
-    print(f"  open   {len(obls)}" + (f" ({len(obls) - waiting} to do now, {waiting} waiting)" if waiting else ""))
-    print("  gate   " + (f"blocked by {gates} open obligation{'s' if gates != 1 else ''} "
-                         f"(dcp session start and dcp check fail)" if gates else "clear"))
-    hidden = [o.id for o in obls if o.target is None and o.id in shown]
-    if hidden:
-        print("  also   " + ", ".join(hidden) + " (project-wide, printed above)")
-    if not obls:
-        print()
-        print("nothing open: every decision is declared and every function is byte + readable")
-        return obls
-    print()
-    for i, o in enumerate(rows, 1):
-        print(f"{i:>2}. {o.id:<18} {'every target' if o.target is None else 'target ' + o.target}")
-        detail("need", o.missing)
-        if o.waits:
-            detail("wait", f"on {o.waits}: declare that first")
-        else:
-            if o.evidence:
-                detail("seen", o.evidence)
-            cmds = o.resolve.split("; ")
-            detail("run", cmds[0])
-            for c in cmds[1:]:
-                detail("then", c)
-        print()
-        if o.target is None:
-            shown.add(o.id)
-    nxt = next((o for o in rows if not o.waits), None)
-    if nxt is not None:
-        print("next: " + nxt.resolve.split("; ")[0])
-    elif rows:
-        print("next: waiting for " + ", ".join(sorted({o.waits for o in rows})))
-    else:
-        print("next: see the project-wide obligations above")
-    return obls
+def print_status(p, shown: list | None = None, work: bool = True, as_json: bool = False) -> list:
+    """The status of one target (decide.rs); `shown`: the project-wide obligations already printed, returned
+    extended."""
+    lines, shown = _core.decide_status(p.core, shown or [], work, as_json)
+    for line in lines:
+        print(line)
+    return shown
 
 
 def cmd_status(args):
     """Per target (every target unless --target): the phase, the gate and the open obligations in order, each
-    with what is missing, the evidence so far and the command that resolves it (obligations.py), plus the first
-    step to take. --json prints the records instead. Exit 0."""
-    shown: set = set()
-    names = ([args.target] if getattr(args, "target", None)
-             else [t.name for t in Project(Path(args.root) if args.root else None).targets])
+    with what is missing, the evidence so far and the command that resolves it, plus the first step to take.
+    --json prints the records instead. Exit 0."""
+    shown: list = []
+    names = [args.target] if getattr(args, "target", None) else [t.name for t in project(args).targets]
     for i, name in enumerate(names):
         if i:
             print()
         p, e = open_project(args, name)
         refresh(p, e)
-        print_status(p, shown=shown, as_json=args.json)
+        shown = print_status(p, shown, as_json=args.json)
     return 0
 
 
 def status_tail(p, view=None, work: bool = True):
-    """The tail other commands print (setup, session start, the declarations)."""
+    """The tail other commands print (setup, session start)."""
     print()
-    print_status(p, view, work=work)
+    print_status(p, work=work)
+
+
+def gate_failures(p) -> list[str]:
+    """The open toolchain and libs obligations of the current target as records (the session and check gate)."""
+    return _core.decide_gate(p.core)
 
 
 # ------------------------------------------------------------------------------------------------ declarations
-def parse_pairs(cmd: str, pairs: list[str], known: tuple[str, ...]) -> dict | None:
-    out = {}
-    for s in pairs:
-        if "=" not in s:
-            err(cmd, f"{s!r} is not KEY=VALUE (keys: {', '.join(known)})")
-            return None
-        k, v = s.split("=", 1)
-        k = k.strip()
-        if k not in known:
-            err(cmd, f"unknown key {k!r} (keys: {', '.join(known)})")
-            return None
-        out[k] = v.strip()
-    return out
-
-
-def target_table(p) -> tuple[str, int | None]:
-    """The (table, index) of the current target in decompanion.toml for tomledit."""
-    t = p.target()
-    if t.legacy:
-        return "target", None
-    return "target", [x.name for x in p.targets].index(t.name)
-
-
-def no_why(cmd: str, why) -> bool:
-    if why is None or not str(why).strip():
-        err(cmd, 'a declaration needs its reason: --why "..." (the evidence it rests on); nothing written')
-        return True
-    return False
-
-
 def rerun(args, name):
     """The rules again after a declaration, so the next obligation shows at once: (project, engine), or None
     before the first `dcp setup` of the target (no store yet: setup runs the rules the first time, a
     declaration made before it only writes)."""
-    p = Project(Path(args.root) if args.root else None, name)
+    p = project(args, name)
     if not p.store_path().exists():
         print("rules: not run yet (no store): `dcp setup` runs them and prints the next obligations")
         return None
@@ -159,139 +79,55 @@ def rerun(args, name):
     return p, e
 
 
-TOOLCHAIN_DECL_KEYS = ("compiler", "linker", "root", "cflags", "plugin")
-
-
 def cmd_toolchain_declare(args):
     """Declare any of compiler= linker= cflags= (the current target's table) root= plugin= ([toolchain]) with one
     reason (--why), stored per key; then rerun the rules and print C.toolchain and the status tail."""
-    cmd = "toolchain declare"
-    if no_why(cmd, args.why):
-        return 2
-    kv = parse_pairs(cmd, args.pairs, TOOLCHAIN_DECL_KEYS)
-    if kv is None:
-        return 2
-    if not kv:
-        return err(cmd, f"nothing to declare (keys: {', '.join(TOOLCHAIN_DECL_KEYS)})", 2)
-    p = Project(Path(args.root) if args.root else None, getattr(args, "target", None))
-    why = args.why.strip()
-    if "root" in kv:
-        root = Path(kv["root"]).expanduser()
-        if not root.is_dir():
-            return err(cmd, f"root={kv['root']}: no such directory; nothing written", 2)
-        kv["root"] = root.resolve().as_posix()
-    if "plugin" in kv:
-        from . import toolchains
-        if kv["plugin"] not in toolchains.TOOLCHAINS:
-            return err(cmd, f"plugin={kv['plugin']}: unknown (known: {', '.join(toolchains.TOOLCHAINS)}); nothing written", 2)
-    path = p.config_path
-    tgt = {k: (v.split() if k == "cflags" else v) for k, v in kv.items() if k in ("compiler", "linker", "cflags")}
-    proj = {k: v for k, v in kv.items() if k in ("root", "plugin")}
-    if tgt:
-        table, index = target_table(p)
-        TE.set_keys(path, table, {**tgt, **{f"reason.{k}": why for k in tgt}}, index,
-                    covered=("compiler", "linker", "cflags", "archives"))
-    if proj:
-        TE.set_keys(path, "toolchain", {**proj, **{f"reason.{k}": why for k in proj}},
-                    covered=("plugin", "root", "compiler", "linker", "cflags"))
-    for k, v in {**tgt, **proj}.items():
-        where = f"target {p.target_name}" if k in tgt else "[toolchain]"
-        print(record(declared=k, value=" ".join(v) if isinstance(v, list) else v, level="declared", where=where, why=why))
-        if isinstance(v, list):
-            print("  flags  " + (" ".join(repr(f) for f in v) or "-"))
+    p = project(args)
+    lines, error, code, root = _core.decide_toolchain_declare(p.core, args.pairs, args.why)
+    if error or code:
+        return report("toolchain declare", lines, error, code)
+    report("toolchain declare", lines, None, 0)
     r = rerun(args, p.target_name)
     if r is None:
         return 0
-    p, e = r
-    if "root" in proj:
-        inst = p.toolchain.install(Path(proj["root"]))
-        print("  " + record(root=proj["root"], available=p.toolchain.available(), **inst.versions))
-    bad = [x for x in p.store.conflicts() if x.check == "C.toolchain"]
-    if not p.waiting("toolchain"):
-        print("C.toolchain: " + ("ok" if not bad else f"{len(bad)} error(s)"))
-        for x in bad:
-            print("  " + x.message)
-    status_tail(p)
-    return 1 if bad else 0
+    lines, code = _core.decide_toolchain_after(r[0].core, root)
+    return report("toolchain declare", lines, None, code)
 
 
 def cmd_libs_declare(args):
     """Declare the current target's static library archives (bare names are the toolchain's archives under the
-    declared root: Toolchain.archive_spec) with a reason; rerun the rules (S.crt.code places the members) and
-    print what was placed and the status tail."""
-    cmd = "libs declare"
-    if no_why(cmd, args.why):
-        return 2
-    p = Project(Path(args.root) if args.root else None, getattr(args, "target", None))
-    specs = [p.toolchain.archive_spec(a) for a in args.archives]
-    if any("{toolchain.root}" in s for s in specs) and not p.toolchain_decl.get("root"):
-        return err(cmd, "the archives are named under the toolchain root, which is not declared yet: "
-                        'dcp toolchain declare root=DIR --why "..." first; nothing written', 2)
-    missing = [s for s in specs if not p.expand(s).exists()]
-    if missing:
-        return err(cmd, "no such archive: " + ", ".join(p.expand(s).as_posix() for s in missing) + "; nothing written", 2)
-    why = args.why.strip()
-    table, index = target_table(p)
-    TE.set_keys(p.config_path, table, {"archives": specs, "reason.archives": why}, index,
-                covered=("compiler", "linker", "cflags", "archives"))
-    print(record(declared="archives", value=",".join(Path(s).name for s in specs), level="declared",
-                 where=f"target {p.target_name}", why=why))
+    declared root) with a reason; rerun the rules (S.crt.code places the members) and print what was placed and
+    the status tail."""
+    p = project(args)
+    code = report("libs declare", *_core.decide_libs_declare(p.core, args.archives, args.why))
+    if code:
+        return code
     r = rerun(args, p.target_name)
-    if r is None:
-        return 0
-    p, e = r
-    units = {f.value["tu"]: f.value.get("lib", "") for f in p.store.facts(Kind.unit, rules=("S.crt.code",))}
-    c = Counter(units.values())
-    print("  placed: " + ("  ".join(f"{k}={v}" for k, v in sorted(c.items())) or "nothing") + "  (S.crt.code)")
-    status_tail(p)
+    if r is not None:
+        report("libs declare", _core.decide_libs_after(r[0].core), None, 0)
     return 0
 
 
 def cmd_libs_candidates(args):
-    """Place every run-time archive of the declared toolchain root on its own (build/libcand.py) and report per
-    archive members, placed members and placed bytes (sorted by bytes) and the archive pairs that conflict."""
-    from .build import libcand
+    """Place every run-time archive of the declared toolchain root on its own (libcand.rs) and report per archive
+    members, placed members and placed bytes (sorted by bytes) and the archive pairs that conflict."""
     p, e = open_project(args)
-    if not p.toolchain_decl.get("root"):
-        return err("libs candidates", 'no toolchain root declared: dcp toolchain declare root=DIR --why "..." first', 2)
+    if p.core.toolchain_root() is None:
+        return report("libs candidates", [], 'no toolchain root declared: dcp toolchain declare root=DIR --why "..." first', 2)
     refresh(p, e)
-    s = libcand.candidates(p, force=args.force, log=(lambda m: print(m, file=sys.stderr)) if args.verbose else None)
-    declared = {Path(a).name.upper() for a in (p.archives_decl_for()["archives"] or [])}
-    print(record(target=p.target_name, root=s["root"], archives=len(s["archives"]), cached=s["cached"], ms=s["ms"]))
-    for r in s["archives"]:
-        print("  " + record(archive=r["archive"], members=r["members"], placed=r["placed"], bytes=r["bytes"],
-                            declared="yes" if r["archive"].upper() in declared else None))
-    for c in s["conflicts"]:
-        print("  " + record(conflict=f"{c['a']},{c['b']}", overlaps=c["overlaps"], first=c["first"]))
-    if not s["conflicts"]:
-        print("  conflicts: none")
-    print('resolve: dcp libs declare ARCHIVE... --why "..." (the evidence above)')
-    return 0
+    lines, log = _core.libs_candidates_lines(p.core, native.source_hash(), args.force)
+    if args.verbose:
+        for line in log:
+            print(line, file=sys.stderr)
+    return report("libs candidates", lines, None, 0)
 
 
 def cmd_analyzer_declare(args):
     """Confirm or change the analyzer ([analyzer] plugin and its keys) with a reason."""
-    from . import analyzers
-    cmd = "analyzer declare"
-    if no_why(cmd, args.why):
-        return 2
-    if args.plugin not in analyzers.ANALYZERS:
-        return err(cmd, f"unknown analyzer {args.plugin!r} (known: {', '.join(analyzers.ANALYZERS)}); nothing written", 2)
-    kv = parse_pairs(cmd, args.pairs, ("root", "java_home", "timeout"))
-    if kv is None:
-        return 2
-    vals: dict = {"plugin": args.plugin}
-    for k, v in kv.items():
-        vals[k] = int(v) if k == "timeout" else (Path(v).as_posix() if k in ("root", "java_home") else v)
-    vals["reason"] = args.why.strip()
-    p = Project(Path(args.root) if args.root else None, getattr(args, "target", None))
-    TE.set_keys(p.config_path, "analyzer", vals)
-    p = Project(p.root, p.target_name)
-    inst = p.analyzer.available()
-    print(record(declared="analyzer", value=args.plugin, level="declared", where="[analyzer]", why=vals["reason"],
-                 available=inst.ok, at=inst.where if inst.ok else None))
-    if not inst.ok:
-        print("  " + record(unavailable=inst.reason))
+    p = project(args)
+    code = report("analyzer declare", *_core.decide_analyzer_declare(p.core, args.plugin, args.pairs, args.why))
+    if code:
+        return code
     r = rerun(args, p.target_name)
     if r is not None:
         status_tail(r[0])
@@ -300,71 +136,16 @@ def cmd_analyzer_declare(args):
 
 # ------------------------------------------------------------------------------------------------ the evidence view
 def cmd_toolchain(args):
-    """Per target (every target unless --target): what is declared (per key with its reason and level), the
-    installs found on this machine with the versions they report, the Rich candidates with the plugin's build
-    names, the PE linker version and time stamp, the CRT strings, the C.toolchain verdict, the archives and the
-    members placed, the probe."""
-    p0 = Project(Path(args.root) if args.root else None)
-    names = [args.target] if getattr(args, "target", None) else [t.name for t in p0.targets]
+    """Per target (every target unless --target): what is declared, the installs found on this machine, the Rich
+    candidates, the PE linker version and time stamp, the CRT strings, the C.toolchain verdict, the archives and the
+    members placed, the probe (decide.rs)."""
+    names = [args.target] if getattr(args, "target", None) else [t.name for t in project(args).targets]
     for i, name in enumerate(names):
         if i:
             print()
         p, e = open_project(args, name)
         refresh(p, e)
-        tc, img = p.toolchain, p.image
-        decl = p.toolchain_decl
-        reasons = decl.get("reasons") or {}
-        probed = [f for f in p.store.facts(Kind.toolchain) if f.run == "M.flags.proven"]
-        proven = sorted(f.value["flag"] for f in probed if f.level.name == "proven")
-        print(record(target=p.target_name, plugin=decl.get("plugin"), available=tc.available()))
-        for k in ("compiler", "linker", "root", "cflags"):
-            v = decl.get(k)
-            v = " ".join(v) if isinstance(v, list) else v
-            level = "open" if not v else ("declared" if reasons.get(k) else "declared-no-reason")
-            if k == "cflags" and proven:
-                level += ";proven:" + ",".join(proven)
-            print("  " + record(key=k, value=v or None, level=level, source=decl["from"].get(k), why=reasons.get(k) or None))
-        installs = tc.installs()
-        print(f"  installs found={len(installs)}  (the {tc.key} plugin's places)")
-        rich = OB.rich_fact(p)
-        for inst in installs:
-            print("    " + OB.install_text(inst, decl, rich))
-        print("  " + record(pe_linker=f"{img.linker_version[0]}.{img.linker_version[1]:02d}", built=OB.built_at(img),
-                            timestamp=f"{img.timestamp:#010x}"))
-        crt = tc.crt_strings(img)
-        print(f"  crt strings={len(crt)}" + "".join(f"\n    {a:#010x} {t!r}" for a, t in crt))
-        if rich is None:
-            print("  rich: no Rich header")
-        else:
-            v = rich.value
-            for key in ("compilers", "linkers"):
-                cands = v.get(key) or []
-                print(f"  {key[:-1]} candidates={len(cands)}  ({rich.level}, {rich.by})")
-                for c in cands:
-                    bn = tc.build_name(c["family"], c["build"])
-                    print("    " + candidate_entry(tc, c) + (f"  [{bn}]" if bn else ""))
-            print(f"  rich entries={len(v.get('entries') or [])}")
-            for en in v.get("entries") or []:
-                print(f"    prodid={en['prodid']:#04x} {en['tool']:<16} family={en['family']:<9} build={en['build']:<5} "
-                      f"count={en['count']:<4} archive_objects={en.get('archive_objects', 0)}")
-        waits = p.waiting("toolchain")
-        bad = [x for x in p.store.conflicts() if x.check == "C.toolchain"]
-        print("  C.toolchain: " + (f"waiting: {', '.join(waits)}" if waits else ("ok" if not bad else f"{len(bad)} error(s)")))
-        for x in bad:
-            print("    " + x.message)
-        ad = p.archives_decl_for()
-        if ad["archives"] is None:
-            print("  archives: open (dcp libs candidates, dcp libs declare)")
-        else:
-            print("  " + record(archives=",".join(Path(a).name for a in ad["archives"]) or "none", source=ad["from"],
-                                why=ad["reason"] or None, waiting=",".join(p.waiting("libs")) or None))
-        members = Counter(f.value.get("lib", "") for f in p.store.facts(Kind.unit, rules=("S.crt.code",)))
-        print("  libraries placed: " + ("  ".join(f"{k}={v}" for k, v in members.items()) or "none"))
-        if not probed:
-            print("  probe: not run (dcp toolchain probe): flags are declared only")
-        for f in probed:
-            v = f.value
-            print("  probe  " + record(flag=v["flag"], group=v["group"], anchors=v["anchors"], units=v["units"], level=f.level.name))
+        report("toolchain", _core.decide_toolchain_view(p.core), None, 0)
 
 
 def register(sub, cmd):
@@ -378,7 +159,7 @@ def register(sub, cmd):
     s2 = cmd(ts, "probe", cmd_probe, "the flag grid over the byte-matched functions")
     s2.add_argument("-v", "--verbose", action="store_true")
     s2 = cmd(ts, "declare", cmd_toolchain_declare, "declare compiler= linker= root= cflags= (any subset) with --why")
-    s2.add_argument("pairs", nargs="+", metavar="KEY=VALUE", help=f"keys: {', '.join(TOOLCHAIN_DECL_KEYS)}")
+    s2.add_argument("pairs", nargs="+", metavar="KEY=VALUE", help="keys: compiler, linker, root, cflags, plugin")
     s2.add_argument("--why", help="the reason (required): the evidence the declaration rests on")
     lb = sub.add_parser("libs", help="the static library archives").add_subparsers(dest="sub", required=True)
     s2 = cmd(lb, "candidates", cmd_libs_candidates, "place every run-time archive of the root on its own")

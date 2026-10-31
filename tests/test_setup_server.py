@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.skipif(not (SERVER.exists() and TOOLC
 @pytest.fixture(scope="module")
 def project(tmp_path_factory):
     from decompanion.config import Project
-    from decompanion.init import init_project
+    from conftest import init_project
     d = tmp_path_factory.mktemp("guild-server")
     init_project(d, SERVER)
     declare_vc6(d)

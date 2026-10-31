@@ -30,13 +30,13 @@ def rebuilt(args, p=None, e=None):
     from .build import compile as B
     from .cli import build_target, lint_built
     if p is not None:
-        if p.toolchain.available() and p.store.facts(Kind.build):
+        if p.core.toolchain_available() and p.store.facts(Kind.build):
             B.ensure(p)
             lint_built(p)
         refresh(p, e)
         return p, e
     p, e = open_project(args)
-    if p.toolchain.available() and p.store.facts(Kind.build):
+    if p.core.toolchain_available() and p.store.facts(Kind.build):
         p, e, _ = build_target(args, getattr(args, "target", None), quiet=True)
     else:
         refresh(p, e)
