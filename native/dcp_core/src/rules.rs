@@ -75,30 +75,35 @@ impl Compared {
 pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>, Vec<(Rc<SFact>, String)>)> {
     let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
-    let refs = store::facts(db, &ctx.db, "ref", &ctx.needed).map_err(err)?;
-    let mut relocs: Vec<u32> = refs.iter().filter(|f| f.s("rkind") == Some("reloc")).map(|f| f.lo as u32).collect();
-    relocs.sort_unstable();
-    let relocs = if relocs.is_empty() || img.relocations().is_empty() { None } else { Some(relocs) };
+    // the relocation sites only for an image that has base relocations (Python reads them, then drops them)
+    let relocs = if img.relocations().is_empty() {
+        None
+    } else {
+        let mut v: Vec<u32> = store::los_where(db, "ref", &ctx.needed, "json_extract(f.value, '$.rkind') = 'reloc'")
+            .map_err(err)?
+            .into_iter()
+            .map(|x| x as u32)
+            .collect();
+        v.sort_unstable();
+        if v.is_empty() { None } else { Some(v) }
+    };
     // starts_of: start facts, function / thunk symbols above open, the end of every code section
-    let mut starts: Vec<u32> = store::facts(db, &ctx.db, "start", &ctx.needed).map_err(err)?.iter().map(|f| f.lo as u32).collect();
-    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed).map_err(err)?.iter() {
-        if matches!(f.s("skind"), Some("func") | Some("thunk")) && f.level > OPEN {
-            starts.push(f.lo as u32);
-        }
-    }
+    let mut starts: Vec<u32> = store::los_where(db, "start", &ctx.needed, "").map_err(err)?.into_iter().map(|x| x as u32).collect();
+    starts.extend(
+        store::los_where(db, "symbol", &ctx.needed, "json_extract(f.value, '$.skind') IN ('func', 'thunk') AND f.level > 0")
+            .map_err(err)?
+            .into_iter()
+            .map(|x| x as u32),
+    );
     for s in img.sections.iter().filter(|s| s.holds_code()) {
         starts.push(s.end());
     }
     starts.sort_unstable();
     starts.dedup();
-    let srcs: Vec<Rc<SFact>> = store::facts(db, &ctx.db, "source", &ctx.needed)
-        .map_err(err)?
-        .iter()
-        .filter(|f| f.s("what") == Some("func") && &*f.rule == "L.src")
-        .cloned()
-        .collect();
+    let srcs = store::facts_where(db, "source", &ctx.needed, "r.rule = 'L.src' AND json_extract(f.value, '$.what') = 'func'")
+        .map_err(err)?;
     let (mut out, mut missing) = (vec![], vec![]);
-    // C.objects: each compiled unit's object, read once per call (a file test per function costs ~20 us each)
+    // C.objects: each compiled unit's object, read once (not per function)
     let mut objs: HashMap<String, Option<Rc<(crate::coff::Obj, HashMap<String, usize>)>>> = HashMap::new();
     for s in srcs {
         let unit = s.s("unit").unwrap_or("").to_string();
@@ -107,7 +112,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
             let o = match ctx.objects.get(&unit) {
                 Some((h, true)) if !h.is_empty() => {
                     let path = format!("{}/build/obj/{}.obj", ctx.root, h);
-                    if std::path::Path::new(&path).exists() { Some(object(&path)?) } else { None }
+                    if std::path::Path::new(&path).exists() { Some(Rc::new(object(&path)?)) } else { None }
                 }
                 _ => None,
             };
@@ -139,10 +144,9 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
 fn m_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let (funcs, _) = compiled_functions(ctx, db)?;
     let mut walk: HashMap<i64, Rc<SFact>> = HashMap::new();
-    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed).map_err(|e| PyRuntimeError::new_err(e.to_string()))?.iter() {
-        if f.s("skind") == Some("func") && &*f.rule == "S.codewalk" {
-            walk.insert(f.lo, f.clone()); // a later fact of the same start wins, as the dict comprehension does
-        }
+    let cond = "r.rule = 'S.codewalk' AND json_extract(f.value, '$.skind') = 'func'";
+    for f in store::facts_where(db, "symbol", &ctx.needed, cond).map_err(|e| PyRuntimeError::new_err(e.to_string()))? {
+        walk.insert(f.lo, f); // a later fact of the same start wins, as the dict comprehension does
     }
     for x in &funcs {
         if x.c.matched() {

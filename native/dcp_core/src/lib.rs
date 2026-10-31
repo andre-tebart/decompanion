@@ -349,42 +349,18 @@ fn record_run(
 
 // ------------------------------------------------------------------------------------------------ objects, image
 
-thread_local! {
-    static IMAGES: RefCell<HashMap<String, std::rc::Rc<pe::Image>>> = RefCell::new(HashMap::new());
-    static OBJS: RefCell<HashMap<String, std::rc::Rc<(coff::Obj, HashMap<String, usize>)>>> = RefCell::new(HashMap::new());
+/// The image at path.
+pub(crate) fn image(path: &str) -> PyResult<pe::Image> {
+    let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+    pe::Image::parse(data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))
 }
 
-/// The image at path, read once per process (the path names a target binary that never changes in place: its
-/// sha256 is checked by the project).
-pub(crate) fn image(path: &str) -> PyResult<std::rc::Rc<pe::Image>> {
-    IMAGES.with(|m| {
-        if let Some(i) = m.borrow().get(path) {
-            return Ok(i.clone());
-        }
-        let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
-        let img = std::rc::Rc::new(pe::Image::parse(data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?);
-        m.borrow_mut().insert(path.to_string(), img.clone());
-        Ok(img)
-    })
-}
-
-/// The object at path with its function index, read once per process (build/obj/<content hash>.obj).
-pub(crate) fn object(path: &str) -> PyResult<std::rc::Rc<(coff::Obj, HashMap<String, usize>)>> {
-    OBJS.with(|m| {
-        if let Some(o) = m.borrow().get(path) {
-            return Ok(o.clone());
-        }
-        let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
-        let obj = coff::Obj::parse(&data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
-        let idx = obj.function_index();
-        let rc = std::rc::Rc::new((obj, idx));
-        let mut mm = m.borrow_mut();
-        if mm.len() > 400 {
-            mm.clear();
-        }
-        mm.insert(path.to_string(), rc.clone());
-        Ok(rc)
-    })
+/// The object at path with its function index.
+pub(crate) fn object(path: &str) -> PyResult<(coff::Obj, HashMap<String, usize>)> {
+    let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+    let obj = coff::Obj::parse(&data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+    let idx = obj.function_index();
+    Ok((obj, idx))
 }
 
 /// The shadow of match.compiled_functions' compares: for each (object path, C name, address, next start) the
@@ -401,8 +377,12 @@ fn compare_functions(
     let img = image(image_path)?;
     let sites = if use_relocs { Some(img.relocations()) } else { None };
     let mut out = Vec::with_capacity(items.len());
+    let mut objs: HashMap<String, std::rc::Rc<(coff::Obj, HashMap<String, usize>)>> = HashMap::new();
     for (path, name, addr, next) in items {
-        let o = object(&path)?;
+        if !objs.contains_key(&path) {
+            objs.insert(path.clone(), std::rc::Rc::new(object(&path)?));
+        }
+        let o = objs[&path].clone();
         let Some(&k) = o.1.get(&name) else {
             out.push(py.None());
             continue;

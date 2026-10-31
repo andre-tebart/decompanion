@@ -5,8 +5,6 @@
 use crate::{put_str, ConflictRow, Row};
 use rusqlite::Connection;
 use serde_json::Value;
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
@@ -30,76 +28,56 @@ impl SFact {
     }
 }
 
-type Decoded = Rc<Vec<(i64, i64, String, Rc<SFact>)>>;
+pub type Facts = Vec<Rc<SFact>>;
 
-type Merged = Rc<Vec<Rc<SFact>>>;
-
-thread_local! {
-    // (db, run id, run at, kind) -> the run's facts of that kind
-    static RUNS: RefCell<HashMap<(String, i64, u64, String), Decoded>> = RefCell::new(HashMap::new());
-    // (db, kind, the chosen runs) -> their facts merged in order (most rules of a refresh read the same)
-    static MERGED: RefCell<HashMap<(String, String, Vec<(i64, u64)>), Merged>> = RefCell::new(HashMap::new());
+fn query_sql(cols: &str, rules: &[String], cond: &str, order: bool) -> String {
+    let marks = vec!["?"; rules.len()].join(",");
+    format!(
+        "SELECT {cols} FROM fact f JOIN run r ON r.id = f.run_id WHERE r.current = 1 AND f.kind = ? AND r.rule IN ({marks}){}{}",
+        if cond.is_empty() { String::new() } else { format!(" AND ({cond})") },
+        if order { " ORDER BY f.lo, f.hi, f.value, r.id, f.id" } else { "" }
+    )
 }
 
-/// The current runs of the store: (id, rule, at).
-pub fn current_runs(db: &Connection) -> rusqlite::Result<Vec<(i64, String, f64)>> {
-    let mut st = db.prepare_cached("SELECT id, rule, at FROM run WHERE current=1")?;
-    let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-    rows.collect()
-}
-
-/// Facts of one kind of the current runs of `rules`, in Store.facts' order.
-pub fn facts(db: &Connection, db_path: &str, kind: &str, rules: &[String]) -> rusqlite::Result<Merged> {
-    let runs = current_runs(db)?;
-    let chosen: Vec<&(i64, String, f64)> = runs.iter().filter(|(_, r, _)| rules.iter().any(|x| x == r)).collect();
-    let mkey = (db_path.to_string(), kind.to_string(), chosen.iter().map(|(rid, _, at)| (*rid, at.to_bits())).collect::<Vec<_>>());
-    if let Some(hit) = MERGED.with(|m| m.borrow().get(&mkey).cloned()) {
-        return Ok(hit);
+/// Facts of one kind of the current runs of `rules`, in Store.facts' order: by (lo, hi, the value's stored text),
+/// ties in run order, then row order. `cond`: an SQL condition on the fact `f` / its run `r` that selects what the
+/// rule reads (SQLite's JSON functions on f.value: `json_extract(f.value, '$.skind') = 'func'`), so the rest is
+/// never decoded.
+pub fn facts_where(db: &Connection, kind: &str, rules: &[String], cond: &str) -> rusqlite::Result<Facts> {
+    let mut st = db.prepare_cached(&query_sql("r.rule, f.lo, f.hi, f.value, f.level, f.by", rules, cond, true))?;
+    let mut args: Vec<&dyn rusqlite::ToSql> = vec![&kind];
+    for r in rules {
+        args.push(r);
     }
-    let mut decoded = Vec::with_capacity(chosen.len());
-    for (rid, rule, at) in &chosen {
-        let key = (db_path.to_string(), *rid, at.to_bits(), kind.to_string());
-        let hit = RUNS.with(|m| m.borrow().get(&key).cloned());
-        let got = match hit {
-            Some(g) => g,
-            None => {
-                let rule_rc: Rc<str> = Rc::from(rule.as_str());
-                let mut st = db.prepare_cached("SELECT lo, hi, value, level, by FROM fact WHERE run_id=? AND kind=?")?;
-                let mut v = Vec::new();
-                let mut q = st.query(rusqlite::params![rid, kind])?;
-                while let Some(r) = q.next()? {
-                    let text: String = r.get(2)?;
-                    let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                    let f = SFact { rule: rule_rc.clone(), lo: r.get(0)?, hi: r.get(1)?, value, level: r.get(3)?, by: r.get(4)? };
-                    v.push((f.lo, f.hi, text, Rc::new(f)));
-                }
-                let g: Decoded = Rc::new(v);
-                RUNS.with(|m| {
-                    let mut m = m.borrow_mut();
-                    if m.len() > 4096 {
-                        m.clear();
-                    }
-                    m.insert(key, g.clone());
-                });
-                g
+    let mut q = st.query(args.as_slice())?;
+    let mut out = Vec::new();
+    let mut last_rule: Option<Rc<str>> = None;
+    while let Some(r) = q.next()? {
+        let rule: String = r.get(0)?;
+        let rc = match &last_rule {
+            Some(x) if **x == *rule => x.clone(),
+            _ => {
+                let x: Rc<str> = Rc::from(rule.as_str());
+                last_rule = Some(x.clone());
+                x
             }
         };
-        decoded.push(got);
+        let text: String = r.get(3)?;
+        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        out.push(Rc::new(SFact { rule: rc, lo: r.get(1)?, hi: r.get(2)?, value, level: r.get(4)?, by: r.get(5)? }));
     }
-    // (lo, hi, value text) by reference, ties in run then row order: a stable sort of the runs' rows in that order
-    let mut rows: Vec<&(i64, i64, String, Rc<SFact>)> = decoded.iter().flat_map(|g| g.iter()).collect();
-    rows.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
-    let merged: Merged = Rc::new(rows.into_iter().map(|r| r.3.clone()).collect());
-    let live: std::collections::HashSet<(i64, u64)> = runs.iter().map(|(rid, _, at)| (*rid, at.to_bits())).collect();
-    MERGED.with(|m| {
-        let mut m = m.borrow_mut();
-        m.retain(|k, _| k.2.iter().all(|x| live.contains(x)));
-        if m.len() > 256 {
-            m.clear();
-        }
-        m.insert(mkey, merged.clone());
-    });
-    Ok(merged)
+    Ok(out)
+}
+
+/// The addresses (lo) of the facts a condition selects, unordered: what a rule reads of facts it only locates.
+pub fn los_where(db: &Connection, kind: &str, rules: &[String], cond: &str) -> rusqlite::Result<Vec<i64>> {
+    let mut st = db.prepare_cached(&query_sql("f.lo", rules, cond, false))?;
+    let mut args: Vec<&dyn rusqlite::ToSql> = vec![&kind];
+    for r in rules {
+        args.push(r);
+    }
+    let rows = st.query_map(args.as_slice(), |r| r.get(0))?;
+    rows.collect()
 }
 
 // ------------------------------------------------------------------------------------------------ canonical
