@@ -58,6 +58,7 @@ mod toolchain;
 mod units;
 mod vc6;
 mod walk;
+mod wt;
 mod x86;
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
@@ -720,6 +721,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(matchcmd::lint_plan, m)?)?;
     m.add_function(wrap_pyfunction!(matchcmd::lint_not_found, m)?)?;
     m.add_function(wrap_pyfunction!(matchcmd::lint_command, m)?)?;
+    m.add_function(wrap_pyfunction!(wt::wt_command, m)?)?;
     m.add_function(wrap_pyfunction!(decide::decide_status, m)?)?;
     m.add_function(wrap_pyfunction!(decide::decide_gate, m)?)?;
     m.add_function(wrap_pyfunction!(decide::decide_toolchain_view, m)?)?;

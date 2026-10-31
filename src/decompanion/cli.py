@@ -26,6 +26,8 @@ def tok(v):
         return "yes" if v else "no"
     if isinstance(v, int):
         return f"{v:#010x}" if v >= 0x100000 else str(v)      # an address, else a count or size (decimal)
+    if isinstance(v, (list, tuple)):
+        return ",".join(tok(x) for x in v) or "-"
     s = str(v)
     return repr(s) if (" " in s or not s) else s
 
@@ -280,36 +282,30 @@ def cmd_layout_propose(args):
 
 
 # ------------------------------------------------------------------------------------------------- worktrees
-def cmd_wt_new(args):
-    from .repo import wt
+def wt(args, cmd: str, arg=None, force=False) -> int:
+    """`dcp wt new|list|drop`, `dcp seed` (the core's wt.rs); its error exits 2."""
     p = Project(Path(args.root) if args.root else None)
-    path = wt.new(p.root, args.name)
-    print(record(worktree=args.name, path=path.as_posix(), branch=f"wt/{args.name}", overlay=(p.root / "build").as_posix()))
+    lines, error = _core.wt_command(str(p.root), cmd, arg, force)
+    if error:
+        print(f"dcp: {error}", file=sys.stderr)
+        return 2
+    return report(cmd, lines)
+
+
+def cmd_wt_new(args):
+    return wt(args, "new", args.name)
 
 
 def cmd_wt_list(args):
-    from .repo import wt
-    p = Project(Path(args.root) if args.root else None)
-    es = wt.entries(p.root)
-    print(f"worktrees={len(es)}")
-    for x in es:
-        path = Path(x["worktree"])
-        print(record(worktree=x["name"], path=path.as_posix(), head=x.get("HEAD", "")[:12], overlay=(path / ".dcp" / "main_store").exists()))
+    return wt(args, "list")
 
 
 def cmd_wt_drop(args):
-    from .repo import wt
-    p = Project(Path(args.root) if args.root else None)
-    for m in wt.drop(p.root, args.name, args.force):
-        print(m)
+    return wt(args, "drop", args.name, bool(args.force))
 
 
 def cmd_seed(args):
-    from .repo import wt
-    p = Project(Path(args.root) if args.root else None)
-    dest = Path(args.path).resolve()
-    copied = wt.seed(p.build_dir, dest)
-    print(record(seeded=dest.as_posix(), stores=copied))
+    return wt(args, "seed", args.path)
 
 
 # ------------------------------------------------------------------------------------------------- parser
@@ -329,12 +325,6 @@ def main(argv=None):
     except RuleError as ex:
         print(f"dcp: {ex}", file=sys.stderr)
         return 2
-    except Exception as ex:
-        from .repo.wt import WtError
-        if isinstance(ex, WtError):
-            print(f"dcp: {ex}", file=sys.stderr)
-            return 2
-        raise
 
 
 def parser() -> argparse.ArgumentParser:
