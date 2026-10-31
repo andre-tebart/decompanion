@@ -120,7 +120,7 @@ def cmd_rename(args):
         p, e = open_project(args, tgt or None) if tgt is not None else open_project(args)
     except ConfigError as ex:
         return rename_fail(args, f"{first}: {ex}", old=first, new=pairs[0][1])
-    refresh(p, e)
+    rebuilt(args, p, e)             # the tree as it stands: the errors of an edit not built yet are from before
     out, errs, status = native.core().rename_command(p.core, pairs, lambda: rebuilt(args, p, e))
     if out:
         print("\n".join(out))

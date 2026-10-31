@@ -350,7 +350,8 @@ fn errors_of(db: &str) -> PyResult<Vec<(String, String, i64, String)>> {
 }
 
 /// `dcp rename`: the checked, written pairs of a call (rename_pairs'); `rebuild()` compiles and refreshes after the
-/// write. (stdout lines, stderr lines, the exit status).
+/// write. The errors of the store as the call finds it (the caller built the tree as it stands) are the ones from
+/// before: only an error the rename brings is new and fails the call. (stdout lines, stderr lines, the exit status).
 #[pyfunction]
 pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<(String, String, String)>, rebuild: Bound<'_, PyAny>)
     -> PyResult<(Vec<String>, Vec<String>, i32)> {
@@ -432,6 +433,13 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
         }
     }
     rebuild.call0()?;
+    // an error from before keeps its rule and address; its message names the new names now (or still the old ones:
+    // M1 names a function by the baseline's name)
+    let words: Vec<(regex::Regex, &str)> = edits.iter().map(|p| (regex::Regex::new(&format!(r"\b{}\b", regex::escape(&p.old))).unwrap(), p.new.as_str())).collect();
+    let before: HashSet<(String, i64, String)> = before.into_iter().flat_map(|(r, a, m)| {
+        let renamed = words.iter().fold(m.clone(), |m, (w, n)| w.replace_all(&m, regex::NoExpand(n)).into_owned());
+        [(r.clone(), a, m), (r, a, renamed)]
+    }).collect();
     let bad = errors_of(&db)?;
     let new: Vec<&(String, String, i64, String)> = bad.iter().filter(|e| !before.contains(&(e.1.clone(), e.2, e.3.clone()))).collect();
     if !bad.is_empty() {

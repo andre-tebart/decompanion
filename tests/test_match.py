@@ -139,6 +139,30 @@ def test_byte_match_with_a_differing_literal_is_no_byte(tiny):
 
 
 @needs_vc6
+def test_rename_counts_the_errors_of_the_tree_as_from_before(tiny):
+    """An M9 an edit brought (not built yet), then one the store holds under the old name: neither is the rename's
+    (exit 0, `0 new error(s)`); an error the rename brings still fails it (a match-base report: the rename of a
+    function whose unbuilt edit broke a literal exited 1 blaming itself)."""
+    with_vc6(tiny)
+    write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n"
+                                 "0x10001030 boundary end tu=net -- f3 is another unit\n")
+    fn = "/* 0x10001020, reads the counter */\nint {}(void)\n{{\n    return *(int *)\"{}\";\n}}\n"
+    unit(tiny, "net", fn.format("get", "\\x34\\x12"))
+    code, out = dcp(tiny, "build")
+    assert code == 0, out
+    unit(tiny, "net", fn.format("get", "\\x34\\x13"))                  # the edit, not built
+    code, out = dcp(tiny, "rename", "get", "read_counter", "--why", "reads the counter")
+    assert code == 0 and "renamed=get" in out and "check: 0 new error(s) after the rename, 1 from before" in out, out
+    code, out = dcp(tiny, "rename", "read_counter", "counter_value", "--why", "the store names read_counter")
+    assert code == 0 and "check: 0 new error(s) after the rename, 1 from before" in out, out
+    unit(tiny, "net", fn.format("counter_value", "\\x34\\x12"))
+    code, out = dcp(tiny, "build")
+    assert code == 0, out
+    code, out = dcp(tiny, "rename", "counter_value", "FUN_10001021", "--why", "a placeholder of no start (L5)")
+    assert code == 1 and "check: 1 new error(s) after the rename, 0 from before" in out and "L5" in out, out
+
+
+@needs_vc6
 def test_promote_raises_only_and_accept(tiny):
     """promote refuses a fall (nothing written); dcp accept lowers that one entry with its reason and M1 holds the
     function there; promote keeps the note while it stays below, clears it once the function is back; a fall
