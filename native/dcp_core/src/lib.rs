@@ -7,6 +7,7 @@
 
 mod clang;
 mod coff;
+mod crt;
 mod compare;
 mod cs;
 mod diffclass;

@@ -12,14 +12,29 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from ..ledger.fact import Kind, Level, Severity
-from ..objfmt.base import ABSOLUTE, RELATIVE
+from ..ledger.fact import Level
+from ..objfmt.base import ABSOLUTE
 from .engine import RuleContext, rule
 
 P, D, O = Level.proven, Level.derived, Level.open
 
 
 # ---------------------------------------------------------------------------------------------------- headers
+def toolchain_key(p) -> dict:
+    """What a native setup rule reads of the configuration: the toolchain's key (its tables are the core's)."""
+    return {"toolchain": p.toolchain.key}
+
+
+def archive_inputs(p) -> dict:
+    """S.rich's: the toolchain's key, the target's archives (none while `libs` waits)."""
+    return {"toolchain": p.toolchain.key, "archives": [str(x) for x in p.input("archives")]}
+
+
+def lib_inputs(p) -> dict:
+    """The library placement rules': the toolchain's key, the target's archives."""
+    return {"toolchain": p.toolchain.key, "libs": [str(x) for x in p.input("libs")]}
+
+
 @rule("S.headers", version="1", ceiling=P, outputs=("region",), native=True)
 def headers(ctx: RuleContext):
     """The image format's headers own their bytes, one region each as the format names them
@@ -78,7 +93,8 @@ def relocs(ctx: RuleContext):
 
 
 # ---------------------------------------------------------------------------------------------------- rich
-@rule("S.rich", version="2", ceiling=D, outputs=("toolchain",), inputs=("archives",))
+@rule("S.rich", version="2", ceiling=D, outputs=("toolchain",), inputs=("archives",), native=True,
+      native_inputs=archive_inputs)
 def rich(ctx: RuleContext):
     """The Rich header decoded with the toolchain's product table (Toolchain.rich_candidates): every entry with
     its tool, family, language, build and object count, and how many objects of the target's configured
@@ -89,12 +105,7 @@ def rich(ctx: RuleContext):
     objects is the target's declaration ([[target]] compiler / linker), checked by C.toolchain. The fact spans
     the whole image; its level is derived (the product table is the community's reconstruction of Microsoft's
     ids)."""
-    img, tc = ctx.image, ctx.project.toolchain
-    entries = img.rich()
-    if not entries:
-        return
-    tools = tc.archive_tools(ctx.project.objfmt.tool_stamps(ctx.input("archives")))
-    yield ctx.fact(img.base, img.end, Kind.toolchain, tc.rich_candidates(entries, tools), D)
+    return ()                                      # native: native/dcp_core/src/crt.rs
 
 
 # ---------------------------------------------------------------------------------------------------- libraries
@@ -218,7 +229,8 @@ def place_members(img, sections, reloc_sites: set[int]):
 
 
 @rule("S.crt.code", version="1", ceiling=P, outputs=("symbol", "start", "name", "unit"), inputs=("libs",), needs=("S.relocs",),
-      helpers=(lib_sections, _longest_run, _masked_equal, place_members))
+      helpers=(lib_sections, _longest_run, _masked_equal, place_members), native=True,
+      native_inputs=lib_inputs)
 def crt_code(ctx: RuleContext):
     """A code section of a library member is placed at the one position in a code section of the image where
     its bytes equal the image's with the relocation fields masked (Section.mask: every byte a relocation of
@@ -229,24 +241,11 @@ def crt_code(ctx: RuleContext):
     section owns its bytes as one `func` symbol named by its first external symbol; every further named
     symbol of the section (external or file-static) is a start and a name; the unit is lib:<archive>/<member>.
     Waits for the declared archives (`dcp libs declare`)."""
-    reloc_sites = {f.lo for f in ctx.facts(Kind.ref) if f.value["rkind"] == "reloc"}
-    for pl in place_members(ctx.image, lib_sections(ctx.project.objfmt, ctx.input("libs")), reloc_sites):
-        if not isinstance(pl, Placement):
-            what, lo, hi, msg = pl
-            yield ctx.conflict(Severity.warn, f"S.crt.{what}", lo, hi, msg)
-            continue
-        v = {"skind": "func", "name": pl.name, "extent": "proven", "unit": pl.unit}
-        if pl.members > 1:
-            v["candidates"] = pl.members
-        yield ctx.fact(pl.lo, pl.hi, Kind.symbol, v, P)
-        yield ctx.fact(pl.lo, pl.hi, Kind.unit, {"tu": pl.unit, "lib": pl.lib}, P)
-        for value, ns in pl.values:
-            a = pl.lo + value
-            yield ctx.fact(a, a + 1, Kind.start, {"skind": "func", "how": "crt"}, P)
-            yield ctx.fact(a, a + 1, Kind.name, {"name": "|".join(ns), "origin": "lib", "unit": pl.unit}, P)
+    return ()                                      # native: native/dcp_core/src/crt.rs
 
 
-@rule("S.lib.data", version="2", ceiling=P, outputs=("symbol", "name", "unit"), inputs=("libs",), needs=("S.crt.code", "S.crt.data"))
+@rule("S.lib.data", version="2", ceiling=P, outputs=("symbol", "name", "unit"), inputs=("libs",), needs=("S.crt.code", "S.crt.data"), native=True,
+      native_inputs=lib_inputs)
 def lib_data(ctx: RuleContext):
     """A data-only member of an archive (no code section; S.crt.data places only the data that placed code
     points to) is placed by content: an initialised data section without relocations, at least 8 bytes long
@@ -255,51 +254,11 @@ def lib_data(ctx: RuleContext):
     [that address, + size) as a `crt.data` symbol, its member a `unit`
     fact {tu, lib}, every named symbol a name (a GUID of an interface-id library, a CRT string table). Two
     members with the same bytes at one address are one placement (the first member; `candidates` counts them)."""
-    img = ctx.image
-    raws = [(s, img.section_data(s)) for s in img.sections if not s.holds_code and not s.uninitialized]
-    done = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "crt.data")
-    seen: dict[tuple[int, bytes], dict] = {}
-    pending = []
-    for lib in ctx.input("libs"):
-        for o in ctx.project.objfmt.archive_objects(lib):
-            if o.code_sections:
-                continue
-            for sec in o.sections[1:]:
-                if sec.code or sec.discard or sec.data is None or sec.relocs or sec.size < 8 or sec.name.startswith(".idata"):
-                    continue                        # .idata$*: an import member's tables, the image's import region
-                data = bytes(sec.data)
-                if sum(1 for b in data if b) < 8:
-                    continue
-                hits = []
-                for s, raw in raws:
-                    k = raw.find(data)
-                    while k >= 0 and len(hits) < 2:
-                        hits.append(s.va + k)
-                        k = raw.find(data, k + 1)
-                if len(hits) != 1:
-                    continue
-                lo, hi = hits[0], hits[0] + sec.size
-                key = (lo, data)
-                if key in seen:
-                    seen[key]["candidates"] += 1
-                    continue
-                if any(lo < b and a < hi for a, b in done):
-                    continue
-                unit = f"lib:{lib.name}/{o.name}"
-                first = next((s for s in sec.syms if s.named), None)
-                v = {"skind": "crt.data", "name": first.name if first else f"{o.name}:{sec.name}", "extent": "proven",
-                     "unit": unit, "section": sec.name, "bss": False, "how": "content", "candidates": 1}
-                seen[key] = v
-                done.append((lo, hi))
-                pending.append((lo, hi, v, unit, lib.name, [s for s in sec.syms if s.named]))
-    for lo, hi, v, unit, libname, named in pending:          # after every member: `candidates` is final
-        yield ctx.fact(lo, hi, Kind.symbol, v, P)
-        yield ctx.fact(lo, hi, Kind.unit, {"tu": unit, "lib": libname}, P)
-        for s in named:
-            yield ctx.fact(lo + s.value, lo + s.value + 1, Kind.name, {"name": s.name, "origin": "lib", "unit": unit}, P)
+    return ()                                      # native: native/dcp_core/src/crt.rs
 
 
-@rule("S.crt.refs", version="1", ceiling=P, outputs=("name", "start"), inputs=("libs",), needs=("S.crt.code",))
+@rule("S.crt.refs", version="1", ceiling=P, outputs=("name", "start"), inputs=("libs",), needs=("S.crt.code",), native=True,
+      native_inputs=lib_inputs)
 def crt_refs(ctx: RuleContext):
     """Every absolute or relative relocation of a placed library section names the address it resolves to
     (Reloc.resolve: an absolute site holds the symbol's address plus the addend the object stores at the
@@ -308,112 +267,22 @@ def crt_refs(ctx: RuleContext):
     through an import address-table slot) get a name fact at the resolved address: the user's entry
     (_DllMain@12, _main, _WinMain@16), CRT data of other members, and so on; a start too when the symbol is a
     function. Two sites that resolve one symbol to two addresses are a conflict."""
-    img = ctx.image
-    placed = {}
-    for f in ctx.facts(Kind.symbol):
-        if f.value.get("skind") == "func" and f.value.get("unit", "").startswith("lib:"):
-            placed[f.value["unit"] + ":" + f.value["name"]] = f
-    by_unit = defaultdict(list)
-    for f in placed.values():
-        by_unit[f.value["unit"]].append(f)
-    resolved: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))   # symbol -> address -> sites
-    functions: set[str] = set()
-    for lib in ctx.input("libs"):
-        for o in ctx.project.objfmt.archive_objects(lib):
-            unit = f"lib:{lib.name}/{o.name}"
-            if unit not in by_unit:
-                continue
-            for sec in o.code_sections:
-                # find where this section was placed: by its first external symbol name
-                exts = [s for s in sec.syms if s.external]
-                name = exts[0].name if exts else (sec.syms[0].name if sec.syms else None)
-                f = placed.get(f"{unit}:{name}")
-                if f is None or f.hi - f.lo != sec.size:
-                    continue
-                for r in sec.relocs:
-                    sym = o.symbols.get(r.symbol_index)
-                    if sym is None:
-                        continue
-                    if r.kind not in (ABSOLUTE, RELATIVE):
-                        continue
-                    site = f.lo + r.offset
-                    target = r.resolve(site, img.read(site, r.width), sec.addend(r))
-                    if sym.defined:
-                        continue
-                    if sym.unresolved and not sym.dllimport:
-                        resolved[sym.name][target] += 1
-                        if sym.function:
-                            functions.add(sym.name)
-    for name, addrs in sorted(resolved.items()):
-        if len(addrs) > 1:
-            yield ctx.conflict(Severity.bug, "S.crt.refs", min(addrs), min(addrs) + 1,
-                               f"{name} resolves to {len(addrs)} addresses: " + ", ".join(f"{a:#x}x{n}" for a, n in sorted(addrs.items())))
-            continue
-        (a, n), = addrs.items()
-        if not img.in_image(a):
-            continue
-        yield ctx.fact(a, a + 1, Kind.name, {"name": name, "origin": "lib", "sites": n}, P)
-        if name in functions:
-            yield ctx.fact(a, a + 1, Kind.start, {"skind": "func", "how": "libref"}, P)
+    return ()                                      # native: native/dcp_core/src/crt.rs
 
 
-@rule("S.crt.data", version="1", ceiling=P, outputs=("symbol", "name", "unit"), inputs=("libs",), needs=("S.crt.code",))
+@rule("S.crt.data", version="1", ceiling=P, outputs=("symbol", "name", "unit"), inputs=("libs",), needs=("S.crt.code",), native=True,
+      native_inputs=lib_inputs)
 def crt_data(ctx: RuleContext):
     """A data section of a placed library member sits where that member's own absolute relocations into it
     point (COFF: DIR32): the address a placed code site resolves to (Reloc.resolve) minus the referenced
     symbol's offset in its section is the section's base. Every site must give the same base (else a
     conflict and nothing is placed); the placed section owns [base, base + size) as a `crt.data` symbol named
     by its first named symbol (external or file-static), and every named symbol is a name."""
-    img = ctx.image
-    placed = {}
-    for f in ctx.facts(Kind.symbol):
-        if f.value.get("skind") == "func" and f.value.get("unit", "").startswith("lib:"):
-            placed[f.value["unit"] + ":" + f.value["name"]] = f
-    done: list[tuple[int, int]] = []
-    for lib in ctx.input("libs"):
-        for o in ctx.project.objfmt.archive_objects(lib):
-            unit = f"lib:{lib.name}/{o.name}"
-            bases: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))   # secnum -> base -> sites
-            for sec in o.code_sections:
-                exts = [s for s in sec.syms if s.external]
-                name = exts[0].name if exts else (sec.syms[0].name if sec.syms else None)
-                f = placed.get(f"{unit}:{name}")
-                if f is None or f.hi - f.lo != sec.size:
-                    continue
-                for r in sec.relocs:
-                    if r.kind != ABSOLUTE:
-                        continue
-                    sym = o.symbols.get(r.symbol_index)
-                    if sym is None or not sym.defined or sym.section is None or sym.section.code or sym.section.discard:
-                        continue
-                    site = f.lo + r.offset
-                    target = r.resolve(site, img.read(site, r.width), sec.addend(r))
-                    bases[sym.secnum][(target - sym.value) & ((1 << (8 * r.width)) - 1)] += 1
-            for secnum, bs in sorted(bases.items()):
-                sec = o.sections[secnum]
-                if len(bs) > 1:
-                    yield ctx.conflict(Severity.warn, "S.crt.data", min(bs), min(bs) + 1,
-                                       f"{unit} {sec.name}#{secnum} has {len(bs)} bases: " + ", ".join(f"{b:#x}x{n}" for b, n in sorted(bs.items())))
-                    continue
-                (base, n), = bs.items()
-                if sec.size == 0 or not img.in_image(base):
-                    continue
-                lo, hi = base, base + sec.size
-                if any(lo < b and a < hi for a, b in done):
-                    yield ctx.conflict(Severity.warn, "S.crt.data", lo, hi, f"{unit} {sec.name}#{secnum} overlaps another placed data section")
-                    continue
-                done.append((lo, hi))
-                first = next((s for s in sec.syms if s.named), None)
-                name = first.name if first else f"{o.name}:{sec.name}#{secnum}"
-                yield ctx.fact(lo, hi, Kind.symbol, {"skind": "crt.data", "name": name, "extent": "proven", "unit": unit,
-                                                     "section": sec.name, "bss": sec.data is None}, P)
-                yield ctx.fact(lo, hi, Kind.unit, {"tu": unit, "lib": lib.name}, P)
-                for s in sec.syms:
-                    if s.named:
-                        yield ctx.fact(lo + s.value, lo + s.value + 1, Kind.name, {"name": s.name, "origin": "lib", "unit": unit}, P)
+    return ()                                      # native: native/dcp_core/src/crt.rs
 
 
-@rule("S.thunk", version="2", ceiling=D, outputs=("symbol", "name"), needs=("S.imports", "S.crt.code"))
+@rule("S.thunk", version="2", ceiling=D, outputs=("symbol", "name"), needs=("S.imports", "S.crt.code"), native=True,
+      native_inputs=toolchain_key)
 def thunk(ctx: RuleContext):
     """An import stub of the toolchain (Toolchain.import_stubs; VC6 / LINK: `FF 25 <slot>`, 6 bytes, `jmp dword
     ptr [slot]`) whose slot is an import address-table slot, in a code section, outside every placed library
@@ -426,30 +295,7 @@ def thunk(ctx: RuleContext):
     before or after it while the stub size is below the function alignment (Toolchain.function_alignment;
     VC6: 16 bytes, so two compiled functions never lie a 6-byte stub apart). Every other candidate is
     compiled code, which the walk reaches."""
-    img, tc = ctx.image, ctx.project.toolchain
-    size = tc.import_stub_size
-    packed = size < tc.function_alignment
-    slots = {f.lo: f.value["name"] for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "iat"}
-    crt = [(f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "func"]
-    first_lib = min((a for a, _ in crt), default=None)
-    cands = []
-    for s in img.sections:
-        if not s.holds_code:
-            continue
-        for p, slot in tc.import_stubs(img.section_data(s)):
-            va = s.va + p
-            if slot in slots and not any(a <= va < b for a, b in crt):
-                cands.append((va, slots[slot]))
-    at = {va for va, _ in cands}
-    for va, name in cands:
-        if (first_lib is not None and va >= first_lib) or packed and (va - size in at or va + size in at):
-            yield ctx.fact(va, va + size, Kind.symbol, {"skind": "thunk", "name": name, "extent": "proven"}, D)
-            yield ctx.fact(va, va + 1, Kind.name, {"name": "thunk:" + name, "origin": "import"}, D)
-
-
-def toolchain_key(p) -> dict:
-    """What a native setup rule reads of the configuration: the toolchain's key (its tables are the core's)."""
-    return {"toolchain": p.toolchain.key}
+    return ()                                      # native: native/dcp_core/src/crt.rs
 
 
 @rule("S.entry.user", version="1", ceiling=D, outputs=("name",), needs=("S.crt.refs", "S.entry", "S.codewalk"), native=True,

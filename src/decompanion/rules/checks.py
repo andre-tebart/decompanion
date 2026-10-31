@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from ..ledger.fact import Kind, Level, Severity
+from ..ledger.fact import Level
 from .engine import RuleContext, rule
 
 
@@ -30,7 +30,13 @@ def declared_build(decl: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
-@rule("C.toolchain", version="2", ceiling=Level.proven, needs=("S.rich",), inputs=("toolchain",), helpers=(declared_build,))
+def toolchain_inputs(p) -> dict:
+    """C.toolchain's and S2's: the toolchain's key, the target's toolchain declaration and name."""
+    return {"toolchain": p.toolchain.key, "decl": p.input("toolchain"), "target": p.target_name}
+
+
+@rule("C.toolchain", version="2", ceiling=Level.proven, needs=("S.rich",), inputs=("toolchain",), helpers=(declared_build,), native=True,
+      native_inputs=toolchain_inputs)
 def toolchain(ctx: RuleContext):
     """The target's toolchain declaration ([[target]] compiler / linker with reason.compiler / reason.linker, or
     the [toolchain] defaults it inherits; written by `dcp toolchain declare`) against the Rich header's
@@ -38,51 +44,18 @@ def toolchain(ctx: RuleContext):
     header lists compiler entries, the declared compiler must name the build of one of them (the last number of
     the declaration); the same for the linker and the linker entries. Waits until both are declared (the
     obligations toolchain.compiler / toolchain.linker)."""
-    decl = ctx.input("toolchain")
-    img = ctx.image
-    t = ctx.project.target_name
-    by = f"decl:decompanion.toml:{t}"
-    for key in ("compiler", "linker", "cflags"):
-        if decl.get(key) and not str((decl.get("reasons") or {}).get(key, "")).strip():
-            yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1,
-                               f"target {t}: the {key} declaration has no reason", a=by)
-    rich = next(iter(ctx.facts(Kind.toolchain)), None)
-    if rich is None:
-        return
-    tc = ctx.project.toolchain
-    for key, cands in (("compiler", rich.value.get("compilers") or []), ("linker", rich.value.get("linkers") or [])):
-        if not cands:
-            continue
-        spelled = ", ".join(f"{tc.declare(c)} ({c['tool']} x{c['count']})" for c in cands)
-        d = str(decl.get(key, "") or "")
-        if not d:
-            yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1,
-                               f"target {t}: no {key} declared; the Rich header's {key} candidates: {spelled}", a=by, b=rich.by)
-            continue
-        b = declared_build(d)
-        if b not in {c["build"] for c in cands}:
-            yield ctx.conflict(Severity.error, "C.toolchain", img.base, img.base + 1,
-                               f"target {t}: declared {key} {d!r} names build {b}, no {key} entry of the Rich header has it "
-                               f"(candidates: {spelled})", a=by, b=rich.by)
+    return ()                                      # native: native/dcp_core/src/crt.rs
 
 
 @rule("S2.rich.members", version="2", ceiling=Level.proven, needs=("S.rich", "S.crt.code"), inputs=("toolchain",),
-      helpers=(declared_build,))
+      helpers=(declared_build,), native=True,
+      native_inputs=toolchain_inputs)
 def rich_members(ctx: RuleContext):
     """The Rich header counts library objects: the compiler entries whose build is not the declared compiler's.
     The placed library members should account for them. Fewer placed members than counted objects is a
     warning (members whose code was not found, or libraries not configured). Without a compiler declaration
     nothing is counted."""
-    rich = next(iter(ctx.facts(Kind.toolchain)), None)
-    b = declared_build(str(ctx.input("toolchain").get("compiler", "") or ""))
-    if rich is None or b is None:
-        return
-    members = {f.value["tu"] for f in ctx.facts(Kind.unit)}
-    counted = sum(c["count"] for c in rich.value.get("compilers") or [] if c["build"] != b)
-    if counted and len(members) < counted:
-        yield ctx.conflict(Severity.warn, "S2", ctx.image.base, ctx.image.base + 1,
-                           f"Rich header counts {counted} library objects (compiler entries of other builds than {b}), "
-                           f"{len(members)} members placed")
+    return ()                                      # native: native/dcp_core/src/crt.rs
 
 
 @rule("S7.entry.section", version="1", ceiling=Level.proven, needs=("S.sections", "S.exports", "S.entry"), native=True)

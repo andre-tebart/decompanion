@@ -651,6 +651,57 @@ pub(crate) mod testlib {
         o
     }
 
+    /// A COFF object: one .text section of these bytes with these relocations (offset, symbol index, type) and
+    /// symbols (name, value, section number, storage class), names of at most 8 bytes; a section symbol first.
+    pub fn code_obj(code: &[u8], relocs: &[(u32, u32, u16)], syms: &[(&str, u32, i16, u8)]) -> Vec<u8> {
+        let (hdr, sec) = (20usize, 40usize);
+        let raw = hdr + sec;
+        let rel = raw + code.len();
+        let symptr = rel + 10 * relocs.len();
+        let mut o = vec![];
+        o.extend(0x14cu16.to_le_bytes());
+        o.extend(1u16.to_le_bytes());
+        o.extend(0u32.to_le_bytes());
+        o.extend((symptr as u32).to_le_bytes());
+        o.extend((syms.len() as u32).to_le_bytes());
+        o.extend([0u8; 4]);
+        let mut name = b".text".to_vec();
+        name.resize(8, 0);
+        o.extend(name);
+        for v in [0u32, 0, code.len() as u32, raw as u32, rel as u32, 0] {
+            o.extend(v.to_le_bytes());
+        }
+        o.extend((relocs.len() as u16).to_le_bytes());
+        o.extend(0u16.to_le_bytes());
+        o.extend(0x6050_0020u32.to_le_bytes());
+        o.extend(code);
+        for &(off, si, typ) in relocs {
+            o.extend(off.to_le_bytes());
+            o.extend(si.to_le_bytes());
+            o.extend(typ.to_le_bytes());
+        }
+        for &(n, value, secnum, cls) in syms {
+            let mut f = n.as_bytes().to_vec();
+            f.resize(8, 0);
+            o.extend(f);
+            o.extend(value.to_le_bytes());
+            o.extend(secnum.to_le_bytes());
+            o.extend((if cls == 2 && secnum > 0 { 0x20u16 } else { 0 }).to_le_bytes());
+            o.extend([cls, 0]);
+        }
+        o.extend(4u32.to_le_bytes());
+        o
+    }
+
+    /// An archive of these named members (no linker member).
+    pub fn archive(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut out = b"!<arch>\n".to_vec();
+        for (n, d) in members {
+            out.extend(member(format!("{n}/").as_bytes(), d));
+        }
+        out
+    }
+
     pub fn build(comp_ids: &[(u32, u32)]) -> Vec<u8> {
         let mut out = b"!<arch>\n".to_vec();
         // the linker member: 2 symbols of member offsets (unused here)
