@@ -28,7 +28,6 @@ def state(p) -> dict:
 def gate(args, quiet=False) -> tuple[bool, list, dict]:
     """No open toolchain or libs obligation (decide.rs); then build, check and link every target: (ok,
     [(target, project, link report)], {target: state})."""
-    from .build import link as L
     from .cli_decide import gate_failures
     p0 = Project(Path(args.root) if getattr(args, "root", None) else None)
     ok, out, states = True, [], {}
@@ -37,27 +36,22 @@ def gate(args, quiet=False) -> tuple[bool, list, dict]:
         obls = gate_failures(p)
         bad_builds = [f.value["tu"] for f in p.store.facts(Kind.build) if not f.value["ok"]]
         errors = [x for x in p.store.conflicts() if x.severity.value in ("bug", "error")]
-        lr = L.full_link(p) if p.store.facts(Kind.build) and p.core.toolchain_available() else None
-        good = not obls and not bad_builds and not errors and (lr is None or lr.ok)
+        lr = native.core().link_command(p.core) if p.store.facts(Kind.build) and p.core.toolchain_available() else None
+        good = not obls and not bad_builds and not errors and (lr is None or lr[1])
         ok = ok and good
         states[t.name] = state(p)
         out.append((t.name, p, lr))
         if not quiet:
             print("  " + record(target=t.name, built=rep.units, failed=",".join(bad_builds) or None, errors=len(errors),
-                                link=("skipped" if lr is None else ("ok" if lr.ok else "failed")),
-                                undrafted=len((lr.unresolved or {}).get("undrafted", [])) if lr else None,
+                                link=("skipped" if lr is None else ("ok" if lr[1] else "failed")),
+                                undrafted=lr[3] if lr else None,
                                 obligations=len(obls) or None, gate="ok" if good else "FAIL"))
             for o in obls:
                 print("    " + o)
             for x in errors[:10]:
                 print("    " + x.line())
-            if lr is not None and not lr.ok:
-                for k, lines in lr.unresolved.items():
-                    if k != "undrafted":
-                        for line in lines[:10]:
-                            print(f"    unresolved {k}: {line}")
-                for x in lr.errors[:5]:
-                    print("    link error: " + x)
+            for line in lr[4] if lr is not None else ():
+                print(line)
     return ok, out, states
 
 
@@ -127,7 +121,7 @@ def cmd_session_wrap(args):
             refused = cmd_promote(args) != 0
         promoted = buf.getvalue().strip()
         ok = ok and not refused
-    links = [(name, p.core, None if lr is None else lr.ok, None if lr is None else len((lr.unresolved or {}).get("undrafted", [])))
+    links = [(name, p.core, None if lr is None else lr[1], None if lr is None else lr[3])
              for name, p, lr in targets]
     print(native.core().session_report(root, base, links, states, promoted, refused, ok), end="")
     return 0 if ok else 1

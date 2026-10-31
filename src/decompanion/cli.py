@@ -275,8 +275,6 @@ def cmd_check(args):
     the target has a source, the full link resolves every external. --against REV: no function grade fell
     against ledger/grades.tsv at that git revision. Each target ends with its verdict line (`gate=ok` or
     `gate=FAIL` and the failing parts), the same verdict `dcp session wrap` prints. Exit 1 otherwise."""
-    from .build import link as L
-    from .cli_match import print_link
     from .ledger import grades as G
     p0 = Project(Path(args.root) if args.root else None, getattr(args, "target", None))
     names = [args.target] if getattr(args, "target", None) else [t.name for t in p0.targets]
@@ -284,10 +282,9 @@ def cmd_check(args):
     against = G.baseline_at(p0.root, args.against) if getattr(args, "against", None) else None
     for name in names:
         p, e, rep = build_target(args, name, quiet=True)
-        from .source import lint as LI
-        if p.store.facts(Kind.build) and LI.available(p):
-            from .cli_match import lint_target
-            lint_target(p, e)
+        if p.store.facts(Kind.build) and native.core().lint_available(p.core):
+            native.core().lint_command(p.core)
+            refresh(p, e)
         conf = p.store.conflicts()
         c = Counter(x.severity.value for x in conf)
         bad = [x for x in conf if x.severity.value in ("bug", "error")]
@@ -304,11 +301,11 @@ def cmd_check(args):
             if conf and not bad:
                 reasons.append(f"strict={len(conf)}")
         if p.store.facts(Kind.build) and p.core.toolchain_available():
-            lr = L.full_link(p)
-            print_link(lr)
-            if not lr.ok:
-                reasons.append("link:" + ",".join(f"{k}={len(v)}" for k, v in lr.unresolved.items() if v and k != "undrafted")
-                               + (f",errors={len(lr.errors)}" if lr.errors else ""))
+            lines, ok, why, _, _ = native.core().link_command(p.core)
+            for line in lines:
+                print(line)
+            if not ok:
+                reasons.append(why)
         elif p.store.facts(Kind.build):
             print(record(link=name, skipped="the toolchain is not available"))
         from .cli_decide import gate_failures
@@ -376,11 +373,9 @@ def build_target(args, name, quiet=False):
 def lint_built(p):
     """A project that lints (a `dcp lint` ran before, libclang is there): lint the units that changed since, before the
     refresh, so the one refresh of a build sees the objects and the lint together (grade / next find it current)."""
-    from .source import lint as LI
-    stale = LI.stale(p)
-    if stale and LI.available(p):
+    if native.core().lint_plan(p.core)[0] == "lint":
         with timing.phase("lint"):
-            LI.lint(p)
+            native.core().lint_command(p.core)
 
 
 def cmd_build(args):

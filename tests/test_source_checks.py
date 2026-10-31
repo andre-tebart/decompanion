@@ -11,7 +11,7 @@ import pytest
 from conftest import dcp, unit
 
 from decompanion.cli_decide import gate_failures
-from decompanion.build import link as L
+from decompanion import native
 from decompanion.config import Project
 from decompanion.ledger.fact import Level
 from decompanion.rules import layout as LY
@@ -154,7 +154,7 @@ def test_link_library_class(tiny):
     assert dcp(tiny, "setup")[0] == 0
     build_symlib(tiny / "libs" / "guids.lib", ["_IID_Foo"])
     p = Project(tiny)
-    out = L.classify(p, ["_IID_Foo", "_nowhere"])
+    out = native.core().link_classify(p.core, ["_IID_Foo", "_nowhere"])
     assert out["library"] == [f"_IID_Foo  ->  {(tiny / 'libs' / 'guids.lib').as_posix()}  (undeclared: dcp libs declare "
                               f"<the declared archives> {(tiny / 'libs' / 'guids.lib').as_posix()} --why \"...\")"]
     assert out["other"] == ["_nowhere"]
@@ -175,7 +175,7 @@ def test_link_library_class_dx6(tiny):
     text = cfg.read_text().replace('root = "C:/nowhere/vc6"\n', f'root = "{VC6.as_posix()}"\nlib_dirs = ["{DX6.as_posix()}"]\n')
     cfg.write_text(text, newline="\n")
     assert dcp(tiny, "setup")[0] == 0
-    out = L.classify(Project(tiny), ["_IID_IDirectDraw4", "_GUID_SysMouse"])
+    out = native.core().link_classify(Project(tiny).core, ["_IID_IDirectDraw4", "_GUID_SysMouse"])
     line = next(l for l in out["library"] if l.startswith("_IID_IDirectDraw4"))
     assert line.startswith(f"_IID_IDirectDraw4  ->  {(DX6 / 'dxguid.lib').as_posix()}  (")
     mouse = next(l for l in out["library"] if l.startswith("_GUID_SysMouse"))

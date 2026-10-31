@@ -550,29 +550,6 @@ pub fn full_link(p: &Project) -> Result<LinkReport, String> {
     Ok(rep)
 }
 
-/// link.full_link: {target, ok, skipped, objects, includes, unresolved {class: lines}, errors, notes, out, cached, ms}.
-#[pyfunction]
-pub fn link_full<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>) -> PyResult<Bound<'py, PyDict>> {
-    let r = full_link(&project.p).map_err(PyRuntimeError::new_err)?;
-    let d = PyDict::new(py);
-    d.set_item("target", r.target)?;
-    d.set_item("ok", r.ok)?;
-    d.set_item("skipped", r.skipped)?;
-    d.set_item("objects", r.objects)?;
-    d.set_item("includes", r.includes)?;
-    let u = PyDict::new(py);
-    for (k, v) in r.unresolved {
-        u.set_item(k, v)?;
-    }
-    d.set_item("unresolved", u)?;
-    d.set_item("errors", r.errors)?;
-    d.set_item("notes", r.notes)?;
-    d.set_item("out", r.out)?;
-    d.set_item("cached", r.cached)?;
-    d.set_item("ms", r.ms)?;
-    Ok(d)
-}
-
 /// link.classify for Python: the classes of these unresolved externals.
 #[pyfunction]
 pub fn link_classify<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, names: Vec<String>) -> PyResult<Bound<'py, PyDict>> {

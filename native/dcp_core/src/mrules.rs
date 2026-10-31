@@ -206,9 +206,3 @@ pub fn m_flags_proven(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()>
     }
     Ok(())
 }
-
-/// probe.analyse for Python.
-#[pyfunction]
-pub fn probe_analyse<'py>(py: Python<'py>, result: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    crate::pystore::json_py(py, &analyse(&crate::pystore::py_value(result)?))
-}

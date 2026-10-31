@@ -2,13 +2,11 @@
 //! listing against the original's, the switch tables, the hunks and the verdict), for the commands to print.
 
 use crate::diffclass::{self, Env, Hunk, Tables, Verdict};
-use crate::difflib::{opcodes, Tag};
 use crate::project::Project;
 use crate::store;
 use crate::x86::Line;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
 
@@ -96,58 +94,3 @@ pub fn reading(p: &Project, capstone: &str, row: Value) -> Result<Result<Reading
 }
 
 // ------------------------------------------------------------------------------------------------ Python's face
-
-fn lines_py<'py>(py: Python<'py>, l: &[Line]) -> PyResult<Bound<'py, PyList>> {
-    PyList::new(py, l.iter().map(|x| (x.addr as i64, x.text.clone())))
-}
-
-fn tables_py<'py>(py: Python<'py>, t: &Option<Tables>) -> PyResult<Option<Bound<'py, PyDict>>> {
-    let Some(t) = t else { return Ok(None) };
-    let d = PyDict::new(py);
-    d.set_item("entries", t.entries)?;
-    d.set_item("bytes", t.bytes)?;
-    d.set_item("diffs", &t.diffs)?;
-    Ok(Some(d))
-}
-
-/// One graded function's reading for asmdiff / diffclass: None when no function has that name or address; else a
-/// dict {row, why (no reading: the reason), ours [(addr, text)], original, tables, hunks [(i1, i2, j1, j2, class,
-/// info)], shape, distance, frame, branches, summary, opcodes [(tag, i1, i2, j1, j2)] of the diff (ours with the
-/// registers renamed by `regs`)}.
-#[pyfunction]
-#[pyo3(signature = (project, capstone, key, regs=None))]
-pub fn asm_reading<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, capstone: &str, key: &str, regs: Option<Vec<(String, String)>>)
-    -> PyResult<Option<Bound<'py, PyDict>>> {
-    let p = &project.p;
-    crate::pystore::st_open(&p.store_path(), &p.main_uri())?;
-    let Some(row) = find_function(&p.store_path(), key)? else { return Ok(None) };
-    let d = PyDict::new(py);
-    d.set_item("row", crate::pystore::json_py(py, &row)?)?;
-    let r = match reading(p, capstone, row)? {
-        Ok(r) => r,
-        Err(why) => {
-            d.set_item("why", why)?;
-            return Ok(Some(d));
-        }
-    };
-    d.set_item("ours", lines_py(py, &r.la)?)?;
-    d.set_item("original", lines_py(py, &r.lb)?)?;
-    d.set_item("tables", tables_py(py, &r.tables)?)?;
-    d.set_item("hunks", PyList::new(py, r.hunks.iter().cloned())?)?;
-    d.set_item("shape", r.verdict.shape)?;
-    d.set_item("distance", r.verdict.distance)?;
-    d.set_item("frame", r.verdict.frame)?;
-    d.set_item("branches", &r.verdict.branches)?;
-    d.set_item("summary", r.verdict.summary())?;
-    let mut a: Vec<String> = r.la.iter().map(|x| x.text.clone()).collect();
-    if let Some(m) = regs {
-        a = crate::x86::rename_registers(&a, &m);
-        d.set_item("ours_renamed", &a)?;
-    }
-    let b: Vec<String> = r.lb.iter().map(|x| x.text.clone()).collect();
-    let ops: Vec<(&str, usize, usize, usize, usize)> = opcodes(&a, &b).into_iter().map(|o| {
-        (match o.0 { Tag::Equal => "equal", Tag::Replace => "replace", Tag::Delete => "delete", Tag::Insert => "insert" }, o.1, o.2, o.3, o.4)
-    }).collect();
-    d.set_item("opcodes", ops)?;
-    Ok(Some(d))
-}

@@ -53,7 +53,7 @@ pub fn function_grades(db: &str) -> PyResult<Vec<Row>> {
     Ok(out)
 }
 
-fn unit_grades(db: &str) -> PyResult<Vec<Row>> {
+pub fn unit_grades(db: &str) -> PyResult<Vec<Row>> {
     let facts = with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("unit")))?;
     let mut out: Vec<Row> = facts.iter().map(|f| {
         let mut m = f.value.as_object().cloned().unwrap_or_default();

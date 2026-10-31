@@ -12,9 +12,7 @@ use crate::frontend::{self, Front};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::canon;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -245,32 +243,8 @@ fn run_threads<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
 
 // ------------------------------------------------------------------------------------------------ Python's face
 
-/// lint.lint: the run's value with `parsed` and `cached`.
-#[pyfunction]
-pub fn lint_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>) -> PyResult<Bound<'py, PyAny>> {
-    let (mut v, parsed, cached) = lint(&project.p).map_err(PyRuntimeError::new_err)?;
-    v["parsed"] = json!(parsed);
-    v["cached"] = json!(cached);
-    crate::pystore::json_py(py, &v)
-}
-
 /// Whether the project's libclang is there.
 #[pyfunction]
 pub fn lint_available(project: PyRef<'_, crate::project::PyProject>) -> bool {
     frontend::library(Some(&project.p.cfg)).is_some()
-}
-
-#[pyfunction]
-pub fn lint_stale(project: PyRef<'_, crate::project::PyProject>) -> PyResult<Option<Vec<String>>> {
-    stale(&project.p).map_err(PyRuntimeError::new_err)
-}
-
-/// header name -> the units it is private to.
-#[pyfunction]
-pub fn lint_private_headers<'py>(py: Python<'py>, root: &str) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new(py);
-    for (h, us) in private_headers(root) {
-        d.set_item(h, pyo3::types::PySet::new(py, us)?)?;
-    }
-    Ok(d)
 }
