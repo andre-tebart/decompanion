@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from ..ledger.fact import Fact, Kind, Level, Severity
+from ..ledger.fact import Kind, Level, Severity
 from ..objfmt.base import ABSOLUTE, RELATIVE
 from .engine import RuleContext, rule
 
@@ -447,101 +447,43 @@ def thunk(ctx: RuleContext):
             yield ctx.fact(va, va + 1, Kind.name, {"name": "thunk:" + name, "origin": "import"}, D)
 
 
-@rule("S.entry.user", version="1", ceiling=D, outputs=("name",), needs=("S.crt.refs", "S.entry", "S.codewalk"))
+def toolchain_key(p) -> dict:
+    """What a native setup rule reads of the configuration: the toolchain's key (its tables are the core's)."""
+    return {"toolchain": p.toolchain.key}
+
+
+@rule("S.entry.user", version="1", ceiling=D, outputs=("name",), needs=("S.crt.refs", "S.entry", "S.codewalk"), native=True,
+      native_inputs=toolchain_key)
 def entry_user(ctx: RuleContext):
     """The user entry: when the CRT names a symbol the CRT start-up calls (through S.crt.refs), that name is the
     user's entry function, reported as its C spelling for the layout (Toolchain.user_entry_names; VC6:
     _DllMain@12 -> DllMain, _main -> main, _WinMain@16 -> WinMain, _wmain -> wmain, _wWinMain@16 ->
     wWinMain)."""
-    user = ctx.project.toolchain.user_entry_names()
-    for f in ctx.facts(Kind.name):
-        if f.value.get("origin") == "lib" and f.value["name"] in user:
-            yield ctx.fact(f.lo, f.lo + 1, Kind.name, {"name": user[f.value["name"]], "origin": "entry"}, D)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S.strings", version="3", ceiling=D, outputs=("symbol",), needs=("S.relocs", "S.sections", "S.crt.data", "S.lib.data"))
+@rule("S.strings", version="3", ceiling=D, outputs=("symbol",), needs=("S.relocs", "S.sections", "S.crt.data", "S.lib.data"), native=True)
 def strings(ctx: RuleContext):
     """A relocation target in a data section whose bytes are at least 4 printable ASCII characters (0x20..0x7e,
     tab, CR, LF) followed by NUL is a string literal: the start is where the pointer points (proven), the extent
     runs to the first NUL (convention: C strings are NUL-terminated). A target inside an already claimed
     string is an inner reference, not a new string; bytes a placed library data section owns are that
     section's (its strings are named there)."""
-    img = ctx.image
-    data_secs = [s for s in img.sections if not s.holds_code]
-    targets = sorted({f.value["to"] for f in ctx.facts(Kind.ref) if f.value["rkind"] == "reloc"})
-    placed = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "crt.data")
-    last_hi = 0
-    for t in targets:
-        if t < last_hi or any(a <= t < b for a, b in placed):
-            continue
-        s = img.section_of(t)
-        if s is None or s not in data_secs:
-            continue
-        o = img.off(t)
-        if o is None:
-            continue
-        e = img.data.find(b"\0", o, min(o + 4096, s.raw_off + s.raw_size))
-        if e < 0 or e - o < 4:
-            continue
-        run = img.data[o:e]
-        if not all(0x20 <= c < 0x7f or c in (9, 10, 13) for c in run):
-            continue
-        last_hi = t + len(run) + 1
-        text = run.decode("ascii")
-        yield ctx.fact(t, last_hi, Kind.symbol, {"skind": "string", "extent": "derived", "text": text[:60]}, D)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
 @rule("S.fill", version="1", ceiling=D, outputs=("symbol",),
-      needs=("S.sections", "S.crt.code", "S.thunk", "S.codewalk", "S.imports"))
+      needs=("S.sections", "S.crt.code", "S.thunk", "S.codewalk", "S.imports"), native=True)
 def fill(ctx: RuleContext):
     """An unclaimed run of a code section that decodes entirely into the toolchain's alignment fill forms
     (VC6: 90, CC, 8B FF, 8D 49 00) and ends at a claimed byte or the section's end is fill. One other byte
     makes the whole run not fill."""
-    img, tc = ctx.image, ctx.project.toolchain
-    forms = tuple(sorted(tc.fill_forms, key=len, reverse=True))
-    for s in img.sections:
-        if not s.holds_code:
-            continue
-        claimed = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol, s.va, s.end))
-        claimed += [(f.lo, f.hi) for f in ctx.facts(Kind.region, s.va, s.end)]
-        claimed.sort()
-        pos = s.va
-        gaps = []
-        for a, b in claimed:
-            if a > pos:
-                gaps.append((pos, a))
-            pos = max(pos, b)
-        if s.va + s.vsize > pos:
-            gaps.append((pos, s.va + s.vsize))
-        for lo, hi in gaps:
-            b = img.read(lo, hi - lo)
-            i = 0
-            ok = True
-            while i < len(b):
-                for f in forms:
-                    if b.startswith(f, i):
-                        i += len(f)
-                        break
-                else:
-                    ok = False
-                    break
-            if ok and len(b):
-                yield ctx.fact(lo, hi, Kind.symbol, {"skind": "fill", "extent": "derived"}, D)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S.unknown", version="1", ceiling=O, outputs=("symbol",), needs=("kind:symbol", "kind:region", "S.sections"))
+@rule("S.unknown", version="1", ceiling=O, outputs=("symbol",), needs=("kind:symbol", "kind:region", "S.sections"), native=True)
 def unknown(ctx: RuleContext):
     """Every mapped byte of a section that no symbol and no region claims is unknown: unknown.code in a code
     section, unknown.data elsewhere. This is the catch-all that makes the byte map total; it claims nothing
     about the bytes."""
-    img = ctx.image
-    for s in img.sections:
-        claimed = sorted({(f.lo, f.hi) for f in ctx.facts(Kind.symbol, s.va, s.end)} | {(f.lo, f.hi) for f in ctx.facts(Kind.region, s.va, s.end)})
-        pos = s.va
-        sk = "unknown.code" if s.holds_code else "unknown.data"
-        for a, b in claimed:
-            if a > pos:
-                yield ctx.fact(pos, a, Kind.symbol, {"skind": sk, "extent": "open"}, O)
-            pos = max(pos, b)
-        if s.end > pos:
-            yield ctx.fact(pos, s.end, Kind.symbol, {"skind": sk, "extent": "open"}, O)
+    return ()                                      # native: native/dcp_core/src/setup.rs

@@ -3,56 +3,25 @@ removes a fact; it makes `dcp check` fail (error, bug) or `dcp conflicts` list i
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 
-from ..ledger.fact import Kind, Level, Severity, severity_of
+from ..ledger.fact import Kind, Level, Severity
 from .engine import RuleContext, rule
 
 
-@rule("C.overlap", version="2", ceiling=Level.proven, needs=("kind:symbol", "kind:region"))
+@rule("C.overlap", version="2", ceiling=Level.proven, needs=("kind:symbol", "kind:region"), native=True)
 def overlap(ctx: RuleContext):
     """Two symbol or region facts that overlap contradict each other (every byte has one owner). Severity
     from the two levels: proven against proven is a bug in a rule. Overlaps with an open fact are not
     reported (open is replaced, not contradicted), nor two facts that say the same thing (one interval, one
     symbol kind: a declaration the walk confirms)."""
-    items = [f for f in ctx.facts(Kind.symbol) if f.level > Level.open] + list(ctx.facts(Kind.region))
-    items.sort(key=lambda f: (f.lo, f.hi))
-    active = []
-    for f in items:
-        active = [g for g in active if g.hi > f.lo]
-        for g in active:
-            if (g.lo, g.hi, g.kind, g.value.get("skind")) == (f.lo, f.hi, f.kind, f.value.get("skind")):
-                continue
-            if g.lo < f.hi and f.lo < g.hi:
-                yield ctx.conflict(severity_of(f.level, g.level), "C.overlap", max(f.lo, g.lo), min(f.hi, g.hi),
-                                   f"{g.kind.value} {g.value.get('skind', g.value.get('what', ''))} {g.lo:#x}..{g.hi:#x} overlaps "
-                                   f"{f.kind.value} {f.value.get('skind', f.value.get('what', ''))} {f.lo:#x}..{f.hi:#x}", a=g.by, b=f.by)
-        active.append(f)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("C.ref.target", version="1", ceiling=Level.proven, needs=("S.codewalk", "S.crt.code", "S.thunk"))
+@rule("C.ref.target", version="1", ceiling=Level.proven, needs=("S.codewalk", "S.crt.code", "S.thunk"), native=True)
 def ref_target(ctx: RuleContext):
     """A direct call whose target lies strictly inside a function (not at its start) contradicts that function's
     extent or the call's decoding."""
-    funcs = [(f.lo, f.hi, f) for f in ctx.facts(Kind.symbol) if f.value.get("skind") == "func" and f.level > Level.open]
-    funcs.sort()
-    starts = {f.lo for f in ctx.facts(Kind.start)}
-    for _, _, f in funcs:
-        starts.update(f.value.get("inner", ()))   # local subroutines of assembly-written code (walk.py W2)
-    import bisect
-    los = [a for a, _, _ in funcs]
-    for r in ctx.facts(Kind.ref):
-        if r.value["rkind"] != "call":
-            continue
-        t = r.value["to"]
-        if t in starts:
-            continue
-        i = bisect.bisect_right(los, t) - 1
-        if i >= 0:
-            a, b, f = funcs[i]
-            if a < t < b:
-                yield ctx.conflict(severity_of(f.level, r.level), "C.ref.target", t, t + 1,
-                                   f"call from {r.lo:#x} targets the inside of the function at {a:#x}..{b:#x}", a=f.by, b=r.by)
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
 def declared_build(decl: str) -> int | None:
@@ -123,17 +92,11 @@ def entry_section(ctx: RuleContext):
     return ()                                      # native: native/dcp_core/src/setup.rs
 
 
-@rule("S5.crt.gaps", version="1", ceiling=Level.proven, needs=("S.crt.code", "S.unknown", "S.fill"))
+@rule("S5.crt.gaps", version="1", ceiling=Level.proven, needs=("S.crt.code", "S.unknown", "S.fill"), native=True)
 def crt_gaps(ctx: RuleContext):
     """Unknown code between the first and the last placed library section is library code no member explains
     (a member not in the configured archives, or a section too short or ambiguous to place)."""
-    crt = [f for f in ctx.facts(Kind.symbol) if f.value.get("unit", "").startswith("lib:") and f.value.get("skind") == "func"]
-    if not crt:
-        return
-    lo, hi = min(f.lo for f in crt), max(f.hi for f in crt)
-    for f in ctx.facts(Kind.symbol, lo, hi):
-        if f.value.get("skind") == "unknown.code":
-            yield ctx.conflict(Severity.warn, "S5", max(f.lo, lo), min(f.hi, hi), f"{min(f.hi, hi) - max(f.lo, lo)} unknown bytes inside the library region")
+    return ()                                      # native: native/dcp_core/src/setup.rs
 
 
 def import_libs_inputs(p) -> dict:

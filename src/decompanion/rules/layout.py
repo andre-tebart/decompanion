@@ -527,11 +527,11 @@ def src_start(ctx: RuleContext):
     return ()
 
 
-@rule("L3.lit.order", version="1", ceiling=D, needs=("L.analyze", "L.unit.extent"), helpers=(lit_issues, unit_index))
+@rule("L3.lit.order", version="1", ceiling=D, needs=("L.analyze", "L.unit.extent"), helpers=(lit_issues, unit_index), native=True)
 def lit_order(ctx: RuleContext):
     """L3, B-LIT contradiction (lit_issues in rules/layout.py): in each data section, the units of the literals'
     first users never go backwards in address order."""
-    yield from _emit(ctx, lit_issues(game_units(ctx.facts(Kind.unit)), lits_of(ctx.facts(Kind.evidence))))
+    return ()                                      # native: native/dcp_core/src/layout.rs
 
 
 @rule("L4.boundary", version="1", ceiling=P, needs=("L.decl", "kind:start", "S.codewalk", "S.crt.code", "S.thunk", "S.fill"),
@@ -617,7 +617,7 @@ def source_outside_unit(ctx: RuleContext):
     return ()
 
 
-@rule("L6.declared", version="1", ceiling=P, needs=("L.decl", "S.codewalk", "S.crt.code", "S.thunk", "S.relocs", "S.sections"))
+@rule("L6.declared", version="1", ceiling=P, needs=("L.decl", "S.codewalk", "S.crt.code", "S.thunk", "S.relocs", "S.sections"), native=True)
 def declared_recheck(ctx: RuleContext):
     """L6: every declaration is re-checked against the computed facts at every run, never trusted.
     bytes dead / foreign: no walked or placed function covers a byte of the range, and no call, jump, tail call
@@ -627,62 +627,13 @@ def declared_recheck(ctx: RuleContext):
     fptr: every address-wide field of the range (Image.ptr_size) is a relocation site whose target lies in a
     code section.
     start: not strictly inside a walked or placed function (unless it is an inner label)."""
-    img = ctx.image
-    code = code_ranges(img)
-    mine = [f for f in ctx.facts(Kind.symbol) if f.run == "L.decl"] + [f for f in ctx.facts(Kind.start) if f.run == "L.decl"]
-    if not mine:
-        return
-    other =[f for f in ctx.facts(Kind.symbol) if f.run != "L.decl" and f.level > O]
-    funcs = sorted((f.lo, f.hi, f) for f in other if f.value.get("skind") == "func")
-    tables = [f for f in other if f.value.get("skind") in ("jumptable", "idxtable")]
-    starts = {f.lo for f in ctx.facts(Kind.start) if f.run != "L.decl"}
-    refs = [r for r in ctx.facts(Kind.ref) if r.value["rkind"] in ("call", "jmp", "tail", "immediate")]
-    relocs = {r.lo: r.value["to"] for r in ctx.facts(Kind.ref) if r.value["rkind"] == "reloc"}
-
-    def covering(lo, hi):
-        return [f for a, b, f in funcs if a < hi and lo < b]
-
-    for d in mine:
-        sk = d.value.get("skind")
-        if d.kind is Kind.start:
-            hit = next((f for f in covering(d.lo, d.hi) if f.lo < d.lo and d.lo not in f.value.get("inner", ())), None)
-            if hit is not None:
-                yield ctx.conflict(Severity.error, "L6", d.lo, d.hi, f"declared start {d.lo:#x} lies inside the function {hit.lo:#x}..{hit.hi:#x}",
-                                   a=d.by, b=hit.by)
-            continue
-        if sk in ("dead", "foreign"):
-            for f in covering(d.lo, d.hi):
-                yield ctx.conflict(Severity.error, "L6", max(d.lo, f.lo), min(d.hi, f.hi),
-                                   f"declared {sk} bytes {d.lo:#x}..{d.hi:#x} are code of the function {f.lo:#x}..{f.hi:#x}", a=d.by, b=f.by)
-            for r in refs:
-                if d.lo <= r.value["to"] < d.hi:
-                    yield ctx.conflict(Severity.error, "L6", r.value["to"], r.value["to"] + 1,
-                                       f"declared {sk} bytes {d.lo:#x}..{d.hi:#x} are reached by the {r.value['rkind']} at {r.lo:#x}", a=d.by, b=r.by)
-        elif sk in ("jumptable", "idxtable"):
-            fn = d.value["fn"]
-            if fn not in starts:
-                yield ctx.conflict(Severity.error, "L6", d.lo, d.hi, f"declared {sk} {d.lo:#x}..{d.hi:#x}: no function starts at fn={fn:#x}", a=d.by)
-            for f in covering(d.lo, d.hi):
-                yield ctx.conflict(Severity.error, "L6", max(d.lo, f.lo), min(d.hi, f.hi),
-                                   f"declared {sk} {d.lo:#x}..{d.hi:#x} lies inside the code of the function {f.lo:#x}..{f.hi:#x}", a=d.by, b=f.by)
-            for t in tables:
-                if t.lo < d.hi and d.lo < t.hi and (t.lo, t.hi, t.value.get("fn")) != (d.lo, d.hi, fn):
-                    yield ctx.conflict(Severity.error, "L6", max(t.lo, d.lo), min(t.hi, d.hi),
-                                       f"declared {sk} {d.lo:#x}..{d.hi:#x} fn={fn:#x}, the walk finds {t.value['skind']} {t.lo:#x}..{t.hi:#x} "
-                                       f"fn={t.value.get('fn', 0):#x}", a=d.by, b=t.by)
-        elif sk == "fptr":
-            w = img.ptr_size
-            for a in range(d.lo, d.hi - w + 1, w):
-                if a not in relocs or not in_ranges(relocs[a], code):
-                    yield ctx.conflict(Severity.error, "L6", a, a + w, f"declared fptr {d.lo:#x}..{d.hi:#x}: the dword at {a:#x} is not a "
-                                                                      f"relocated code address", a=d.by)
-                    break
+    return ()                                      # native: native/dcp_core/src/layout.rs
 
 
-@rule("L8.leak", version="1", ceiling=D, needs=("L.analyze", "L.unit.extent"), helpers=(leak_issues, unit_index))
+@rule("L8.leak", version="1", ceiling=D, needs=("L.analyze", "L.unit.extent"), helpers=(leak_issues, unit_index), native=True)
 def leak_unit(ctx: RuleContext):
     """L8 (leak_issues in rules/layout.py): one unit, one leaked source file."""
-    yield from _emit(ctx, leak_issues(game_units(ctx.facts(Kind.unit)), leaks_of(ctx.facts(Kind.evidence))))
+    return ()                                      # native: native/dcp_core/src/layout.rs
 
 
 # ------------------------------------------------------------------------------------------------ L9 / L10 / R5
@@ -742,25 +693,11 @@ def unexplained(ctx: RuleContext):
     return ()
 
 
-@rule("M.bytes.declared", version="1", ceiling=DE, outputs=("source",), needs=("L.decl", "L.unit.extent"))
+@rule("M.bytes.declared", version="1", ceiling=DE, outputs=("source",), needs=("L.decl", "L.unit.extent"), native=True)
 def bytes_declared(ctx: RuleContext):
     """R5: declared dead or foreign bytes (decl/*.dcl `bytes dead`, `foreign kind=`) inside a game unit's extent
     belong to that unit: a `source` fact {what: dead | foreign, unit} over the range, declared (the declaration
     is the premise), so the byte map gives those bytes the unit and its source, and the unit counts them as
     explained (L.unit.extent: dead_bytes), not open. A range that crosses a unit boundary is an error
     (M.bytes.declared); a range inside no unit is a warning (no unit owns it yet)."""
-    units = game_units(ctx.facts(Kind.unit))
-    at = unit_index(units)
-    for f in ctx.facts(Kind.symbol):
-        if f.run != "L.decl" or f.value.get("skind") not in ("dead", "foreign"):
-            continue
-        i, j = at(f.lo), at(f.hi - 1)
-        if i is None and j is None:
-            yield ctx.conflict(Severity.warn, "M.bytes.declared", f.lo, f.hi, f"declared {f.value['skind']} bytes {f.lo:#x}..{f.hi:#x} lie in no unit", a=f.by)
-            continue
-        if i != j:
-            yield ctx.conflict(Severity.error, "M.bytes.declared", f.lo, f.hi,
-                               f"declared {f.value['skind']} bytes {f.lo:#x}..{f.hi:#x} cross a unit boundary", a=f.by)
-            continue
-        v = {"what": f.value["skind"], "unit": units[i].tu, "decl": f.by}
-        yield ctx.fact(f.lo, f.hi, Kind.source, v, min_level(f.level, ceiling=DE), f.reason)
+    return ()                                      # native: native/dcp_core/src/layout.rs

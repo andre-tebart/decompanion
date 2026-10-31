@@ -146,6 +146,221 @@ pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()
     Ok(())
 }
 
+// ------------------------------------------------------------------------------------------------ facts-only rules
+
+use crate::store::{SFact, DERIVED, OPEN};
+use std::rc::Rc;
+
+fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> PyResult<Vec<Rc<SFact>>> {
+    store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err)
+}
+
+/// Store.facts(kind, lo, hi): the facts of a kind that intersect [lo, hi), in the store's order.
+fn facts_in(ctx: &Ctx, db: &Connection, kind: &str, lo: i64, hi: i64) -> PyResult<Vec<Rc<SFact>>> {
+    store::facts(db, &ctx.db, kind, &ctx.needed, |f| f.hi > lo && f.lo < hi).map_err(err)
+}
+
+/// fact.severity_of: proven against proven is a bug, else an error.
+pub(crate) fn severity_of(a: i64, b: i64) -> &'static str {
+    if a == PROVEN && b == PROVEN { "bug" } else { "error" }
+}
+
+/// A value as Python's str() spells it in a message.
+pub(crate) fn py_str(v: Option<&serde_json::Value>) -> String {
+    match v {
+        None | Some(serde_json::Value::Null) => "None".into(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Bool(b)) => if *b { "True".into() } else { "False".into() },
+        Some(x) => x.to_string(),
+    }
+}
+
+/// The toolchain native_inputs name ({"toolchain": key}).
+fn toolchain_of(ctx: &Ctx) -> PyResult<Box<dyn crate::toolchain::Toolchain>> {
+    let x: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
+    crate::toolchain::of(x["toolchain"].as_str().unwrap_or("")).ok_or_else(|| PyRuntimeError::new_err(format!("{}: no toolchain in its inputs", ctx.rule)))
+}
+
+/// C.overlap: two symbol or region facts that overlap contradict each other.
+pub fn c_overlap(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let mut items: Vec<(&'static str, Rc<SFact>)> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.level > OPEN).map(|f| ("symbol", f)).collect();
+    items.extend(facts(ctx, db, "region")?.into_iter().map(|f| ("region", f)));
+    items.sort_by_key(|(_, f)| (f.lo, f.hi));
+    let label = |f: &SFact| py_str(f.value.get("skind").or(Some(f.value.get("what").unwrap_or(&serde_json::Value::String(String::new())))));
+    let mut active: Vec<&(&str, Rc<SFact>)> = vec![];
+    for item in &items {
+        let (fk, f) = item;
+        active.retain(|(_, g)| g.hi > f.lo);
+        for (gk, g) in &active {
+            if (g.lo, g.hi, gk, g.value.get("skind")) == (f.lo, f.hi, fk, f.value.get("skind")) {
+                continue;
+            }
+            if g.lo < f.hi && f.lo < g.hi {
+                out.conflict2(severity_of(f.level, g.level), "C.overlap", f.lo.max(g.lo), f.hi.min(g.hi),
+                              format!("{gk} {} {:#x}..{:#x} overlaps {fk} {} {:#x}..{:#x}", label(g), g.lo, g.hi, label(f), f.lo, f.hi), &g.by, &f.by);
+            }
+        }
+        active.push(item);
+    }
+    Ok(())
+}
+
+/// C.ref.target: a direct call whose target lies strictly inside a function contradicts it.
+pub fn c_ref_target(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let mut funcs: Vec<Rc<SFact>> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).collect();
+    funcs.sort_by_key(|f| (f.lo, f.hi));
+    let mut starts: std::collections::HashSet<i64> = facts(ctx, db, "start")?.iter().map(|f| f.lo).collect();
+    for f in &funcs {
+        starts.extend(f.value.get("inner").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|x| x.as_i64()));
+    }
+    for r in facts(ctx, db, "ref")?.iter().filter(|r| r.s("rkind") == Some("call")) {
+        let Some(t) = r.value.get("to").and_then(|v| v.as_i64()) else { continue };
+        if starts.contains(&t) {
+            continue;
+        }
+        let i = funcs.partition_point(|f| f.lo <= t);
+        if i > 0 {
+            let f = &funcs[i - 1];
+            if f.lo < t && t < f.hi {
+                out.conflict2(severity_of(f.level, r.level), "C.ref.target", t, t + 1,
+                              format!("call from {:#x} targets the inside of the function at {:#x}..{:#x}", r.lo, f.lo, f.hi), &f.by, &r.by);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// S5.crt.gaps: unknown code between the first and the last placed library function.
+pub fn s5_crt_gaps(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let crt: Vec<Rc<SFact>> = facts(ctx, db, "symbol")?.into_iter()
+        .filter(|f| f.s("unit").is_some_and(|u| u.starts_with("lib:")) && f.s("skind") == Some("func")).collect();
+    if crt.is_empty() {
+        return Ok(());
+    }
+    let lo = crt.iter().map(|f| f.lo).min().unwrap();
+    let hi = crt.iter().map(|f| f.hi).max().unwrap();
+    for f in facts_in(ctx, db, "symbol", lo, hi)? {
+        if f.s("skind") == Some("unknown.code") {
+            let (a, b) = (f.lo.max(lo), f.hi.min(hi));
+            out.conflict("warn", "S5", a, b, format!("{} unknown bytes inside the library region", b - a), "");
+        }
+    }
+    Ok(())
+}
+
+/// S.entry.user: the user entry the CRT start-up calls, as its C name.
+pub fn s_entry_user(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let tc = toolchain_of(ctx)?;
+    let user: std::collections::HashMap<&str, &str> = tc.user_entry_names().into_iter().collect();
+    for f in facts(ctx, db, "name")? {
+        if f.s("origin") == Some("lib") {
+            if let Some(c) = f.s("name").and_then(|n| user.get(n)) {
+                out.fact(f.lo, f.lo + 1, "name", json!({"name": c, "origin": "entry"}), DERIVED);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// S.strings: a relocation target in a data section that holds at least 4 printable characters and a NUL.
+pub fn s_strings(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let targets: std::collections::BTreeSet<i64> = facts(ctx, db, "ref")?.iter()
+        .filter(|f| f.s("rkind") == Some("reloc")).filter_map(|f| f.value.get("to").and_then(|v| v.as_i64())).collect();
+    let mut placed: Vec<(i64, i64)> = facts(ctx, db, "symbol")?.iter().filter(|f| f.s("skind") == Some("crt.data")).map(|f| (f.lo, f.hi)).collect();
+    placed.sort();
+    let mut last_hi = 0i64;
+    for t in targets {
+        if t < last_hi || placed.iter().any(|&(a, b)| a <= t && t < b) {
+            continue;
+        }
+        let Some(s) = img.section_of(t as u32) else { continue };
+        if s.holds_code() {
+            continue;
+        }
+        let Some((o, _)) = img.off(t as u32) else { continue };
+        let end = (o + 4096).min((s.raw_off + s.raw_size) as usize).min(img.data.len());
+        if o >= end {
+            continue;
+        }
+        let Some(e) = memchr::memchr(0, &img.data[o..end]).map(|k| o + k) else { continue };
+        if e - o < 4 {
+            continue;
+        }
+        let run = &img.data[o..e];
+        if !run.iter().all(|&c| (0x20..0x7f).contains(&c) || c == 9 || c == 10 || c == 13) {
+            continue;
+        }
+        last_hi = t + run.len() as i64 + 1;
+        let text: String = run.iter().take(60).map(|&c| c as char).collect();
+        out.fact(t, last_hi, "symbol", json!({"skind": "string", "extent": "derived", "text": text}), DERIVED);
+    }
+    Ok(())
+}
+
+/// S.fill: an unclaimed run of a code section made only of the fill forms, up to a claim or VirtualSize.
+pub fn s_fill(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let forms = crate::compare::fill_order(&ctx.fill_forms);
+    for s in img.sections.iter().filter(|s| s.holds_code()) {
+        let (va, end) = (s.va as i64, s.end() as i64);
+        let mut claimed: Vec<(i64, i64)> = facts_in(ctx, db, "symbol", va, end)?.iter().map(|f| (f.lo, f.hi)).collect();
+        claimed.extend(facts_in(ctx, db, "region", va, end)?.iter().map(|f| (f.lo, f.hi)));
+        claimed.sort();
+        let mut pos = va;
+        let mut gaps = vec![];
+        for &(a, b) in &claimed {
+            if a > pos {
+                gaps.push((pos, a));
+            }
+            pos = pos.max(b);
+        }
+        if va + s.vsize as i64 > pos {
+            gaps.push((pos, va + s.vsize as i64));
+        }
+        for (lo, hi) in gaps {
+            let b = img.read(lo as u32, (hi - lo) as usize);
+            let mut i = 0;
+            let ok = loop {
+                if i >= b.len() {
+                    break true;
+                }
+                match forms.iter().find(|f| b[i..].starts_with(f)) {
+                    Some(f) => i += f.len(),
+                    None => break false,
+                }
+            };
+            if ok && !b.is_empty() {
+                out.fact(lo, hi, "symbol", json!({"skind": "fill", "extent": "derived"}), DERIVED);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// S.unknown: every mapped byte no symbol and no region claims.
+pub fn s_unknown(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    for s in &img.sections {
+        let (va, end) = (s.va as i64, s.end() as i64);
+        let mut claimed: std::collections::BTreeSet<(i64, i64)> = facts_in(ctx, db, "symbol", va, end)?.iter().map(|f| (f.lo, f.hi)).collect();
+        claimed.extend(facts_in(ctx, db, "region", va, end)?.iter().map(|f| (f.lo, f.hi)));
+        let sk = if s.holds_code() { "unknown.code" } else { "unknown.data" };
+        let mut pos = va;
+        for (a, b) in claimed {
+            if a > pos {
+                out.fact(pos, a, "symbol", json!({"skind": sk, "extent": "open"}), OPEN);
+            }
+            pos = pos.max(b);
+        }
+        if end > pos {
+            out.fact(pos, end, "symbol", json!({"skind": sk, "extent": "open"}), OPEN);
+        }
+    }
+    Ok(())
+}
+
+
 #[cfg(test)]
 mod tests {
     use crate::pe::testpe::{build, BASE, DATA, RELOC, TEXT};
@@ -191,6 +406,45 @@ mod tests {
         let refs = of(&rows, "ref");
         assert_eq!(refs.len(), 5);
         assert_eq!(refs[0], (t + 0x21, t + 0x25, json!({"rkind": "reloc", "to": BASE + DATA})));
+    }
+
+    #[test]
+    fn fill_unknown_strings() {
+        let k = Kit::new(&build(None));
+        let t = (BASE + TEXT) as i64;
+        k.record("S.sections", &[], "");
+        k.record("S.relocs", &[], "");
+        let func = |lo: i64, hi: i64| (lo, hi, "symbol", json!({"skind": "func"}), 3);
+        k.put("S.codewalk", &[func(t, t + 0x0f), func(t + 0x20, t + 0x26), func(t + 0x30, t + 0x3e), func(t + 0x50, t + 0x57)]);
+        let (rows, _) = k.run("S.fill", &["S.sections", "S.codewalk"], "");
+        let fills: Vec<(i64, i64)> = of(&rows, "symbol").iter().map(|x| (x.0 - t, x.1 - t)).collect();
+        assert_eq!(fills, [(0x0f, 0x20), (0x26, 0x30), (0x3e, 0x50), (0x57, 0x60)]);
+        k.record("S.fill", &["S.sections", "S.codewalk"], "");
+        let (rows, _) = k.run("S.unknown", &["S.sections", "S.codewalk", "S.fill"], "");
+        let u: Vec<(i64, i64, String)> = of(&rows, "symbol").iter().map(|x| (x.0, x.1, x.2["skind"].as_str().unwrap().to_string())).collect();
+        // .text: functions, fill, and past VirtualSize S.sections' pad: no unknown code; the data unclaimed
+        assert!(!u.is_empty() && u.iter().all(|x| x.2 == "unknown.data" && x.0 >= (BASE + DATA) as i64));
+        k.put("S.crt.data", &[]);
+        let (rows, _) = k.run("S.strings", &["S.relocs", "S.sections", "S.crt.data"], "");
+        let d = (BASE + DATA) as i64;
+        let s: Vec<(i64, i64, String)> = of(&rows, "symbol").iter().map(|x| (x.0 - d, x.1 - d, x.2["text"].as_str().unwrap().to_string())).collect();
+        assert_eq!(s, [(0x10, 0x21, r"c:\src\net\net.c".to_string()), (0x30, 0x36, "hello".to_string()), (0x38, 0x3e, "world".to_string())]);
+    }
+
+    #[test]
+    fn overlaps_and_call_targets() {
+        let k = Kit::new(&build(None));
+        let t = (BASE + TEXT) as i64;
+        k.put("A", &[(t, t + 0x10, "symbol", json!({"skind": "func"}), 3), (t + 0x20, t + 0x30, "symbol", json!({"skind": "func"}), 3)]);
+        k.put("B", &[(t + 8, t + 0x18, "symbol", json!({"skind": "func"}), 3), (t + 0x20, t + 0x30, "symbol", json!({"skind": "func"}), 2),
+                     (t, t + 4, "symbol", json!({"skind": "string"}), 0), (t + 0x40, t + 0x41, "ref", json!({"rkind": "call", "to": t + 0x24}), 3)]);
+        let (_, c) = k.run("C.overlap", &["A", "B"], "");
+        // the same interval and kind of symbol is no contradiction; open facts are not counted
+        assert_eq!(c.iter().map(|x| (x.severity.as_str(), x.lo - t, x.hi - t)).collect::<Vec<_>>(), [("bug", 8, 0x10)]);
+        assert_eq!(c[0].message, format!("symbol func {:#x}..{:#x} overlaps symbol func {:#x}..{:#x}", t, t + 0x10, t + 8, t + 0x18));
+        k.put("S.thunk", &[]);
+        let (_, c) = k.run("C.ref.target", &["A", "B"], "");
+        assert_eq!(c.iter().map(|x| (x.severity.as_str(), x.lo - t)).collect::<Vec<_>>(), [("error", 0x24)]);
     }
 
     #[test]

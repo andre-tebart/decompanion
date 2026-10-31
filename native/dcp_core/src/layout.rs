@@ -1232,3 +1232,218 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
     }
     Ok(())
 }
+
+// ------------------------------------------------------------------------------------------------ L3, L6, L8, R5
+
+/// L3.lit.order: in each data section the units of the literals' first users never go backwards.
+pub fn l3_lit_order(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("lit")).map_err(err)?;
+    // section -> (lo, hi, first) of the literals no data section reaches, in first-seen order of the sections
+    let mut by_sec: Vec<(String, Vec<(i64, i64, i64)>)> = vec![];
+    for f in &ev {
+        if f.value.get("data_refs").and_then(|v| v.as_i64()) != Some(0) {
+            continue;
+        }
+        let sec = f.s("section").unwrap_or("").to_string();
+        let first = f.value.get("first").and_then(|v| v.as_i64()).unwrap_or(0);
+        match by_sec.iter_mut().find(|x| x.0 == sec) {
+            Some(x) => x.1.push((f.lo, f.hi, first)),
+            None => by_sec.push((sec, vec![(f.lo, f.hi, first)])),
+        }
+    }
+    for (sec, mut ls) in by_sec {
+        ls.sort_by_key(|l| l.0);
+        let mut top: Option<(usize, (i64, i64, i64))> = None;
+        let mut reported: HashSet<(usize, usize)> = HashSet::new();
+        for l in ls {
+            let Some(i) = unit_at(&units, l.2) else { continue };
+            if let Some((t, tl)) = top {
+                if i < t && reported.insert((i, t)) {
+                    out.conflict2("error", "L3", l.0, l.1,
+                                  format!("literal at {:#x} ({sec}) is first used by {:#x} in unit {}, but the earlier literal at {:#x} is first used by {:#x} in the later unit {}",
+                                          l.0, l.2, units[i].tu, tl.0, tl.2, units[t].tu), &units[i].start_by, &units[t].start_by);
+                }
+            }
+            if top.is_none_or(|(t, _)| i > t) {
+                top = Some((i, l));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// L8.leak: the leaked .c / .cpp paths of one unit's functions name one file.
+pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("leak")).map_err(err)?;
+    // unit -> stem -> (fn, path), the first leak of a stem kept
+    let mut per: Vec<(usize, Vec<(String, i64, String)>)> = vec![];
+    for f in &ev {
+        if f.value.get("header").is_some_and(|h| h.as_bool() == Some(true) || h.as_i64().is_some_and(|n| n != 0)) {
+            continue;
+        }
+        let Some(i) = unit_at(&units, f.lo) else { continue };
+        let stem = crate::setup::py_str(f.value.get("stem"));
+        let path = crate::setup::py_str(f.value.get("path"));
+        let e = match per.iter().position(|x| x.0 == i) {
+            Some(k) => &mut per[k].1,
+            None => {
+                per.push((i, vec![]));
+                &mut per.last_mut().unwrap().1
+            }
+        };
+        if !e.iter().any(|x| x.0 == stem) {
+            e.push((stem, f.lo, path));
+        }
+    }
+    for (i, mut stems) in per {
+        if stems.len() > 1 {
+            stems.sort_by_key(|x| x.1);
+            let u = &units[i];
+            out.conflict("error", "L8", u.lo, u.hi,
+                         format!("unit {} holds functions that leak {} source files: {}", u.tu, stems.len(),
+                                 stems.iter().map(|(_, f, p)| format!("{p} ({f:#x})")).collect::<Vec<_>>().join(", ")), &u.start_by);
+        }
+    }
+    Ok(())
+}
+
+/// L6.declared: every declaration re-checked against the computed facts.
+pub fn l6_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let code = code_ranges(&img);
+    let symbols = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let starts_all = store::facts(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?;
+    let mut mine: Vec<(bool, std::rc::Rc<SFact>)> = symbols.iter().filter(|f| &*f.rule == "L.decl").map(|f| (false, f.clone())).collect();
+    mine.extend(starts_all.iter().filter(|f| &*f.rule == "L.decl").map(|f| (true, f.clone())));
+    if mine.is_empty() {
+        return Ok(());
+    }
+    let other: Vec<&std::rc::Rc<SFact>> = symbols.iter().filter(|f| &*f.rule != "L.decl" && f.level > OPEN).collect();
+    let mut funcs: Vec<&std::rc::Rc<SFact>> = other.iter().copied().filter(|f| f.s("skind") == Some("func")).collect();
+    funcs.sort_by_key(|f| (f.lo, f.hi));
+    let tables: Vec<&std::rc::Rc<SFact>> = other.iter().copied().filter(|f| matches!(f.s("skind"), Some("jumptable" | "idxtable"))).collect();
+    let starts: HashSet<i64> = starts_all.iter().filter(|f| &*f.rule != "L.decl").map(|f| f.lo).collect();
+    let all_refs = store::facts(db, &ctx.db, "ref", &ctx.needed, |_| true).map_err(err)?;
+    let refs: Vec<&std::rc::Rc<SFact>> = all_refs.iter().filter(|r| matches!(r.s("rkind"), Some("call" | "jmp" | "tail" | "immediate"))).collect();
+    let mut relocs: HashMap<i64, i64> = HashMap::new();
+    for r in all_refs.iter().filter(|r| r.s("rkind") == Some("reloc")) {
+        relocs.insert(r.lo, r.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0));
+    }
+    let covering = |lo: i64, hi: i64| funcs.iter().copied().filter(move |f| f.lo < hi && lo < f.hi);
+    let to = |r: &SFact| r.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0);
+    for (is_start, d) in &mine {
+        let sk = d.s("skind").unwrap_or("");
+        if *is_start {
+            let inner = |f: &SFact| f.value.get("inner").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|x| x.as_i64() == Some(d.lo)));
+            if let Some(hit) = covering(d.lo, d.hi).find(|f| f.lo < d.lo && !inner(f)) {
+                out.conflict2("error", "L6", d.lo, d.hi, format!("declared start {:#x} lies inside the function {:#x}..{:#x}", d.lo, hit.lo, hit.hi), &d.by, &hit.by);
+            }
+            continue;
+        }
+        match sk {
+            "dead" | "foreign" => {
+                for f in covering(d.lo, d.hi) {
+                    out.conflict2("error", "L6", d.lo.max(f.lo), d.hi.min(f.hi),
+                                  format!("declared {sk} bytes {:#x}..{:#x} are code of the function {:#x}..{:#x}", d.lo, d.hi, f.lo, f.hi), &d.by, &f.by);
+                }
+                for r in &refs {
+                    let t = to(r);
+                    if d.lo <= t && t < d.hi {
+                        out.conflict2("error", "L6", t, t + 1, format!("declared {sk} bytes {:#x}..{:#x} are reached by the {} at {:#x}", d.lo, d.hi,
+                                                                          r.s("rkind").unwrap_or(""), r.lo), &d.by, &r.by);
+                    }
+                }
+            }
+            "jumptable" | "idxtable" => {
+                let fnv = d.value.get("fn").and_then(|v| v.as_i64()).unwrap_or(0);
+                if !starts.contains(&fnv) {
+                    out.conflict("error", "L6", d.lo, d.hi, format!("declared {sk} {:#x}..{:#x}: no function starts at fn={fnv:#x}", d.lo, d.hi), &d.by);
+                }
+                for f in covering(d.lo, d.hi) {
+                    out.conflict2("error", "L6", d.lo.max(f.lo), d.hi.min(f.hi),
+                                  format!("declared {sk} {:#x}..{:#x} lies inside the code of the function {:#x}..{:#x}", d.lo, d.hi, f.lo, f.hi), &d.by, &f.by);
+                }
+                for t in &tables {
+                    let tfn = t.value.get("fn").and_then(|v| v.as_i64());
+                    if t.lo < d.hi && d.lo < t.hi && (t.lo, t.hi, tfn) != (d.lo, d.hi, Some(fnv)) {
+                        out.conflict2("error", "L6", t.lo.max(d.lo), t.hi.min(d.hi),
+                                      format!("declared {sk} {:#x}..{:#x} fn={fnv:#x}, the walk finds {} {:#x}..{:#x} fn={:#x}", d.lo, d.hi,
+                                              t.s("skind").unwrap_or(""), t.lo, t.hi, tfn.unwrap_or(0)), &d.by, &t.by);
+                    }
+                }
+            }
+            "fptr" => {
+                let mut a = d.lo;
+                while a <= d.hi - 4 {
+                    if !relocs.get(&a).is_some_and(|&t| code.iter().any(|&(lo, hi)| lo <= t && t < hi)) {
+                        out.conflict("error", "L6", a, a + 4, format!("declared fptr {:#x}..{:#x}: the dword at {a:#x} is not a relocated code address", d.lo, d.hi), &d.by);
+                        break;
+                    }
+                    a += 4;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// M.bytes.declared (R5): declared dead or foreign bytes inside a game unit belong to it (a source fact).
+pub fn m_bytes_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)? {
+        let sk = f.s("skind").unwrap_or("");
+        if &*f.rule != "L.decl" || !matches!(sk, "dead" | "foreign") {
+            continue;
+        }
+        let (i, j) = (unit_at(&units, f.lo), unit_at(&units, f.hi - 1));
+        if i.is_none() && j.is_none() {
+            out.conflict("warn", "M.bytes.declared", f.lo, f.hi, format!("declared {sk} bytes {:#x}..{:#x} lie in no unit", f.lo, f.hi), &f.by);
+            continue;
+        }
+        if i != j {
+            out.conflict("error", "M.bytes.declared", f.lo, f.hi, format!("declared {sk} bytes {:#x}..{:#x} cross a unit boundary", f.lo, f.hi), &f.by);
+            continue;
+        }
+        let v = serde_json::json!({"what": sk, "unit": units[i.unwrap()].tu, "decl": f.by});
+        out.fact_reason(f.lo, f.hi, "source", v, f.level.min(DECLARED), f.reason.clone());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests_2b {
+    use crate::pe::testpe::{build, BASE, TEXT};
+    use crate::rules::testkit::{of, Kit};
+    use serde_json::json;
+
+    fn unit(tu: &str, lo: i64, hi: i64) -> (i64, i64, &'static str, serde_json::Value, i64) {
+        (lo, hi, "unit", json!({"tu": tu, "status": "x", "start_level": "declared", "end_level": "declared", "start_by": format!("decl:{tu}"), "end_by": ""}), 1)
+    }
+
+    #[test]
+    fn declared_bytes_leaks_and_rechecks() {
+        let k = Kit::new(&build(None));
+        let t = (BASE + TEXT) as i64;
+        k.put("L.unit.extent", &[unit("a", t, t + 0x30), unit("b", t + 0x30, t + 0x60)]);
+        k.put("L.decl", &[(t + 0x10, t + 0x20, "symbol", json!({"skind": "dead"}), 1), (t + 0x2c, t + 0x34, "symbol", json!({"skind": "foreign"}), 1)]);
+        let (rows, c) = k.run("M.bytes.declared", &["L.decl", "L.unit.extent"], "");
+        assert_eq!(of(&rows, "source"), vec![(t + 0x10, t + 0x20, json!({"what": "dead", "unit": "a", "decl": "rule:L.decl@1"}))]);
+        assert_eq!(c.iter().map(|x| (x.severity.as_str(), x.message.as_str())).collect::<Vec<_>>(),
+                   [("error", &*format!("declared foreign bytes {:#x}..{:#x} cross a unit boundary", t + 0x2c, t + 0x34))]);
+        k.put("L.analyze", &[(t + 0x10, t + 0x11, "evidence", json!({"ekind": "leak", "path": "c:/a.c", "stem": "a", "header": false, "string": 1}), 2),
+                             (t + 0x20, t + 0x21, "evidence", json!({"ekind": "leak", "path": "c:/b.c", "stem": "b", "header": false, "string": 2}), 2),
+                             (t + 0x40, t + 0x41, "evidence", json!({"ekind": "leak", "path": "c:/x.h", "stem": "x", "header": true, "string": 3}), 2)]);
+        let (_, c) = k.run("L8.leak", &["L.analyze", "L.unit.extent"], "");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].message, format!("unit a holds functions that leak 2 source files: c:/a.c ({:#x}), c:/b.c ({:#x})", t + 0x10, t + 0x20));
+        k.put("S.codewalk", &[(t + 0x18, t + 0x28, "symbol", json!({"skind": "func"}), 3)]);
+        for r in ["S.crt.code", "S.thunk", "S.relocs", "S.sections"] {
+            k.put(r, &[]);
+        }
+        let (_, c) = k.run("L6.declared", &["L.decl", "S.codewalk", "S.crt.code", "S.thunk", "S.relocs", "S.sections"], "");
+        assert_eq!(c.iter().map(|x| (x.lo - t, x.hi - t)).collect::<Vec<_>>(), [(0x18, 0x20)]);
+    }
+}

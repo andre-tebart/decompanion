@@ -962,6 +962,17 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
         "S.relocs" => crate::setup::s_relocs(ctx, db, &mut out),
         "S7.entry.section" => crate::setup::s7_entry_section(ctx, db, &mut out),
         "S4.import.libs" => crate::setup::s4_import_libs(ctx, db, &mut out),
+        "C.overlap" => crate::setup::c_overlap(ctx, db, &mut out),
+        "C.ref.target" => crate::setup::c_ref_target(ctx, db, &mut out),
+        "S5.crt.gaps" => crate::setup::s5_crt_gaps(ctx, db, &mut out),
+        "S.entry.user" => crate::setup::s_entry_user(ctx, db, &mut out),
+        "S.strings" => crate::setup::s_strings(ctx, db, &mut out),
+        "S.fill" => crate::setup::s_fill(ctx, db, &mut out),
+        "S.unknown" => crate::setup::s_unknown(ctx, db, &mut out),
+        "L3.lit.order" => crate::layout::l3_lit_order(ctx, db, &mut out),
+        "L6.declared" => crate::layout::l6_declared(ctx, db, &mut out),
+        "L8.leak" => crate::layout::l8_leak(ctx, db, &mut out),
+        "M.bytes.declared" => crate::layout::m_bytes_declared(ctx, db, &mut out),
         "M.match" => m_match(ctx, db, &mut out),
         "M8.reloc" => m8_reloc(ctx, db, &mut out),
         "M.lint" => m_lint(ctx, db, &mut out),
@@ -1051,6 +1062,16 @@ pub(crate) mod testkit {
         /// Run and record a rule (the rules that need it read its facts).
         pub fn record(&self, rule: &str, needed: &[&str], extra: &str) {
             run_rule(self.ctx(rule, needed, extra)).unwrap();
+        }
+
+        /// Record a run of these facts (lo, hi, kind, value, level) under a rule's name, `by` its producer.
+        pub fn put(&self, rule: &str, facts: &[(i64, i64, &str, serde_json::Value, i64)]) {
+            let mut out = Out::new(rule, "1");
+            for (lo, hi, kind, v, level) in facts {
+                out.fact(*lo, *hi, kind, v.clone(), *level);
+            }
+            let (rows, confl) = out.sorted();
+            with_db(&self.db, |db| write_run(db, &self.db, rule, "1", "test", &format!("put:{rule}"), &rows, &confl, 0, true)).unwrap();
         }
     }
 

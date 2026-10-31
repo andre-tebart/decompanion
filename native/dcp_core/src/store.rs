@@ -315,6 +315,13 @@ impl Out {
         self.rows.push(Row { lo, hi, kind: kind.to_string(), value: text, level, by: self.by.clone(), reason: None });
     }
 
+    /// A fact with a reason (one resting on a declared premise carries the premise's).
+    pub fn fact_reason(&mut self, lo: i64, hi: i64, kind: &str, value: Value, level: i64, reason: Option<String>) {
+        let mut text = String::new();
+        canon(&mut text, &value);
+        self.rows.push(Row { lo, hi, kind: kind.to_string(), value: text, level, by: self.by.clone(), reason });
+    }
+
     /// A declared fact of a loader rule: its producer a line of typed state (src:<file>:<line>), with a reason.
     pub fn declared(&mut self, lo: i64, hi: i64, kind: &str, value: Value, by: &str, reason: &str) {
         let mut text = String::new();
