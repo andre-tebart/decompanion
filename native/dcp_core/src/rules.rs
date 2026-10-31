@@ -656,12 +656,6 @@ pub fn least(value: Option<u32>, size: u32) -> u32 {
     1u32.max(size.saturating_sub(a - 1))
 }
 
-#[pyfunction]
-#[pyo3(name = "least_size")]
-pub fn py_least_size(value: Option<u32>, size: u32) -> u32 {
-    least(value, size)
-}
-
 /// padding_masked: the mask with the possible alignment padding masked too, the zero bytes from the least size
 /// on (the padding in front of the next symbol is zero in our object; a nonzero byte there is the symbol's own).
 pub fn padding_masked(data: &[u8], mask: &[u8], least: usize) -> Vec<u8> {
@@ -672,12 +666,6 @@ pub fn padding_masked(data: &[u8], mask: &[u8], least: usize) -> Vec<u8> {
         }
     }
     m
-}
-
-#[pyfunction]
-#[pyo3(name = "padding_masked")]
-pub fn py_padding_masked(data: Vec<u8>, mask: Vec<u8>, least: usize) -> Vec<u8> {
-    padding_masked(&data, &mask, least)
 }
 
 /// The least size of a data definition (None without a size).

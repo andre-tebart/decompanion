@@ -11,6 +11,7 @@ mod cliread;
 mod coff;
 mod decl;
 mod crt;
+mod datafix;
 mod compare;
 mod compile;
 mod cs;
@@ -667,6 +668,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(asmcmd::asm_reading, m)?)?;
     m.add_function(wrap_pyfunction!(cliread::read_command, m)?)?;
     m.add_function(wrap_pyfunction!(cliread::read_resolve, m)?)?;
+    m.add_function(wrap_pyfunction!(datafix::data_map, m)?)?;
+    m.add_function(wrap_pyfunction!(datafix::data_fix, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_stale, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_private_headers, m)?)?;
@@ -757,11 +760,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compare_functions, m)?)?;
     m.add_function(wrap_pyfunction!(store::store_schema, m)?)?;
     m.add_function(wrap_pyfunction!(rules::py_aligned_sites, m)?)?;
-    m.add_function(wrap_pyfunction!(rules::py_least_size, m)?)?;
     m.add_function(wrap_pyfunction!(layout::py_compute_units, m)?)?;
     m.add_function(wrap_pyfunction!(layout::py_boundary_issues, m)?)?;
     m.add_function(wrap_pyfunction!(layout::py_outside_unit_issues, m)?)?;
-    m.add_function(wrap_pyfunction!(rules::py_padding_masked, m)?)?;
     m.add_function(wrap_pyfunction!(clang::clang_load, m)?)?;
     m.add_function(wrap_pyfunction!(clang::clang_version, m)?)?;
     m.add_function(wrap_pyfunction!(clang::clang_parse, m)?)?;
