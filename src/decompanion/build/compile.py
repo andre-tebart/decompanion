@@ -18,7 +18,6 @@ reads a modification time.
 """
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import os
 import time
@@ -27,8 +26,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
-from .. import fsmemo, timing
-from ..ledger import decl as decl_mod
+from .. import fsmemo, native, timing
 from ..ledger import srcscan
 from ..ledger.fact import canonical
 from ..ledger.store import sha256
@@ -49,28 +47,17 @@ class Report:
 
 def unit_overrides(project) -> list[dict]:
     """The [[toolchain.unit]] tables: glob (on the unit name), cflags, reason, optional targets."""
-    tc = project.cfg.get("toolchain") or {}
-    out = tc.get("unit") or []
-    return out if isinstance(out, list) else []
+    return native.core().plan_unit_overrides(project.core)
 
 
 def flags_for(project, target: str, unit: str) -> tuple[list[str], dict | None]:
-    """(flags, the override table that applied or None): the target's declared cflags, then the cflags of the
-    first [[toolchain.unit]] whose glob matches the unit name (and whose `targets`, when given, list the
-    target)."""
-    flags = list(project.toolchain_decl_for(target).get("cflags") or [])
-    for o in unit_overrides(project):
-        if o.get("targets") and target not in o["targets"]:
-            continue
-        if fnmatch.fnmatchcase(unit, str(o.get("glob", ""))):
-            return flags + list(o.get("cflags") or []), o
-    return flags, None
+    """(flags, the override table that applied or None): the core's (plan.rs flags_for)."""
+    return native.core().plan_flags_for(project.core, target, unit)
 
 
 def compile_flags(project, target: str, unit: str) -> list[str]:
-    """The flags a unit compiles with: flags_for's and the target's define (srcscan.target_macro: a function of
-    some targets only stands under `#if` on their macros)."""
-    return flags_for(project, target, unit)[0] + [project.toolchain.define_flag(srcscan.target_macro(target))]
+    """The flags a unit compiles with: flags_for's and the target's define."""
+    return native.core().plan_compile_flags(project.core, target, unit)
 
 
 def include_dirs(unit: str) -> list[Path]:
@@ -123,29 +110,12 @@ class Hasher:
         return sha256(*(f"{f.lower()}={self.file(f)}" for f in sorted(files, key=str.lower)))
 
 
-_plans: dict[tuple, list] = {}
-
-
 def plan(project, scan=None) -> list[T.TU]:
-    """The translation units of the project's current target (build/tu.py), memoised per process by the root,
-    the target and the hashes of what they depend on (the sources, the declarations, the target list)."""
-    key = None
-    if scan is None:
-        key = (str(project.root), project.target_name, project.default_target, project.input_hash("src"),
-               project.input_hash("decl"), project.input_hash("targets"))
-        hit = _plans.get(key)
-        if hit is not None:
-            return hit
-        scan = srcscan.scan(project.root, project.input_hash("src"))
-    targets = [t["name"] for t in project.input("targets")]
-    decls, _ = decl_mod.load(project.input("decl"), project.root, targets)
-    names = decl_mod.unit_files(decls, project.target_name, project.default_target)
-    out = T.units(project.root, scan, project.target_name, project.default_target, names)
-    if key is not None:
-        if len(_plans) > 2:
-            _plans.clear()
-        _plans[key] = out
-    return out
+    """The translation units of the project's current target (the core's: plan.rs, memoised by the hashes of what
+    they depend on); of a given scan: tu.units."""
+    if scan is not None:
+        return T.units(project.root, scan, project.target_name, project.default_target)
+    return T.of_rows(project.root, native.core().plan_units(project.core))
 
 
 def located(a, diagnostics: list) -> list:

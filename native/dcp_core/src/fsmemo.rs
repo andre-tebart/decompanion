@@ -83,7 +83,7 @@ pub fn exists(path: &str) -> bool {
 }
 
 /// fnmatch.fnmatchcase of `*`, `?` and literal characters.
-fn fnmatch(name: &[u8], pat: &[u8]) -> bool {
+pub(crate) fn fnmatch(name: &[u8], pat: &[u8]) -> bool {
     let (mut n, mut p) = (0, 0);
     let (mut star, mut mark) = (None, 0);
     while n < name.len() {
