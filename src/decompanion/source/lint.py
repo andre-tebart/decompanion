@@ -38,133 +38,23 @@ include hash (the compile's: every file of its include set by content), so a uni
 it would be compiled again; the all-declarations unit by its text and the contents of include/. The result of a
 run is the store meta `lint` (the input `lint` of M.lint and G.grade).
 
-clang: the LLVM installation's libclang in process (source/cparse.py: `[lint] libclang = "<path>"` in
+clang: the LLVM installation's libclang in process (the core's frontend.rs: `[lint] libclang = "<path>"` in
 decompanion.toml, else beside `clang` on PATH, else the LLVM default install path); the units a lint parses at
-once go to cparse's worker processes; a unit alone stays live (cparse.parse: the scan's parse of an edit serves its lint).
+once parse on threads; a unit alone stays live (the scan's parse of an edit serves its lint).
 """
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
 from pathlib import Path
 
 from .. import native
-from ..ledger import srcscan
-
-EXEMPT = re.compile(r"@(original|vc6)\b")        # headers.py; lint.rs reads the same
-VERSION = "7"
-
 
 NOT_FOUND = ("libclang not found ([lint] libclang = ... in decompanion.toml, or an LLVM installation: clang on PATH "
              "or C:/Program Files/LLVM)")
 
 
 def available(project) -> bool:
-    from . import cparse
-    return cparse.library(project.cfg) is not None
-
-
-def setup(project) -> None:
-    """Load the project's libclang (cparse.library) into this process."""
-    from . import cparse
-    lib = cparse.library(project.cfg)
-    if lib is None:
-        raise RuntimeError(NOT_FOUND)
-    cparse.load(lib)
-
-
-def sysdirs_of(project) -> list[Path]:
-    return [Path(d) for d in project.toolchain.include_search_dirs([]) if Path(d).exists()]
-
-
-def call_of(d) -> tuple[str, str] | None:
-    """An M7 call: (callee, `proto` through a K&R declaration / `undeclared`); None for any other diagnostic
-    (-Wdeprecated-non-prototype also stands at a K&R declaration itself)."""
-    if d["kind"] != "warning":
-        return None
-    if d["flag"] == "-Wdeprecated-non-prototype" and d["msg"].startswith("passing arguments"):
-        return d.get("name") or "?", "proto"
-    if d["flag"] == "-Wimplicit-function-declaration":
-        return d.get("name") or "?", "undeclared"
-    return None
-
-
-def grouped(diags):
-    groups = []
-    for d in diags:
-        if d["kind"] == "note" and groups:
-            groups[-1].append(d)
-        else:
-            groups.append([d])
-    return groups
-
-
-def fmt_group(g) -> str:
-    d = g[0]
-    s = f"{d['file']}:{d['line']}: {d['msg']}" + (f" [{d['flag']}]" if d["flag"] else "")
-    for n in g[1:]:
-        s += f" / note {n['file']}:{n['line']}: {n['msg']}"
-    return s
-
-
-@dataclass(frozen=True)
-class Decl:
-    """One file-scope declaration or definition of a function or a data object, as the all-declarations unit
-    repeats it (whitespace collapsed, comments and strings blanked)."""
-    file: str
-    line: int
-    last: int                 # the statement's last line (an exemption may stand on any of its lines)
-    name: str
-    kind: str                 # proto | extern (declarations); fdef | knr | ddef (definitions; ddef as extern)
-    stmt: str                 # the statement as emitted: `...;`, a K&R definition `... {}`
-    at: int                   # offset of the name in stmt (a renamed copy replaces it)
-    init: bool = False        # ddef: it has an initialiser (the definition of a tentatively defined name)
-    proto: str = ""           # knr: the prototype its parameter declarations spell (what its copy compares)
-
-    @property
-    def func(self) -> bool:
-        return self.kind in ("proto", "fdef", "knr")
-
-    @property
-    def definition(self) -> bool:
-        return self.kind in ("fdef", "knr", "ddef")
-
-    @property
-    def spelling(self) -> str:
-        s = self.stmt[:-3] if self.stmt.endswith(" {}") else self.stmt.rstrip(";")
-        return s.removeprefix("extern ").strip()
-
-    @property
-    def where(self) -> str:
-        return f"{self.file}:{self.line}"
-
-    def renamed(self, new: str) -> str:
-        if self.proto:
-            k = _name_at(self.proto, self.name)
-            return self.proto[:k] + new + self.proto[k + len(self.name):]
-        return self.stmt[:self.at] + new + self.stmt[self.at + len(self.name):]
-
-
-def _name_at(stmt: str, name: str) -> int:
-    """The offset of the declared name in a collapsed declaration: the occurrence followed by a declarator
-    end (`(`, `[`, `)`, `;`, `,`, `=`), else the first one."""
-    m = re.search(r"(?<![\w])" + re.escape(name) + r"(?=\s*[(\[);,=]|\s*$)", stmt)
-    if m is None:
-        m = re.search(r"\b" + re.escape(name) + r"\b", stmt)
-    return m.start() if m else -1
-
-
-def file_scope_decls(rel: str, text: str, m: dict | None = None) -> list[Decl]:
-    """Every file-scope declaration and definition of a function or data object that is not static, in file
-    order: prototypes (`proto`), extern data (`extern`), function definitions (`fdef` as a prototype of their
-    head, `knr` a K&R definition with an empty body) and data definitions (`ddef`, as an extern declaration).
-    Typedefs, tags, `__inline` bodies and function pointer types are left out. The declarations are the
-    front end's (m: the file's cparse.model entry, `decls`), their text cut from the file by their positions
-    (comments blanked, whitespace collapsed); a declaration whose spelled name is not the declared one (a rename
-    macro, `#define X X_ag`, declares X_ag) is left out. Without m the text is parsed alone
-    (srcscan.model_alone)."""
-    m = srcscan.model_alone(rel, text) if m is None else m
-    return [Decl(*r) for r in native.core().lint_file_decls(rel, text, m)]
+    """Whether the project's libclang is there (the core's frontend::library)."""
+    return native.core().lint_available(project.core)
 
 
 def private_headers(root: Path) -> dict[str, set[str]]:

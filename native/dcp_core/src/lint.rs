@@ -72,19 +72,19 @@ pub(crate) fn mdecls(decls: &[crate::clang::Decl]) -> Vec<MDecl> {
 /// One file-scope declaration or definition as the all-declarations unit repeats it (lint.Decl).
 #[derive(Clone, PartialEq)]
 pub(crate) struct Decl {
-    file: String,
-    line: i64,
-    last: i64,
-    name: String,
-    kind: String, // proto | extern | fdef | knr | ddef
-    stmt: String,
-    at: usize, // byte offset of the name in stmt
-    init: bool,
-    proto: String,
+    pub(crate) file: String,
+    pub(crate) line: i64,
+    pub(crate) last: i64,
+    pub(crate) name: String,
+    pub(crate) kind: String, // proto | extern | fdef | knr | ddef
+    pub(crate) stmt: String,
+    pub(crate) at: usize, // byte offset of the name in stmt
+    pub(crate) init: bool,
+    pub(crate) proto: String,
 }
 
 impl Decl {
-    fn func(&self) -> bool {
+    pub(crate) fn func(&self) -> bool {
         matches!(self.kind.as_str(), "proto" | "fdef" | "knr")
     }
 
@@ -92,7 +92,7 @@ impl Decl {
         matches!(self.kind.as_str(), "fdef" | "knr" | "ddef")
     }
 
-    fn spelling(&self) -> String {
+    pub(crate) fn spelling(&self) -> String {
         let s = match self.stmt.strip_suffix(" {}") {
             Some(s) => s,
             None => self.stmt.trim_end_matches(';'),
@@ -408,15 +408,6 @@ pub(crate) fn file_lint(rel: &str, src: &Src, m: &FileModel) -> PyResult<FileLin
 /// A file's `#include <..>` names.
 pub(crate) fn system_includes(text: &str) -> Vec<String> {
     SYSINC.captures_iter(text).map(|c| py_strip(&c[1]).to_string()).collect()
-}
-
-/// lint.file_scope_decls for Python (headers.py): the rows of lint.Decl.
-#[pyfunction]
-pub fn lint_file_decls(rel: &str, text: &str, model: &Bound<'_, PyDict>) -> PyResult<Vec<(String, i64, i64, String, String, String, i64, bool, String)>> {
-    let m = crate::clang::file_model_of(model)?;
-    let src = Src::new(text, &m.comments, &m.strings);
-    let decls = mdecls(&m.decls);
-    Ok(file_decls(rel, &src, &decls).iter().map(|d| d.row()).collect())
 }
 
 // ------------------------------------------------------------------------------------------------ the unit

@@ -424,20 +424,6 @@ def test_lint_m5_per_symbol(tiny):
     assert "m5=0" in out, out
 
 
-def test_lint_alldecls_scan():
-    from decompanion.source import lint as L
-    ds = L.file_scope_decls("src/u/head.c", "int a = 1, *b;\nstatic int c;\nextern struct S s[];\ntypedef int T;\n"
-                            "static int f(void) { return 0; }\nint g(x) int x; { return x; }\nint h(void);\n"
-                            "struct Q { int q; };\nchar *k(char *s)\n{\n    return s;\n}\n")
-    assert [(d.kind, d.name, d.stmt) for d in ds] == [
-        ("ddef", "a", "extern int a;"), ("ddef", "b", "extern int *b;"), ("extern", "s", "extern struct S s[];"),
-        ("knr", "g", "int g(x) int x; {}"), ("proto", "h", "int h(void);"), ("fdef", "k", "char *k(char *s);")]
-    assert all(d.stmt[d.at:d.at + len(d.name)] == d.name for d in ds)
-    # a K&R definition compares as its default-promoted prototype (`int f()` and `int f(int, int)` agree with it)
-    (d,) = L.file_scope_decls("src/u/f.c", "int f(x, y, p, q) short x; unsigned char y; float p; char *q;\n{\n}\n")
-    assert d.kind == "knr" and d.proto == "int f(int x, int y, double p, char *q);"
-
-
 @needs_vc6
 def test_q4_view_forms(tiny):
     """Q4: `(*(T *)datum)` reads through the datum's value (raw), `(*(T *)&datum)` with its address comment is a

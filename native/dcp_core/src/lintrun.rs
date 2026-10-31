@@ -254,6 +254,12 @@ pub fn lint_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProj
     crate::pystore::json_py(py, &v)
 }
 
+/// Whether the project's libclang is there.
+#[pyfunction]
+pub fn lint_available(project: PyRef<'_, crate::project::PyProject>) -> bool {
+    frontend::library(Some(&project.p.cfg)).is_some()
+}
+
 #[pyfunction]
 pub fn lint_stale(project: PyRef<'_, crate::project::PyProject>) -> PyResult<Option<Vec<String>>> {
     stale(&project.p).map_err(PyRuntimeError::new_err)

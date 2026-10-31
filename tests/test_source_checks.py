@@ -308,20 +308,6 @@ def test_headers_conflicts_multi_name_and_position(tiny):
     assert (tiny / "src/net.c").read_text().startswith('#include "net2.h"\n#include "base.h"\n#include "net.h"\n')
 
 
-def test_drop_names_and_include_pos():
-    from decompanion.source import headers as H
-    assert H.drop_names("h.c", "extern int a, *b, c[3];  /* 0x1 */", {"b"}) == "extern int a, c[3];  /* 0x1 */"
-    assert H.drop_names("h.c", "extern int a, *b, c[3];  /* 0x1 */", {"a"}) == "extern int *b, c[3];  /* 0x1 */"
-    assert H.drop_names("h.c", "extern int a, *b;  /* 0x1 */", {"a", "b"}) is None
-    assert H.drop_names("h.c", "extern int x; extern char *y, z;", {"x"}) == "extern char *y, z;"
-    assert H.drop_line("h.c", "int f(void);  /* 0x1 */", {"f"}, {"f"}) is None
-    assert H.declared_names("h.c", "extern int a, *b, c[3];\n") == {"a": 1, "b": 1, "c": 1}
-    text = '#include "a.h"\nextern int x;\nstatic int tab[] = {\n  1,\n  x\n};\n#include "late.h"\n'
-    assert H.include_pos("h.c", text, {"x"}) == 2 and H.include_pos("h.c", text, {"y"}) == 7
-    text = '#include "a.h"\nextern int x;\n/* the table,\n   of x */ static int *px =\n  &x;\n#include "late.h"\n'
-    assert H.include_pos("h.c", text, {"x"}) == 2              # not inside the comment, not inside the statement
-
-
 VC6_ROOT = Path("C:/Tools/MSVC600-SP5PP")
 
 

@@ -20,6 +20,7 @@ mod difflib;
 mod engine;
 mod fsmemo;
 mod frontend;
+mod headers;
 mod grade;
 mod libcand;
 mod link;
@@ -670,8 +671,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cliread::read_resolve, m)?)?;
     m.add_function(wrap_pyfunction!(datafix::data_map, m)?)?;
     m.add_function(wrap_pyfunction!(datafix::data_fix, m)?)?;
+    m.add_function(wrap_pyfunction!(headers::headers_conflicts, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_run, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_stale, m)?)?;
+    m.add_function(wrap_pyfunction!(lintrun::lint_available, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_private_headers, m)?)?;
     m.add_function(wrap_pyfunction!(mrules::probe_analyse, m)?)?;
     m.add_function(wrap_pyfunction!(compile::compile_ensure, m)?)?;
@@ -770,7 +773,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<clang::Unit>()?;
     m.add_function(wrap_pyfunction!(srcscan::scan_file, m)?)?;
     m.add_class::<srcscan::ScanPiece>()?;
-    m.add_function(wrap_pyfunction!(lint::lint_file_decls, m)?)?;
     m.add_function(wrap_pyfunction!(lint::lint_alldecls, m)?)?;
     m.add_class::<lint::AllDecls>()?;
     m.add_function(wrap_pyfunction!(decl::decl_parse_line, m)?)?;
