@@ -1,4 +1,4 @@
-"""The native core (native/dcp_core, Rust; docs/plan.md section 20): built on first use, loaded once per process.
+"""The native core (native/dcp_core, Rust): built on first use, loaded once per process.
 
 `core()` is the extension module. It is built with cargo from native/dcp_core (rustup's x86_64-pc-windows-gnu
 toolchain) and copied to build/native/_core-<profile>-<source hash>.pyd of the decompanion checkout, so a changed

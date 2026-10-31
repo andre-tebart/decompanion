@@ -1,9 +1,7 @@
-//! dcp_core: the native core of decompanion (docs/plan.md, section 20).
+//! dcp_core: the native core of decompanion (docs/architecture.md lists its modules).
 //!
-//! N0: the store's write path. `record_run` writes a finished rule run as ledger/store.py's Store.record_run
-//! does (same SQL, same out_hash), on its own connection to the project's store (WAL: beside Python's).
-//! `canonical` and `out_hash` are fact.canonical and the run hash, byte for byte: the shadow mode of the engine
-//! compares them with Python's for every rule's output.
+//! This file holds the module list, the Python module's registry of functions, the store's connections and its
+//! write path (`write_run`: a finished rule run with its facts and conflicts, its out_hash, made current).
 
 mod analyzers;
 mod asmcmd;

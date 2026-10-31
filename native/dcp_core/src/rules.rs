@@ -1,6 +1,5 @@
-//! The native rules (docs/plan.md section 20). Each runs on the store directly: it reads the current facts of
-//! its needed runs, builds its facts and conflicts and records its run, or (shadow) returns its out_hash only.
-//! A rule here keeps its Python docstring as the criterion (`dcp rules` prints it); the code is this file.
+//! The rules. Each runs on the store directly: it reads the current facts of its needed runs, builds its facts and
+//! conflicts and records its run. A rule's criterion is its doc text in registry.rs (`dcp rules -v` prints it).
 
 use crate::compare::{compare, Compared};
 use crate::store::{self, Out, SFact, DECLARED, DERIVED, OPEN};

@@ -1,4 +1,4 @@
-//! The store's facts in memory (docs/plan.md section 20, option 2): the native core holds the facts of every
+//! The store's facts in memory: the native core holds the facts of every
 //! current run of a store, decoded once when the run is first seen; SQLite stays the store of record (every run
 //! is written there when it is recorded). A run never changes after it is recorded (a new output is a new run, an
 //! unchanged one keeps its run and facts), so memory is keyed by the run's identity (id, time) and the run table

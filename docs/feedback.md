@@ -15,8 +15,7 @@ observed, the cause (verified in the code, or suspected), a proposed change. Rem
 | disasm, dump | 28 | 0.34 .. 0.37 s | | 2 % |
 | grade, asmdiff, diffclass, next, fn, escalate, why | 81 | 0.15 .. 0.23 s | | ~3 % |
 
-The reading tools, `headers conflicts` and `check` were reported fast and trusted. Done since (docs/plan.md, the
-entry of 2026-10-31): rename takes several pairs in one call (one rebuild), rename's own work and the build's
+The reading tools, `headers conflicts` and `check` were reported fast and trusted. Done since (2026-10-31): rename takes several pairs in one call (one rebuild), rename's own work and the build's
 compile, include scan, lint and G.grade got cheaper; a closed stdout pipe (`dcp refs X | head`) no longer reads as
 a lost daemon; asmdiff prints its legend; disasm inside an instruction starts at the next one. Open:
 
@@ -28,7 +27,7 @@ a lost daemon; asmdiff prints its legend; disasm inside an instruction starts at
     carry line numbers, so the L.* chain, L9.analyzer.span, L5, L13 and the byte map run again). Proposed: per-unit partitions of the M / G / D rules, and a position-free run key of L.src for the rules that
     read no line (their facts must not carry a source line then: `by=src:file:line`).
 12. **A header edit parses the changed units twice with clang, and compiles units whose code did not change.**
-    The model walk is native since 2026-10-31 (~0.15 s per unit, docs/plan.md); the source scan's model and the
+    The model walk is native since 2026-10-31 (~0.15 s per unit); the source scan's model and the
     lint's diagnostics are still separate parses, and the all-declarations unit (1.6 MB, ~0.76 s) is parsed again
     on every header edit. The d3.h worst case (43 units) is 9.5 s: CL 5.0 s, lint 1.65 s, rules 1.5 s, plan 1.2 s.
     Proposed: skip the compile of a unit whose preprocessed text (without its line markers) is unchanged (a
