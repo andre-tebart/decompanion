@@ -1071,3 +1071,28 @@ verdicts would not beat Python's memoised one):
   reuse a decoded fact whose row (id, rule, content) is unchanged: after a line move only the changed rows are
   decoded (the first Python rule to read the source facts paid ~250 ms for all 21k).
 - Refresh on gildegold: a line move ~1.05 s (1.4 s), a body edit ~0.55 .. 0.65 s. bench --verify ok.
+- L9.analyzer.span is native; the blob table has an index on kind (store.blobs scanned 460k blobs for the 5136
+  drafts: 144 -> 20 ms).
+- The line-move cascade is native: L.src.extent, L5, A1, L13, L.unit.extent (compute_units, the layout
+  proposals' too), M1, then L1, L4 (boundary_issues), L10, L14 (outside_unit_issues) and L.src. The scan stays
+  Python for now: srcscan.native_view hands its items over once per scan, as JSON text (Ctx.extra; the scan rules
+  keep the parsed text while it is the same, and keep the scanner modules in their code hash).
+- G.grade is native (2026-10-31, user decision "No fallbacks": no Python for verdicts the store does not hold):
+  diffclass.rs (difflib's SequenceMatcher, the hunk classes, branch targets, switch tables, the frame-aligned
+  diff, the walk of the original's slot), x86.rs (the listing, the explanations; the renaming searches pruned by
+  what a renaming cannot change), readability.rs (Q1..Q7 over Source's lexing). Verdict.summary orders classes of
+  equal weight by name (it depended on whether a verdict came fresh or from the store). A function's code size,
+  original and verdict are held by what they are computed from (its bytes, mask, table relocations, address,
+  slot, extent), a file's lexing and readability by its text and the tree context; each run keeps what it used;
+  what is not held is computed on every core (a new daemon: ~1 s for gildegold's 3500 functions).
+- One refresh's rules share the per-function compare (held by object, symbol, address, next start under the
+  image and relocation sites); the native rules read the tu table themselves; write_run syncs a run against the
+  facts memory holds and puts the run as written back into memory (no read of the run's rows, no reload).
+- Build: a unit of changed text is no longer preprocessed before its compile (its include set is read beside it);
+  lint keeps a file's provided names and system includes while its text stands.
+- gildegold, `dcp build` after an edit no earlier run has seen (a new comment above or inside ai_ShotHitsGround):
+  ~1.25 s after a body edit, ~1.4 s after a line move (scan ~310 ms: libclang's model ~210; CL ~230; lint ~340:
+  the all-declarations text ~85, the unit's libclang parse ~85, cross ~60; refresh ~300 .. 390). Rename ~2.6 s.
+  bench --verify S1 S3 S5 ok. Still Python: the scan (srcscan, cparse's decoding), lint, the setup rules (S.*,
+  C.*), L.decl / L.decl.start / L.analyzer / L.analyze, L3 / L6 / L8, M.compile, M.flags.proven,
+  M.bytes.declared, the engine and the CLI commands' cores (asmdiff / diffclass read Python's diffclass).
