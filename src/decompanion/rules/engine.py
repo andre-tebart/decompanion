@@ -235,12 +235,10 @@ class Engine:
     def native_ctx(self, r: Rule, needed: tuple[str, ...], ih: str, record: bool) -> dict:
         """What a native rule reads (rules.rs Ctx): the store, its needed runs, the project's paths and inputs."""
         p = self.project
-        objs = p.input("objects") if "objects" in r.inputs else {}
         return {"rule": r.id, "version": r.version, "code_hash": r.code_hash, "input_hash": ih, "db": str(self.store.path),
                 "main": Path(self.store.main).resolve().as_uri() + "?mode=ro" if self.store.main else "",
                 "needed": list(needed), "root": str(p.root), "image": str(p.image.path),
                 "fill_forms": [bytes(f) for f in p.toolchain.fill_forms], "record": record, "capstone": capstone_dll(),
-                "objects": {u: (row.get("obj_hash") or "", bool(row.get("ok"))) for u, row in objs.items()},
                 "shortcuts": not os.environ.get("DCP_NO_SHORTCUTS"),
                 "extra": extra if isinstance(extra := r.native_inputs(p) if r.native_inputs else {}, str) else json.dumps(extra)}
 

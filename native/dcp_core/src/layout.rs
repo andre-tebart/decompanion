@@ -277,8 +277,19 @@ struct ScanInputs {
     scan: ScanView,
 }
 
-fn scan_inputs(ctx: &Ctx) -> PyResult<ScanInputs> {
-    serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("{}: native inputs: {e}", ctx.rule)))
+thread_local! {
+    // the latest scan inputs as parsed, by their text (L5, A1 and L13 of one refresh get the same text)
+    static SCAN: std::cell::RefCell<Option<(String, std::rc::Rc<ScanInputs>)>> = const { std::cell::RefCell::new(None) };
+}
+
+fn scan_inputs(ctx: &Ctx) -> PyResult<std::rc::Rc<ScanInputs>> {
+    if let Some(x) = SCAN.with(|s| s.borrow().as_ref().filter(|(t, _)| *t == ctx.extra).map(|(_, x)| x.clone())) {
+        return Ok(x);
+    }
+    let x: ScanInputs = serde_json::from_str(&ctx.extra).map_err(|e| PyRuntimeError::new_err(format!("{}: native inputs: {e}", ctx.rule)))?;
+    let x = std::rc::Rc::new(x);
+    SCAN.with(|s| *s.borrow_mut() = Some((ctx.extra.clone(), x.clone())));
+    Ok(x)
 }
 
 /// A hex value of the scan: its number when it is one (None past u64).

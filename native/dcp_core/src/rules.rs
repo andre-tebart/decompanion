@@ -26,7 +26,6 @@ pub struct Ctx {
     pub root: String,
     pub image: String,
     pub fill_forms: Vec<Vec<u8>>,
-    pub objects: HashMap<String, (String, bool)>, // unit -> (object hash, compiled ok)
     pub capstone: String,                           // the capstone library the Python package loaded
     pub record: bool,
     pub shortcuts: bool,
@@ -39,8 +38,8 @@ pub struct Ctx {
 pub struct Compiled {
     pub obj: crate::ObjIndex,
     pub src: Rc<SFact>,
-    pub c: Compared,
-    pub code: crate::coff::FunctionCode,
+    pub c: Rc<Compared>,
+    pub code: Rc<crate::coff::FunctionCode>,
     pub next: u32, // the next known start (the end of the function's slot)
 }
 
@@ -73,6 +72,24 @@ impl Compared {
         }
         out.join("; ")
     }
+}
+
+/// The compiled units of the store's tu table: unit -> (object hash, compiled ok) (the `objects` input).
+pub fn objects(db: &Connection) -> PyResult<HashMap<String, (String, bool)>> {
+    let err = |e: rusqlite::Error| PyRuntimeError::new_err(e.to_string());
+    let mut st = db.prepare_cached("SELECT unit, obj_hash, ok FROM tu").map_err(err)?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)))).map_err(err)?;
+    rows.collect::<Result<_, _>>().map_err(err)
+}
+
+/// One function's compare is computed from its object (build/obj/<content hash>.obj), its symbol there, its
+/// address and the next start (and the image, the relocation sites, the fill forms: the stamp).
+type FnKey = (String, usize, u32, u32);
+type Stamp = (String, Option<Vec<u32>>, Vec<Vec<u8>>);
+
+thread_local! {
+    static COMPARED: std::cell::RefCell<(Stamp, HashMap<FnKey, (Rc<crate::coff::FunctionCode>, Rc<Compared>)>)> =
+        std::cell::RefCell::new(Default::default());
 }
 
 /// match.compiled_functions: every L.src function source of the current target whose unit compiled and whose
@@ -109,10 +126,17 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
         .map_err(err)?;
     let forms = crate::compare::fill_order(&ctx.fill_forms);
     let (mut out, mut missing) = (vec![], vec![]);
+    // the compares of the latest call (one refresh's rules share them), under the image and the relocation sites
+    let stamp = (ctx.image.clone(), relocs.clone(), ctx.fill_forms.clone());
+    let mut held = COMPARED.with(|h| std::mem::take(&mut *h.borrow_mut()));
+    if held.0 != stamp {
+        held = (stamp, HashMap::new());
+    }
+    let mut used: HashMap<FnKey, (Rc<crate::coff::FunctionCode>, Rc<Compared>)> = HashMap::new();
     // C.objects: each compiled unit's object, read once (not per function)
-    let mut objs: HashMap<String, Option<crate::ObjIndex>> = HashMap::new();
-    let current: std::collections::HashSet<String> = ctx
-        .objects
+    let objects = objects(db)?;
+    let mut objs: HashMap<String, Option<(String, crate::ObjIndex)>> = HashMap::new();
+    let current: std::collections::HashSet<String> = objects
         .values()
         .filter(|(h, ok)| *ok && !h.is_empty())
         .map(|(h, _)| format!("{}/build/obj/{}.obj", ctx.root, h))
@@ -122,18 +146,18 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
         let unit = s.s("unit").unwrap_or("").to_string();
         let name = s.s("symbol").unwrap_or("").to_string();
         if !objs.contains_key(&unit) {
-            let o = match ctx.objects.get(&unit) {
+            let o = match objects.get(&unit) {
                 Some((h, true)) if !h.is_empty() => {
                     let path = format!("{}/build/obj/{}.obj", ctx.root, h);
-                    crate::object_if(&path)?
+                    crate::object_if(&path)?.map(|o| (path, o))
                 }
                 _ => None,
             };
             objs.insert(unit.clone(), o);
         }
         let obj = objs[&unit].clone();
-        let Some(obj) = obj else {
-            let why = if ctx.objects.contains_key(&unit) { "failed to compile" } else { "is not compiled (dcp build)" };
+        let Some((path, obj)) = obj else {
+            let why = if objects.contains_key(&unit) { "failed to compile" } else { "is not compiled (dcp build)" };
             missing.push((s, format!("no object: the unit {why}")));
             continue;
         };
@@ -144,10 +168,19 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
         let lo = s.lo as u32;
         let i = starts.partition_point(|&x| x <= lo);
         let next = if i < starts.len() { starts[i] } else { img.end() };
-        let code = obj.0.function_code(k);
-        let c = compare(&img, &code, lo, relocs.as_deref(), next, &forms);
+        let key = (path, k, lo, next);
+        let (code, c) = match held.1.get(&key) {
+            Some(x) => x.clone(),
+            None => {
+                let code = obj.0.function_code(k);
+                let c = compare(&img, &code, lo, relocs.as_deref(), next, &forms);
+                (Rc::new(code), Rc::new(c))
+            }
+        };
+        used.insert(key, (code.clone(), c.clone()));
         out.push(Compiled { obj: obj.clone(), src: s, c, code, next });
     }
+    COMPARED.with(|h| *h.borrow_mut() = (held.0, used));
     Ok((out, missing))
 }
 
@@ -559,7 +592,7 @@ impl DataObj {
 fn data_objects(ctx: &Ctx, db: &Connection) -> PyResult<Vec<DataObj>> {
     let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
     let mut index: HashMap<String, (crate::ObjIndex, HashMap<String, (usize, &'static str, u32)>)> = HashMap::new();
-    for (unit, (h, ok)) in &ctx.objects {
+    for (unit, (h, ok)) in &objects(db)? {
         if !*ok || h.is_empty() {
             continue;
         }
