@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import timing
 from .fact import Conflict, Fact, Kind, Level, canonical
 
 SCHEMA_VERSION = "1"
@@ -265,14 +266,28 @@ class Store:
         if hit is not None:
             return list(hit)
         rows = []
+        # decoded facts by row id: a run recorded again in place (record_run writes only the facts that changed)
+        # keeps the ids of its unchanged facts, so only the changed rows are decoded; a row counts as the same
+        # only with the same rule and content (SQLite may give a deleted row's id to another)
+        known = self.__dict__.setdefault("_rows", {})
+        if len(known) > 1_000_000:
+            known.clear()
         for n, (rid, rule, at) in enumerate(chosen):
             got = cache.get((rid, at, kind))          # (id, at): an id SQLite reuses after a delete is another run
             if got is None:
                 # (lo, hi, value text, run, row, fact): the order of (lo, hi, value) with ties in run and row order,
                 # as tuples that sort in C without touching the fact
-                got = cache[(rid, at, kind)] = [
-                    (r[1], r[2], r[4], k, self._row_fact((r[0], rule, *r[1:]))) for k, r in enumerate(self.db.execute(
-                        "SELECT id, lo, hi, kind, value, level, by, reason FROM fact WHERE run_id=? AND kind=?", (rid, kind.value)))]
+                got = []
+                for k, r in enumerate(self.db.execute(
+                        "SELECT id, lo, hi, kind, value, level, by, reason FROM fact WHERE run_id=? AND kind=?", (rid, kind.value))):
+                    hit = known.get(r[0])
+                    if hit is not None and hit[0] == rule and hit[1] == r:
+                        f = hit[2]
+                    else:
+                        f = self._row_fact((r[0], rule, *r[1:]))
+                        known[r[0]] = (rule, r, f)
+                    got.append((r[1], r[2], r[4], k, f))
+                cache[(rid, at, kind)] = got
             rows.extend((lo, hi, v, n, k, f) for lo, hi, v, k, f in got)
         rows.sort()
         out = [r[5] for r in rows]
@@ -389,10 +404,18 @@ class Store:
         self.db.execute("COMMIT")
 
     def bytemap_at(self, addr: int):
+        """The byte map row holding addr (the map built first when its facts changed: query.ensure_bytemap)."""
+        from .query import ensure_bytemap
+        with timing.phase("bytemap"):
+            ensure_bytemap(self)
         return self.db.execute("SELECT lo, hi, cls, level, symbol, unit, source, section FROM bytemap WHERE lo<=? "
                                "ORDER BY lo DESC LIMIT 1", (addr,)).fetchone()
 
     def bytemap_rows(self, lo: int | None = None, hi: int | None = None):
+        """The byte map rows intersecting [lo, hi) (the map built first when its facts changed)."""
+        from .query import ensure_bytemap
+        with timing.phase("bytemap"):
+            ensure_bytemap(self)
         q, args = "SELECT lo, hi, cls, level, symbol, unit, source, section FROM bytemap", []
         if lo is not None or hi is not None:
             q += " WHERE 1=1"

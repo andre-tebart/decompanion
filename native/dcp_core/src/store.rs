@@ -21,6 +21,7 @@ pub const DERIVED: i64 = 2;
 pub const PROVEN: i64 = 3;
 
 pub struct SFact {
+    pub id: i64, // the fact's row
     pub rule: Rc<str>,
     pub lo: i64,
     pub hi: i64,
@@ -44,22 +45,43 @@ struct RunFacts {
     by_kind: HashMap<String, Facts>,
 }
 
+impl RunFacts {
+    /// Its facts by row id (with their kind): what a run recorded again in place keeps.
+    fn by_id(&self) -> HashMap<i64, (&str, &Rc<SFact>)> {
+        self.by_kind.iter().flat_map(|(k, v)| v.iter().map(move |f| (f.id, (k.as_str(), f)))).collect()
+    }
+}
+
 thread_local! {
     // store path -> (run id, run time) -> its facts
     static MEM: RefCell<HashMap<String, HashMap<(i64, u64), Rc<RunFacts>>>> = RefCell::new(HashMap::new());
 }
 
-fn load_run(db: &Connection, rid: i64, rule: &str) -> rusqlite::Result<RunFacts> {
+/// A run's facts read from the store. `before`: the same run as memory held it before it was recorded again in
+/// place (record_run writes only the facts that changed): a row with the same id and content is that fact.
+fn load_run(db: &Connection, rid: i64, rule: &str, before: Option<&RunFacts>) -> rusqlite::Result<RunFacts> {
     let rule_rc: Rc<str> = Rc::from(rule);
-    let mut st = db.prepare_cached("SELECT kind, lo, hi, value, level, by FROM fact WHERE run_id=? ORDER BY id")?;
+    let known = before.map(|b| b.by_id()).unwrap_or_default();
+    let mut st = db.prepare_cached("SELECT id, kind, lo, hi, value, level, by FROM fact WHERE run_id=? ORDER BY id")?;
     let mut q = st.query([rid])?;
     let mut by_kind: HashMap<String, Facts> = HashMap::new();
     while let Some(r) = q.next()? {
-        let kind: String = r.get(0)?;
-        let text: String = r.get(3)?;
-        let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        let f = SFact { rule: rule_rc.clone(), lo: r.get(1)?, hi: r.get(2)?, text, value, level: r.get(4)?, by: r.get(5)? };
-        by_kind.entry(kind).or_default().push(Rc::new(f));
+        let id: i64 = r.get(0)?;
+        let kind: String = r.get(1)?;
+        let (lo, hi, level): (i64, i64, i64) = (r.get(2)?, r.get(3)?, r.get(5)?);
+        let text = r.get_ref(4)?.as_str()?;
+        let by = r.get_ref(6)?.as_str()?;
+        let same = known.get(&id).filter(|(k, f)| {
+            *k == kind && f.lo == lo && f.hi == hi && f.level == level && f.text == text && f.by == by
+        });
+        let f = match same {
+            Some((_, f)) => (*f).clone(),
+            None => {
+                let value: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+                Rc::new(SFact { id, rule: rule_rc.clone(), lo, hi, text: text.to_string(), value, level, by: by.to_string() })
+            }
+        };
+        by_kind.entry(kind).or_default().push(f);
     }
     Ok(RunFacts { rule: rule.to_string(), by_kind })
 }
@@ -75,12 +97,21 @@ fn current(db: &Connection, db_path: &str) -> rusqlite::Result<Vec<Rc<RunFacts>>
         let mut m = m.borrow_mut();
         let held = m.entry(db_path.to_string()).or_default();
         let live: std::collections::HashSet<(i64, u64)> = runs.iter().map(|(id, _, at)| (*id, at.to_bits())).collect();
-        held.retain(|k, _| live.contains(k));
+        // the runs no longer current by their id: one recorded again in place is read against its earlier facts
+        let mut gone: HashMap<i64, Rc<RunFacts>> = HashMap::new();
+        held.retain(|k, v| {
+            if live.contains(k) {
+                return true;
+            }
+            gone.insert(k.0, v.clone());
+            false
+        });
         let mut out = Vec::with_capacity(runs.len());
         for (id, rule, at) in &runs {
             let key = (*id, at.to_bits());
             if !held.contains_key(&key) {
-                held.insert(key, Rc::new(load_run(db, *id, rule)?));
+                let before = gone.get(id).filter(|b| b.rule == *rule).map(|b| &**b);
+                held.insert(key, Rc::new(load_run(db, *id, rule, before)?));
             }
             out.push(held[&key].clone());
         }

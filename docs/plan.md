@@ -1057,3 +1057,17 @@ N1 in progress (2026-10-31):
   enlarged over the next symbol: D1 error). ~280 .. 330 ms -> ~90 .. 110 ms for the four. least_size and
   padding_masked are exposed for tests/test_datafix.py; match_data.py keeps the criteria only.
   Refresh on gildegold now: a body edit ~0.6 s (1.1 s before N1), a line move ~1.4 s (2.0 s).
+
+N2 in progress (2026-10-31, user decision: the line-move cascade before G.grade; a native G.grade without held
+verdicts would not beat Python's memoised one):
+- record_run writes a changed run in place: the rule's current run keeps its id, takes a new time and out_hash,
+  and only the facts and conflicts that differ are deleted / inserted (a line move changes the facts of the
+  functions below it; M.lint's 4698 M7 lines stay). DCP_NO_SHORTCUTS (bench --verify's fresh recompute) still
+  writes a new run whole, so --verify compares the two ways. Recording L.src after a line move ~190 ms -> ~90 ms,
+  G.grade's ~110 ms -> ~37 ms.
+- The byte map is built when a command reads it (Store.bytemap_at / bytemap_rows), not after every refresh
+  (~100 .. 270 ms per line move).
+- A recorded fact row keeps its id while the run is written in place, so the Python store and the native memory
+  reuse a decoded fact whose row (id, rule, content) is unchanged: after a line move only the changed rows are
+  decoded (the first Python rule to read the source facts paid ~250 ms for all 21k).
+- Refresh on gildegold: a line move ~1.05 s (1.4 s), a body edit ~0.55 .. 0.65 s. bench --verify ok.

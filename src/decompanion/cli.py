@@ -88,8 +88,7 @@ def refresh(p: Project, e: Engine, verbose=False, force=False, only=None):
     ran = [r for r in res if r.ran]
     if verbose or ran:
         print(f"rules: {len(ran)} ran of {len(res)}, {int((time.perf_counter() - t0) * 1000)} ms (target {p.target_name})", file=sys.stderr)
-    with timing.phase("bytemap"):
-        query.ensure_bytemap(p.store)
+    # the byte map is built when a command reads it (Store.bytemap_at / bytemap_rows), not after every refresh
     return res
 
 

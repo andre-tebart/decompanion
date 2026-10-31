@@ -263,8 +263,101 @@ pub(crate) fn with_conn<T>(path: &str, f: impl FnOnce(&mut Connection) -> PyResu
     CONNS.with(|c| f(c.borrow_mut().get_mut(path).unwrap()))
 }
 
+type FactKey = (i64, i64, String, String, i64, String, Option<String>);
+type ConflictKey = (String, String, i64, i64, String, String, String);
+
+/// Make a run's facts the given rows, writing only the difference: the facts the run holds that the rows do not
+/// are deleted, the rows it does not hold are inserted (a line move changes the facts of the functions below it,
+/// not the 26k of the sources).
+fn sync_facts(tx: &rusqlite::Transaction, run_id: i64, rows: &[Row]) -> rusqlite::Result<()> {
+    let mut have: HashMap<FactKey, std::collections::VecDeque<i64>> = HashMap::new();
+    {
+        let mut st = tx.prepare("SELECT id, lo, hi, kind, value, level, by, reason FROM fact WHERE run_id=? ORDER BY id")?;
+        let mut q = st.query([run_id])?;
+        while let Some(r) = q.next()? {
+            let k: FactKey = (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?);
+            have.entry(k).or_default().push_back(r.get(0)?);
+        }
+    }
+    let mut add = Vec::new();
+    for r in rows {
+        let k: FactKey = (r.lo, r.hi, r.kind.clone(), r.value.clone(), r.level, r.by.clone(), r.reason.clone());
+        match have.get_mut(&k).and_then(|q| q.pop_front()) {
+            Some(_) => {}
+            None => add.push(r),
+        }
+    }
+    {
+        let mut st = tx.prepare("DELETE FROM fact WHERE id=?")?;
+        for ids in have.values() {
+            for id in ids {
+                st.execute([id])?;
+            }
+        }
+    }
+    let mut st = tx.prepare("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
+    for r in add {
+        st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
+    }
+    Ok(())
+}
+
+/// The same for a run's conflicts (M.lint's thousands of M7 lines are the same from one run to the next).
+fn sync_conflicts(tx: &rusqlite::Transaction, run_id: i64, confl: &[ConflictRow]) -> rusqlite::Result<()> {
+    let mut have: HashMap<ConflictKey, std::collections::VecDeque<i64>> = HashMap::new();
+    {
+        let mut st = tx.prepare("SELECT id, severity, check_id, lo, hi, message, a, b FROM conflict WHERE run_id=? ORDER BY id")?;
+        let mut q = st.query([run_id])?;
+        while let Some(r) = q.next()? {
+            let k: ConflictKey = (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?);
+            have.entry(k).or_default().push_back(r.get(0)?);
+        }
+    }
+    let mut add = Vec::new();
+    for c in confl {
+        let k: ConflictKey = (c.severity.clone(), c.check.clone(), c.lo, c.hi, c.message.clone(), c.a.clone(), c.b.clone());
+        match have.get_mut(&k).and_then(|q| q.pop_front()) {
+            Some(_) => {}
+            None => add.push(c),
+        }
+    }
+    {
+        let mut st = tx.prepare("DELETE FROM conflict WHERE id=?")?;
+        for ids in have.values() {
+            for id in ids {
+                st.execute([id])?;
+            }
+        }
+    }
+    let mut st = tx.prepare("INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
+    for c in add {
+        st.execute(params![run_id, c.severity, c.check, c.lo, c.hi, c.message, c.a, c.b])?;
+    }
+    Ok(())
+}
+
+fn drop_runs(tx: &rusqlite::Transaction, rule: &str, keep: Option<i64>) -> rusqlite::Result<()> {
+    let old: Vec<i64> = {
+        let mut st = tx.prepare("SELECT id FROM run WHERE rule=?")?;
+        st.query_map([rule], |r| r.get(0))?.collect::<Result<_, _>>()?
+    };
+    for oid in old {
+        if Some(oid) == keep {
+            continue;
+        }
+        tx.execute("DELETE FROM fact WHERE run_id=?", [oid])?;
+        tx.execute("DELETE FROM conflict WHERE run_id=?", [oid])?;
+        tx.execute("DELETE FROM run WHERE id=?", [oid])?;
+    }
+    Ok(())
+}
+
 /// A run written as Store.record_run writes it, on the store's native connection: (run id, out_hash). `rows` and
-/// `confl` must be in record order (sort_rows / sort_conflicts). `shortcuts` false is DCP_NO_SHORTCUTS.
+/// `confl` must be in record order (Out::sorted). Only the latest run of a rule is kept. An unchanged output
+/// (out_hash) keeps the run and its facts and takes the new key; a changed one is written into the rule's
+/// current run, only the facts and conflicts that differ (sync_facts), with a new time (a reader that holds the
+/// run by (id, time) reads it again). `shortcuts` false (DCP_NO_SHORTCUTS, bench --verify's fresh recompute):
+/// a new run written whole.
 pub(crate) fn write_run(
     db: &mut Connection,
     rule: &str,
@@ -279,50 +372,43 @@ pub(crate) fn write_run(
     let out = run_hash(rows, confl);
     let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
     let tx = db.transaction()?;
-    let same: Option<i64> = if shortcuts {
-        tx.query_row("SELECT id FROM run WHERE rule=? AND current=1 AND out_hash=?", params![rule, out], |r| r.get(0)).ok()
+    let cur: Option<(i64, String)> = if shortcuts {
+        tx.query_row("SELECT id, out_hash FROM run WHERE rule=? AND current=1", [rule], |r| Ok((r.get(0)?, r.get(1)?))).ok()
     } else {
         None
     };
     let run_id;
-    if let Some(id) = same {
-        run_id = id;
-        let old: Vec<i64> = {
-            let mut st = tx.prepare("SELECT id FROM run WHERE rule=? AND id<>?")?;
-            st.query_map(params![rule, run_id], |r| r.get(0))?.collect::<Result<_, _>>()?
-        };
-        for oid in old {
-            tx.execute("DELETE FROM fact WHERE run_id=?", [oid])?;
-            tx.execute("DELETE FROM conflict WHERE run_id=?", [oid])?;
-            tx.execute("DELETE FROM run WHERE id=?", [oid])?;
+    match cur {
+        Some((id, h)) if h == out => {
+            run_id = id;
+            drop_runs(&tx, rule, Some(run_id))?;
+            tx.execute("UPDATE run SET version=?, code_hash=?, input_hash=?, ms=? WHERE id=?",
+                       params![version, code_hash, input_hash, ms, run_id])?;
+            sync_conflicts(&tx, run_id, confl)?;
         }
-        tx.execute("UPDATE run SET version=?, code_hash=?, input_hash=?, ms=? WHERE id=?",
-                   params![version, code_hash, input_hash, ms, run_id])?;
-        tx.execute("DELETE FROM conflict WHERE run_id=?", [run_id])?;
-    } else {
-        let old: Vec<i64> = {
-            let mut st = tx.prepare("SELECT id FROM run WHERE rule=?")?;
-            st.query_map([rule], |r| r.get(0))?.collect::<Result<_, _>>()?
-        };
-        for oid in old {
-            tx.execute("DELETE FROM fact WHERE run_id=?", [oid])?;
-            tx.execute("DELETE FROM conflict WHERE run_id=?", [oid])?;
-            tx.execute("DELETE FROM run WHERE id=?", [oid])?;
+        Some((id, _)) => {
+            run_id = id;
+            drop_runs(&tx, rule, Some(run_id))?;
+            sync_facts(&tx, run_id, rows)?;
+            sync_conflicts(&tx, run_id, confl)?;
+            tx.execute("UPDATE run SET version=?, code_hash=?, input_hash=?, out_hash=?, current=1, ms=?, at=? WHERE id=?",
+                       params![version, code_hash, input_hash, out, ms, at, run_id])?;
         }
-        tx.execute(
-            "INSERT INTO run (rule, version, code_hash, input_hash, out_hash, current, ms, at) VALUES (?,?,?,?,?,1,?,?)",
-            params![rule, version, code_hash, input_hash, out, ms, at],
-        )?;
-        run_id = tx.last_insert_rowid();
-        let mut st = tx.prepare("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
-        for r in rows {
-            st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
-        }
-    }
-    {
-        let mut st = tx.prepare("INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
-        for c in confl {
-            st.execute(params![run_id, c.severity, c.check, c.lo, c.hi, c.message, c.a, c.b])?;
+        None => {
+            drop_runs(&tx, rule, None)?;
+            tx.execute(
+                "INSERT INTO run (rule, version, code_hash, input_hash, out_hash, current, ms, at) VALUES (?,?,?,?,?,1,?,?)",
+                params![rule, version, code_hash, input_hash, out, ms, at],
+            )?;
+            run_id = tx.last_insert_rowid();
+            let mut st = tx.prepare("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
+            for r in rows {
+                st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
+            }
+            let mut st = tx.prepare("INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
+            for c in confl {
+                st.execute(params![run_id, c.severity, c.check, c.lo, c.hi, c.message, c.a, c.b])?;
+            }
         }
     }
     tx.commit()?;
