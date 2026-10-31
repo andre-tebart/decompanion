@@ -79,7 +79,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
     let relocs = if img.relocations().is_empty() {
         None
     } else {
-        let mut v: Vec<u32> = store::los_where(db, "ref", &ctx.needed, "json_extract(f.value, '$.rkind') = 'reloc'")
+        let mut v: Vec<u32> = store::los(db, &ctx.db, "ref", &ctx.needed, |f| f.s("rkind") == Some("reloc"))
             .map_err(err)?
             .into_iter()
             .map(|x| x as u32)
@@ -88,9 +88,9 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
         if v.is_empty() { None } else { Some(v) }
     };
     // starts_of: start facts, function / thunk symbols above open, the end of every code section
-    let mut starts: Vec<u32> = store::los_where(db, "start", &ctx.needed, "").map_err(err)?.into_iter().map(|x| x as u32).collect();
+    let mut starts: Vec<u32> = store::los(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?.into_iter().map(|x| x as u32).collect();
     starts.extend(
-        store::los_where(db, "symbol", &ctx.needed, "json_extract(f.value, '$.skind') IN ('func', 'thunk') AND f.level > 0")
+        store::los(db, &ctx.db, "symbol", &ctx.needed, |f| matches!(f.s("skind"), Some("func") | Some("thunk")) && f.level > OPEN)
             .map_err(err)?
             .into_iter()
             .map(|x| x as u32),
@@ -100,7 +100,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
     }
     starts.sort_unstable();
     starts.dedup();
-    let srcs = store::facts_where(db, "source", &ctx.needed, "r.rule = 'L.src' AND json_extract(f.value, '$.what') = 'func'")
+    let srcs = store::facts(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("func"))
         .map_err(err)?;
     let (mut out, mut missing) = (vec![], vec![]);
     // C.objects: each compiled unit's object, read once (not per function)
@@ -144,8 +144,8 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
 fn m_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let (funcs, _) = compiled_functions(ctx, db)?;
     let mut walk: HashMap<i64, Rc<SFact>> = HashMap::new();
-    let cond = "r.rule = 'S.codewalk' AND json_extract(f.value, '$.skind') = 'func'";
-    for f in store::facts_where(db, "symbol", &ctx.needed, cond).map_err(|e| PyRuntimeError::new_err(e.to_string()))? {
+    let keep = |f: &SFact| &*f.rule == "S.codewalk" && f.s("skind") == Some("func");
+    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed, keep).map_err(|e| PyRuntimeError::new_err(e.to_string()))? {
         walk.insert(f.lo, f); // a later fact of the same start wins, as the dict comprehension does
     }
     for x in &funcs {

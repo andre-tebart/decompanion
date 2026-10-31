@@ -1,10 +1,17 @@
-//! The store's facts for native rules: the current runs' facts of a kind, as ledger/store.py's Store.facts gives
-//! them (sorted by lo, hi, the value's stored text; ties in run order, then row order), decoded once per run and
-//! kept while the run stays current; and the output a native rule builds (facts and conflicts in record order).
+//! The store's facts in memory (docs/plan.md section 20, option 2): the native core holds the facts of every
+//! current run of a store, decoded once when the run is first seen; SQLite stays the store of record (every run
+//! is written there when it is recorded). A run never changes after it is recorded (a new output is a new run, an
+//! unchanged one keeps its run and facts), so memory is keyed by the run's identity (id, time) and the run table
+//! says what is current: each read lists the current runs (one small query), loads the runs memory does not hold
+//! (recorded by Python, by another process, or before this process started) and drops the ones no longer current.
+//! Reads give Store.facts' order: (lo, hi, the value's stored text), ties in run order, then row order.
+//! Also the output a native rule builds (facts and conflicts in record order).
 
 use crate::{put_str, ConflictRow, Row};
 use rusqlite::Connection;
 use serde_json::Value;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
@@ -17,6 +24,7 @@ pub struct SFact {
     pub rule: Rc<str>,
     pub lo: i64,
     pub hi: i64,
+    pub text: String, // the stored value (canonical): Store.facts' third sort key
     pub value: Value,
     pub level: i64,
     pub by: String,
@@ -30,54 +38,84 @@ impl SFact {
 
 pub type Facts = Vec<Rc<SFact>>;
 
-fn query_sql(cols: &str, rules: &[String], cond: &str, order: bool) -> String {
-    let marks = vec!["?"; rules.len()].join(",");
-    format!(
-        "SELECT {cols} FROM fact f JOIN run r ON r.id = f.run_id WHERE r.current = 1 AND f.kind = ? AND r.rule IN ({marks}){}{}",
-        if cond.is_empty() { String::new() } else { format!(" AND ({cond})") },
-        if order { " ORDER BY f.lo, f.hi, f.value, r.id, f.id" } else { "" }
-    )
+/// One recorded run's facts by kind, in row order.
+struct RunFacts {
+    rule: String,
+    by_kind: HashMap<String, Facts>,
 }
 
-/// Facts of one kind of the current runs of `rules`, in Store.facts' order: by (lo, hi, the value's stored text),
-/// ties in run order, then row order. `cond`: an SQL condition on the fact `f` / its run `r` that selects what the
-/// rule reads (SQLite's JSON functions on f.value: `json_extract(f.value, '$.skind') = 'func'`), so the rest is
-/// never decoded.
-pub fn facts_where(db: &Connection, kind: &str, rules: &[String], cond: &str) -> rusqlite::Result<Facts> {
-    let mut st = db.prepare_cached(&query_sql("r.rule, f.lo, f.hi, f.value, f.level, f.by", rules, cond, true))?;
-    let mut args: Vec<&dyn rusqlite::ToSql> = vec![&kind];
-    for r in rules {
-        args.push(r);
-    }
-    let mut q = st.query(args.as_slice())?;
-    let mut out = Vec::new();
-    let mut last_rule: Option<Rc<str>> = None;
+thread_local! {
+    // store path -> (run id, run time) -> its facts
+    static MEM: RefCell<HashMap<String, HashMap<(i64, u64), Rc<RunFacts>>>> = RefCell::new(HashMap::new());
+}
+
+fn load_run(db: &Connection, rid: i64, rule: &str) -> rusqlite::Result<RunFacts> {
+    let rule_rc: Rc<str> = Rc::from(rule);
+    let mut st = db.prepare_cached("SELECT kind, lo, hi, value, level, by FROM fact WHERE run_id=? ORDER BY id")?;
+    let mut q = st.query([rid])?;
+    let mut by_kind: HashMap<String, Facts> = HashMap::new();
     while let Some(r) = q.next()? {
-        let rule: String = r.get(0)?;
-        let rc = match &last_rule {
-            Some(x) if **x == *rule => x.clone(),
-            _ => {
-                let x: Rc<str> = Rc::from(rule.as_str());
-                last_rule = Some(x.clone());
-                x
-            }
-        };
+        let kind: String = r.get(0)?;
         let text: String = r.get(3)?;
         let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        out.push(Rc::new(SFact { rule: rc, lo: r.get(1)?, hi: r.get(2)?, value, level: r.get(4)?, by: r.get(5)? }));
+        let f = SFact { rule: rule_rc.clone(), lo: r.get(1)?, hi: r.get(2)?, text, value, level: r.get(4)?, by: r.get(5)? };
+        by_kind.entry(kind).or_default().push(Rc::new(f));
     }
+    Ok(RunFacts { rule: rule.to_string(), by_kind })
+}
+
+/// The current runs of the store in run order, each with its facts (loaded if memory does not hold it yet).
+fn current(db: &Connection, db_path: &str) -> rusqlite::Result<Vec<Rc<RunFacts>>> {
+    let runs: Vec<(i64, String, f64)> = {
+        let mut st = db.prepare_cached("SELECT id, rule, at FROM run WHERE current=1 ORDER BY id")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    MEM.with(|m| {
+        let mut m = m.borrow_mut();
+        let held = m.entry(db_path.to_string()).or_default();
+        let live: std::collections::HashSet<(i64, u64)> = runs.iter().map(|(id, _, at)| (*id, at.to_bits())).collect();
+        held.retain(|k, _| live.contains(k));
+        let mut out = Vec::with_capacity(runs.len());
+        for (id, rule, at) in &runs {
+            let key = (*id, at.to_bits());
+            if !held.contains_key(&key) {
+                held.insert(key, Rc::new(load_run(db, *id, rule)?));
+            }
+            out.push(held[&key].clone());
+        }
+        Ok(out)
+    })
+}
+
+/// Facts of one kind of the current runs of `rules` that `keep` selects, in Store.facts' order.
+pub fn facts(db: &Connection, db_path: &str, kind: &str, rules: &[String], keep: impl Fn(&SFact) -> bool) -> rusqlite::Result<Facts> {
+    let mut out: Facts = Vec::new();
+    for run in current(db, db_path)? {
+        if !rules.iter().any(|r| *r == run.rule) {
+            continue;
+        }
+        if let Some(v) = run.by_kind.get(kind) {
+            out.extend(v.iter().filter(|f| keep(f)).cloned());
+        }
+    }
+    // stable: equal (lo, hi, text) keep run order, then row order
+    out.sort_by(|a, b| (a.lo, a.hi, &a.text).cmp(&(b.lo, b.hi, &b.text)));
     Ok(out)
 }
 
-/// The addresses (lo) of the facts a condition selects, unordered: what a rule reads of facts it only locates.
-pub fn los_where(db: &Connection, kind: &str, rules: &[String], cond: &str) -> rusqlite::Result<Vec<i64>> {
-    let mut st = db.prepare_cached(&query_sql("f.lo", rules, cond, false))?;
-    let mut args: Vec<&dyn rusqlite::ToSql> = vec![&kind];
-    for r in rules {
-        args.push(r);
+/// The addresses (lo) of the facts `keep` selects, unordered: what a rule reads of facts it only locates.
+pub fn los(db: &Connection, db_path: &str, kind: &str, rules: &[String], keep: impl Fn(&SFact) -> bool) -> rusqlite::Result<Vec<i64>> {
+    let mut out = Vec::new();
+    for run in current(db, db_path)? {
+        if !rules.iter().any(|r| *r == run.rule) {
+            continue;
+        }
+        if let Some(v) = run.by_kind.get(kind) {
+            out.extend(v.iter().filter(|f| keep(f)).map(|f| f.lo));
+        }
     }
-    let rows = st.query_map(args.as_slice(), |r| r.get(0))?;
-    rows.collect()
+    Ok(out)
 }
 
 // ------------------------------------------------------------------------------------------------ canonical
