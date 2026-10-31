@@ -52,6 +52,8 @@ def pytest_collection_modifyitems(config, items):
 
 
 def pytest_sessionstart(session):
+    from decompanion import native
+    native.core()                   # a changed core builds before the clock starts (as cargo test's compile)
     session.config._dcp_started = time.perf_counter()
 
 

@@ -1,0 +1,363 @@
+//! The toolchain seam (toolchains/base.py is its Python face): the conventions of a compiler and linker the rules
+//! rest on, as data. VC6 (cl 12.00, link 6.00) is the one implementation (toolchains/vc6/__init__.py, rich.py).
+
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+
+/// A Rich header product: prodid, name (Microsoft's internal, as the community reconstructed them), family
+/// (compiler / linker / assembler / ...), language.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RichProduct {
+    pub prodid: u32,
+    pub name: String,
+    pub family: &'static str,
+    pub language: &'static str,
+}
+
+pub trait Toolchain {
+    fn key(&self) -> &'static str;
+    /// The alignment fill between functions.
+    fn fill_forms(&self) -> &'static [&'static [u8]];
+    fn function_alignment(&self) -> u32;
+    fn import_stub_size(&self) -> u32;
+    /// What a fill run says of its origin.
+    fn fill_origin(&self, run: &[u8]) -> &'static str;
+    /// (offset, slot) of every import stub in a byte range.
+    fn import_stubs(&self, data: &[u8]) -> Vec<(usize, u32)>;
+    fn rich_product(&self, prodid: u32) -> RichProduct;
+    fn build_name(&self, family: &str, build: u32) -> &'static str;
+    /// The declaration spelling of a Rich compiler or linker entry ('cl 12.00.9044').
+    fn declare(&self, tool: &str, family: &str, build: u32) -> String;
+    /// (prodid, build) -> objects, from the archives' tool stamps (raw stamp -> objects).
+    fn archive_tools(&self, stamps: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<(u32, u32), u32>;
+    /// CRT entry symbol -> what it starts (dll / gui / console).
+    fn crt_entry_symbols(&self) -> Vec<(&'static str, &'static str)>;
+    /// The decorated user entry a CRT entry calls, "" when none.
+    fn crt_user_entry(&self, entry: &str) -> &'static str;
+    /// The decorated user entries -> their C names.
+    fn user_entry_names(&self) -> Vec<(&'static str, &'static str)>;
+    /// Every library archive of an installation at root.
+    fn library_archives(&self, root: &Path) -> Vec<PathBuf>;
+    fn import_library_name(&self, dll: &str) -> String;
+    /// (va, string) of every occurrence of the CRT's own strings in the sections' raw data.
+    fn crt_strings(&self, img: &crate::pe::Image) -> Vec<(u32, &'static str)>;
+
+    /// The decoded Rich header (Toolchain.rich_candidates): every entry with its tool, family, language, build,
+    /// count and archive objects; the compiler and the linker candidates by count, build, prodid.
+    fn rich_candidates(&self, entries: &[(u32, u32, u32)], tools: &std::collections::BTreeMap<(u32, u32), u32>) -> Value {
+        let decoded: Vec<Value> = entries
+            .iter()
+            .map(|&(prodid, build, count)| {
+                let p = self.rich_product(prodid);
+                json!({"prodid": prodid, "tool": p.name, "family": p.family, "language": p.language, "build": build, "count": count,
+                       "archive_objects": tools.get(&(prodid, build)).copied().unwrap_or(0)})
+            })
+            .collect();
+        let mut order = decoded.clone();
+        order.sort_by_key(|e| (-(e["count"].as_i64().unwrap_or(0)), -(e["build"].as_i64().unwrap_or(0)), e["prodid"].as_i64().unwrap_or(0)));
+        let of = |fam: &str| order.iter().filter(|e| e["family"] == fam).cloned().collect::<Vec<_>>();
+        json!({"entries": decoded, "compilers": of("compiler"), "linkers": of("linker")})
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ VC6
+
+const PRODUCTS: &[(u32, &str, &str, &str)] = &[
+    (0x00, "Unknown", "unknown", ""),
+    (0x01, "Import0", "import", ""),
+    (0x02, "Linker510", "linker", ""),
+    (0x03, "Cvtomf510", "cvtomf", ""),
+    (0x04, "Linker600", "linker", ""),
+    (0x05, "Cvtomf600", "cvtomf", ""),
+    (0x06, "Cvtres500", "cvtres", ""),
+    (0x07, "Utc11_Basic", "compiler", "Basic"),
+    (0x08, "Utc11_C", "compiler", "C"),
+    (0x09, "Utc12_Basic", "compiler", "Basic"),
+    (0x0a, "Utc12_C", "compiler", "C"),
+    (0x0b, "Utc12_CPP", "compiler", "C++"),
+    (0x0c, "AliasObj60", "alias", ""),
+    (0x0d, "VisualBasic60", "compiler", "Basic"),
+    (0x0e, "Masm613", "assembler", ""),
+    (0x0f, "Masm710", "assembler", ""),
+    (0x10, "Linker511", "linker", ""),
+    (0x11, "Cvtomf511", "cvtomf", ""),
+    (0x12, "Masm614", "assembler", ""),
+    (0x13, "Linker512", "linker", ""),
+    (0x14, "Cvtomf512", "cvtomf", ""),
+    (0x15, "Utc12_C_Std", "compiler", "C"),
+    (0x16, "Utc12_CPP_Std", "compiler", "C++"),
+    (0x17, "Utc12_C_Book", "compiler", "C"),
+    (0x18, "Utc12_CPP_Book", "compiler", "C++"),
+    (0x19, "Implib700", "implib", ""),
+    (0x1a, "Cvtomf700", "cvtomf", ""),
+    (0x1b, "Utc13_Basic", "compiler", "Basic"),
+    (0x1c, "Utc13_C", "compiler", "C"),
+    (0x1d, "Utc13_CPP", "compiler", "C++"),
+    (0x1e, "Linker610", "linker", ""),
+    (0x1f, "Cvtomf610", "cvtomf", ""),
+    (0x20, "Linker601", "linker", ""),
+    (0x21, "Cvtomf601", "cvtomf", ""),
+    (0x22, "Utc12_1_Basic", "compiler", "Basic"),
+    (0x23, "Utc12_1_C", "compiler", "C"),
+    (0x24, "Utc12_1_CPP", "compiler", "C++"),
+    (0x25, "Linker620", "linker", ""),
+    (0x26, "Cvtomf620", "cvtomf", ""),
+    (0x27, "AliasObj70", "alias", ""),
+    (0x28, "Linker621", "linker", ""),
+    (0x29, "Cvtomf621", "cvtomf", ""),
+    (0x2a, "Masm615", "assembler", ""),
+    (0x2b, "Utc13_LTCG_C", "compiler", "C"),
+    (0x2c, "Utc13_LTCG_CPP", "compiler", "C++"),
+    (0x2d, "Masm620", "assembler", ""),
+    (0x2e, "ILAsm100", "assembler", ""),
+    (0x2f, "Utc12_2_Basic", "compiler", "Basic"),
+    (0x30, "Utc12_2_C", "compiler", "C"),
+    (0x31, "Utc12_2_CPP", "compiler", "C++"),
+    (0x32, "Utc12_2_C_Std", "compiler", "C"),
+    (0x33, "Utc12_2_CPP_Std", "compiler", "C++"),
+    (0x34, "Utc12_2_C_Book", "compiler", "C"),
+    (0x35, "Utc12_2_CPP_Book", "compiler", "C++"),
+    (0x36, "Implib622", "implib", ""),
+    (0x37, "Cvtomf622", "cvtomf", ""),
+    (0x38, "Cvtres501", "cvtres", ""),
+    (0x39, "Utc13_C_Std", "compiler", "C"),
+    (0x3a, "Utc13_CPP_Std", "compiler", "C++"),
+    (0x3b, "Cvtpgd1300", "cvtpgd", ""),
+    (0x3c, "Linker622", "linker", ""),
+    (0x3d, "Linker700", "linker", ""),
+    (0x3e, "Export622", "export", ""),
+    (0x3f, "Export700", "export", ""),
+    (0x40, "Masm700", "assembler", ""),
+    (0x41, "Utc13_POGO_I_C", "compiler", "C"),
+    (0x42, "Utc13_POGO_I_CPP", "compiler", "C++"),
+    (0x43, "Utc13_POGO_O_C", "compiler", "C"),
+    (0x44, "Utc13_POGO_O_CPP", "compiler", "C++"),
+    (0x45, "Cvtres700", "cvtres", ""),
+    (0x46, "Cvtres710p", "cvtres", ""),
+    (0x47, "Linker710p", "linker", ""),
+    (0x48, "Cvtomf710p", "cvtomf", ""),
+    (0x49, "Export710p", "export", ""),
+    (0x4a, "Implib710p", "implib", ""),
+    (0x4b, "Masm710p", "assembler", ""),
+    (0x4c, "Utc1310p_C", "compiler", "C"),
+    (0x4d, "Utc1310p_CPP", "compiler", "C++"),
+    (0x4e, "Utc1310p_C_Std", "compiler", "C"),
+    (0x4f, "Utc1310p_CPP_Std", "compiler", "C++"),
+    (0x50, "Utc1310p_LTCG_C", "compiler", "C"),
+    (0x51, "Utc1310p_LTCG_CPP", "compiler", "C++"),
+    (0x52, "Utc1310p_POGO_I_C", "compiler", "C"),
+    (0x53, "Utc1310p_POGO_I_CPP", "compiler", "C++"),
+    (0x54, "Utc1310p_POGO_O_C", "compiler", "C"),
+    (0x55, "Utc1310p_POGO_O_CPP", "compiler", "C++"),
+    (0x56, "Linker624", "linker", ""),
+    (0x57, "Cvtomf624", "cvtomf", ""),
+    (0x58, "Export624", "export", ""),
+    (0x59, "Implib624", "implib", ""),
+    (0x5a, "Linker710", "linker", ""),
+    (0x5b, "Cvtomf710", "cvtomf", ""),
+    (0x5c, "Export710", "export", ""),
+    (0x5d, "Implib710", "implib", ""),
+    (0x5e, "Cvtres710", "cvtres", ""),
+    (0x5f, "Utc1310_C", "compiler", "C"),
+    (0x60, "Utc1310_CPP", "compiler", "C++"),
+    (0x61, "Utc1310_C_Std", "compiler", "C"),
+    (0x62, "Utc1310_CPP_Std", "compiler", "C++"),
+    (0x63, "Utc1310_LTCG_C", "compiler", "C"),
+    (0x64, "Utc1310_LTCG_CPP", "compiler", "C++"),
+    (0x65, "Utc1310_POGO_I_C", "compiler", "C"),
+    (0x66, "Utc1310_POGO_I_CPP", "compiler", "C++"),
+    (0x67, "Utc1310_POGO_O_C", "compiler", "C"),
+    (0x68, "Utc1310_POGO_O_CPP", "compiler", "C++"),
+    (0x69, "AliasObj710", "alias", ""),
+    (0x6a, "AliasObj710p", "alias", ""),
+    (0x6b, "Cvtpgd1310", "cvtpgd", ""),
+    (0x6c, "Cvtpgd1310p", "cvtpgd", ""),
+];
+
+/// Known builds of the VC6 back end (a Rich Utc12* entry's build) and linker, with their names.
+const COMPILER_BUILDS: &[(u32, &str)] = &[
+    (8047, "VC6 pre-release build used for the shipped CRT / SDK libraries"),
+    (8168, "VC6 RTM (cl 12.00.8168)"),
+    (8447, "VC6 RTM linker (link 6.00.8447)"),
+    (8804, "VC6 SP3 (cl 12.00.8804)"),
+    (8964, "VC6 SP4 (cl 12.00.8964)"),
+    (9044, "VC6 SP5 and SP5 + Processor Pack (cl 12.00.9044, C2 13.00.9044)"),
+    (9782, "VC6 SP6 (cl 12.00.9782)"),
+];
+
+/// nop, int3, mov edi,edi, lea ecx,[ecx+0]: the fill VC6 / LINK leave between functions.
+const FILL_FORMS: &[&[u8]] = &[b"\x90", b"\xcc", b"\x8b\xff", b"\x8d\x49\x00"];
+const INT3: u8 = 0xcc;
+const STUB_OPCODE: &[u8] = b"\xff\x25"; // LINK's import stub: jmp dword ptr [slot]
+const STUB_SIZE: u32 = 6;
+/// The CRT start-up symbols, what they start, the decorated user entry each calls and its C name.
+const ENTRIES: &[(&str, &str, &str, &str)] = &[
+    ("__DllMainCRTStartup@12", "dll", "_DllMain@12", "DllMain"),
+    ("_DllMainCRTStartup@12", "dll", "_DllMain@12", "DllMain"),
+    ("_WinMainCRTStartup", "gui", "_WinMain@16", "WinMain"),
+    ("_mainCRTStartup", "console", "_main", "main"),
+    ("_wWinMainCRTStartup", "gui", "_wWinMain@16", "wWinMain"),
+    ("_wmainCRTStartup", "console", "_wmain", "wmain"),
+];
+const LIB_DIR: [&str; 2] = ["VC98", "Lib"];
+/// Strings of VC6's C run time: evidence that an image links the static CRT.
+const CRT_STRINGS: &[&str] = &["Microsoft Visual C++ Runtime Library", "__MSVCRT_HEAP_SELECT", "runtime error "];
+
+/// The major.minor a tool reports, from its Rich product name: Utc12_2_C -> 12.00, Utc1310_C -> 13.10,
+/// Linker600 -> 6.00; "" for others.
+pub fn tool_version(name: &str) -> String {
+    let digits = |s: &str, n: usize| s.len() >= n && s.as_bytes()[..n].iter().all(u8::is_ascii_digit);
+    if let Some(r) = name.strip_prefix("Utc") {
+        if digits(r, 4) {
+            return format!("{}.{}", &r[..2], &r[2..4]);
+        }
+        if digits(r, 2) {
+            return format!("{}.00", &r[..2]);
+        }
+    }
+    if let Some(r) = name.strip_prefix("Linker") {
+        if digits(r, 3) {
+            return format!("{}.{}", &r[..1], &r[1..3]);
+        }
+    }
+    String::new()
+}
+
+pub struct Vc6;
+
+impl Toolchain for Vc6 {
+    fn key(&self) -> &'static str {
+        "vc6"
+    }
+    fn fill_forms(&self) -> &'static [&'static [u8]] {
+        FILL_FORMS
+    }
+    fn function_alignment(&self) -> u32 {
+        16
+    }
+    fn import_stub_size(&self) -> u32 {
+        STUB_SIZE
+    }
+    /// cc (int3 only: LINK's padding between contributions), nop (no int3: CL's alignment), mixed.
+    fn fill_origin(&self, run: &[u8]) -> &'static str {
+        if !run.is_empty() && run.iter().all(|&c| c == INT3) {
+            "cc"
+        } else if !run.contains(&INT3) {
+            "nop"
+        } else {
+            "mixed"
+        }
+    }
+    fn import_stubs(&self, data: &[u8]) -> Vec<(usize, u32)> {
+        memchr::memmem::find_iter(data, STUB_OPCODE)
+            .filter(|&p| p + STUB_SIZE as usize <= data.len())
+            .map(|p| (p, u32::from_le_bytes([data[p + 2], data[p + 3], data[p + 4], data[p + 5]])))
+            .collect()
+    }
+    fn rich_product(&self, prodid: u32) -> RichProduct {
+        match PRODUCTS.iter().find(|p| p.0 == prodid) {
+            Some(&(p, n, f, l)) => RichProduct { prodid: p, name: n.to_string(), family: f, language: l },
+            None => RichProduct { prodid, name: format!("prodid_{prodid:#x}"), family: "unknown", language: "" },
+        }
+    }
+    fn build_name(&self, _family: &str, build: u32) -> &'static str {
+        COMPILER_BUILDS.iter().find(|b| b.0 == build).map(|b| b.1).unwrap_or("")
+    }
+    fn declare(&self, tool: &str, family: &str, build: u32) -> String {
+        let t = match family {
+            "compiler" => "cl",
+            "linker" => "link",
+            _ => tool,
+        };
+        let v = tool_version(tool);
+        if v.is_empty() { format!("{t} {build}") } else { format!("{t} {v}.{build}") }
+    }
+    /// `@comp.id` holds prodid << 16 | build.
+    fn archive_tools(&self, stamps: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<(u32, u32), u32> {
+        let mut out = std::collections::BTreeMap::new();
+        for (&v, &n) in stamps {
+            *out.entry((v >> 16, v & 0xffff)).or_insert(0) += n;
+        }
+        out
+    }
+    fn crt_entry_symbols(&self) -> Vec<(&'static str, &'static str)> {
+        ENTRIES.iter().map(|e| (e.0, e.1)).collect()
+    }
+    fn crt_user_entry(&self, entry: &str) -> &'static str {
+        ENTRIES.iter().find(|e| e.0 == entry).map(|e| e.2).unwrap_or("")
+    }
+    fn user_entry_names(&self) -> Vec<(&'static str, &'static str)> {
+        let mut out: Vec<(&str, &str)> = vec![];
+        for e in ENTRIES {
+            if !out.iter().any(|x| x.0 == e.2) {
+                out.push((e.2, e.3));
+            }
+        }
+        out
+    }
+    fn library_archives(&self, root: &Path) -> Vec<PathBuf> {
+        let dir = root.join(LIB_DIR[0]).join(LIB_DIR[1]);
+        let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "LIB")).collect())
+            .unwrap_or_default();
+        out.sort();
+        out
+    }
+    /// KERNEL32.dll -> kernel32.lib
+    fn import_library_name(&self, dll: &str) -> String {
+        let l = dll.to_lowercase();
+        format!("{}.lib", l.rsplit_once('.').map(|x| x.0).unwrap_or(&l))
+    }
+    fn crt_strings(&self, img: &crate::pe::Image) -> Vec<(u32, &'static str)> {
+        let mut out = vec![];
+        for s in &img.sections {
+            let raw = img.section_data(s);
+            for needle in CRT_STRINGS {
+                out.extend(memchr::memmem::find_iter(raw, needle.as_bytes()).map(|p| (s.va + p as u32, *needle)));
+            }
+        }
+        out.sort();
+        out
+    }
+}
+
+/// The toolchain of a key ("vc6").
+pub fn of(key: &str) -> Option<Box<dyn Toolchain>> {
+    match key {
+        "vc6" => Some(Box::new(Vc6)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rich_and_versions() {
+        let t = Vc6;
+        assert_eq!((tool_version("Utc12_2_C"), tool_version("Utc1310_C"), tool_version("Linker600"), tool_version("Linker512"), tool_version("Masm613")),
+                   ("12.00".into(), "13.10".into(), "6.00".into(), "5.12".into(), String::new()));
+        assert_eq!(t.rich_product(0x30).name, "Utc12_2_C");
+        assert_eq!(t.rich_product(0x99).name, "prodid_0x99");
+        assert_eq!(t.declare("Utc12_2_C", "compiler", 9044), "cl 12.00.9044");
+        assert_eq!(t.declare("Linker600", "linker", 8447), "link 6.00.8447");
+        let tools = t.archive_tools(&[((0x0a << 16) | 8047, 3), ((0x30 << 16) | 8168, 1)].into_iter().collect());
+        let r = t.rich_candidates(&[(0x30, 9044, 3), (0x0a, 8047, 5), (0x04, 8447, 1)], &tools);
+        assert_eq!(r["entries"][1]["archive_objects"], 3);
+        let comp: Vec<&str> = r["compilers"].as_array().unwrap().iter().map(|e| e["tool"].as_str().unwrap()).collect();
+        assert_eq!(comp, ["Utc12_C", "Utc12_2_C"]); // by count first
+        assert_eq!(r["linkers"][0]["tool"], "Linker600");
+        assert_eq!(t.build_name("compiler", 9044), "VC6 SP5 and SP5 + Processor Pack (cl 12.00.9044, C2 13.00.9044)");
+    }
+
+    #[test]
+    fn conventions() {
+        let t = Vc6;
+        assert_eq!((t.fill_origin(b"\xcc\xcc"), t.fill_origin(b"\x90\x8b\xff"), t.fill_origin(b"\x90\xcc")), ("cc", "nop", "mixed"));
+        assert_eq!(t.import_stubs(b"\x90\xff\x25\x00\x10\x00\x10\xff\x25\x01"), vec![(1, 0x1000_1000)]);
+        assert_eq!(t.import_library_name("KERNEL32.dll"), "kernel32.lib");
+        assert_eq!(t.crt_user_entry("_WinMainCRTStartup"), "_WinMain@16");
+        assert_eq!(t.user_entry_names().len(), 5);
+    }
+}

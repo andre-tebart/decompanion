@@ -20,6 +20,7 @@ mod readability;
 mod rules;
 mod srcscan;
 mod store;
+mod toolchain;
 mod x86;
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};

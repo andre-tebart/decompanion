@@ -82,6 +82,7 @@ impl Symbol {
 }
 
 pub struct Obj {
+    pub name: String,           // the archive member's or file's name ("" when parsed without one)
     pub sections: Vec<Section>, // index 0: unused (sections count from 1)
     pub symbols: Vec<Symbol>,   // in symbol-table order (auxiliary records skipped)
     pub by_index: std::collections::HashMap<usize, usize>,
@@ -222,7 +223,7 @@ impl Obj {
         for s in sections.iter_mut().skip(1) {
             s.syms.sort_by_key(|&k| symbols[k].value);
         }
-        Ok(Obj { sections, symbols, by_index })
+        Ok(Obj { name: String::new(), sections, symbols, by_index })
     }
 
     pub fn section_of(&self, s: &Symbol) -> Option<&Section> {
@@ -391,5 +392,317 @@ impl Obj {
             }
         }
         out
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ symbols, sections
+
+const SCN_LNK_COMDAT: u32 = 0x1000;
+pub const IMPORT_PREFIX: &str = "__imp_"; // the pointer symbol of a dllimport reference (its IAT slot)
+pub const COMP_ID: &str = "@comp.id"; // the absolute symbol MSVC-era tools stamp every object with
+// String literals and float constants are COMDATs that VC6's LINK keeps per object: they resolve per object.
+const CONSTANT_PREFIXES: [&str; 2] = ["??_C@", "__real@"];
+
+impl Section {
+    pub fn comdat(&self) -> bool {
+        self.chars & SCN_LNK_COMDAT != 0
+    }
+}
+
+impl Symbol {
+    pub fn external(&self) -> bool {
+        self.cls == 2
+    }
+    /// An external this object references and another defines.
+    pub fn unresolved(&self) -> bool {
+        self.cls == 2 && self.secnum == 0
+    }
+    /// The pointer of a dllimport reference (`__imp_X`: X's import address-table slot).
+    pub fn dllimport(&self) -> bool {
+        self.name.starts_with(IMPORT_PREFIX)
+    }
+    /// The linker symbol a dllimport reference imports (`__imp__Sleep@4` -> `_Sleep@4`).
+    pub fn imported(&self) -> Option<&str> {
+        self.name.strip_prefix(IMPORT_PREFIX)
+    }
+    /// The name the link resolves: an external's own (not a constant's), else `<object>:<name>`.
+    pub fn key(&self, obj: &str) -> String {
+        if self.external() && !CONSTANT_PREFIXES.iter().any(|p| self.name.starts_with(p)) {
+            self.name.clone()
+        } else {
+            format!("{obj}:{}", self.name)
+        }
+    }
+}
+
+impl Obj {
+    /// An object as its archive member or file names it.
+    pub fn parse_named(name: &str, b: &[u8]) -> Result<Obj, String> {
+        let mut o = Obj::parse(b)?;
+        o.name = name.to_string();
+        Ok(o)
+    }
+
+    /// The section numbers of the code sections with data.
+    pub fn code_sections(&self) -> Vec<usize> {
+        (1..self.sections.len()).filter(|&k| self.sections[k].code() && self.sections[k].data.as_ref().is_some_and(|d| !d.is_empty())).collect()
+    }
+
+    /// The section numbers of the data sections (not code, not discarded).
+    pub fn data_sections(&self) -> Vec<usize> {
+        (1..self.sections.len()).filter(|&k| !self.sections[k].code() && !self.sections[k].discard()).collect()
+    }
+
+    /// The value of the `@comp.id` symbol (the tool that built the object), None without one.
+    pub fn comp_id(&self) -> Option<u32> {
+        self.symbols.iter().find(|s| s.name == COMP_ID).map(|s| s.value)
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ archives
+
+/// (member name, bytes) of every member of a COFF archive, long names resolved, the linker members (`/`, `//`)
+/// skipped; import-library short members are kept (is_import_member tells them).
+pub fn archive_members(b: &[u8]) -> Result<Vec<(String, &[u8])>, String> {
+    if b.len() < 8 || &b[..8] != b"!<arch>\n" {
+        return Err("not an archive".into());
+    }
+    let (mut i, mut longnames, mut out): (usize, &[u8], Vec<(String, &[u8])>) = (8, &[], vec![]);
+    while i + 60 <= b.len() {
+        let name = latin1(&b[i..i + 16]).trim().to_string();
+        let size: usize = std::str::from_utf8(&b[i + 48..i + 58]).ok().and_then(|s| s.trim().parse().ok()).ok_or("bad member size")?;
+        let d = &b[i + 60..(i + 60 + size).min(b.len())];
+        if name == "//" {
+            longnames = d;
+        } else if let Some(num) = name.strip_prefix('/').filter(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit())) {
+            let o: usize = num.parse().unwrap_or(0);
+            let e = memchr::memchr(0, &longnames[o.min(longnames.len())..]).map(|k| o + k).unwrap_or(longnames.len());
+            out.push((latin1(&longnames[o.min(e)..e]), d));
+        } else if name != "/" {
+            out.push((name.trim_end_matches('/').to_string(), d));
+        }
+        i += 60 + size + (size & 1);
+    }
+    Ok(out)
+}
+
+/// The public symbols of an archive's first linker member (`/`): a big-endian count N, N offsets, N names;
+/// empty without one.
+pub fn archive_symbol_table(b: &[u8]) -> Result<Vec<String>, String> {
+    if b.len() < 8 || &b[..8] != b"!<arch>\n" {
+        return Err("not an archive".into());
+    }
+    if b.len() < 68 || latin1(&b[8..24]).trim() != "/" {
+        return Ok(vec![]);
+    }
+    let size: usize = std::str::from_utf8(&b[56..66]).ok().and_then(|s| s.trim().parse().ok()).ok_or("bad member size")?;
+    let d = &b[68..(68 + size).min(b.len())];
+    let n = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as usize;
+    let names = &d[(4 + 4 * n).min(d.len())..];
+    Ok(names.split(|&c| c == 0).take(n).map(latin1).collect())
+}
+
+pub fn is_import_member(d: &[u8]) -> bool {
+    d.len() >= 4 && d[..4] == [0, 0, 0xff, 0xff]
+}
+
+/// Every real COFF object of an archive (import-library short members skipped), named by its member's file name.
+pub fn archive_objects(b: &[u8]) -> Result<Vec<Obj>, String> {
+    let mut out = vec![];
+    for (name, d) in archive_members(b)? {
+        if is_import_member(d) || d.len() < 20 {
+            continue;
+        }
+        let base = name.rsplit(['/', '\\']).next().unwrap_or(&name).to_string();
+        out.push(Obj::parse_named(&base, d)?);
+    }
+    Ok(out)
+}
+
+/// symbol -> (dll, import name or `#ordinal`) of an import library's short members.
+pub fn import_symbols(b: &[u8]) -> Result<Vec<(String, String, String)>, String> {
+    let mut out = vec![];
+    for (_, d) in archive_members(b)? {
+        if !is_import_member(d) || d.len() < 20 {
+            continue;
+        }
+        let hint = u16_at(d, 16);
+        let typ = u16_at(d, 18);
+        let strings: Vec<String> = d[20..].split(|&c| c == 0).map(latin1).collect();
+        if strings.len() < 2 {
+            continue;
+        }
+        let (sym, dll) = (strings[0].clone(), strings[1].clone());
+        let stripped = sym.trim_start_matches(['?', '@', '_']);
+        let name = match typ >> 2 & 7 {
+            0 => format!("#{hint}"),
+            1 => sym.clone(),
+            2 => stripped.to_string(),
+            3 => stripped.split('@').next().unwrap_or("").to_string(),
+            _ => sym.clone(),
+        };
+        out.push((sym, dll, name));
+    }
+    Ok(out)
+}
+
+/// raw `@comp.id` value -> the number of objects that carry it.
+pub fn comp_ids<'a>(objs: impl IntoIterator<Item = &'a Obj>) -> std::collections::BTreeMap<u32, u32> {
+    let mut out = std::collections::BTreeMap::new();
+    for o in objs {
+        if let Some(v) = o.comp_id() {
+            *out.entry(v).or_insert(0) += 1;
+        }
+    }
+    out
+}
+
+/// An object whose only content is one weak external per (alias, canonical) pair (storage class
+/// WEAK_EXTERNAL, aux characteristics 3: search alias): LINK resolves the alias to the canonical symbol.
+pub fn alias_object(aliases: &[(String, String)]) -> Vec<u8> {
+    let mut strtab: Vec<u8> = vec![];
+    let mut namefield = |n: &str| -> Vec<u8> {
+        if n.len() <= 8 {
+            let mut f = n.as_bytes().to_vec();
+            f.resize(8, 0);
+            f
+        } else {
+            let off = 4 + strtab.len() as u32;
+            strtab.extend(n.as_bytes());
+            strtab.push(0);
+            [0u32.to_le_bytes(), off.to_le_bytes()].concat()
+        }
+    };
+    let sym = |field: Vec<u8>, cls: u8, naux: u8| -> Vec<u8> { [field, 0u32.to_le_bytes().to_vec(), 0i16.to_le_bytes().to_vec(), 0u16.to_le_bytes().to_vec(), vec![cls, naux]].concat() };
+    let mut idx = 2 * aliases.len() as u32;
+    let mut target: Vec<(String, u32)> = vec![];
+    for (_, c) in aliases {
+        if !target.iter().any(|(t, _)| t == c) {
+            target.push((c.clone(), idx));
+            idx += 1;
+        }
+    }
+    let mut body = vec![];
+    for (a, c) in aliases {
+        body.extend(sym(namefield(a), 105, 1));
+        let t = target.iter().find(|(x, _)| x == c).unwrap().1;
+        body.extend(t.to_le_bytes());
+        body.extend(3u32.to_le_bytes());
+        body.extend([0u8; 10]);
+    }
+    for (c, _) in &target {
+        body.extend(sym(namefield(c), 2, 0));
+    }
+    let mut out = vec![];
+    out.extend(0x14cu16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u32.to_le_bytes());
+    out.extend(20u32.to_le_bytes());
+    out.extend(idx.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out.extend(body);
+    out.extend((4 + strtab.len() as u32).to_le_bytes());
+    out.extend(strtab);
+    out
+}
+
+// ------------------------------------------------------------------------------------------------ tests
+
+#[cfg(test)]
+pub(crate) mod testlib {
+    //! An archive of objects that carry only an `@comp.id` symbol (tests/conftest.py build_lib), plus an import
+    //! member, a long-named member and a linker member.
+    fn member(name: &[u8], d: &[u8]) -> Vec<u8> {
+        let mut h = name.to_vec();
+        h.resize(16, b' ');
+        for f in [&b"0"[..], b"0", b"0", b"644"].iter().zip([12usize, 6, 6, 8]) {
+            let mut x = f.0.to_vec();
+            x.resize(f.1, b' ');
+            h.extend(x);
+        }
+        let mut sz = d.len().to_string().into_bytes();
+        sz.resize(10, b' ');
+        h.extend(sz);
+        h.extend(b"`\n");
+        h.extend(d);
+        if d.len() & 1 == 1 {
+            h.push(b'\n');
+        }
+        h
+    }
+
+    /// An object with no sections and one absolute `@comp.id` symbol.
+    pub fn comp_obj(prodid: u32, build: u32) -> Vec<u8> {
+        let mut o = vec![];
+        for v in [0x14cu16, 0] {
+            o.extend(v.to_le_bytes());
+        }
+        for v in [0u32, 20, 1] {
+            o.extend(v.to_le_bytes());
+        }
+        o.extend([0u8; 4]); // optional header size 0, characteristics 0
+        o.extend(b"@comp.id");
+        o.extend(((prodid << 16) | build).to_le_bytes());
+        o.extend((-1i16).to_le_bytes());
+        o.extend(0u16.to_le_bytes());
+        o.extend([3u8, 0]);
+        o.extend(4u32.to_le_bytes());
+        o
+    }
+
+    pub fn build(comp_ids: &[(u32, u32)]) -> Vec<u8> {
+        let mut out = b"!<arch>\n".to_vec();
+        // the linker member: 2 symbols of member offsets (unused here)
+        let mut lm = 2u32.to_be_bytes().to_vec();
+        lm.extend([0u8; 8]);
+        lm.extend(b"_first\0_second\0");
+        out.extend(member(b"/", &lm));
+        out.extend(member(b"//", b"a_rather_long_member_name.obj\0"));
+        for (k, &(p, b)) in comp_ids.iter().enumerate() {
+            let name = if k == 0 { b"/0".to_vec() } else { format!("o{k}.obj/").into_bytes() };
+            out.extend(member(&name, &comp_obj(p, b)));
+        }
+        // an import member: _GetTickCount@0 of KERNEL32.dll, by name without decoration (type 3 << 2)
+        let mut im = vec![0u8, 0, 0xff, 0xff];
+        im.extend([0u8; 12]);
+        im.extend(7u16.to_le_bytes());
+        im.extend((3u16 << 2).to_le_bytes());
+        im.extend(b"_GetTickCount@0\0KERNEL32.dll\0");
+        out.extend(member(b"k32.obj/", &im));
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archives() {
+        let a = testlib::build(&[(0x30, 9044), (0x0a, 8047), (0x30, 9044)]);
+        let members = archive_members(&a).unwrap();
+        let names: Vec<&str> = members.iter().map(|m| m.0.as_str()).collect();
+        assert_eq!(names, ["a_rather_long_member_name.obj", "o1.obj", "o2.obj", "k32.obj"]);
+        assert_eq!(archive_symbol_table(&a).unwrap(), ["_first", "_second"]);
+        let objs = archive_objects(&a).unwrap();
+        assert_eq!(objs.len(), 3);
+        assert_eq!(objs[0].name, "a_rather_long_member_name.obj");
+        let ids = comp_ids(&objs);
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), [((0x0a << 16) | 8047, 1), ((0x30 << 16) | 9044, 2)]);
+        assert_eq!(import_symbols(&a).unwrap(), [("_GetTickCount@0".to_string(), "KERNEL32.dll".to_string(), "GetTickCount".to_string())]);
+        assert!(archive_members(b"MZ").is_err());
+    }
+
+    #[test]
+    fn alias_objects_parse_back() {
+        let o = Obj::parse(&alias_object(&[("_a".into(), "_canonical_target".into()), ("_b".into(), "_canonical_target".into())])).unwrap();
+        let names: Vec<&str> = o.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["_a", "_b", "_canonical_target"]);
+        assert_eq!((o.symbols[0].cls, o.symbols[2].cls, o.symbols[2].external()), (105, 2, true));
+        let s = Symbol { index: 0, name: "__imp__Sleep@4".into(), value: 0, secnum: 0, typ: 0, cls: 2 };
+        assert!(s.unresolved() && s.dllimport() && s.imported() == Some("_Sleep@4") && s.key("x.obj") == "__imp__Sleep@4");
+        let c = Symbol { index: 0, name: "??_C@_05hello".into(), value: 0, secnum: 1, typ: 0, cls: 2 };
+        assert_eq!(c.key("x.obj"), "x.obj:??_C@_05hello");
     }
 }
