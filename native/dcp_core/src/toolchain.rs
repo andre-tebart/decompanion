@@ -41,6 +41,17 @@ pub trait Toolchain {
     fn import_library_name(&self, dll: &str) -> String;
     /// (va, string) of every occurrence of the CRT's own strings in the sections' raw data.
     fn crt_strings(&self, img: &crate::pe::Image) -> Vec<(u32, &'static str)>;
+    // the language the compiler reads beyond standard C (`dcp draft` spells declarations with them)
+    /// The compiler's own keywords (calling conventions, extended types).
+    fn keywords(&self) -> &'static [&'static str];
+    /// The calling convention a skeleton prototype spells ("": none).
+    fn default_convention(&self) -> &'static str;
+    /// The conventions whose decorated name carries the parameters' size: a declaration needs the full prototype.
+    fn sized_conventions(&self) -> &'static [&'static str];
+    /// The system header that declares the functions an imported DLL exports, None when unknown.
+    fn import_header(&self, dll: &str) -> Option<&'static str>;
+    /// The standard headers a declaring header is looked for in first (the C89 ones).
+    fn standard_headers(&self) -> &'static [&'static str];
 
     /// The decoded Rich header (Toolchain.rich_candidates): every entry with its tool, family, language, build,
     /// count and archive objects; the compiler and the linker candidates by count, build, prodid.
@@ -228,6 +239,26 @@ pub struct Vc6;
 impl Toolchain for Vc6 {
     fn key(&self) -> &'static str {
         "vc6"
+    }
+    fn keywords(&self) -> &'static [&'static str] {
+        &["__cdecl", "__stdcall", "__fastcall", "__thiscall", "__int64", "__declspec", "__asm"]
+    }
+    /// CL's default (/Gd).
+    fn default_convention(&self) -> &'static str {
+        "__cdecl"
+    }
+    /// `_f@12`, `@f@8`: the name needs the parameters.
+    fn sized_conventions(&self) -> &'static [&'static str] {
+        &["__stdcall", "__fastcall", "__thiscall"]
+    }
+    /// The Win32 API of every system DLL is declared through <windows.h> (it includes winsock.h and mmsystem.h unless
+    /// WIN32_LEAN_AND_MEAN).
+    fn import_header(&self, _dll: &str) -> Option<&'static str> {
+        Some("windows.h")
+    }
+    fn standard_headers(&self) -> &'static [&'static str] {
+        &["assert.h", "ctype.h", "errno.h", "float.h", "limits.h", "locale.h", "math.h", "setjmp.h", "signal.h", "stdarg.h", "stddef.h", "stdio.h",
+          "stdlib.h", "string.h", "time.h"]
     }
     fn fill_forms(&self) -> &'static [&'static [u8]] {
         FILL_FORMS

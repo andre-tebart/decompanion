@@ -10,8 +10,6 @@ The guided decisions (obligations.py; the plugin hands over evidence, it never d
   wizard_cflags()        the flags the toolchain's project wizard writes (evidence for toolchain.cflags)
   declare / build_name   the Rich header vocabulary (the core's)
   available()            the compiler and linker are installed
-Drafting: declaring_header(name), import_header(dll), the language beyond standard C (keywords,
-default_convention, sized_conventions) that `dcp draft` spells declarations with.
 """
 from __future__ import annotations
 
@@ -35,11 +33,6 @@ class Install:
 
 class Toolchain:
     key = "base"
-    # the language the compiler reads beyond standard C (`dcp draft` spells declarations with them)
-    keywords: frozenset = frozenset()       # the compiler's own keywords (calling conventions, extended types)
-    default_convention = ""                 # the calling convention a skeleton prototype spells ('' : none)
-    sized_conventions: tuple = ()           # conventions whose decorated name carries the parameters' size: a
-                                            # declaration of such a function needs its full prototype
 
     def __init__(self, root: Path | None, config: dict):
         self.root = Path(root) if root else None
@@ -79,13 +72,3 @@ class Toolchain:
     def available(self) -> bool:
         """The compiler and linker are installed (else nothing compiles: the match rules say so as warnings)."""
         return False
-
-    # -------------------------------------------------------------- drafting
-    def declaring_header(self, name: str) -> str | None:
-        """The system header (as `#include <...>` names it) that declares the C library function `name`, None when
-        no header of the toolchain does (`dcp draft` includes it instead of writing a declaration)."""
-        return None
-
-    def import_header(self, dll: str) -> str | None:
-        """The system header that declares the functions an imported DLL exports, None when unknown."""
-        return None

@@ -37,48 +37,22 @@ scan(root) returns every definition, data declaration, placeholder and parse err
 targets; the loader rule L.src (rules/layout.py) picks the current target's addresses and emits the facts.
 Results are memoised per tree hash, so the loader and the checks parse once per process.
 
-Everything C comes from the front end (docs/plan.md section 18; source/cparse.py, libclang): the comments and
-literals (its tokens), the macro definitions, the function definitions and the file-scope data declarations,
-over each unit file as a target's compile sees it (models: its DCP_TARGET_<name> defined); a header as the first unit that includes it sees it, a file no unit
-holds parsed alone. So `#if` / `#ifdef` are evaluated (a declaration in a dead branch is no declaration), a macro
-is expanded (zlib's `local` is `static`), and every declarator of `int a = 1, b = 2;` is one. The default
-target's view gives everything; another target's adds the function definitions only it holds (L16 compares
-the targets a function is live in with those its comment lists). A data statement's address comment is found by
-its extent (on its first line, after its `;`, or the own-line comment above). A text that is no project file (a
-test's, a single line) is parsed alone (model_alone). What the comments say (the address comments, the tags, the
-descriptions) and what the macros' bodies hold (views, casts) the scan reads: per file in the native core
-(native/dcp_core/src/srcscan.rs: scan_file). Source (TOKEN, its own lexer) serves the other readers of a text.
+Everything C comes from the front end (libclang, native/dcp_core/src/frontend.rs and srcscan.rs): the comments and
+literals, the macro definitions, the function definitions and the file-scope data declarations, over each unit
+file as a target's compile sees it. Source (TOKEN, its own lexer) serves the readers of a text that remain here.
 """
 from __future__ import annotations
 
 import bisect
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from .. import fsmemo
 
-NATIVE = True                 # the per-file scan is the native core's: a rule with this module as a helper hashes it
 TOKEN = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|//[^\n]*|/\*.*?\*/', re.S)
 ADDR_ITEM = r"(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+"
 LEAD_ADDRS = re.compile(r"^\s*(" + ADDR_ITEM + r")((?:\s*[,/]\s*" + ADDR_ITEM + r")*)")
 ONE_ADDR = re.compile(r"(?:([A-Za-z][A-Za-z0-9_-]*):)?(0x[0-9a-fA-F]+)")
 UNLINKED = re.compile(r"^\s*unlinked\b\s*,?\s*(.*)", re.S)
-DEEP = re.compile(r"@deep\b[ \t]*(.*?)[ \t]*(?:\*/|\n|$)")
-STUCK = re.compile(r"@stuck\b[ \t]*(.*?)[ \t]*(?:\*/|\n|$)")
-ROUGH = re.compile(r"@rough\b")
-FUNCPTR = re.compile(r"\(\s*(?:__cdecl|__stdcall|__fastcall|WINAPI|CALLBACK|APIENTRY|PASCAL)?\s*\*+\s*(?:const\s+)?([A-Za-z_]\w*)\s*\)")
-# `Unk<hex>` takes hex digits of one case and may carry an upper-case view suffix (`ai_Unk7603a0B` is the view B
-# of 0x7603a0, not 0x7603a0b); the lower-case reading is tried first, so `Unk430100B` is 0x430100 too
-PLACEHOLDER_ADDR = re.compile(r"\b[A-Za-z_]\w*?Unk([0-9a-f]{5,8}|[0-9A-F]{5,8})(?:[A-Z][A-Za-z]*)?\b"
-                              r"|\b[A-Za-z_]\w*?(?:FUN_|DAT_|PTR_|LAB_)([0-9a-fA-F]{5,8})\b"
-                              r"|\b[A-Za-z_]\w*?_((?=[0-9a-fA-F]*\d)[0-9a-fA-F]{6,8})\b")
-
-
-def placeholder_value(m: re.Match) -> int:
-    """The address a PLACEHOLDER_ADDR match spells."""
-    return int(next(g for g in m.groups() if g), 16)
-
 
 
 @dataclass(frozen=True)
@@ -265,181 +239,12 @@ class Source:
                                    if not self.text[self.text.rfind("\n", 0, s) + 1:s].strip()}
         return self._own_line_ends
 
-def live_code(S: Source, model: dict) -> str:
-    """The file's code (comments and strings blanked) with its preprocessor lines and the ranges the preprocessor
-    skipped (model["dead"]) blanked too; offsets unchanged."""
-    lines = S.code.split("\n")
-    dead = {n for a, b in model["dead"] for n in range(a, b + 1)}
-    cont = False
-    for n, ln in enumerate(lines, 1):
-        directive = cont or ln.lstrip().startswith("#")
-        cont = directive and ln.rstrip().endswith("\\")
-        if directive or n in dead:
-            lines[n - 1] = " " * len(ln)
-    return "\n".join(lines)
-
-
-def model_alone(rel: str, text: str, root: Path | None = None) -> dict:
-    """The front end's model of one text parsed alone (no unit around it, no includes found unless they exist
-    below root): a text that is no project file (a test's, a single line), as a file no unit holds is."""
-    from .. import native
-    return native.core().front_model_alone(str(Path(root) if root is not None else Path.cwd()), rel, text)
-
-
-def model_of(root: Path, rel: str, text: str) -> dict | None:
-    """The front end's model of a file when text is the file as it is on disk (the scan's), else None."""
-    p = Path(root) / rel
-    if not p.exists() or fsmemo.read_text(p) != text:
-        return None
-    tree = fsmemo.tree_hash([Path(root) / "src", Path(root) / "include"], ("*.c", "*.h"))
-    return scan(Path(root), tree).models.get(rel, EMPTY)
-
-
-@dataclass(frozen=True)
-class Define:
-    """A macro the preprocessor defined in a file: offsets in the file's text from its name to the end of its last
-    token (a trailing comment is no part of it)."""
-    name: str
-    line: int
-    start: int
-    end: int
-    flike: bool
-
-    def rest(self, text: str) -> str:
-        """What follows the name in `text` (the file's text or its code): `(params) body` or the body."""
-        return text[self.start + len(self.name):self.end]
-
-
-def defines(S: Source, model: dict, like: bool | None = None):
-    """The live macro definitions of a file (the front end's: model["defines"]), the function-like or the
-    object-like ones only when `like` says so."""
-    for name, flike, line, col, eline, ecol in model["defines"]:
-        if like is None or flike == like:
-            yield Define(name, line, S.offset(line, col), S.offset(eline, ecol), flike)
-
-
-def scan_file(rel: str, text: str, out: Scan, model: dict | None = None, views: dict | None = None):
-    """One file's part of the scan (native/dcp_core/src/srcscan.rs): its address comments, function definitions,
-    data declarations, macros, casts and placeholders from its text and the front end's model of the file
-    (cparse.model's entry; the text parsed alone when none is given: model_alone). views: target -> that target's
-    model of the file (model is the default target's): a function's `targets` are the views that hold its
-    definition, and a definition only another target's view holds (under its `#if`) is a function too."""
-    from .. import native
-    model = model_alone(rel, text) if model is None else model
-    macros, described, functions, data, ptrcasts, views_, rawobj, errors, placeholders, piece = \
-        native.core().scan_file(rel, text, model, list(views.items()) if views else [])
-    out.piece_ids.append(piece.id)
-    out.__dict__.setdefault("_pieces", []).append(piece)
-    out.macros += [tuple(x) for x in macros]
-    out.described += described
-    out.functions += [Function(*a[:4], tuple(a[4]), *a[5:], *b[:6], tuple(b[6])) for a, b in functions]
-    out.data += [Data(*d[:5], tuple(d[5]), *d[6:]) for d in data]
-    out.ptrcasts += [PtrCast(*c) for c in ptrcasts]
-    out.views += [View(*v[:6], tuple(v[6]), v[7]) for v in views_]
-    out.rawobj += rawobj
-    out.errors += [ScanError(*e) for e in errors]
-    out.placeholders += [Placeholder(*x) for x in placeholders]
-
-
-EMPTY = {"defs": [], "vars": [], "macros": [], "defines": [], "comments": [], "strings": [], "casts": [], "decls": [], "types": [], "dead": []}
-
-
-def target_macro(name: str) -> str:
-    """The macro every compile of a target defines (a function of some targets only stands under `#if` on it)."""
-    return "DCP_TARGET_" + re.sub(r"\W", "_", name)
-
-
-def local_refs(root: Path, names: list[str]) -> dict[str, set[tuple[int, int]]]:
-    """rel -> {(line, col)} of the occurrences of `names` the front end finds referring to a declaration not at
-    file scope (cparse.refs: a local, a parameter, a field, a label), in every project file that holds one of
-    the names (as the default target's compile sees it): what a rename of a file-scope symbol leaves alone.
-    One parse per such file, not per unit that reads it: each unit file that holds a name, and for a header
-    that holds one, the first unit that includes it; a unit's parse covers the headers it reads."""
-    from .. import native
-    from ..source import cparse
-    root = Path(root)
-    core = native.core()
-    sysdirs, incdirs_, targets = core.front_of(str(root))
-    defines = targets[0][1]
-    tree = fsmemo.tree_hash([root / "src", root / "include"], ("*.c", "*.h"))
-    scan(root, tree)                                      # every unit's dependencies (its last parse's)
-    files = [(rel, p) for rel, p in fsmemo.walk(root / "src", ("*.c",))] if (root / "src").exists() else []
-    pat = re.compile(r"\b(?:" + "|".join(map(re.escape, names)) + r")\b")
-    holds = {}
-    under = os.path.normcase(str(root.resolve())) + os.sep
-
-    def norm(d: str) -> str:
-        return os.path.normcase(os.path.abspath(d))
-
-    def held(p) -> bool:
-        if p not in holds:
-            try:
-                text = fsmemo.read_text(p)
-                holds[p] = any(n in text for n in names) and bool(pat.search(text))
-            except OSError:
-                holds[p] = False
-        return holds[p]
-
-    units = []                                            # (unit file, it holds a name, the headers below root it reads that do)
-    for rel, p in sorted(files, key=lambda t: t[0].lower()):
-        if "/" not in rel:
-            deps = {norm(d) for d in core.front_last_deps(str(Path(p)))}
-            units.append((p, held(str(p)), {d for d in deps if d.startswith(under) and held(d)}))
-    covered, pick = set(), set()
-    for p, own, deps in units:
-        if own:
-            pick.add(p)
-            covered |= deps
-    for p, own, deps in units:
-        if not own and deps - covered:
-            pick.add(p)
-            covered |= deps
-    jobs = [(Path(p), root, [Path(d) for d in sysdirs], [Path(d) for d in incdirs_], fsmemo.read_text(p), list(defines), list(names), None)
-            for p, _, _ in units if p in pick]
-    out: dict[str, set] = {}
-    for r in cparse.many(jobs, fn="refs"):
-        for rel, xs in r.items():
-            out.setdefault(rel, set()).update(xs)
-    return out
-
 
 def scan(root: Path, tree_hash: str | None = None) -> Scan:
     """Scan src/**/*.c, src/**/*.h and include/**/*.h of the project at root (memoised per tree hash), every
     file as each target's compile sees it (the core's: native/dcp_core/src/frontend.rs)."""
     from .. import native
     return Scan(native.core().front_scan(str(Path(root)), tree_hash))
-
-
-class Spans:
-    """(file, line) -> the function whose span holds the line: from its address comment to the last line of its
-    definition (an end of 0: to the next span or the end of the file). items: (file, first, last, value)."""
-
-    def __init__(self, items):
-        by: dict[str, list] = {}
-        for f, lo, hi, v in items:
-            by.setdefault(f, []).append((lo, hi, v))
-        self._by = {f: sorted(xs, key=lambda x: x[0]) for f, xs in by.items()}
-        self._keys = {f: [x[0] for x in xs] for f, xs in self._by.items()}
-
-    def at(self, file: str, line: int):
-        xs = self._by.get(file)
-        if not xs:
-            return None
-        k = bisect.bisect_right(self._keys[file], line) - 1
-        if k < 0 or xs[k][1] and line > xs[k][1]:
-            return None
-        return xs[k][2]
-
-
-def native_pieces(sc: Scan) -> tuple[list[int], list[tuple]]:
-    """The scan as the native rules read it: its files' pieces in the core by id, the errors of the whole scan."""
-    return list(sc.piece_ids), [(e.check, e.file, e.line, e.message) for e in sc.own_errors]
-
-
-def function_spans(sc: Scan, target: str, default: str) -> Spans:
-    """(file, line) -> the address of the target's function whose span holds the line."""
-    return Spans((f.file, f.comment_line, f.end_line, a) for f in sc.functions
-                 if (a := address_for(f.addrs, target, default)) is not None)
 
 
 def address_for(addrs: tuple, target: str, default: str) -> int | None:

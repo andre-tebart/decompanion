@@ -60,10 +60,6 @@ def test_scan(tmp_path):
     assert "g: no address comment" in errs[0][3] and "h: no address comment" in errs[1][3]
     assert "unexpected source file src/net/extra.c" in errs[2][3]
     assert [p.ident for p in sc.placeholders] == ["FUN_10001020"]
-    spans = srcscan.function_spans(sc, "tiny", "tiny")
-    assert spans.at("src/net.c", 13) == spans.at("src/net.c", 17) == 0x10001000
-    assert spans.at("src/net.c", 12) is None and spans.at("src/net.c", 18) is None
-    assert spans.at("src/net.c", 26) == 0x10001020
 
 
 def test_line_directives():

@@ -54,6 +54,12 @@ pub fn library(cfg: Option<&toml::Table>) -> Option<String> {
     cands.into_iter().find(|c| c.exists()).map(|c| c.to_string_lossy().into_owned())
 }
 
+/// The default libclang (no configuration), None when there is none.
+#[pyfunction]
+pub fn clang_library() -> Option<String> {
+    library(None)
+}
+
 /// The macro every compile of a target defines (a function of some targets only stands under `#if` on it).
 pub fn target_macro(name: &str) -> String {
     format!("DCP_TARGET_{}", name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>())

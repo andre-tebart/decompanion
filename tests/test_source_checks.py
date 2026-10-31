@@ -13,10 +13,9 @@ from conftest import dcp, unit
 from decompanion import obligations
 from decompanion.build import link as L
 from decompanion.config import Project
-from decompanion.ledger import srcscan
 from decompanion.ledger.fact import Level
 from decompanion.rules import layout as LY
-from decompanion.source import cparse
+from decompanion import native
 
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
 DX6 = Path("C:/Tools/DXSDK61/lib")
@@ -33,34 +32,6 @@ def errors(root, check):
 
 
 # ------------------------------------------------------------------------------------------------ A1
-def test_ptr_cast_scan():
-    # the names the code uses are declared on the first line (an expression with an undeclared name has no cast
-    # for the front end: clang's recovery drops it)
-    text = ("/* 0x5de460, registers the exit callback */ int atexit(void (*)(void)); char *p, *t; "
-            "struct foo **q; void (__cdecl *r)(int); unsigned s; int u, full_data_6f242c, ai_OptionsFile; char *w;"
-            " int U_I(unsigned);\n"
-            "#define CB ((void (*)(void))0x5de471)\n"
-            "#if 0\nchar *dead = (char *)0x401234;\n#endif\n"
-            "int f(void)\n{\n"
-            "    atexit((void (*)(void))0x5de470);\n"
-            "    p = (char *)0x6f242c;\n"
-            "    q = (struct foo **)(unsigned)(0x6f2430u);\n"
-            "    r = (void (__cdecl *)(int))(0x401000);\n"
-            "    s = U_I((unsigned)&full_data_6f242c);\n"
-            "    t = (char *)(unsigned)&ai_OptionsFile;\n"
-            "    u = (int)0x5de470;\n"
-            "    w = \"(char *)0x5de470\";  /* (char *)0x5de470 */\n"
-            "    return 0;\n}\n")
-    sc = srcscan.Scan()
-    srcscan.scan_file("src/sfx.c", text, sc)
-    got = sorted((c.line, c.value, c.text) for c in sc.ptrcasts)
-    assert got == [(2, 0x5de471, "(void (*)(void))0x5de471"),
-                   (8, 0x5de470, "(void (*)(void))0x5de470"),
-                   (9, 0x6f242c, "(char *)0x6f242c"),
-                   (10, 0x6f2430, "(struct foo **)(unsigned)(0x6f2430u)"),
-                   (11, 0x401000, "(void (__cdecl *)(int))(0x401000)")]
-
-
 def test_a1_addr_cast(tiny):
     assert dcp(tiny, "decl", "add", "0x10001050 name ShowWorld -- pushes world (test)")[0] == 0
     unit(tiny, "net", "int counter = 0x1234;  /* 0x10002000 */\nextern int atexit(void (*)(void));\n",
@@ -105,19 +76,6 @@ VIEWS_H = ("#define rec_Count (*(int *)((char *)&records + 0x4))  /* 0x10002004 
            "#define rec_Elem (*(int *)(table + 1))  /* 0x10002004 */\n"
            "#define LOCAL (*(int *)&p)\n"
            "#define SIZE 0x10  /* 0x10, the record size */\n")
-
-
-def test_view_scan():
-    sc = srcscan.Scan()
-    srcscan.scan_file("include/views.h", VIEWS_H, sc)
-    got = [(v.name, v.container, v.offset, v.addrs, v.alias) for v in sc.views]
-    assert got == [("rec_Count", "records", 4, ((None, 0x10002004),), False),
-                   ("rec_Names", "table", 8, ((None, 0x10002008),), False),
-                   ("rec_All", "records", 0, ((None, 0x10002000),), False),
-                   ("rec_Alias", "records", 0, ((None, 0x10002000),), True),
-                   ("rec_Bad", "records", 8, ((None, 0x1000200c),), False)]
-    assert sc.rawobj == ["rec_Elem", "LOCAL"]
-    assert [(e.check, e.line) for e in sc.errors] == [("L15", 6)]       # an address comment, but no byte offset
 
 
 def test_l15_views(tiny):
@@ -225,7 +183,7 @@ def test_link_library_class_dx6(tiny):
 
 
 # ------------------------------------------------------------------------------------------------ dcp headers conflicts
-@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
+@pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")
 def test_headers_conflicts(tiny):
     write(tiny, "include/net.h", "extern int counter;\nextern short width;\nint add2(int a, int b);\n")
     unit(tiny, "net", "extern int counter;  /* the same as net.h */\nextern char width;\n",
@@ -249,7 +207,7 @@ def test_headers_conflicts(tiny):
     assert text == '#include "net.h"\n\n' + fn, text
 
 
-@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
+@pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")
 def test_headers_conflicts_warnings(tiny):
     """prototyped calls by argument class; the declaration-set warning; a dropped duplicate that carries the only
     description of its function (Q6)."""
@@ -274,7 +232,7 @@ def test_headers_conflicts_warnings(tiny):
     assert "src/net.c:12 (constants: safe)" in out, out
 
 
-@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
+@pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")
 def test_headers_conflicts_multi_name_and_position(tiny):
     """Every name of a multi-name `extern a, b, c;` line is a duplicate (the line keeps its other names when
     written); the include goes before the first statement using a duplicate when that is above the last
@@ -305,7 +263,7 @@ def test_headers_conflicts_multi_name_and_position(tiny):
 VC6_ROOT = Path("C:/Tools/MSVC600-SP5PP")
 
 
-@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
+@pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")
 @pytest.mark.skipif(not (VC6_ROOT / "VC98" / "Bin" / "CL.EXE").exists(), reason="VC6 not installed")
 def test_headers_conflicts_vc6(tiny):
     """clang accepts a struct parameter by value whose type the unit never completes; VC6 rejects it (C2079):
@@ -319,20 +277,3 @@ def test_headers_conflicts_vc6(tiny):
     assert "kind=vc6" in out and "C2079" in out and "COLOR" in out, out
     code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
     assert code == 1 and "write=refused" in out, out
-
-
-@pytest.mark.skipif(cparse.library(None) is None, reason="libclang not installed")
-def test_placeholder_view_suffix_and_shared_comment():
-    """`ai_Unk7603a0B` is the view B of 0x7603a0 (an upper-case suffix after lower-case hex), in the scan and in
-    PLACEHOLDER_ADDR alike; a comment behind the second statement of a line is that statement's, not the
-    first's."""
-    text = "int x = ai_Unk7603a0B + ai_Unk430100C + FUN_0040100a + DAT_7603A0 + x_abcdef_123456 + y_abcdef;\n"
-    want = [0x7603a0, 0x430100, 0x40100a, 0x7603a0, 0x123456]
-    vals = [srcscan.placeholder_value(m) for m in srcscan.PLACEHOLDER_ADDR.finditer(srcscan.Source("src/u.c", text).code)]
-    assert vals == want, [hex(v) for v in vals]
-    sc = srcscan.Scan()
-    srcscan.scan_file("src/u.c", text, sc)
-    assert [p.value for p in sc.placeholders] == want, sc.placeholders
-    sc = srcscan.Scan()
-    srcscan.scan_file("src/u.c", "extern char *a; extern char *b;  /* 0x10002000 */\n", sc)
-    assert [(d.name, d.addrs) for d in sc.data] == [("a", ()), ("b", ((None, 0x10002000),))]

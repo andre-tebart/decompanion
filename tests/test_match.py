@@ -14,7 +14,7 @@ from decompanion.ledger import srcscan
 from decompanion.ledger.fact import Fact, Kind, Level
 from decompanion.ledger.store import Store
 from decompanion.rules.grade import falls, parse_baseline
-from decompanion.source import cparse
+from decompanion import native
 
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
 needs_vc6 = pytest.mark.skipif(not (VC6 / "VC98" / "Bin" / "CL.EXE").exists(), reason="VC6 not installed")
@@ -278,7 +278,7 @@ def test_header_edit_recompiles_only_includers(tiny):
     assert "compiled=0" in dcp(tiny, "build")[1]
 
 
-LIBCLANG = cparse.library(None)
+LIBCLANG = native.core().clang_library()
 
 
 @needs_vc6

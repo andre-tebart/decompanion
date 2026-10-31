@@ -464,7 +464,7 @@ impl Reader {
         if !self.memo.contains_key(f) {
             let p = if Path::new(f).is_absolute() { py_path(f) } else { py_path(&format!("{}/{f}", self.root)) };
             let ls = if Path::new(&p).exists() {
-                std::fs::read(&p).map(|b| crate::vc6::cp1252(&b)).unwrap_or_default().split('\n').map(|l| l.to_string()).collect()
+                crate::fsmemo::read_text(&p).unwrap_or_default().split('\n').map(|l| l.to_string()).collect()
             } else {
                 vec![]
             };
@@ -1253,6 +1253,15 @@ extern int x;
         // a K&R definition compares as its default-promoted prototype (`int f()` and `int f(int, int)` agree with it)
         let ds = x.file_scope_decls("src/u/f.c", "int f(x, y, p, q) short x; unsigned char y; float p; char *q;\n{\n}\n", None);
         assert!(ds.len() == 1 && ds[0].kind == "knr" && ds[0].proto == "int f(int x, int y, double p, char *q);");
+    }
+
+    /// A function's span runs from its address comment to the last line of its definition (an end of 0: open).
+    #[test]
+    fn function_spans() {
+        let spans = Spans { by: [("src/net.c".to_string(), vec![(13, 17, 0x10001000), (24, 0, 0x10001020)])].into_iter().collect() };
+        assert_eq!((spans.at("src/net.c", 13), spans.at("src/net.c", 17)), (Some(0x10001000), Some(0x10001000)));
+        assert_eq!((spans.at("src/net.c", 12), spans.at("src/net.c", 18)), (None, None));
+        assert_eq!((spans.at("src/net.c", 26), spans.at("src/other.c", 13)), (Some(0x10001020), None));
     }
 
     #[test]

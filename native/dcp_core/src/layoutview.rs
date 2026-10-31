@@ -113,6 +113,20 @@ impl View {
         out
     }
 
+    /// The first open item of the game code: (address, kind, size), None when there is none.
+    pub(crate) fn first_open_item(&self) -> Option<(i64, &'static str, i64)> {
+        let items = self.items_of();
+        let mut starts: Vec<i64> = items.iter().filter(|t| t.2 == "func" || t.2 == "start").map(|t| t.0).collect();
+        starts.push(self.game.1);
+        starts.sort();
+        starts.dedup();
+        items.iter().find(|(lo, _, what, _)| !((*what == "func" || *what == "start") && self.sources.contains_key(lo))).map(|(lo, hi, what, _)| {
+            let k = starts.partition_point(|x| x <= lo);
+            let nxt = starts.get(k).copied().unwrap_or(self.game.1);
+            (*lo, *what, if *what != "unknown" { nxt - lo } else { hi - lo })
+        })
+    }
+
     pub(crate) fn unit_index(&self, a: i64) -> Option<usize> {
         layout::unit_at(&self.units, a)
     }
@@ -328,7 +342,7 @@ impl View {
     }
 
     /// The skind of the first symbol (not the match phase's) that starts at a, or None.
-    fn symbol_kind(&self, a: i64) -> Option<String> {
+    pub(crate) fn symbol_kind(&self, a: i64) -> Option<String> {
         self.syms.iter().find(|f| f.lo == a).and_then(|f| f.s("skind")).map(|s| s.to_string())
     }
 

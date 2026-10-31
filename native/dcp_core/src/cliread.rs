@@ -127,9 +127,9 @@ fn splitlines(t: &str) -> Vec<&str> {
     out
 }
 
-/// A text as Path.read_text(errors="replace") reads it on this system (cp1252, universal newlines).
+/// A text as Path.read_text(errors="replace") reads it (UTF-8, universal newlines).
 fn read_text_locale(p: &str) -> String {
-    std::fs::read(p).map(|b| crate::vc6::cp1252(&b)).unwrap_or_default()
+    crate::fsmemo::read_text(p).unwrap_or_default()
 }
 
 fn latin1(b: &[u8]) -> String {
@@ -778,6 +778,15 @@ pub fn read_command(project: PyRef<'_, crate::project::PyProject>, capstone: &st
 }
 
 /// An address from `0xADDR`, a name the ledger knows, or a placeholder spelling one; None when it is none of them.
+pub fn resolve_key(p: &Project, key: &str) -> PyResult<Option<i64>> {
+    Reader::open(p, "")?.resolve(key).map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+/// The body comment of a draft skeleton at a (the disassembly of the walk's extent).
+pub fn skeleton_lines(p: &Project, capstone: &str, a: i64) -> PyResult<Vec<String>> {
+    Ok(skeleton(&Reader::open(p, capstone)?, a)?.0)
+}
+
 #[pyfunction]
 pub fn read_resolve(project: PyRef<'_, crate::project::PyProject>, key: &str) -> PyResult<Option<i64>> {
     Reader::open(&project.p, "")?.resolve(key).map_err(pyo3::exceptions::PyValueError::new_err)

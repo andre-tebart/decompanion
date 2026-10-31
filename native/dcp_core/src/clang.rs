@@ -426,7 +426,7 @@ impl Unit {
     }
 
     /// cparse.refs of the unit.
-    fn refs(&self, root: &str, text: &str, names: Vec<String>) -> PyResult<Vec<(String, Vec<(usize, usize)>)>> {
+    pub(crate) fn refs(&self, root: &str, text: &str, names: Vec<String>) -> PyResult<Vec<(String, Vec<(usize, usize)>)>> {
         let a = api()?;
         let t = lock(self);
         refs(a, &t, root, text, &names)

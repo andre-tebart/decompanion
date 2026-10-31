@@ -608,3 +608,79 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
     let piece = hold(Piece { view, rel: rel.to_string(), defs: defs_of, lint, sysinc: crate::lint::system_includes(text) });
     Ok(FilePart { macros, described, functions, data, ptrcasts, views: vrows, rawobj, errors, placeholders, piece })
 }
+
+#[cfg(test)]
+mod tests {
+    //! One text scanned alone, as a file no unit holds is (libclang's model of it): skipped without libclang.
+    use super::*;
+
+    fn scan_alone(rel: &str, text: &str) -> Option<FilePart> {
+        crate::frontend::library(None)?;
+        let root = std::env::temp_dir().join(format!("dcp-srcscan-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let r = root.to_string_lossy().into_owned();
+        let front = crate::frontend::Front::of(&r).unwrap();
+        let path = crate::project::py_path(&format!("{r}/{rel}"));
+        let m = crate::frontend::parse_model(&r, &path, &front.args(&[]), text, false).unwrap();
+        let model = m.files.into_iter().find(|(x, _)| x == rel).map(|x| x.1).unwrap_or_default();
+        Some(scan_file_rs(rel, text, &model, &[]).unwrap())
+    }
+
+    #[test]
+    fn ptr_casts() {
+        // the names the code uses are declared on the first line (an expression with an undeclared name has no cast
+        // for the front end: clang's recovery drops it)
+        let text = "/* 0x5de460, registers the exit callback */ int atexit(void (*)(void)); char *p, *t; \
+                    struct foo **q; void (__cdecl *r)(int); unsigned s; int u, full_data_6f242c, ai_OptionsFile; char *w; int U_I(unsigned);\n\
+                    #define CB ((void (*)(void))0x5de471)\n\
+                    #if 0\nchar *dead = (char *)0x401234;\n#endif\n\
+                    int f(void)\n{\n\
+                    \x20   atexit((void (*)(void))0x5de470);\n\
+                    \x20   p = (char *)0x6f242c;\n\
+                    \x20   q = (struct foo **)(unsigned)(0x6f2430u);\n\
+                    \x20   r = (void (__cdecl *)(int))(0x401000);\n\
+                    \x20   s = U_I((unsigned)&full_data_6f242c);\n\
+                    \x20   t = (char *)(unsigned)&ai_OptionsFile;\n\
+                    \x20   u = (int)0x5de470;\n\
+                    \x20   w = \"(char *)0x5de470\";  /* (char *)0x5de470 */\n\
+                    \x20   return 0;\n}\n";
+        let Some(part) = scan_alone("src/sfx.c", text) else { return };
+        let mut got: Vec<(i64, u64, String)> = part.ptrcasts.iter().map(|c| (c.1, c.3, c.2.clone())).collect();
+        got.sort();
+        assert_eq!(got, [(2, 0x5de471, "(void (*)(void))0x5de471".to_string()), (8, 0x5de470, "(void (*)(void))0x5de470".to_string()),
+                         (9, 0x6f242c, "(char *)0x6f242c".to_string()), (10, 0x6f2430, "(struct foo **)(unsigned)(0x6f2430u)".to_string()),
+                         (11, 0x401000, "(void (__cdecl *)(int))(0x401000)".to_string())]);
+    }
+
+    #[test]
+    fn views() {
+        let text = "#define rec_Count (*(int *)((char *)&records + 0x4))  /* 0x10002004 */\n\
+                    #define rec_Names (*(char (*)[2][8])((char *)table + 8))  /* 0x10002008 */\n\
+                    #define rec_All (*(int (*)[4])&records)  /* 0x10002000 */\n\
+                    #define rec_Alias records  /* 0x10002000 */\n\
+                    #define rec_Bad (*(int *)((char *)&records + 0x8))  /* 0x1000200c */\n\
+                    #define rec_Elem (*(int *)(table + 1))  /* 0x10002004 */\n\
+                    #define LOCAL (*(int *)&p)\n\
+                    #define SIZE 0x10  /* 0x10, the record size */\n";
+        let Some(part) = scan_alone("include/views.h", text) else { return };
+        let got: Vec<(&str, &str, u64, Vec<(Option<String>, u64)>, bool)> =
+            part.views.iter().map(|v| (v.3.as_str(), v.4.as_str(), v.5, v.6.clone(), v.7)).collect();
+        let a = |x: u64| vec![(None, x)];
+        assert_eq!(got, [("rec_Count", "records", 4, a(0x10002004), false), ("rec_Names", "table", 8, a(0x10002008), false),
+                         ("rec_All", "records", 0, a(0x10002000), false), ("rec_Alias", "records", 0, a(0x10002000), true),
+                         ("rec_Bad", "records", 8, a(0x1000200c), false)]);
+        assert_eq!(part.rawobj, ["rec_Elem", "LOCAL"]);
+        assert_eq!(part.errors.iter().map(|e| (e.2.as_str(), e.1)).collect::<Vec<_>>(), [("L15", 6)]); // an address comment, no byte offset
+    }
+
+    /// `ai_Unk7603a0B` is the view B of 0x7603a0 (an upper-case suffix after lower-case hex); a comment behind the
+    /// second statement of a line is that statement's, not the first's.
+    #[test]
+    fn placeholders_and_shared_comments() {
+        let Some(part) = scan_alone("src/u.c", "int x = ai_Unk7603a0B + ai_Unk430100C + FUN_0040100a + DAT_7603A0 + x_abcdef_123456 + y_abcdef;\n") else { return };
+        assert_eq!(part.placeholders.iter().map(|p| p.3).collect::<Vec<_>>(), [0x7603a0, 0x430100, 0x40100a, 0x7603a0, 0x123456]);
+        let part = scan_alone("src/u.c", "extern char *a; extern char *b;  /* 0x10002000 */\n").unwrap();
+        let got: Vec<(&str, Vec<(Option<String>, u64)>)> = part.data.iter().map(|d| (d.3.as_str(), d.5.clone())).collect();
+        assert_eq!(got, [("a", vec![]), ("b", vec![(None, 0x10002000)])]);
+    }
+}

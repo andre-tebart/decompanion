@@ -396,14 +396,6 @@ def test_unknown_analyzer(tiny, capsys):
     assert "unknown analyzer plugin 'ida'" in capsys.readouterr().err
 
 
-def test_rename_leaves_strings_and_includes():
-    from decompanion.source import edit as E
-    text = '/* net: f calls net */\n#include "net.h"\nchar *s = "net";\nint net(void);\nint f(void) { return net(); }\n'
-    new, n = E.replace_words(text, {"net": "socket_net"})
-    assert n == 4 and '#include "net.h"' in new and '"net"' in new and "int socket_net(void);" in new
-    assert "/* socket_net: f calls socket_net */" in new
-
-
 def test_rename_is_symbol_exact(tiny):
     """A symbol with an address is renamed where it is used, not where a parameter, a local or a struct field of
     the same name stands (comments still follow by word); a new name that is only a local elsewhere is no
@@ -420,13 +412,6 @@ def test_rename_is_symbol_exact(tiny):
     assert "s.a_10001000 = count;" in text and "return s.a_10001000;" in text
     assert "int a_10001000 = 1;" in text and "return a_10001000 + checksum + a_10001000;" in text
     assert "struct S { int a_10001000; };" in text
-
-
-def test_draft_keeps_analyzer_comments_off_the_signature():
-    from decompanion.source import draft as DR
-    text = "\r\n/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */\r\n\r\nvoid f(int a)\r\n\r\n{\r\n  return;\r\n}\r\n"
-    assert DR.split(text)[0] == "void f(int a)"
-    assert DR.lead_comments(text) == ["/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */"]
 
 
 def test_rename_collides_only_with_code(tiny):
