@@ -311,7 +311,7 @@ pub fn models(front: &Front, files: &[(String, String)], defines: &[String]) -> 
 }
 
 fn clang_version() -> Result<String, String> {
-    Python::attach(|_| clang::clang_version()).map_err(|e| e.to_string())
+    clang::clang_version().map_err(|e| Python::attach(|_| e.to_string()))
 }
 
 /// (path relative to root, full path) of src/**/*.c, src/**/*.h and include/**/*.h, in the scan's order.
@@ -433,7 +433,7 @@ pub fn scan(root: &str, tree_hash: Option<&str>) -> Result<Rc<Scan>, String> {
             None => {
                 let text = fsmemo::read_text(p).map_err(|e| format!("{p}: {e}"))?;
                 let vs: Vec<(Option<String>, &FileModel)> = views.iter().map(|(t, m)| (t.clone(), &**m)).collect();
-                Rc::new(Python::attach(|_| srcscan::scan_file_rs(rel, &text, &m, &vs)).map_err(|e| e.to_string())?)
+                Rc::new(srcscan::scan_file_rs(rel, &text, &m, &vs).map_err(|e| Python::attach(|_| e.to_string()))?)
             }
         };
         used.insert(key, (held, part.clone()));
@@ -605,26 +605,99 @@ pub fn front_scan(py: Python<'_>, root: &str, tree_hash: Option<&str>) -> PyResu
     Ok(ScanObj { s: scan(root, tree_hash).map_err(err)? })
 }
 
-/// The front end's model of one text parsed alone (no unit around it): {files, deps, missing}'s entry for rel.
-#[pyfunction]
-pub fn front_model_alone<'py>(py: Python<'py>, root: &str, rel: &str, text: &str) -> PyResult<Bound<'py, PyDict>> {
-    let front = py.detach(|| Front::of(root)).map_err(err)?;
-    let path = py_path(&Path::new(root).join(rel).to_string_lossy());
-    let m = py.detach(|| parse_model(root, &path, &front.args(&[]), text, false)).map_err(err)?;
-    let r = Path::new(rel).to_string_lossy().replace('\\', "/");
-    clang::file_model_py(py, m.files.iter().find(|(x, _)| *x == r).map(|x| &x.1).unwrap_or(&FileModel::default()))
-}
-
 /// The unit files' last parses' dependencies (what local_refs reads): path -> files read.
 #[pyfunction]
 pub fn front_last_deps(path: &str) -> Vec<String> {
     LAST_DEPS.lock().unwrap().get(path).cloned().unwrap_or_default()
 }
 
-/// The front end's arguments and system directories of the project at root: (sysdirs, incdirs, targets).
-#[pyfunction]
-#[allow(clippy::type_complexity)]
-pub fn front_of(root: &str) -> PyResult<(Vec<String>, Vec<String>, Vec<(Option<String>, Vec<String>)>)> {
-    let f = Front::of(root).map_err(err)?;
-    Ok((f.sysdirs, f.incdirs, f.targets))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source tree in a fresh temporary directory: (path, text) files; its root.
+    fn tree(name: &str, files: &[(&str, &str)]) -> String {
+        let d = std::env::temp_dir().join(format!("dcp-front-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for (rel, text) in files {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        py_path(&d.to_string_lossy())
+    }
+
+    /// A unit's file from its parts (conftest.unit): each part ends its line, a blank line between two parts.
+    fn unit_text(parts: &[&str]) -> String {
+        parts.iter().filter(|p| !p.is_empty()).map(|p| if p.ends_with('\n') { p.to_string() } else { format!("{p}\n") }).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn scan_of_a_tree() {
+        let net = unit_text(&["#include \"net.h\"\n\nstatic int counter = 0;  /* 0x10002000 */\nextern int a, b;  /* 0x10002004, 0x10002008 */\n/* 0x10002010 */\n\
+                               static const char *names[] = {\n    \"x\",\n    \"y\",\n};\nint both;  /* tiny:0x1000200c, other:0x1000300c */\n\
+                               static int local = 5;  /* 0x10002020 */\n",
+                              "/* 0x10001000, opens the socket @deep the jump table differs */\nint NetOpen(int port)\n{\n    return FUN_10001020(port) + local;\n}\n",
+                              "static __inline int sq(int x)\n{\n    return x * x;\n}\n",
+                              "/* tiny:0x10001020, other:0x10001120, a helper\n   on two lines @rough */\nint __stdcall helper(int x)\n{\n    return sq(x);\n}\n",
+                              "/* unlinked, dropped by /OPT:REF */\nvoid unused(void)\n{\n}\n",
+                              "/* a description, no address */\nvoid g(void)\n{\n}\n",
+                              "void h(void)\n{\n}\n"]);
+        let root = tree("scan", &[("src/net.c", &net), ("src/net/extra.c", "int x;\n"),
+                                  ("include/net.h", "int NetOpen(int port);  /* 0x10001000 */\nextern int counter2;  /* 0x10002030 */\n")]);
+        let sc = scan(&root, None).unwrap();
+        let fns: HashMap<&str, &srcscan::FnRow> = sc.functions().map(|f| (f.0 .3.as_str(), f)).collect();
+        let mut names: Vec<&str> = fns.keys().copied().collect();
+        names.sort();
+        assert_eq!(names, ["NetOpen", "helper", "unused"]); // an __inline helper is no function
+        let open = fns["NetOpen"];
+        assert_eq!((open.0 .4.clone(), open.0 .2.as_str()), (vec![(None, 0x10001000)], "net"));
+        assert_eq!((open.1 .3, open.0 .1, open.1 .5), (13, 14, 17));
+        assert_eq!((open.0 .6.as_str(), open.1 .0.as_deref()), ("opens the socket", Some("the jump table differs")));
+        let helper = fns["helper"];
+        assert_eq!(helper.0 .4, vec![(Some("tiny".to_string()), 0x10001020), (Some("other".to_string()), 0x10001120)]);
+        assert!(helper.1 .2 && helper.0 .6 == "a helper on two lines" && helper.1 .3 == 24);
+        assert!(fns["unused"].0 .5 && fns["unused"].0 .4.is_empty() && !fns["unused"].1 .4 && !open.1 .4);
+        let data: HashMap<(&str, &str), &srcscan::DataRow> = sc.parts.iter().flat_map(|p| p.data.iter()).map(|d| ((d.3.as_str(), d.4.as_str()), d)).collect();
+        assert_eq!(data[&("counter", "def")].5, vec![(None, 0x10002000)]);
+        assert_eq!((data[&("a", "extern")].5.clone(), data[&("b", "extern")].5.clone()), (vec![(None, 0x10002004)], vec![(None, 0x10002008)]));
+        assert_eq!(data[&("names", "def")].5, vec![(None, 0x10002010)]);
+        assert_eq!(data[&("both", "def")].5, vec![(Some("tiny".to_string()), 0x1000200c), (Some("other".to_string()), 0x1000300c)]);
+        assert_eq!(data[&("local", "def")].5, vec![(None, 0x10002020)]);
+        assert!(data[&("local", "def")].7 && data[&("counter", "def")].7 && !data[&("both", "def")].7);
+        assert_eq!(data[&("counter2", "extern")].2, "net");
+        assert_eq!(address_for(&helper.0 .4, "other", "tiny"), Some(0x10001120));
+        assert_eq!((address_for(&open.0 .4, "tiny", "tiny"), address_for(&open.0 .4, "other", "tiny")), (Some(0x10001000), None));
+        let mut errs: Vec<&srcscan::ErrRow> = sc.parts.iter().flat_map(|p| p.errors.iter()).chain(sc.own_errors.iter()).collect();
+        errs.sort();
+        assert_eq!(errs.iter().map(|e| (e.0.as_str(), e.1, e.2.as_str())).collect::<Vec<_>>(),
+                   [("src/net.c", 37, "L.src"), ("src/net.c", 41, "L.src"), ("src/net/extra.c", 1, "L.src")]);
+        assert!(errs[0].3.contains("g: no address comment") && errs[1].3.contains("h: no address comment"));
+        assert!(errs[2].3.contains("unexpected source file src/net/extra.c"));
+        let ph: Vec<&str> = sc.parts.iter().flat_map(|p| p.placeholders.iter()).map(|p| p.2.as_str()).collect();
+        assert_eq!(ph, ["FUN_10001020"]);
+    }
+
+    #[test]
+    fn memo_and_context() {
+        let views = "#define rec_Count (*(int *)((char *)&records + 0x4))  /* 0x10002004 */\n\
+                     #define rec_Names (*(char (*)[2][8])((char *)table + 8))  /* 0x10002008 */\n\
+                     #define rec_All (*(int (*)[4])&records)  /* 0x10002000 */\n\
+                     #define rec_Alias records  /* 0x10002000 */\n\
+                     #define rec_Bad (*(int *)((char *)&records + 0x8))  /* 0x1000200c */\n\
+                     #define rec_Elem (*(int *)(table + 1))  /* 0x10002004 */\n\
+                     #define LOCAL (*(int *)&p)\n\
+                     #define SIZE 0x10  /* 0x10, the record size */\n";
+        let root = tree("memo", &[("src/u.c", "/* 0x10001000, x */\nvoid f(void)\n{\n}\n"), ("include/views.h", views)]);
+        let a = scan(&root, Some("h1")).unwrap();
+        assert_eq!(scan(&root, Some("h1")).unwrap().piece_ids(), a.piece_ids()); // the same pieces: the memo
+        // Q4's raw macros: function-like or dereferencing a cast without being a view
+        let (raw, _) = context(&a);
+        for m in ["rec_Elem", "LOCAL"] {
+            assert!(raw.iter().any(|r| r == m), "{m} {raw:?}");
+        }
+        for m in ["rec_Count", "rec_Names", "rec_All", "rec_Alias", "rec_Bad", "SIZE"] {
+            assert!(!raw.iter().any(|r| r == m), "{m} {raw:?}");
+        }
+    }
 }

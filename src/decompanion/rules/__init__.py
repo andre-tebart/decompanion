@@ -1,2 +1,1 @@
-"""Importing the package registers every rule (rules.engine.RULES)."""
-from . import checks, grade, layout, match  # noqa: F401
+"""The rule engine's face (engine.py); the rules are the core's (native/dcp_core/src/registry.rs, rules.rs)."""

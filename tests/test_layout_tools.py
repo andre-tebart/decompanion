@@ -273,17 +273,6 @@ def test_source_only_start_owns_its_code(tmp_path):
     assert dcp(root, "check")[0] == 0
 
 
-def test_unit_status_rule():
-    """L.unit.extent's status: open bytes and C.walk conflicts inside a unit keep it open."""
-    from decompanion.ledger.fact import Level
-    from decompanion.rules import layout as L
-    DE, O = Level.declared, Level.open
-    assert L.unit_status(DE, DE, 0, 0) == "separated"
-    assert L.unit_status(DE, DE, 3, 0) == "open"
-    assert L.unit_status(DE, DE, 0, 1) == "open"
-    assert L.unit_status(DE, O, 0, 0) == "open"
-
-
 # ------------------------------------------------------------------------------------------------ unlinked helpers
 @needs_vc6
 def test_unlinked_helper_builds_without_a_grade(tiny):
@@ -297,8 +286,8 @@ def test_unlinked_helper_builds_without_a_grade(tiny):
     assert code == 0 and "failed=0" in out and "ok=yes" not in out, out   # only failed units get a row
     code, out = dcp(tiny, "build", "--units")
     assert code == 0 and "tu=net" in out and "ok=yes" in out, out
-    from decompanion.ledger import grades as G
-    rows = G.function_grades(Project(tiny).store)
+    from decompanion import native
+    rows = native.core().grades_function(str(Project(tiny).store_path()))
     assert [r["name"] for r in rows] == ["get"] and rows[0]["code"] == "byte"
     assert not [c for c in Project(tiny).store.conflicts() if c.check in ("M.gen", "M.compile")]
     code, out = dcp(tiny, "layout", "units", "-v")

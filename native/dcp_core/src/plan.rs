@@ -182,42 +182,11 @@ fn rows(units: &[Tu]) -> Vec<TuRow> {
     units.iter().map(|a| (a.target.clone(), a.unit.clone(), a.file.clone(), a.functions.clone(), a.file_name.clone(), a.src_hash.clone())).collect()
 }
 
-/// The translation units of the project's current target: (target, unit, file, functions, file name, source hash).
-#[pyfunction]
-pub fn plan_units(project: PyRef<'_, crate::project::PyProject>) -> PyResult<Vec<TuRow>> {
-    Ok(rows(&plan(&project.p).map_err(crate::project::ConfigError::new_err)?))
-}
-
-/// (flags, the override table that applied or None) of a unit of a target.
-#[pyfunction]
-pub fn plan_flags_for<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, target: &str, unit: &str)
-    -> PyResult<(Vec<String>, Option<Bound<'py, PyAny>>)> {
-    let (f, o) = flags_for(&project.p, target, unit).map_err(crate::project::ConfigError::new_err)?;
-    let o = o.map(|t| crate::pystore::json_py(py, &crate::project::toml_json(&toml::Value::Table(t)))).transpose()?;
-    Ok((f, o))
-}
-
-#[pyfunction]
-pub fn plan_compile_flags(project: PyRef<'_, crate::project::PyProject>, target: &str, unit: &str) -> PyResult<Vec<String>> {
-    compile_flags(&project.p, target, unit).map_err(crate::project::ConfigError::new_err)
-}
-
-/// The [[toolchain.unit]] tables.
-#[pyfunction]
-pub fn plan_unit_overrides<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    unit_overrides(&project.p).into_iter().map(|t| crate::pystore::json_py(py, &crate::project::toml_json(&toml::Value::Table(t)))).collect()
-}
-
 /// The translation units of one target of a scan (tu.units).
 #[pyfunction]
 #[pyo3(signature = (root, scan, target, default, names=None))]
 pub fn plan_scan_units(root: &str, scan: PyRef<'_, frontend::ScanObj>, target: &str, default: &str, names: Option<HashMap<String, String>>) -> PyResult<Vec<TuRow>> {
     Ok(rows(&units(&py_path(root), &scan.s, target, default, &names.unwrap_or_default()).map_err(pyo3::exceptions::PyRuntimeError::new_err)?))
-}
-
-#[pyfunction]
-pub fn plan_locate(text: &str, rel: &str, name: &str, line: i64) -> Vec<i64> {
-    locate(text, rel, name, line)
 }
 
 #[cfg(test)]
@@ -230,5 +199,12 @@ mod tests {
         assert_eq!(locate(text, "src/net.c", "c:\\src\\net.c", 2), vec![3]);
         assert_eq!(locate(text, "src/net.c", "net.c", 40), vec![5]);
         assert!(locate(text, "src/net.c", "other.c", 2).is_empty());
+        // a unit with its original file name and a `__LINE__` pin
+        let text = "int x;\n#line 1 \"D:\\\\dev\\\\u.c\"\nint a(void)\n{\n#line 200\n    return 1;\n}\n";
+        assert_eq!(locate(text, "src/u.c", "src/u.c", 1), vec![1]);
+        assert_eq!(locate(text, "src/u.c", "src\\u.c", 1), vec![1]);
+        assert_eq!(locate(text, "src/u.c", "D:\\dev\\u.c", 1), vec![3]); // `int a(void)`
+        assert_eq!(locate(text, "src/u.c", "d:/dev/U.C", 200), vec![6]); // after the pin
+        assert!(locate(text, "src/u.c", "D:\\dev\\u.c", 5).is_empty());
     }
 }

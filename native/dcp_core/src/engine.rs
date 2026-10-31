@@ -338,12 +338,6 @@ pub fn engine_order(ids: Option<Vec<String>>) -> PyResult<Vec<(String, String, i
     }).collect()
 }
 
-/// The code hash of a native rule.
-#[pyfunction]
-pub fn engine_code_hash(id: &str, core_hash: &str) -> PyResult<String> {
-    Ok(native_code_hash(rule(id)?, core_hash))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -197,12 +197,6 @@ fn api() -> PyResult<&'static Api> {
     LIB.get().map(|l| &l.1).ok_or_else(|| PyRuntimeError::new_err("libclang is not loaded (cparse.load)"))
 }
 
-/// Load libclang once per process; another library later is an error.
-#[pyfunction]
-pub fn clang_load(path: &str) -> PyResult<()> {
-    load(path).map_err(PyRuntimeError::new_err)
-}
-
 pub(crate) fn load(path: &str) -> Result<(), String> {
     if let Some((have, _)) = LIB.get() {
         let norm = |p: &str| crate::project::py_path(p).to_lowercase();
@@ -320,13 +314,6 @@ pub struct Unit {
 
 fn cstr(s: &str) -> PyResult<CString> {
     CString::new(s).map_err(|_| PyRuntimeError::new_err(format!("a NUL in {s:?}")))
-}
-
-/// Parse a file (its text handed over, the file itself never read) with the arguments; preamble: a precompiled
-/// preamble for the reparses of a live unit.
-#[pyfunction]
-pub fn clang_parse(py: Python<'_>, path: &str, args: Vec<String>, text: &str, preamble: bool) -> PyResult<Unit> {
-    py.detach(|| parse(path, &args, text, preamble)).map_err(PyRuntimeError::new_err)
 }
 
 /// Parse a file (its text handed over) with the arguments, in any thread (each parse has its own index).
@@ -887,26 +874,6 @@ pub fn file_model_py<'py>(py: Python<'py>, m: &FileModel) -> PyResult<Bound<'py,
     e.set_item("types", &m.types)?;
     e.set_item("dead", &m.dead)?;
     Ok(e)
-}
-
-/// A file's model from Python's dict (file_model_py's form).
-pub fn file_model_of(d: &Bound<'_, PyDict>) -> PyResult<FileModel> {
-    let item = |k: &str| d.get_item(k)?.ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(k.to_string()));
-    let mut decls = vec![];
-    for x in item("decls")?.extract::<Vec<Bound<'_, pyo3::types::PyTuple>>>()? {
-        decls.push(if x.get_item(0)?.extract::<String>()? == "f" {
-            Decl::F(x.get_item(1)?.extract()?, x.get_item(2)?.extract()?, x.get_item(3)?.extract()?, x.get_item(4)?.extract()?,
-                    x.get_item(5)?.extract()?, x.get_item(6)?.extract()?, x.get_item(7)?.extract()?)
-        } else {
-            Decl::V(x.get_item(1)?.extract()?, x.get_item(2)?.extract()?, x.get_item(3)?.extract()?, x.get_item(4)?.extract()?,
-                    x.get_item(5)?.extract()?, x.get_item(6)?.extract()?, x.get_item(7)?.extract()?, x.get_item(8)?.extract()?)
-        });
-    }
-    Ok(FileModel {
-        defs: item("defs")?.extract()?, vars: item("vars")?.extract()?, macros: item("macros")?.extract()?, defines: item("defines")?.extract()?,
-        casts: item("casts")?.extract()?, comments: item("comments")?.extract()?, strings: item("strings")?.extract()?, decls,
-        types: item("types")?.extract()?, dead: item("dead")?.extract()?,
-    })
 }
 
 /// A parse's model as Python reads it: {files: {rel: model}, deps, missing}.

@@ -319,12 +319,6 @@ fn sha_of(p: &Project) -> PyResult<String> {
 }
 
 /// up-to-date | stale | none (never exported).
-#[pyfunction]
-pub fn analyzer_state(project: PyRef<'_, crate::project::PyProject>) -> PyResult<String> {
-    state(&project.p)
-}
-
-/// up-to-date | stale | none (never exported).
 pub fn state(p: &Project) -> PyResult<String> {
     let db = p.store_path();
     let Some(have) = crate::pystore::st_meta(&db, EXPORT)? else { return Ok("none".into()) };

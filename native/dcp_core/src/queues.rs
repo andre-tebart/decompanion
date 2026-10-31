@@ -362,74 +362,6 @@ pub fn grades_function<'py>(py: Python<'py>, db: &str) -> PyResult<Bound<'py, Py
     rows_py(py, function_grades(db)?)
 }
 
-#[pyfunction]
-pub fn grades_unit<'py>(py: Python<'py>, db: &str) -> PyResult<Bound<'py, PyList>> {
-    rows_py(py, unit_grades(db)?)
-}
-
-#[pyfunction]
-#[pyo3(signature = (db, which, shard=None, unit=None))]
-pub fn grades_queue<'py>(py: Python<'py>, db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> PyResult<Bound<'py, PyList>> {
-    rows_py(py, queue(db, which, shard, unit)?)
-}
-
-#[pyfunction]
-pub fn grades_parse_shard(text: &str) -> PyResult<Option<(i64, i64)>> {
-    parse_shard(text).map_err(PyValueError::new_err)
-}
-
-#[pyfunction]
-pub fn grades_shard_owner(start: i64, n: i64) -> i64 {
-    shard_owner(start, n)
-}
-
-#[pyfunction]
-pub fn grades_only_missing_statements(reason: &str) -> bool {
-    only_missing_statements(reason)
-}
-
-/// (target, address) -> {name, unit, code, readability, level, accepted} of a baseline text.
-#[pyfunction]
-pub fn grades_parse_baseline<'py>(py: Python<'py>, text: &str) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new(py);
-    for ((t, a), e) in parse_baseline(text) {
-        let v = PyDict::new(py);
-        for (k, x) in [("name", &e.name), ("unit", &e.unit), ("code", &e.code), ("readability", &e.readability), ("level", &e.level),
-                       ("accepted", &e.accepted)] {
-            v.set_item(k, x)?;
-        }
-        d.set_item((t, a), v)?;
-    }
-    Ok(d)
-}
-
-/// What fell from a baseline row (code, readability) to the current grade (None: no grade any more).
-#[pyfunction]
-pub fn grades_falls(code: &str, readability: &str, now: Option<(String, String)>) -> Vec<String> {
-    let base = Entry { code: code.into(), readability: readability.into(), ..Default::default() };
-    falls(&base, now.as_ref().map(|(c, r)| (c.as_str(), r.as_str())))
-}
-
-#[pyfunction]
-pub fn grades_at_least(code: &str, readability: &str, grade: &str) -> bool {
-    at_least(code, readability, grade)
-}
-
-#[pyfunction]
-pub fn grades_accept_note(before: &str, after: &str, commit: &str, why: &str) -> String {
-    accept_note(before, after, commit, why)
-}
-
-#[pyfunction]
-pub fn grades_note_from(note: &str) -> Option<String> {
-    note_from(note)
-}
-
-#[pyfunction]
-pub fn grades_baseline_text(targets: Vec<(String, String)>, old: &str, accept_falls: bool, commit: &str) -> PyResult<String> {
-    baseline_text(&targets, old, accept_falls, commit)
-}
-
 /// The baseline text with one function's entry lowered to code + readability and its accepted column set.
 #[pyfunction]
 pub fn grades_accept(text: &str, target: &str, addr: i64, code: &str, readability: &str, note: &str) -> String {
@@ -465,6 +397,58 @@ pub fn grades_baseline_at(root: &str, rev: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_order() {
+        use crate::rules::testkit::Kit;
+        use serde_json::json;
+        let k = Kit::new(&crate::pe::testpe::build(None));
+        let units = [("a", 0x1000, 0x2000, "separated"), ("b", 0x2000, 0x3000, "separated"), ("c", 0x3000, 0x4000, "separated"), ("open", 0x4000, 0x5000, "open")];
+        let uf: Vec<(i64, i64, &str, Value, i64)> = units.iter().map(|&(tu, lo, hi, status)| {
+            (lo, hi, "unit", json!({"tu": tu, "status": status, "start_level": "declared", "end_level": "declared", "start_by": "x", "end_by": "y"}), 1)
+        }).collect();
+        let funcs = [(0x1000, "a1", "a", "draft", "draft", "", 9), (0x1100, "a2", "a", "draft", "readable", "", 3), (0x1200, "a3", "a", "shape", "draft", "", 2),
+                     (0x2000, "b1", "b", "draft", "draft", "", 50), (0x2100, "b2", "b", "byte", "readable", "", 0),
+                     (0x3000, "c1", "c", "shape", "readable", "", 7), (0x3100, "c2", "c", "byte", "draft", "deep", 0),
+                     (0x3200, "c3", "c", "draft", "draft", "stuck", 4), (0x4000, "o1", "open", "draft", "draft", "", 1)];
+        let gf: Vec<(i64, i64, &str, Value, i64)> = funcs.iter().map(|&(a, n, u, code, q, lvl, d)| {
+            (a, a + 1, "grade", json!({"of": "function", "name": n, "unit": u, "file": format!("src/{u}.c"), "code": code, "readability": q, "level": lvl,
+                                       "failing": [], "dist": {"ins": d, "bytes": d, "size": 1, "orig": 1}}), 1)
+        }).collect();
+        k.put("L.unit.extent", &uf);
+        k.put("G.grade", &gf);
+        let names = |which: &str, shard: Option<(i64, i64)>| -> Vec<(String, String)> {
+            queue(&k.db, which, shard, None).unwrap().iter().map(|r| (s(r, "name").to_string(), s(r, "section").to_string())).collect()
+        };
+        let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> { v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
+        // every code draft first (unit b has 1 draft, a has 2), then the readability work; the open unit is left out
+        assert_eq!(names("base", None), pairs(&[("b1", "draft"), ("a1", "draft"), ("a2", "draft"), ("a3", "read")]));
+        // c has no base item left: its byte work (c1) first, the Q-only c2 waits, the stuck c3 last
+        assert_eq!(names("deep", None), pairs(&[("c1", "deep"), ("c3", "stuck")]));
+        assert_eq!(names("names", None).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["c2"]);
+        let mut got: Vec<String> = (0..2).flat_map(|i| names("base", Some((i, 2)))).map(|x| x.0).collect();
+        got.sort();
+        let mut all: Vec<String> = names("base", None).into_iter().map(|x| x.0).collect();
+        all.sort();
+        assert_eq!(got, all);
+    }
+
+    #[test]
+    fn accepted_column() {
+        // an old 7-column file parses (empty accepted column); accept lowers one entry and notes it, every other line stays
+        let old = "target\taddress\tname\tunit\tcode\treadability\tlevel\nt\t0x10001000\tf\tu\tbyte\treadable\t\nt\t0x10001010\tg\tu\tshape\tdraft\tdeep\n";
+        assert_eq!(parse_baseline(old)[0].1.accepted, "");
+        let note = accept_note("byte+readable", "shape+readable", "abc1234", "a VC6\tdeclaration-set\ntie-break");
+        assert_eq!(note, "byte+readable -> shape+readable at abc1234: a VC6 declaration-set tie-break");
+        let new = grades_accept(old, "t", 0x10001000, "shape", "readable", &note);
+        assert_eq!(new, format!("{HEADER}\nt\t0x10001000\tf\tu\tshape\treadable\t\t{note}\nt\t0x10001010\tg\tu\tshape\tdraft\tdeep\t\n"));
+        let b = &parse_baseline(&new)[0].1;
+        assert_eq!((b.code.as_str(), b.accepted.as_str()), ("shape", note.as_str()));
+        assert!(falls(b, Some(("shape", "readable"))).is_empty()); // M1 holds it at shape
+        assert_eq!(falls(b, Some(("draft", "readable"))), ["code shape -> draft"]);
+        assert!(falls(&parse_baseline(old)[1].1, Some(("byte", "draft"))).is_empty());
+        assert!(at_least("byte", "readable", "byte+readable") && !at_least("shape", "readable", "byte+readable") && !at_least("byte", "draft", "shape+readable"));
+    }
 
     #[test]
     fn shards_baseline_and_reasons() {

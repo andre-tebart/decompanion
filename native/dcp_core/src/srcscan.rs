@@ -388,30 +388,6 @@ pub(crate) struct FilePart {
     pub piece: ScanPiece,
 }
 
-/// srcscan.scan_file: one file's part of the scan from its text and its model (the default target's) and every
-/// target's view of it ((target or None, model)): (macros, described, functions, data, ptrcasts, views, rawobj,
-/// errors, placeholders), the rows of srcscan's dataclasses, and the file's ScanPiece.
-#[pyfunction]
-pub fn scan_file<'py>(py: Python<'py>, rel: &str, text: &str, model: &Bound<'py, PyDict>, views: Vec<(Option<String>, Bound<'py, PyDict>)>)
-                      -> PyResult<Bound<'py, PyTuple>> {
-    let model = crate::clang::file_model_of(model)?;
-    let views: Vec<(Option<String>, FileModel)> = views.into_iter().map(|(t, m)| Ok((t, crate::clang::file_model_of(&m)?))).collect::<PyResult<_>>()?;
-    let views: Vec<(Option<String>, &FileModel)> = views.iter().map(|(t, m)| (t.clone(), m)).collect();
-    let x = scan_file_rs(rel, text, &model, &views)?;
-    PyTuple::new(py, [
-        x.macros.into_pyobject(py)?.into_any(),
-        x.described.into_pyobject(py)?.into_any(),
-        x.functions.into_pyobject(py)?.into_any(),
-        x.data.into_pyobject(py)?.into_any(),
-        x.ptrcasts.into_pyobject(py)?.into_any(),
-        x.views.into_pyobject(py)?.into_any(),
-        x.rawobj.into_pyobject(py)?.into_any(),
-        x.errors.into_pyobject(py)?.into_any(),
-        x.placeholders.into_pyobject(py)?.into_any(),
-        Bound::new(py, x.piece)?.into_any(),
-    ])
-}
-
 /// scan_file of a model: views as (target or None, its model of the file); none: the model is the only view.
 pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(Option<String>, &FileModel)]) -> PyResult<FilePart> {
     let sf = Src::new(text, &model.comments, &model.strings);

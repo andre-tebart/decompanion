@@ -19,11 +19,7 @@ reads a modification time.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-
-
 from .. import native
-from . import tu as T
 
 
 @dataclass
@@ -36,39 +32,6 @@ class Report:
     preprocessed: int = 0
     ms: int = 0
     unavailable: bool = False                       # the toolchain is not installed: nothing compiled
-
-
-def unit_overrides(project) -> list[dict]:
-    """The [[toolchain.unit]] tables: glob (on the unit name), cflags, reason, optional targets."""
-    return native.core().plan_unit_overrides(project.core)
-
-
-def flags_for(project, target: str, unit: str) -> tuple[list[str], dict | None]:
-    """(flags, the override table that applied or None): the core's (plan.rs flags_for)."""
-    return native.core().plan_flags_for(project.core, target, unit)
-
-
-def compile_flags(project, target: str, unit: str) -> list[str]:
-    """The flags a unit compiles with: flags_for's and the target's define."""
-    return native.core().plan_compile_flags(project.core, target, unit)
-
-
-def include_dirs(unit: str) -> list[Path]:
-    """The include directories of a unit, relative to the project root (a quoted include also resolves beside
-    the unit's file, in src/)."""
-    return [Path("include")]
-
-
-def plan(project, scan=None) -> list[T.TU]:
-    """The translation units of the project's current target (the core's: plan.rs, memoised by the hashes of what
-    they depend on); of a given scan: tu.units."""
-    if scan is not None:
-        return T.units(project.root, scan, project.target_name, project.default_target)
-    return T.of_rows(project.root, native.core().plan_units(project.core))
-
-
-def obj_path(root: Path, obj_hash: str) -> Path:
-    return Path(root) / "build" / "obj" / f"{obj_hash}.obj"
 
 
 def ensure(project, log=None, force: bool = False, jobs: int | None = None) -> Report:

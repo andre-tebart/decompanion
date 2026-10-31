@@ -368,14 +368,6 @@ pub fn aligned_sites(dll: &str, ours: &[u8], mask: &[u8], orig: &[u8], va: u32, 
     Ok(out)
 }
 
-/// aligned_sites for Python (tests/test_match.py).
-#[pyfunction]
-#[pyo3(name = "aligned_sites")]
-pub fn py_aligned_sites(dll: &str, ours: Vec<u8>, mask: Vec<u8>, orig: Vec<u8>, va: u32, matched: bool, sites: Vec<(u32, u32)>)
-    -> PyResult<std::collections::HashSet<u32>> {
-    aligned_sites(dll, &ours, &mask, &orig, va, matched, &sites).map_err(PyRuntimeError::new_err)
-}
-
 /// M8 / M9 / M10 (M8.reloc): each relocation of ours whose site lines up with the original's code, resolved against
 /// the image: a registered symbol the original's site does not refer to (M8), a literal or a floating constant
 /// whose bytes the original does not hold there (M9 / M10).
@@ -1101,5 +1093,31 @@ pub(crate) mod testkit {
     /// (lo, hi, kind, value) of the rows of one kind.
     pub fn of(rows: &[Row], kind: &str) -> Vec<(i64, i64, serde_json::Value)> {
         rows.iter().filter(|r| r.kind == kind).map(|r| (r.lo, r.hi, serde_json::from_str(&r.value).unwrap())).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests_aligned {
+    /// M8.reloc's line-up of a relocation site of ours with the original's code.
+    #[test]
+    fn aligned_sites() {
+        let dll = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.venv/Lib/site-packages/capstone/lib/capstone.dll");
+        let dll = dll.to_string_lossy().into_owned();
+        let ours = b"\x55\x8b\xec\xe8\x00\x00\x00\x00\x5d\xc3"; // push ebp; mov ebp,esp; call f; pop ebp; ret
+        let mask = [0u8, 0, 0, 0, 1, 1, 1, 1, 0, 0];
+        let aligned = |orig: &[u8]| -> Vec<u32> {
+            let matched = (0..ours.len()).all(|k| mask[k] != 0 || ours[k] == orig[k]);
+            let mut v: Vec<u32> = super::aligned_sites(&dll, ours, &mask, orig, 0x1000, matched, &[(4, 4)]).unwrap().into_iter().collect();
+            v.sort();
+            v
+        };
+        // a draft whose call sits where the original's does: the site lines up although the function differs
+        assert_eq!(aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5e\xc3"), [4]);
+        // one more instruction before the call (push ecx): the original's bytes at our site are no call target
+        assert!(aligned(b"\x55\x8b\xec\x51\xe8\x10\x00\x00\x00\xc3").is_empty());
+        // the same size and offset but another instruction (mov eax, imm32): no line-up either
+        assert!(aligned(b"\x55\x8b\xec\xb8\x10\x00\x00\x00\x5d\xc3").is_empty());
+        // a match lines up everywhere
+        assert_eq!(aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5d\xc3"), [4]);
     }
 }

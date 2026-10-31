@@ -61,6 +61,33 @@ mod walk;
 mod wt;
 mod x86;
 
+/// The test run's time budget: a watchdog started before the test harness's main fails the run (exit 1) when it is
+/// still going after 2 s (DCP_TEST_BUDGET_MS overrides, 0 turns it off; the `--ignored` tier of real installations
+/// has none). Compile time is not counted.
+#[cfg(test)]
+mod budget {
+    extern "C" fn start() {
+        if std::env::args().any(|a| a == "--ignored" || a == "--include-ignored") {
+            return;
+        }
+        let ms: u64 = std::env::var("DCP_TEST_BUDGET_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+        if ms == 0 {
+            return;
+        }
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            eprintln!("
+cargo test: over its budget of {ms} ms (DCP_TEST_BUDGET_MS): the run fails");
+            std::process::exit(1);
+        });
+    }
+
+    #[used]
+    #[cfg_attr(windows, unsafe(link_section = ".CRT$XCU"))]
+    #[cfg_attr(not(windows), unsafe(link_section = ".init_array"))]
+    static START: extern "C" fn() = start;
+}
+
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
@@ -633,40 +660,6 @@ pub(crate) fn live_objects(paths: &std::collections::HashSet<String>) {
     OBJS.with(|m| m.borrow_mut().retain(|k, _| paths.contains(k)));
 }
 
-/// The shadow of match.compiled_functions' compares: for each (object path, C name, address, next start) the
-/// compare of that function, or None when the object defines no function of that name: (size, diffs, tail_ok,
-/// tail, abs_ours, abs_image, sites_ok, missing_sites, code_len, the relocated offsets with their kinds).
-#[pyfunction]
-fn compare_functions(
-    py: Python<'_>,
-    image_path: &str,
-    fill_forms: Vec<Vec<u8>>,
-    use_relocs: bool,
-    items: Vec<(String, String, u32, u32)>,
-) -> PyResult<Vec<Py<PyAny>>> {
-    let img = image(image_path)?;
-    let sites = if use_relocs { Some(img.relocations()) } else { None };
-    let forms = compare::fill_order(&fill_forms);
-    let mut out = Vec::with_capacity(items.len());
-    let mut objs: HashMap<String, std::rc::Rc<(coff::Obj, HashMap<String, usize>)>> = HashMap::new();
-    for (path, name, addr, next) in items {
-        if !objs.contains_key(&path) {
-            objs.insert(path.clone(), object(&path)?);
-        }
-        let o = objs[&path].clone();
-        let Some(&k) = o.1.get(&name) else {
-            out.push(py.None());
-            continue;
-        };
-        let code = o.0.function_code(k);
-        let c = compare::compare(&img, &code, addr, sites.as_deref(), next, &forms);
-        let relocs: Vec<(u32, u8, u32)> = code.relocs.iter().map(|(off, r)| (*off, r.kind_width().0, r.kind_width().1)).collect();
-        let t = (c.size, c.diffs, c.tail_ok, c.tail, c.abs_ours, c.abs_image, c.sites_ok, c.missing_sites, code.code_len, relocs);
-        out.push(t.into_pyobject(py)?.into_any().unbind());
-    }
-    Ok(out)
-}
-
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
@@ -677,14 +670,11 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(libcand::libs_candidates_lines, m)?)?;
     m.add_class::<pyimage::PeImage>()?;
     m.add_function(wrap_pyfunction!(pyimage::pe_open, m)?)?;
-    m.add_function(wrap_pyfunction!(x86::x86_disasm, m)?)?;
     m.add_function(wrap_pyfunction!(cliread::read_command, m)?)?;
     m.add_function(wrap_pyfunction!(cliread::read_resolve, m)?)?;
     m.add_function(wrap_pyfunction!(datafix::data_map, m)?)?;
     m.add_function(wrap_pyfunction!(datafix::data_fix, m)?)?;
     m.add_function(wrap_pyfunction!(headers::headers_conflicts, m)?)?;
-    m.add_function(wrap_pyfunction!(toolchain::tc_declare, m)?)?;
-    m.add_function(wrap_pyfunction!(toolchain::tc_build_name, m)?)?;
     m.add_function(wrap_pyfunction!(draft::draft_command, m)?)?;
     m.add_function(wrap_pyfunction!(rename::rename_pairs, m)?)?;
     m.add_function(wrap_pyfunction!(rename::rename_command, m)?)?;
@@ -741,43 +731,20 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(session::session_record, m)?)?;
     m.add_function(wrap_pyfunction!(session::session_overview, m)?)?;
     m.add_function(wrap_pyfunction!(session::session_report, m)?)?;
-    m.add_function(wrap_pyfunction!(analyzers::analyzer_state, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_step, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_available, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_default, m)?)?;
     m.add_function(wrap_pyfunction!(analyzers::analyzer_keys, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_available, m)?)?;
     m.add_function(wrap_pyfunction!(compile::compile_ensure, m)?)?;
-    m.add_function(wrap_pyfunction!(plan::plan_units, m)?)?;
-    m.add_function(wrap_pyfunction!(plan::plan_flags_for, m)?)?;
-    m.add_function(wrap_pyfunction!(plan::plan_compile_flags, m)?)?;
-    m.add_function(wrap_pyfunction!(plan::plan_unit_overrides, m)?)?;
-    m.add_function(wrap_pyfunction!(plan::plan_locate, m)?)?;
     m.add_function(wrap_pyfunction!(plan::plan_scan_units, m)?)?;
     m.add_class::<frontend::ScanObj>()?;
     m.add_function(wrap_pyfunction!(frontend::front_scan, m)?)?;
-    m.add_function(wrap_pyfunction!(frontend::front_model_alone, m)?)?;
-    m.add_function(wrap_pyfunction!(frontend::front_last_deps, m)?)?;
-    m.add_function(wrap_pyfunction!(frontend::front_of, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_function, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_unit, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_queue, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_parse_shard, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_shard_owner, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_only_missing_statements, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_parse_baseline, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_at_least, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_falls, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_accept_note, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_note_from, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_baseline_text, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_accept, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_regressions, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_commit_of, m)?)?;
     m.add_function(wrap_pyfunction!(queues::grades_baseline_at, m)?)?;
     m.add_function(wrap_pyfunction!(engine::engine_run, m)?)?;
     m.add_function(wrap_pyfunction!(engine::engine_order, m)?)?;
-    m.add_function(wrap_pyfunction!(engine::engine_code_hash, m)?)?;
     m.add("RuleError", m.py().get_type::<engine::RuleError>())?;
     m.add_function(wrap_pyfunction!(project::config_targets, m)?)?;
     m.add_function(wrap_pyfunction!(project::config_target_name_of, m)?)?;
@@ -829,20 +796,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fsmemo::fs_forget_all, m)?)?;
     m.add_function(wrap_pyfunction!(out_hash, m)?)?;
     m.add_function(wrap_pyfunction!(record_run, m)?)?;
-    m.add_function(wrap_pyfunction!(compare_functions, m)?)?;
     m.add_function(wrap_pyfunction!(store::store_schema, m)?)?;
-    m.add_function(wrap_pyfunction!(rules::py_aligned_sites, m)?)?;
-    m.add_function(wrap_pyfunction!(layout::py_compute_units, m)?)?;
-    m.add_function(wrap_pyfunction!(layout::py_boundary_issues, m)?)?;
-    m.add_function(wrap_pyfunction!(layout::py_outside_unit_issues, m)?)?;
-    m.add_function(wrap_pyfunction!(clang::clang_load, m)?)?;
-    m.add_function(wrap_pyfunction!(clang::clang_version, m)?)?;
-    m.add_function(wrap_pyfunction!(clang::clang_parse, m)?)?;
-    m.add_function(wrap_pyfunction!(clang::clang_function_headers, m)?)?;
     m.add_class::<clang::Unit>()?;
-    m.add_function(wrap_pyfunction!(srcscan::scan_file, m)?)?;
     m.add_class::<srcscan::ScanPiece>()?;
-    m.add_function(wrap_pyfunction!(lint::lint_alldecls, m)?)?;
     m.add_class::<lint::AllDecls>()?;
     m.add_function(wrap_pyfunction!(decl::decl_parse_line, m)?)?;
     m.add_function(wrap_pyfunction!(decl::decl_load, m)?)?;

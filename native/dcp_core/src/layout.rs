@@ -693,15 +693,6 @@ pub fn compute_units(game: (i64, i64, i64), bounds: &[Bound], srcs: &[SrcFn], fu
 
 type UnitRow = (String, i64, i64, i64, i64, String, String, Option<String>);
 
-/// compute_units for Python (layoutview's proposals): units as (tu, lo, hi, start level, end level, start_by,
-/// end_by, named_by), issues as (check, lo, hi, message, a, b).
-#[pyfunction]
-#[pyo3(name = "compute_units")]
-pub fn py_compute_units(game: (i64, i64, i64), bounds: Vec<Bound>, srcs: Vec<SrcFn>, func_starts: Vec<i64>) -> (Vec<UnitRow>, Vec<Issue>) {
-    let (units, issues) = compute_units(game, &bounds, &srcs, &func_starts);
-    (units.into_iter().map(|u| (u.tu, u.lo, u.hi, u.start_level, u.end_level, u.start_by, u.end_by, u.named_by)).collect(), issues)
-}
-
 const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 /// L.unit.extent: the units of the game code as `unit` facts, the L7 issues of their computation.
@@ -755,7 +746,7 @@ pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> 
         let inside: Vec<i64> = funcs.iter().copied().filter(|&a| u.lo <= a && a < u.hi).collect();
         let inside_set: HashSet<i64> = inside.iter().copied().collect();
         let extra: HashSet<i64> = srcs.iter().map(|s| s.0).filter(|&a| u.lo <= a && a < u.hi && !inside_set.contains(&a)).collect();
-        let status = if u.start_level >= DECLARED && u.end_level >= DECLARED && open_bytes == 0 && n_walk == 0 { "separated" } else { "open" };
+        let status = unit_status(u.start_level, u.end_level, open_bytes, n_walk);
         let mut v = serde_json::json!({
             "tu": u.tu, "status": status, "start_level": LEVEL_NAMES[u.start_level as usize], "end_level": LEVEL_NAMES[u.end_level as usize],
             "start_by": u.start_by, "end_by": u.end_by, "open_bytes": open_bytes, "dead_bytes": overlap(&dead, u),
@@ -924,13 +915,6 @@ pub fn boundary_issues(bounds: &[Bound], starts: &HashSet<i64>, funcs: &[(i64, i
     out
 }
 
-/// boundary_issues for Python (layoutview's proposals): issues as (check, lo, hi, message, a, b).
-#[pyfunction]
-#[pyo3(name = "boundary_issues")]
-pub fn py_boundary_issues(bounds: Vec<Bound>, starts: HashSet<i64>, funcs: Vec<(i64, i64)>, fills: Vec<(i64, i64)>, game_hi: i64) -> Vec<Issue> {
-    boundary_issues(&bounds, &starts, &funcs, &fills, game_hi)
-}
-
 pub(crate) fn bounds_of(facts: &[std::rc::Rc<SFact>]) -> Vec<Bound> {
     facts.iter().map(|f| (f.lo, f.s("side").unwrap_or("").to_string(), f.s("tu").unwrap_or("").to_string(), f.by.clone(),
                           f.s("named_by").map(|s| s.to_string()))).collect()
@@ -1036,12 +1020,10 @@ pub fn outside_unit_issues(units: &[UnitExt], srcs: &[SrcFn], declared: &HashSet
     out
 }
 
-/// outside_unit_issues for Python (its tests).
-#[pyfunction]
-#[pyo3(name = "outside_unit_issues")]
-pub fn py_outside_unit_issues(units: Vec<UnitExt>, srcs: Vec<SrcFn>, declared: HashSet<String>, game: (i64, i64), mut libs: Vec<LibUnit>) -> Vec<Issue> {
-    libs.sort();
-    outside_unit_issues(&units, &srcs, &declared, game, &libs)
+/// separated when both boundaries are at least declared, no open byte and no C.walk conflict lies inside the unit;
+/// else open.
+pub fn unit_status(start_level: i64, end_level: i64, open_bytes: i64, walk_conflicts: i64) -> &'static str {
+    if start_level >= DECLARED && end_level >= DECLARED && open_bytes == 0 && walk_conflicts == 0 { "separated" } else { "open" }
 }
 
 /// L14.unit.outside: a sourced function of a declared unit (or a library unit) outside its extent.
@@ -1613,4 +1595,80 @@ pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
         out.fact(f.lo, f.lo + 1, "evidence", v, f.level.min(DERIVED));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests_pure {
+    use super::*;
+
+    fn u(tu: &str, lo: i64, hi: i64, start_by: &str, end_by: &str) -> Unit {
+        Unit { tu: tu.into(), lo, hi, start_level: DECLARED, end_level: DECLARED, start_by: start_by.into(), end_by: end_by.into(), named_by: None }
+    }
+
+    fn src(addr: i64, unit: &str, name: &str, by: &str) -> SrcFn {
+        (addr, unit.into(), name.into(), by.into())
+    }
+
+    #[test]
+    fn literal_order() {
+        let units = [u("a", 0x1000, 0x1100, "decl:a", "x"), u("b", 0x1100, 0x1200, "decl:b", "x")];
+        let lit = |lo: i64, first: i64, data_refs: i64| Lit { lo, hi: lo + 4, first, section: ".data".into(), data_refs };
+        let ok = vec![lit(0x2000, 0x1000, 0), lit(0x2004, 0x1150, 0)];
+        assert!(lit_issues(&units, &ok).is_empty());
+        let mut bad = ok.clone();
+        bad.push(lit(0x2008, 0x1010, 0));
+        let issues = lit_issues(&units, &bad);
+        assert_eq!(issues.iter().map(|i| i.0.as_str()).collect::<Vec<_>>(), ["L3"]);
+        assert!(issues[0].3.contains("unit a"), "{}", issues[0].3);
+        let mut table = ok.clone();
+        table.push(lit(0x2008, 0x1010, 2)); // reached from data: no evidence
+        assert!(lit_issues(&units, &table).is_empty());
+    }
+
+    #[test]
+    fn leaked_files() {
+        let units = [u("a", 0x1000, 0x1100, "decl:a", "x")];
+        let leak = |func: i64, path: &str, stem: &str, header: bool| Leak { func, path: path.into(), stem: stem.into(), header };
+        let issues = leak_issues(&units, &[leak(0x1000, "a.c", "a", false), leak(0x1050, "b.c", "b", false), leak(0x1060, "a.h", "a", true)]);
+        assert_eq!(issues.iter().map(|i| i.0.as_str()).collect::<Vec<_>>(), ["L8"]);
+        assert!(issues[0].3.contains("2 source files"), "{}", issues[0].3);
+    }
+
+    #[test]
+    fn unit_states() {
+        assert_eq!(unit_status(DECLARED, DECLARED, 0, 0), "separated");
+        assert_eq!(unit_status(DECLARED, DECLARED, 3, 0), "open");
+        assert_eq!(unit_status(DECLARED, DECLARED, 0, 1), "open");
+        assert_eq!(unit_status(DECLARED, OPEN, 0, 0), "open");
+    }
+
+    #[test]
+    fn outside_the_unit() {
+        let units: Vec<UnitExt> = vec![("sfx".into(), 0x42b720, 0x42c3b0, "decl:decl/text.dcl:47".into()),
+                                       ("open".into(), 0x42c3b0, 0x42d000, "src:src/open.c:1".into())];
+        let srcs = [src(0x42b720, "sfx", "sfx_Open", "src:src/sfx.c:3"),
+                    src(0x5de460, "sfx", "MSS_auto_cleanup", "src:src/sfx.c:9"), // library code: L14
+                    src(0x5de470, "open", "other", "src:src/open.c:3"),         // no declared boundary
+                    src(0x42c400, "sfx", "inside", "src:src/sfx.c:15"),         // game code: L7's case
+                    src(0x5de480, "lib", "x", "src:src/lib.c:3")];              // no unit extent
+        let declared: HashSet<String> = ["sfx".to_string()].into_iter().collect();
+        let issues = outside_unit_issues(&units, &srcs, &declared, (0x401000, 0x5dd3e0), &[]);
+        assert_eq!(issues.iter().map(|i| (i.0.as_str(), i.1)).collect::<Vec<_>>(), [("L14", 0x5de460)]);
+        assert!(issues[0].3.contains("function of unit sfx (MSS_auto_cleanup) at 0x5de460 lies outside the unit's declared extent 0x42b720..0x42c3b0"),
+                "{}", issues[0].3);
+        assert_eq!((issues[0].4.as_str(), issues[0].5.as_str()), ("src:src/sfx.c:9", "decl:decl/text.dcl:47"));
+        // a library unit is checked against its member range: inside is fine, outside is L14, a member range inside
+        // the game code is L14 too
+        let srcs = [src(0x5de460, "mss32lib", "MSS_auto_cleanup", "src:src/mss32lib.c:3"),
+                    src(0x5de470, "mss32lib", "mss_AutoCleanupExit", "src:src/mss32lib.c:9"),
+                    src(0x5de490, "mss32lib", "beyond", "src:src/mss32lib.c:15")];
+        let lib: LibUnit = ("mss32lib".into(), 0x5de460, 0x5de480, "decl:decl/text.dcl:188".into());
+        let issues = outside_unit_issues(&[], &srcs, &HashSet::new(), (0x401000, 0x5dd3e0), &[lib]);
+        assert_eq!(issues.iter().map(|i| (i.0.as_str(), i.1)).collect::<Vec<_>>(), [("L14", 0x5de490)]);
+        assert!(issues[0].3.contains("outside its declared member range 0x5de460..0x5de480"), "{}", issues[0].3);
+        let inside: LibUnit = ("wrong".into(), 0x401000, 0x401010, "decl:decl/text.dcl:1".into());
+        let issues = outside_unit_issues(&[], &[], &HashSet::new(), (0x401000, 0x5dd3e0), &[inside]);
+        assert_eq!(issues.iter().map(|i| i.0.as_str()).collect::<Vec<_>>(), ["L14"]);
+        assert!(issues[0].3.contains("inside the game code"), "{}", issues[0].3);
+    }
 }

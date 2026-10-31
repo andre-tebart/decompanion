@@ -14,7 +14,6 @@ from decompanion.cli_decide import gate_failures
 from decompanion import native
 from decompanion.config import Project
 from decompanion.ledger.fact import Level
-from decompanion.rules import layout as LY
 from decompanion import native
 
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
@@ -90,53 +89,6 @@ def test_l15_views(tiny):
     assert "view rec_Bad at 0x1000200c, but records (0x10002000) + 0x8 is 0x10002008" in l15[1].message
     names = {f.value["name"]: f.lo for f in Project(tiny).store.facts("name") if f.value.get("view")}
     assert names == {"rec_Count": 0x10002004, "rec_All": 0x10002000, "rec_Alias": 0x10002000}
-
-
-def test_q4_object_macros(tmp_path):
-    from decompanion.rules import grade as GR
-    write(tmp_path, "include/views.h", VIEWS_H)
-    raw, _ = GR.context(str(tmp_path), "t1")
-    assert {"rec_Elem", "LOCAL"} <= raw and not raw & {"rec_Count", "rec_Names", "rec_All", "rec_Alias", "rec_Bad", "SIZE"}
-
-
-# ------------------------------------------------------------------------------------------------ L14
-def outside_unit_issues(units, srcs, declared, game, libs=None):
-    """The crate's L14 (native/dcp_core/src/layout.rs) over the rule's Python shapes."""
-    from decompanion import native
-    raw = native.core().outside_unit_issues([(u.tu, u.lo, u.hi, u.start_by) for u in units],
-                                            [(s.addr, s.unit, s.name, s.by) for s in srcs], set(declared), tuple(game[:2]),
-                                            [(tu, d.lo, d.hi, d.by) for tu, d in (libs or {}).items()])
-    return [LY.Issue(*i) for i in raw]
-
-
-def test_l14_outside_unit_pure():
-    units = [LY.UnitX("sfx", 0x42b720, 0x42c3b0, Level.declared, Level.declared, "decl:decl/text.dcl:47", "decl:decl/text.dcl:48"),
-             LY.UnitX("open", 0x42c3b0, 0x42d000, Level.declared, Level.declared, "src:src/open.c:1", "start of x")]
-    srcs = [LY.SrcFn(0x42b720, "sfx", "sfx_Open", "src:src/sfx.c:3"),
-            LY.SrcFn(0x5de460, "sfx", "MSS_auto_cleanup", "src:src/sfx.c:9"),        # library code: L14
-            LY.SrcFn(0x5de470, "open", "other", "src:src/open.c:3"),                 # no declared boundary
-            LY.SrcFn(0x42c400, "sfx", "inside", "src:src/sfx.c:15"),                 # game code: L7's case
-            LY.SrcFn(0x5de480, "lib", "x", "src:src/lib.c:3")]                       # no unit extent
-    issues = outside_unit_issues(units, srcs, {"sfx"}, (0x401000, 0x5dd3e0))
-    assert [(i.check, i.lo) for i in issues] == [("L14", 0x5de460)]
-    assert "function of unit sfx (MSS_auto_cleanup) at 0x5de460 lies outside the unit's declared extent 0x42b720..0x42c3b0" in issues[0].message
-    assert issues[0].a == "src:src/sfx.c:9" and issues[0].b == "decl:decl/text.dcl:47"
-
-
-def test_l14_library_unit_pure():
-    """A library unit (`libunit`) is checked against its member range, not a game unit's extent: inside it is
-    fine, outside it is L14, and a member range inside the game code is L14 too."""
-    from decompanion.ledger import decl as D
-    lib = D.parse_line("0x5de460..0x5de480 libunit lib=mss32.lib tu=mss32lib -- the member", "decl/text.dcl", 188)
-    srcs = [LY.SrcFn(0x5de460, "mss32lib", "MSS_auto_cleanup", "src:src/mss32lib.c:3"),
-            LY.SrcFn(0x5de470, "mss32lib", "mss_AutoCleanupExit", "src:src/mss32lib.c:9"),
-            LY.SrcFn(0x5de490, "mss32lib", "beyond", "src:src/mss32lib.c:15")]
-    issues = outside_unit_issues([], srcs, set(), (0x401000, 0x5dd3e0), {"mss32lib": lib})
-    assert [(i.check, i.lo) for i in issues] == [("L14", 0x5de490)]
-    assert "outside its declared member range 0x5de460..0x5de480" in issues[0].message
-    inside = D.parse_line("0x401000..0x401010 libunit lib=x.lib tu=wrong -- inside the game code", "decl/text.dcl", 1)
-    issues = outside_unit_issues([], [], set(), (0x401000, 0x5dd3e0), {"wrong": inside})
-    assert [i.check for i in issues] == ["L14"] and "inside the game code" in issues[0].message
 
 
 # ------------------------------------------------------------------------------------------------ the link's library class

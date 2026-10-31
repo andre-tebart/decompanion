@@ -7,13 +7,8 @@ import pytest
 
 from conftest import dcp, unit
 
-from decompanion.build import tu as T
 from decompanion.config import Project
-from decompanion.ledger import grades as G
-from decompanion.ledger import srcscan
-from decompanion.ledger.fact import Fact, Kind, Level
-from decompanion.ledger.store import Store
-from decompanion.rules.grade import falls, parse_baseline
+from decompanion.ledger.fact import Kind, Level
 from decompanion import native
 
 VC6 = Path("C:/Tools/MSVC600-SP5PP")
@@ -32,29 +27,42 @@ def with_vc6(root: Path):
 
 
 # ------------------------------------------------------------------------------------------------ translation units
+def scan(root):
+    """The core's scan of a tree (frontend.rs)."""
+    return native.core().front_scan(str(root), None)
+
+
+def errors(sc, check):
+    """(file, line, check, message) of the scan's errors of one check."""
+    return [e for e in sc.error_rows if e[2] == check]
+
+
+def units(root, sc, target, default="tiny"):
+    """{unit: [(address or None, name)]} of one target's translation units (plan.rs)."""
+    return {u: [tuple(f) for f in fns] for _, u, _, fns, _, _ in native.core().plan_scan_units(str(root), sc, target, default, {})}
+
+
 def test_unit_file_order_and_fn(tiny):
     unit(tiny, "net", "int counter = 1;  /* 0x10002000 */\n",
          "/* 0x10001030, logs */\nvoid log3(void)\n{\n}\n",
          "/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n",
          "/* unlinked, dropped by /OPT:REF */\nvoid spare(void)\n{\n}\n", "int last = 2;\n")
-    sc = srcscan.scan(tiny)
-    assert not sc.errors, sc.errors
-    (a,) = T.units(tiny, sc, "tiny", "tiny")
-    assert a.functions == [(0x10001030, "log3"), (0x10001020, "get"), (None, "spare")]      # the text's order
-    assert a.first_addr == 0x10001020 and a.path == a.file == "src/net.c"
-    get = next(f for f in sc.functions if f.name == "get")
-    assert (get.comment_line, get.line, get.end_line) == (8, 9, 12)
+    sc = scan(tiny)
+    assert not sc.error_rows, sc.error_rows
+    assert units(tiny, sc, "tiny") == {"net": [(0x10001030, "log3"), (0x10001020, "get"), (None, "spare")]}   # the text's order
+    get = next(f for f in sc.function_rows if f[0][3] == "get")
+    assert (get[1][3], get[0][1], get[1][5]) == (8, 9, 12)
     code, out = dcp(tiny, "fn", "0x10001020")
     assert code == 0 and "at=src/net.c:8-12" in out and out.endswith("/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n"), out
     # a definition without its address comment directly above it
     unit(tiny, "net", "/* 0x10001020, reads */\nint x;\nint get(void)\n{\n    return 1;\n}\n")
-    errs = [e for e in srcscan.scan(tiny).errors if e.check == "L.src"]
-    assert len(errs) == 1 and "get: no address comment" in errs[0].message and errs[0].line == 3, errs
+    errs = errors(scan(tiny), "L.src")
+    assert len(errs) == 1 and "get: no address comment" in errs[0][3] and errs[0][1] == 3, errs
     unit(tiny, "net", "/* 0x10001020, reads */\nint get(void)\n{\n    return 1;\n}\n")
     (tiny / "src" / "old").mkdir()
     (tiny / "src" / "old" / "f_10001020.c").write_text("int y;\n")
-    errs = [e for e in srcscan.scan(tiny).errors if e.check == "L.src"]
-    assert len(errs) == 1 and "unexpected source file src/old/f_10001020.c" in errs[0].message, errs
+    errs = errors(scan(tiny), "L.src")
+    assert len(errs) == 1 and "unexpected source file src/old/f_10001020.c" in errs[0][3], errs
 
 
 def test_unit_targets(tiny2):
@@ -63,113 +71,20 @@ def test_unit_targets(tiny2):
          "#ifdef DCP_TARGET_tiny\n/* 0x10001050, only the default target */\nvoid first(void)\n{\n}\n#endif\n")
     unit(tiny2, "lone", "#ifdef DCP_TARGET_other\n/* other:0x10001040, a unit of the second target only */\n"
                         "void lone(void)\n{\n}\n#endif\n")
-    sc = srcscan.scan(tiny2)
-    assert not sc.errors, sc.errors
-    t = {a.unit: [n for _, n in a.functions] for a in T.units(tiny2, sc, "tiny", "tiny")}
-    o = {a.unit: [n for _, n in a.functions] for a in T.units(tiny2, sc, "other", "tiny")}
-    assert t == {"net": ["get", "first"]}
-    assert o == {"lone": ["lone"], "net": ["get", "only"]}
+    sc = scan(tiny2)
+    assert not sc.error_rows, sc.error_rows
+    assert {u: [n for _, n in fs] for u, fs in units(tiny2, sc, "tiny").items()} == {"net": ["get", "first"]}
+    assert {u: [n for _, n in fs] for u, fs in units(tiny2, sc, "other").items()} == {"lone": ["lone"], "net": ["get", "only"]}
     # L16: a function the guard and the comment disagree on
     unit(tiny2, "lone", "/* other:0x10001040, unguarded */\nvoid lone(void)\n{\n}\n")
-    errs = [e for e in srcscan.scan(tiny2).errors if e.check == "L16"]
-    assert len(errs) == 1 and "lone is compiled into tiny" in errs[0].message and "DCP_TARGET_other" in errs[0].message, errs
+    errs = errors(scan(tiny2), "L16")
+    assert len(errs) == 1 and "lone is compiled into tiny" in errs[0][3] and "DCP_TARGET_other" in errs[0][3], errs
     unit(tiny2, "lone", "#ifdef DCP_TARGET_tiny\n/* other:0x10001040, the wrong guard */\nvoid lone(void)\n{\n}\n#endif\n")
-    msgs = sorted(e.message for e in srcscan.scan(tiny2).errors if e.check == "L16")
+    msgs = sorted(e[3] for e in errors(scan(tiny2), "L16"))
     assert len(msgs) == 2 and "lists other, whose compile does not hold it" in msgs[1], msgs
 
 
-def test_aligned_sites():
-    """Native (native/dcp_core rules.rs aligned_sites, what M8.reloc reads)."""
-    from decompanion import native
-    from decompanion.rules.engine import capstone_dll
-    ours = b"\x55\x8b\xec\xe8\x00\x00\x00\x00\x5d\xc3"           # push ebp; mov ebp,esp; call f; pop ebp; ret
-    mask = bytes([0, 0, 0, 0, 1, 1, 1, 1, 0, 0])
-    site = [(4, 4)]
-
-    def aligned(orig):
-        matched = all(mask[k] or ours[k] == orig[k] for k in range(len(ours)))
-        return native.core().aligned_sites(capstone_dll(), ours, mask, orig, 0x1000, matched, site)
-
-    # a draft whose call sits where the original's does: the site lines up although the function differs
-    assert aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5e\xc3") == {4}
-    # one more instruction before the call (push ecx): the original's bytes at our site are no call target
-    assert aligned(b"\x55\x8b\xec\x51\xe8\x10\x00\x00\x00\xc3") == set()
-    # the same size and offset but another instruction (mov eax, imm32): no line-up either
-    assert aligned(b"\x55\x8b\xec\xb8\x10\x00\x00\x00\x5d\xc3") == set()
-    # a match lines up everywhere
-    assert aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5d\xc3") == {4}
-
-
 # ------------------------------------------------------------------------------------------------ diffclass
-# ------------------------------------------------------------------------------------------------ queues
-def grade_store(tmp_path, units, funcs):
-    """A store holding unit facts (L.unit.extent) and function grade facts (G.grade)."""
-    st = Store(tmp_path / "s.sqlite")
-    uf = [Fact(lo, hi, Kind.unit, {"tu": tu, "status": status, "start_level": "declared", "end_level": "declared",
-                                   "start_by": "x", "end_by": "y"}, Level.declared, "rule:L.unit.extent@1") for tu, lo, hi, status in units]
-    gf = [Fact(a, a + 1, Kind.grade, {"of": "function", "name": n, "unit": u, "file": f"src/{u}.c", "code": code,
-                                      "readability": q, "level": lvl, "failing": [], "dist": {"ins": d, "bytes": d, "size": 1, "orig": 1}},
-               Level.declared, "rule:G.grade@1") for a, n, u, code, q, lvl, d in funcs]
-    st.record_run("L.unit.extent", "1", "c", "i1", uf, [], 0)
-    st.record_run("G.grade", "1", "c", "i2", gf, [], 0)
-    return st
-
-
-def test_queue_order(tmp_path):
-    st = grade_store(tmp_path, [("a", 0x1000, 0x2000, "separated"), ("b", 0x2000, 0x3000, "separated"),
-                                ("c", 0x3000, 0x4000, "separated"), ("open", 0x4000, 0x5000, "open")], [
-        (0x1000, "a1", "a", "draft", "draft", "", 9), (0x1100, "a2", "a", "draft", "readable", "", 3),
-        (0x1200, "a3", "a", "shape", "draft", "", 2),
-        (0x2000, "b1", "b", "draft", "draft", "", 50), (0x2100, "b2", "b", "byte", "readable", "", 0),
-        (0x3000, "c1", "c", "shape", "readable", "", 7), (0x3100, "c2", "c", "byte", "draft", "deep", 0),
-        (0x3200, "c3", "c", "draft", "draft", "stuck", 4),
-        (0x4000, "o1", "open", "draft", "draft", "", 1),
-    ])
-    base = [(r["name"], r["section"]) for r in G.queue(st, "base")]
-    # every code draft first (unit b has 1 draft, a has 2), then the readability work; the open unit is left out
-    assert base == [("b1", "draft"), ("a1", "draft"), ("a2", "draft"), ("a3", "read")]
-    deep = [(r["name"], r["section"]) for r in G.queue(st, "deep")]
-    # c has no base item left: its byte work (c1) first, the Q-only c2 waits, the stuck c3 last
-    assert deep == [("c1", "deep"), ("c3", "stuck")]
-    assert [r["name"] for r in G.queue(st, "names")] == ["c2"]
-    owners = {G.shard_owner(lo, 2) for lo in (0x1000, 0x2000, 0x3000)}
-    got = [r["name"] for k in range(2) for r in G.queue(st, "base", (k, 2))]
-    assert sorted(got) == sorted(r["name"] for r in G.queue(st, "base")) and owners <= {0, 1}
-    assert G.parse_shard("1/3") == (1, 3) and G.parse_shard("off") is None
-    with pytest.raises(ValueError):
-        G.parse_shard("3/3")
-
-
-# ------------------------------------------------------------------------------------------------ baseline, ladder
-def test_baseline_falls():
-    text = G.HEADER + "\nt\t0x10001000\tf\tu\tbyte\treadable\t\nt\t0x10001010\tg\tu\tshape\tdraft\tdeep\n"
-    b = parse_baseline(text)
-    assert b[("t", 0x10001000)]["code"] == "byte" and b[("t", 0x10001010)]["level"] == "deep"
-    assert falls(b[("t", 0x10001000)], {"code": "shape", "readability": "readable"}) == ["code byte -> shape"]
-    assert falls(b[("t", 0x10001000)], {"code": "byte", "readability": "draft"}) == ["readability readable -> draft"]
-    assert falls(b[("t", 0x10001010)], {"code": "byte", "readability": "draft"}) == []
-    assert "no grade now" in falls(b[("t", 0x10001010)], None)[0]
-
-
-def test_baseline_accept_column():
-    """The accepted column: an old 7-column file parses (empty), dcp accept lowers one entry and notes it, every
-    other line stays; the note names the grade it fell from."""
-    old = "target\taddress\tname\tunit\tcode\treadability\tlevel\nt\t0x10001000\tf\tu\tbyte\treadable\t\nt\t0x10001010\tg\tu\tshape\tdraft\tdeep\n"
-    assert parse_baseline(old)[("t", 0x10001000)]["accepted"] == ""
-    note = G.accept_note("byte+readable", "shape+readable", "abc1234", "a VC6\tdeclaration-set\ntie-break")
-    assert note == "byte+readable -> shape+readable at abc1234: a VC6 declaration-set tie-break"
-    assert G.note_from(note) == "byte+readable" and G.note_from("") is None
-    new = G.accept(old, "t", 0x10001000, "shape", "readable", note)
-    assert new == (G.HEADER + "\nt\t0x10001000\tf\tu\tshape\treadable\t\t" + note + "\nt\t0x10001010\tg\tu\tshape\tdraft\tdeep\t\n")
-    b = parse_baseline(new)[("t", 0x10001000)]
-    assert b["code"] == "shape" and b["accepted"] == note
-    assert falls(b, {"code": "shape", "readability": "readable"}) == []          # M1 holds it at shape
-    assert falls(b, {"code": "draft", "readability": "readable"}) == ["code shape -> draft"]
-    assert G.at_least({"code": "byte", "readability": "readable"}, "byte+readable")
-    assert not G.at_least({"code": "shape", "readability": "readable"}, "byte+readable")
-    assert not G.at_least({"code": "byte", "readability": "draft"}, "shape+readable")
-
-
 # ------------------------------------------------------------------------------------------------ with VC6
 @needs_vc6
 def test_compile_and_byte_match(tiny):
@@ -217,7 +132,7 @@ def test_promote_raises_only_and_accept(tiny):
     code, out = dcp(tiny, "promote")
     assert code == 0 and "functions=1" in out and "accepted=0" in out, out
     tsv = tiny / "ledger" / "grades.tsv"
-    assert tsv.read_text() == G.HEADER + "\ntiny\t0x10001020\tget\tnet\tbyte\treadable\t\t\n"
+    assert tsv.read_text() == "target\taddress\tname\tunit\tcode\treadability\tlevel\taccepted\ntiny\t0x10001020\tget\tnet\tbyte\treadable\t\t\n"
     unit(tiny, "net", bad)
     before = tsv.read_text()
     code, out = dcp(tiny, "promote")

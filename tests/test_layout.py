@@ -6,7 +6,6 @@ from conftest import dcp, unit
 
 from decompanion.config import Project
 from decompanion.ledger.fact import Kind, Level
-from decompanion.rules import layout as L
 
 
 def write(root: Path, rel: str, text: str):
@@ -138,20 +137,3 @@ def test_ghidra_analyzer(tiny, tmp_path, capsys):
     assert [s.value.get("name") for s in facts(tiny, Kind.start) if s.value["how"] == "ghidra"] == ["Answer"]   # kept
 
 
-def test_lit_issues_pure():
-    units = [L.UnitX("a", 0x1000, 0x1100, Level.declared, Level.declared, "decl:a", "x"),
-             L.UnitX("b", 0x1100, 0x1200, Level.declared, Level.declared, "decl:b", "x")]
-    ok = [L.Lit(0x2000, 0x2004, 0x1000, ".data", 0), L.Lit(0x2004, 0x2008, 0x1150, ".data", 0)]
-    assert L.lit_issues(units, ok) == []
-    bad = ok + [L.Lit(0x2008, 0x200c, 0x1010, ".data", 0)]
-    issues = L.lit_issues(units, bad)
-    assert [i.check for i in issues] == ["L3"] and "unit a" in issues[0].message
-    table = ok + [L.Lit(0x2008, 0x200c, 0x1010, ".data", 2)]       # reached from data: no evidence
-    assert L.lit_issues(units, table) == []
-
-
-def test_leak_issues_pure():
-    units = [L.UnitX("a", 0x1000, 0x1100, Level.declared, Level.declared, "decl:a", "x")]
-    leaks = [L.Leak(0x1000, "a.c", "a", False, 0x2000), L.Leak(0x1050, "b.c", "b", False, 0x2010), L.Leak(0x1060, "a.h", "a", True, 0x2020)]
-    issues = L.leak_issues(units, leaks)
-    assert [i.check for i in issues] == ["L8"] and "2 source files" in issues[0].message

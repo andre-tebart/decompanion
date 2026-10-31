@@ -455,22 +455,6 @@ pub fn of(key: &str) -> Option<Box<dyn Toolchain>> {
     }
 }
 
-fn named(key: &str) -> pyo3::PyResult<Box<dyn Toolchain>> {
-    of(key).ok_or_else(|| pyo3::exceptions::PyValueError::new_err(format!("no toolchain {key}")))
-}
-
-/// The declaration spelling of a Rich compiler or linker entry ('cl 12.00.9044', 'link 6.00.8447').
-#[pyo3::pyfunction]
-pub fn tc_declare(key: &str, tool: &str, family: &str, build: u32) -> pyo3::PyResult<String> {
-    Ok(named(key)?.declare(tool, family, build))
-}
-
-/// A human name for a tool build ('' when unknown).
-#[pyo3::pyfunction]
-pub fn tc_build_name(key: &str, family: &str, build: u32) -> pyo3::PyResult<String> {
-    Ok(named(key)?.build_name(family, build).to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
