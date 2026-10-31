@@ -87,7 +87,7 @@ def placeholder(unit: str, a: int) -> str:
 
 def function_name(names, unit: str, a: int) -> str:
     """The name a new draft defines (module docstring)."""
-    n, origin = names.at.get(a, (None, None))
+    n, origin = names.name(a), names.origin(a)
     if n and origin in CANONICAL:
         return n
     return placeholder(unit, a)

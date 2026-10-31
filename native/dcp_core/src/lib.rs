@@ -19,6 +19,7 @@ mod grade;
 mod lint;
 mod names;
 mod layout;
+mod layoutview;
 mod pe;
 mod project;
 mod pystore;
@@ -623,6 +624,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;
     m.add_class::<project::PyProject>()?;
     m.add_class::<names::Names>()?;
+    m.add_class::<layoutview::View>()?;
     m.add_function(wrap_pyfunction!(engine::engine_run, m)?)?;
     m.add_function(wrap_pyfunction!(engine::engine_order, m)?)?;
     m.add_function(wrap_pyfunction!(engine::engine_code_hash, m)?)?;

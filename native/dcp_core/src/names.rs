@@ -11,7 +11,8 @@
 //!   import   an import slot (`KERNEL32.dll!GetTickCount` -> GetTickCount) and the import thunk that jumps through
 //!            it (`thunk:WS2_32.dll!#3`: by ordinal, no name)
 //!   analyzer the name the analyzer gave a function it found (its drafts, `dcp setup`), unless the analyzer calls
-//!            it one of its own placeholders (Ghidra: FUN_, thunk_FUN_, LAB_, SUB_, DAT_, PTR_ and a hex number)
+//!            it one of its own placeholders (Ghidra's dialect, Ghidra's and rea's drafts: FUN_, thunk_FUN_, LAB_,
+//!            SUB_, DAT_, PTR_ and a hex number)
 //! A thunk or slot imported by ordinal takes the analyzer's name for it when there is one.
 
 use crate::store::{self, SFact};
@@ -31,7 +32,8 @@ fn is_ident(s: &str) -> bool {
 
 /// Whether an analyzer calls a name one of its own placeholders.
 pub fn analyzer_placeholder(analyzer: &str, name: &str) -> bool {
-    if analyzer != "ghidra" {
+    // rea's drafts are in Ghidra's dialect (analyzers/rea.py: GhidraDialect)
+    if analyzer != "ghidra" && analyzer != "rea" {
         return false;
     }
     let n = name.strip_prefix("thunk_").unwrap_or(name);
@@ -247,7 +249,8 @@ mod tests {
         assert!(analyzer_placeholder("ghidra", "thunk_FUN_10001000"));
         assert!(!analyzer_placeholder("ghidra", "FUN_"));
         assert!(!analyzer_placeholder("ghidra", "net_Send"));
-        assert!(!analyzer_placeholder("rea", "FUN_10001000"));
+        assert!(analyzer_placeholder("rea", "FUN_10001000"));
+        assert!(!analyzer_placeholder("none", "FUN_10001000"));
         assert!(is_ident("_f1") && !is_ident("1f") && !is_ident("a-b"));
     }
 }

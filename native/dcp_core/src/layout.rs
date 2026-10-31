@@ -840,7 +840,7 @@ fn py_int16(s: &str) -> Option<i64> {
 // ------------------------------------------------------------------------------------------------ L1 / L4 / L10 / L14
 
 /// layout.game_units: the game units of L.unit.extent facts (library members have no status), by address.
-fn game_units(facts: &[std::rc::Rc<SFact>]) -> Vec<Unit> {
+pub(crate) fn game_units(facts: &[std::rc::Rc<SFact>]) -> Vec<Unit> {
     let lvl = |s: Option<&str>| LEVEL_NAMES.iter().position(|n| Some(*n) == s).unwrap_or(0) as i64;
     let mut out: Vec<Unit> = facts.iter().filter(|f| f.value.get("status").is_some()).map(|f| Unit {
         tu: f.s("tu").unwrap_or("").to_string(), lo: f.lo, hi: f.hi, start_level: lvl(f.s("start_level")), end_level: lvl(f.s("end_level")),
@@ -852,7 +852,7 @@ fn game_units(facts: &[std::rc::Rc<SFact>]) -> Vec<Unit> {
 }
 
 /// layout.unit_index: the index of the unit holding a.
-fn unit_at(units: &[Unit], a: i64) -> Option<usize> {
+pub(crate) fn unit_at(units: &[Unit], a: i64) -> Option<usize> {
     let i = units.partition_point(|u| u.lo <= a) as i64 - 1;
     if i >= 0 && a < units[i as usize].hi { Some(i as usize) } else { None }
 }
@@ -931,7 +931,7 @@ pub fn py_boundary_issues(bounds: Vec<Bound>, starts: HashSet<i64>, funcs: Vec<(
     boundary_issues(&bounds, &starts, &funcs, &fills, game_hi)
 }
 
-fn bounds_of(facts: &[std::rc::Rc<SFact>]) -> Vec<Bound> {
+pub(crate) fn bounds_of(facts: &[std::rc::Rc<SFact>]) -> Vec<Bound> {
     facts.iter().map(|f| (f.lo, f.s("side").unwrap_or("").to_string(), f.s("tu").unwrap_or("").to_string(), f.by.clone(),
                           f.s("named_by").map(|s| s.to_string()))).collect()
 }
@@ -1225,34 +1225,66 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 
 // ------------------------------------------------------------------------------------------------ L3, L6, L8, R5
 
-/// L3.lit.order: in each data section the units of the literals' first users never go backwards.
-pub fn l3_lit_order(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
-    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
-    let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("lit")).map_err(err)?;
-    // section -> (lo, hi, first) of the literals no data section reaches, in first-seen order of the sections
-    let mut by_sec: Vec<(String, Vec<(i64, i64, i64)>)> = vec![];
-    for f in &ev {
-        if f.value.get("data_refs").and_then(|v| v.as_i64()) != Some(0) {
-            continue;
-        }
-        let sec = f.s("section").unwrap_or("").to_string();
-        let first = f.value.get("first").and_then(|v| v.as_i64()).unwrap_or(0);
-        match by_sec.iter_mut().find(|x| x.0 == sec) {
-            Some(x) => x.1.push((f.lo, f.hi, first)),
-            None => by_sec.push((sec, vec![(f.lo, f.hi, first)])),
+/// A literal (L.analyze's lit evidence): its range, its first user, its section, the data sections' references.
+#[derive(Clone)]
+pub struct Lit {
+    pub lo: i64,
+    pub hi: i64,
+    pub first: i64,
+    pub section: String,
+    pub data_refs: i64,
+}
+
+/// A leaked source path (L.analyze's leak evidence) at a function.
+#[derive(Clone)]
+pub struct Leak {
+    pub func: i64,
+    pub path: String,
+    pub stem: String,
+    pub header: bool,
+}
+
+pub fn lits_of(ev: &[std::rc::Rc<SFact>]) -> Vec<Lit> {
+    ev.iter().filter(|f| f.s("ekind") == Some("lit")).map(|f| Lit {
+        lo: f.lo, hi: f.hi, first: f.value.get("first").and_then(|v| v.as_i64()).unwrap_or(0), section: f.s("section").unwrap_or("").to_string(),
+        data_refs: f.value.get("data_refs").and_then(|v| v.as_i64()).unwrap_or(0),
+    }).collect()
+}
+
+pub fn leaks_of(ev: &[std::rc::Rc<SFact>]) -> Vec<Leak> {
+    ev.iter().filter(|f| f.s("ekind") == Some("leak")).map(|f| Leak {
+        func: f.lo, path: crate::setup::py_str(f.value.get("path")), stem: crate::setup::py_str(f.value.get("stem")),
+        header: f.value.get("header").is_some_and(|h| h.as_bool() == Some(true) || h.as_i64().is_some_and(|n| n != 0)),
+    }).collect()
+}
+
+fn issue_of(check: &str, lo: i64, hi: i64, message: String, a: &str, b: &str) -> Issue {
+    (check.to_string(), lo, hi, message, a.to_string(), b.to_string())
+}
+
+/// L3 (B-LIT contradiction): in one data section the literals, in address order, have first users whose units
+/// never go backwards (a literal reached from a data section is skipped).
+pub fn lit_issues(units: &[Unit], lits: &[Lit]) -> Vec<Issue> {
+    let mut out = vec![];
+    // section -> the literals no data section reaches, in first-seen order of the sections
+    let mut by_sec: Vec<(String, Vec<&Lit>)> = vec![];
+    for l in lits.iter().filter(|l| l.data_refs == 0) {
+        match by_sec.iter_mut().find(|x| x.0 == l.section) {
+            Some(x) => x.1.push(l),
+            None => by_sec.push((l.section.clone(), vec![l])),
         }
     }
     for (sec, mut ls) in by_sec {
-        ls.sort_by_key(|l| l.0);
-        let mut top: Option<(usize, (i64, i64, i64))> = None;
+        ls.sort_by_key(|l| l.lo);
+        let mut top: Option<(usize, &Lit)> = None;
         let mut reported: HashSet<(usize, usize)> = HashSet::new();
         for l in ls {
-            let Some(i) = unit_at(&units, l.2) else { continue };
+            let Some(i) = unit_at(units, l.first) else { continue };
             if let Some((t, tl)) = top {
                 if i < t && reported.insert((i, t)) {
-                    out.conflict2("error", "L3", l.0, l.1,
-                                  format!("literal at {:#x} ({sec}) is first used by {:#x} in unit {}, but the earlier literal at {:#x} is first used by {:#x} in the later unit {}",
-                                          l.0, l.2, units[i].tu, tl.0, tl.2, units[t].tu), &units[i].start_by, &units[t].start_by);
+                    out.push(issue_of("L3", l.lo, l.hi,
+                                      format!("literal at {:#x} ({sec}) is first used by {:#x} in unit {}, but the earlier literal at {:#x} is first used by {:#x} in the later unit {}",
+                                              l.lo, l.first, units[i].tu, tl.lo, tl.first, units[t].tu), &units[i].start_by, &units[t].start_by));
                 }
             }
             if top.is_none_or(|(t, _)| i > t) {
@@ -1260,22 +1292,15 @@ pub fn l3_lit_order(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
             }
         }
     }
-    Ok(())
+    out
 }
 
-/// L8.leak: the leaked .c / .cpp paths of one unit's functions name one file.
-pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
-    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
-    let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("leak")).map_err(err)?;
+/// L8: the leaked .c / .cpp paths referenced by the functions of one unit name one file.
+pub fn leak_issues(units: &[Unit], leaks: &[Leak]) -> Vec<Issue> {
     // unit -> stem -> (fn, path), the first leak of a stem kept
-    let mut per: Vec<(usize, Vec<(String, i64, String)>)> = vec![];
-    for f in &ev {
-        if f.value.get("header").is_some_and(|h| h.as_bool() == Some(true) || h.as_i64().is_some_and(|n| n != 0)) {
-            continue;
-        }
-        let Some(i) = unit_at(&units, f.lo) else { continue };
-        let stem = crate::setup::py_str(f.value.get("stem"));
-        let path = crate::setup::py_str(f.value.get("path"));
+    let mut per: Vec<(usize, Vec<(&str, i64, &str)>)> = vec![];
+    for l in leaks.iter().filter(|l| !l.header) {
+        let Some(i) = unit_at(units, l.func) else { continue };
         let e = match per.iter().position(|x| x.0 == i) {
             Some(k) => &mut per[k].1,
             None => {
@@ -1283,19 +1308,42 @@ pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
                 &mut per.last_mut().unwrap().1
             }
         };
-        if !e.iter().any(|x| x.0 == stem) {
-            e.push((stem, f.lo, path));
+        if !e.iter().any(|x| x.0 == l.stem) {
+            e.push((&l.stem, l.func, &l.path));
         }
     }
+    let mut out = vec![];
     for (i, mut stems) in per {
         if stems.len() > 1 {
             stems.sort_by_key(|x| x.1);
             let u = &units[i];
-            out.conflict("error", "L8", u.lo, u.hi,
-                         format!("unit {} holds functions that leak {} source files: {}", u.tu, stems.len(),
-                                 stems.iter().map(|(_, f, p)| format!("{p} ({f:#x})")).collect::<Vec<_>>().join(", ")), &u.start_by);
+            out.push(issue_of("L8", u.lo, u.hi,
+                              format!("unit {} holds functions that leak {} source files: {}", u.tu, stems.len(),
+                                      stems.iter().map(|(_, f, p)| format!("{p} ({f:#x})")).collect::<Vec<_>>().join(", ")), &u.start_by, ""));
         }
     }
+    out
+}
+
+fn emit(out: &mut Out, issues: Vec<Issue>) {
+    for (check, lo, hi, message, a, b) in issues {
+        out.conflict2("error", &check, lo, hi, message, &a, &b);
+    }
+}
+
+/// L3.lit.order: the literals' first users never go back to an earlier unit within a data section.
+pub fn l3_lit_order(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("lit")).map_err(err)?;
+    emit(out, lit_issues(&units, &lits_of(&ev)));
+    Ok(())
+}
+
+/// L8.leak: the leaked .c / .cpp paths of one unit's functions name one file.
+pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("leak")).map_err(err)?;
+    emit(out, leak_issues(&units, &leaks_of(&ev)));
     Ok(())
 }
 

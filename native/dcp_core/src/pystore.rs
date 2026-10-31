@@ -123,7 +123,7 @@ fn kind_obj(py: Python<'_>, kind: &str) -> PyResult<Py<PyAny>> {
     Ok(k)
 }
 
-fn level_obj(py: Python<'_>, level: i64) -> PyResult<Py<PyAny>> {
+pub(crate) fn level_obj(py: Python<'_>, level: i64) -> PyResult<Py<PyAny>> {
     if LEVELS.with(|l| l.borrow().is_empty()) {
         let cls = fact_module(py)?.getattr("Level")?;
         let all: Vec<Py<PyAny>> = (0..4).map(|i| cls.call1((i,)).map(|o| o.unbind())).collect::<PyResult<_>>()?;

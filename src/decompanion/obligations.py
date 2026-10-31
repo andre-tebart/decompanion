@@ -235,19 +235,7 @@ def work_obligations(p, view=None) -> list[Obligation]:
 
 def first_open(v) -> dict | None:
     """The first open item of the game code (what `dcp layout next` shows first, without its evidence lines)."""
-    from .ledger import drafts
-    items = v.items()
-    starts = sorted({lo for lo, _, w, _ in items if w in ("func", "start")} | {v.game[1]})
-    for lo, hi, what, f in items:
-        if what in ("func", "start") and lo in v.sources:
-            continue
-        k = bisect.bisect_right(starts, lo)
-        nxt = starts[k] if k < len(starts) else v.game[1]
-        u = v.unit_at(lo)
-        hows = ",".join(sorted({s.value["how"] for s in v.starts.get(lo, [])})) or "-"
-        return {"addr": lo, "kind": what, "size": (nxt - lo) if what != "unknown" else (hi - lo), "unit": u.tu if u else None,
-                "how": hows, "analyzed": drafts.draft(v.store, v.project.image.sha256, lo) is not None}
-    return None
+    return v.first_open()
 
 
 def compute(p, view=None, work: bool = True) -> list[Obligation]:
