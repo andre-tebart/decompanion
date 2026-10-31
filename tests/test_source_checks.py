@@ -143,6 +143,15 @@ def test_q4_object_macros(tmp_path):
 
 
 # ------------------------------------------------------------------------------------------------ L14
+def outside_unit_issues(units, srcs, declared, game, libs=None):
+    """The crate's L14 (native/dcp_core/src/layout.rs) over the rule's Python shapes."""
+    from decompanion import native
+    raw = native.core().outside_unit_issues([(u.tu, u.lo, u.hi, u.start_by) for u in units],
+                                            [(s.addr, s.unit, s.name, s.by) for s in srcs], set(declared), tuple(game[:2]),
+                                            [(tu, d.lo, d.hi, d.by) for tu, d in (libs or {}).items()])
+    return [LY.Issue(*i) for i in raw]
+
+
 def test_l14_outside_unit_pure():
     units = [LY.UnitX("sfx", 0x42b720, 0x42c3b0, Level.declared, Level.declared, "decl:decl/text.dcl:47", "decl:decl/text.dcl:48"),
              LY.UnitX("open", 0x42c3b0, 0x42d000, Level.declared, Level.declared, "src:src/open.c:1", "start of x")]
@@ -151,7 +160,7 @@ def test_l14_outside_unit_pure():
             LY.SrcFn(0x5de470, "open", "other", "src:src/open.c:3"),                 # no declared boundary
             LY.SrcFn(0x42c400, "sfx", "inside", "src:src/sfx.c:15"),                 # game code: L7's case
             LY.SrcFn(0x5de480, "lib", "x", "src:src/lib.c:3")]                       # no unit extent
-    issues = LY.outside_unit_issues(units, srcs, {"sfx"}, (0x401000, 0x5dd3e0))
+    issues = outside_unit_issues(units, srcs, {"sfx"}, (0x401000, 0x5dd3e0))
     assert [(i.check, i.lo) for i in issues] == [("L14", 0x5de460)]
     assert "function of unit sfx (MSS_auto_cleanup) at 0x5de460 lies outside the unit's declared extent 0x42b720..0x42c3b0" in issues[0].message
     assert issues[0].a == "src:src/sfx.c:9" and issues[0].b == "decl:decl/text.dcl:47"
@@ -165,11 +174,11 @@ def test_l14_library_unit_pure():
     srcs = [LY.SrcFn(0x5de460, "mss32lib", "MSS_auto_cleanup", "src:src/mss32lib.c:3"),
             LY.SrcFn(0x5de470, "mss32lib", "mss_AutoCleanupExit", "src:src/mss32lib.c:9"),
             LY.SrcFn(0x5de490, "mss32lib", "beyond", "src:src/mss32lib.c:15")]
-    issues = LY.outside_unit_issues([], srcs, set(), (0x401000, 0x5dd3e0), {"mss32lib": lib})
+    issues = outside_unit_issues([], srcs, set(), (0x401000, 0x5dd3e0), {"mss32lib": lib})
     assert [(i.check, i.lo) for i in issues] == [("L14", 0x5de490)]
     assert "outside its declared member range 0x5de460..0x5de480" in issues[0].message
     inside = D.parse_line("0x401000..0x401010 libunit lib=x.lib tu=wrong -- inside the game code", "decl/text.dcl", 1)
-    issues = LY.outside_unit_issues([], [], set(), (0x401000, 0x5dd3e0), {"wrong": inside})
+    issues = outside_unit_issues([], [], set(), (0x401000, 0x5dd3e0), {"wrong": inside})
     assert [i.check for i in issues] == ["L14"] and "inside the game code" in issues[0].message
 
 

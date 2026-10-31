@@ -196,25 +196,9 @@ def boundary_issues(bounds: list[Bound], starts: set[int], funcs: list[tuple[int
     """L4: a declared boundary lies at a function start (a `start` fact of any producer, or the start of a
     function symbol), or, for an end boundary, at the end of the game code. A boundary inside alignment fill
     or strictly inside a function is an error (fill belongs to the unit before it: the next unit's code starts
-    at its first function)."""
-    out = []
-    flos = [lo for lo, hi in funcs]
-    for b in bounds:
-        a = b.addr
-        if b.side == "end" and a == game[1]:
-            continue
-        fill = next(((lo, hi) for lo, hi in fills if lo <= a < hi), None)
-        if fill is not None:
-            out.append(Issue("L4", a, a + 1, f"{b.side} boundary of {b.tu} inside fill {fill[0]:#x}..{fill[1]:#x} (the unit starts at the "
-                                             f"function after it, {fill[1]:#x})", a=b.by))
-            continue
-        i = bisect.bisect_right(flos, a) - 1
-        if i >= 0 and funcs[i][0] < a < funcs[i][1] and a not in starts:
-            out.append(Issue("L4", a, a + 1, f"{b.side} boundary of {b.tu} inside the function {funcs[i][0]:#x}..{funcs[i][1]:#x}", a=b.by))
-            continue
-        if a not in starts and not (i >= 0 and funcs[i][0] == a):
-            out.append(Issue("L4", a, a + 1, f"{b.side} boundary of {b.tu} at {a:#x}, where no function starts", a=b.by))
-    return out
+    at its first function). Native: native/dcp_core/src/layout.rs."""
+    return [Issue(*i) for i in native.core().boundary_issues(
+        [(b.addr, b.side, b.tu, b.by, b.named_by) for b in bounds], set(starts), list(funcs), list(fills), game[1])]
 
 
 @dataclass(frozen=True)
@@ -586,14 +570,6 @@ def unit_status(start_level: Level, end_level: Level, open_bytes: int, walk_conf
     return "separated" if start_level >= DE and end_level >= DE and not open_bytes and not walk_conflicts else "open"
 
 
-def lib_units_of(ctx) -> dict:
-    """unit -> its `libunit` declaration for the current target (decl/text.dcl; a library member compiled from
-    source, no game unit)."""
-    targets = [t["name"] for t in ctx.input("targets")]
-    decls, _ = decl_mod.load(ctx.input("decl"), ctx.project.root, targets)
-    return decl_mod.lib_units(decls, ctx.project.target_name, targets[0])
-
-
 def lib_unit_names(p) -> dict:
     """What L.unit.extent reads that only Python computes: {libs: the units declared `libunit` for the current target}."""
     targets = [t["name"] for t in p.input("targets")]
@@ -638,34 +614,15 @@ def leaks_of(facts) -> list[Leak]:
     return [Leak(f.lo, f.value["path"], f.value["stem"], f.value["header"], f.value["string"]) for f in facts if f.value.get("ekind") == "leak"]
 
 
-@rule("L1.src.start", version="1", ceiling=P, needs=("L.src", "S.codewalk", "S.crt.code", "S.thunk", "S.fill", "S.sections"))
+@rule("L1.src.start", version="1", ceiling=P, needs=("L.src", "S.codewalk", "S.crt.code", "S.thunk", "S.fill", "S.sections"),
+      native=True)
 def src_start(ctx: RuleContext):
     """L1: the address of a sourced function is the start of a function: the start of a walked or placed
     function, or a byte of unknown code (an undrafted start the walk did not find). Strictly inside a function
     (not one of its inner labels), inside fill, an import thunk or a table it is an error: the walk crosses
-    the source's start, one of the two is wrong."""
-    syms = [f for f in ctx.facts(Kind.symbol) if f.level > O]
-    los = sorted((f.lo, f.hi, f) for f in syms)
-    keys = [x[0] for x in los]
-    for s in ctx.facts(Kind.source):
-        if s.value.get("what") != "func":
-            continue
-        a = s.lo
-        i = bisect.bisect_right(keys, a) - 1
-        hit = None
-        for j in range(i, max(i - 8, -1), -1):     # symbols do not overlap (C.overlap): the nearest few suffice
-            lo, hi, f = los[j]
-            if lo <= a < hi:
-                hit = f
-                break
-        if hit is None or hit.lo == a:
-            continue
-        sk = hit.value.get("skind")
-        if sk == "func" and a in hit.value.get("inner", ()):
-            continue
-        yield ctx.conflict(Severity.error, "L1", a, a + 1,
-                           f"{s.value['file']}:{s.value.get('comment', s.value['line'])}: {s.value['symbol']} starts at {a:#x}, inside the {sk} {hit.lo:#x}..{hit.hi:#x}",
-                           a=s.by, b=hit.by)
+    the source's start, one of the two is wrong. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 @rule("L3.lit.order", version="1", ceiling=D, needs=("L.analyze", "L.unit.extent"), helpers=(lit_issues, unit_index))
@@ -676,19 +633,12 @@ def lit_order(ctx: RuleContext):
 
 
 @rule("L4.boundary", version="1", ceiling=P, needs=("L.decl", "kind:start", "S.codewalk", "S.crt.code", "S.thunk", "S.fill"),
-      helpers=(boundary_issues, game_range, lib_starts_of))
+      native=True)
 def boundary_at_start(ctx: RuleContext):
     """L4 (boundary_issues in rules/layout.py): a declared boundary lies at a function start (or an end
-    boundary at the end of the game code), never inside fill or strictly inside a function."""
-    syms = ctx.facts(Kind.symbol)
-    funcs = [(lo, hi) for lo, hi, _ in functions_of(syms)]
-    fills = sorted((f.lo, f.hi) for f in syms if f.value.get("skind") == "fill")
-    starts = {f.lo for f in ctx.facts(Kind.start)}
-    for f in syms:
-        if f.value.get("skind") == "func":
-            starts.update(f.value.get("inner", ()))
-    game = game_range(ctx.image, lib_starts_of(syms))
-    yield from _emit(ctx, boundary_issues(bounds_of(ctx.facts(Kind.boundary)), starts, funcs, fills, game))
+    boundary at the end of the game code), never inside fill or strictly inside a function. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 def scan_inputs(p) -> str:
@@ -745,53 +695,24 @@ def data_at_code(ctx: RuleContext):
     return ()
 
 
-def outside_unit_issues(units: list[UnitX], srcs: list[SrcFn], declared: set[str], game: tuple,
-                        libs: dict | None = None) -> list[Issue]:
-    """L14: a sourced function of a unit whose extent rests on a declared boundary (`declared`: the units with a
-    `boundary start` or `boundary end` line) lies outside that unit's extent. compute_units' L7 already reports
-    the functions inside the game code that lie outside their unit; L14 adds the ones outside the game code (in
-    the library code after it), which L7 does not look at. A unit without a declared boundary, or without an
-    extent, is not checked. A library unit (`libs`: unit -> its `libunit` declaration) is checked against its
-    member range instead: every function lies inside it, and the range lies outside the game code (a library
-    member is no game code)."""
-    ext = {u.tu: u for u in units}
-    libs = libs or {}
-    out = []
-    for tu, d in sorted(libs.items()):
-        if d.lo < game[1] and game[0] < d.hi:
-            out.append(Issue("L14", d.lo, d.hi, f"library unit {tu} declares the member range {d.lo:#x}..{d.hi:#x}, inside the "
-                                                f"game code {game[0]:#x}..{game[1]:#x}", a=d.by))
-    for s in srcs:
-        d = libs.get(s.unit)
-        if d is not None:
-            if not d.lo <= s.addr < d.hi:
-                out.append(Issue("L14", s.addr, s.addr + 1,
-                                 f"function of library unit {s.unit} ({s.name}) at {s.addr:#x} lies outside its declared member "
-                                 f"range {d.lo:#x}..{d.hi:#x}", a=s.by, b=d.by))
-            continue
-        u = ext.get(s.unit)
-        if u is None or s.unit not in declared or u.lo <= s.addr < u.hi or game[0] <= s.addr < game[1]:
-            continue
-        out.append(Issue("L14", s.addr, s.addr + 1,
-                         f"function of unit {s.unit} ({s.name}) at {s.addr:#x} lies outside the unit's declared extent "
-                         f"{u.lo:#x}..{u.hi:#x}", a=s.by, b=u.start_by))
-    return out
+def lib_unit_ranges(p) -> dict:
+    """What L14 reads that only Python computes: {libs: unit -> [lo, hi, by] of its `libunit` declaration}."""
+    targets = [t["name"] for t in p.input("targets")]
+    decls, _ = decl_mod.load(p.input("decl"), p.root, targets)
+    return {"libs": {u: [d.lo, d.hi, d.by] for u, d in decl_mod.lib_units(decls, p.target_name, targets[0]).items()}}
 
 
 @rule("L14.unit.outside", version="2", ceiling=DE, needs=("L.unit.extent", "L.src", "L.decl", "S.crt.code", "S.thunk"),
-      inputs=("decl", "targets"), helpers=(outside_unit_issues, game_range, lib_starts_of, lib_units_of))
+      inputs=("decl", "targets"), native=True, native_inputs=lib_unit_ranges)
 def source_outside_unit(ctx: RuleContext):
     """L14 (outside_unit_issues in rules/layout.py): a sourced function outside the game code (in the library
     code after it) whose unit has a declared boundary (`boundary start|end tu=UNIT` in decl/text.dcl) and an
     extent: every function of such a unit lies inside the extent. Inside the game code L7 checks the same.
     An error: no game unit owns library code, and a unit compiled with that function is not the
     unit's translation unit. Library code with a source belongs to a library unit (`libunit` in decl/text.dcl):
-    its functions lie inside the declared member range, which lies outside the game code."""
-    syms = ctx.facts(Kind.symbol)
-    game = game_range(ctx.image, lib_starts_of(syms))
-    declared = {f.value["tu"] for f in ctx.facts(Kind.boundary)}
-    srcs = [s for s in srcfns_of(ctx.facts(Kind.source)) if s.by.startswith("src:")]
-    yield from _emit(ctx, outside_unit_issues(game_units(ctx.facts(Kind.unit)), srcs, declared, game, lib_units_of(ctx)))
+    its functions lie inside the declared member range, which lies outside the game code. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 @rule("L6.declared", version="1", ceiling=P, needs=("L.decl", "S.codewalk", "S.crt.code", "S.thunk", "S.relocs", "S.sections"))
@@ -899,7 +820,8 @@ def src_extent(ctx: RuleContext):
     return ()
 
 
-@rule("L10.unexplained", version="2", ceiling=DE, needs=("L.unit.extent", "L.src", "M.match", "S.codewalk", "L.decl", "L.src.extent"))
+@rule("L10.unexplained", version="2", ceiling=DE, needs=("L.unit.extent", "L.src", "M.match", "S.codewalk", "L.decl", "L.src.extent"),
+      native=True)
 def unexplained(ctx: RuleContext):
     """L10 (warning): code inside a game unit's extent that no source, no declaration and no other function
     explains, though a source claims it. Two cases:
@@ -913,33 +835,9 @@ def unexplained(ctx: RuleContext):
     dead -- why`, or a table read as code). (R1's tail check makes (b) rare: a match already proves that only fill
     follows its end up to the next start.)
     A non-matching draft with a walked start owns the walk's extent (M.draft), and a walked function without a
-    function is L2 (informational, `dcp layout next`): neither is L10."""
-    units = game_units(ctx.facts(Kind.unit))
-    at = unit_index(units)
-    walk = {f.lo: f for f in ctx.facts(Kind.symbol) if f.run == "S.codewalk" and f.value.get("skind") == "func"}
-    owned = {f.lo for f in ctx.facts(Kind.symbol) if f.run == "L.src.extent" and f.value.get("skind") == "func"}
-    matched = {f.lo: f for f in ctx.facts(Kind.source) if f.value.get("what") == "match"}
-    dead = sorted((f.lo, f.hi) for f in ctx.facts(Kind.symbol) if f.run == "L.decl" and f.value.get("skind") in ("dead", "foreign"))
-    for s in ctx.facts(Kind.source):
-        if s.run != "L.src" or s.value.get("what") != "func":
-            continue
-        i = at(s.lo)
-        if i is None:
-            continue
-        w, m = walk.get(s.lo), matched.get(s.lo)
-        if w is None and m is None and s.lo not in owned:
-            yield ctx.conflict(Severity.warn, "L10", s.lo, s.lo + 1,
-                               f"unit {units[i].tu}: {s.value['file']} ({s.value['symbol']}) owns no bytes: the walk does not know its "
-                               f"start and it does not byte-match, so its code stays open", a=s.by)
-            continue
-        if w is None or m is None or w.hi <= m.hi:
-            continue
-        left = w.hi - m.hi - sum(max(0, min(b, w.hi) - max(a, m.hi)) for a, b in dead if a < w.hi and b > m.hi)
-        if left > 0:
-            yield ctx.conflict(Severity.warn, "L10", m.hi, w.hi,
-                               f"unit {units[i].tu}: the walk of {s.lo:#x} ({s.value['symbol']}) runs to {w.hi:#x}, its byte-matched "
-                               f"compile ends at {m.hi:#x}: {left} bytes of walked code no source explains (a missed start, or "
-                               f"dead code to declare `bytes dead`)", a=w.by, b=m.by)
+    function is L2 (informational, `dcp layout next`): neither is L10. Native:
+    native/dcp_core/src/layout.rs."""
+    return ()
 
 
 @rule("M.bytes.declared", version="1", ceiling=DE, outputs=("source",), needs=("L.decl", "L.unit.extent"))

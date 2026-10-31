@@ -815,3 +815,232 @@ fn py_int16(s: &str) -> Option<i64> {
     let v = i64::from_str_radix(&t.replace('_', ""), 16).ok()?;
     Some(if neg { -v } else { v })
 }
+
+// ------------------------------------------------------------------------------------------------ L1 / L4 / L10 / L14
+
+/// layout.game_units: the game units of L.unit.extent facts (library members have no status), by address.
+fn game_units(facts: &[std::rc::Rc<SFact>]) -> Vec<Unit> {
+    let lvl = |s: Option<&str>| LEVEL_NAMES.iter().position(|n| Some(*n) == s).unwrap_or(0) as i64;
+    let mut out: Vec<Unit> = facts.iter().filter(|f| f.value.get("status").is_some()).map(|f| Unit {
+        tu: f.s("tu").unwrap_or("").to_string(), lo: f.lo, hi: f.hi, start_level: lvl(f.s("start_level")), end_level: lvl(f.s("end_level")),
+        start_by: f.s("start_by").unwrap_or("").to_string(), end_by: f.s("end_by").unwrap_or("").to_string(),
+        named_by: f.s("named_by").map(|s| s.to_string()),
+    }).collect();
+    out.sort_by_key(|u| u.lo);
+    out
+}
+
+/// layout.unit_index: the index of the unit holding a.
+fn unit_at(units: &[Unit], a: i64) -> Option<usize> {
+    let i = units.partition_point(|u| u.lo <= a) as i64 - 1;
+    if i >= 0 && a < units[i as usize].hi { Some(i as usize) } else { None }
+}
+
+/// L1.src.start: the address of a sourced function is the start of a function (or unknown code).
+pub fn l1_src_start(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let syms = sorted_syms(store::facts(db, &ctx.db, "symbol", &ctx.needed, |f| f.level > OPEN).map_err(err)?);
+    for s in store::facts(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func")).map_err(err)? {
+        let a = s.lo;
+        let i = syms.partition_point(|x| x.0 <= a) as i64 - 1;
+        let mut hit = None;
+        let mut j = i;
+        while j >= 0 && j > i - 8 {
+            let (lo, hi, f) = &syms[j as usize];
+            if *lo <= a && a < *hi {
+                hit = Some(f);
+                break;
+            }
+            j -= 1;
+        }
+        let Some(hit) = hit else { continue };
+        if hit.lo == a {
+            continue;
+        }
+        let sk = hit.s("skind");
+        if sk == Some("func") && hit.value.get("inner").and_then(|v| v.as_array()).is_some_and(|v| v.iter().any(|x| x.as_i64() == Some(a))) {
+            continue;
+        }
+        let v = &s.value;
+        let line = match v.get("comment") {
+            Some(c) => c.clone(),
+            None => v["line"].clone(),
+        };
+        let line = match &line {
+            serde_json::Value::Null => "None".to_string(),
+            serde_json::Value::String(s) => s.clone(),
+            x => x.to_string(),
+        };
+        out.conflict2("error", "L1", a, a + 1,
+                      format!("{}:{line}: {} starts at {:#x}, inside the {} {:#x}..{:#x}", s.s("file").unwrap_or(""), s.s("symbol").unwrap_or(""),
+                              a, sk.unwrap_or("None"), hit.lo, hit.hi), &s.by, &hit.by);
+    }
+    Ok(())
+}
+
+/// layout.boundary_issues: L4 over declared boundaries, the starts, the functions and the fill (sorted).
+pub fn boundary_issues(bounds: &[Bound], starts: &HashSet<i64>, funcs: &[(i64, i64)], fills: &[(i64, i64)], game_hi: i64) -> Vec<Issue> {
+    let mut out = vec![];
+    for b in bounds {
+        let (a, side, tu, by) = (b.0, &b.1, &b.2, &b.3);
+        if side == "end" && a == game_hi {
+            continue;
+        }
+        if let Some(&(lo, hi)) = fills.iter().find(|&&(lo, hi)| lo <= a && a < hi) {
+            out.push(("L4".into(), a, a + 1, format!("{side} boundary of {tu} inside fill {:#x}..{:#x} (the unit starts at the function after it, {:#x})", lo, hi, hi),
+                      by.clone(), String::new()));
+            continue;
+        }
+        let i = funcs.partition_point(|f| f.0 <= a) as i64 - 1;
+        let f = if i >= 0 { Some(funcs[i as usize]) } else { None };
+        if let Some((lo, hi)) = f.filter(|&(lo, hi)| lo < a && a < hi && !starts.contains(&a)) {
+            out.push(("L4".into(), a, a + 1, format!("{side} boundary of {tu} inside the function {:#x}..{:#x}", lo, hi), by.clone(), String::new()));
+            continue;
+        }
+        if !starts.contains(&a) && !f.is_some_and(|f| f.0 == a) {
+            out.push(("L4".into(), a, a + 1, format!("{side} boundary of {tu} at {:#x}, where no function starts", a), by.clone(), String::new()));
+        }
+    }
+    out
+}
+
+/// boundary_issues for Python (layoutview's proposals): issues as (check, lo, hi, message, a, b).
+#[pyfunction]
+#[pyo3(name = "boundary_issues")]
+pub fn py_boundary_issues(bounds: Vec<Bound>, starts: HashSet<i64>, funcs: Vec<(i64, i64)>, fills: Vec<(i64, i64)>, game_hi: i64) -> Vec<Issue> {
+    boundary_issues(&bounds, &starts, &funcs, &fills, game_hi)
+}
+
+fn bounds_of(facts: &[std::rc::Rc<SFact>]) -> Vec<Bound> {
+    facts.iter().map(|f| (f.lo, f.s("side").unwrap_or("").to_string(), f.s("tu").unwrap_or("").to_string(), f.by.clone(),
+                          f.s("named_by").map(|s| s.to_string()))).collect()
+}
+
+/// L4.boundary: a declared boundary lies at a function start, never inside fill or strictly inside a function.
+pub fn l4_boundary(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let funcs: Vec<(i64, i64)> = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).cloned().collect())
+        .iter().map(|f| (f.0, f.1)).collect();
+    let mut fills: Vec<(i64, i64)> = syms.iter().filter(|f| f.s("skind") == Some("fill")).map(|f| (f.lo, f.hi)).collect();
+    fills.sort();
+    let mut starts: HashSet<i64> = store::los(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?.into_iter().collect();
+    for f in syms.iter().filter(|f| f.s("skind") == Some("func")) {
+        if let Some(a) = f.value.get("inner").and_then(|v| v.as_array()) {
+            starts.extend(a.iter().filter_map(|x| x.as_i64()));
+        }
+    }
+    let (_, ghi) = game_range(&img, &lib_starts_of(&syms));
+    let bounds = bounds_of(&store::facts(db, &ctx.db, "boundary", &ctx.needed, |_| true).map_err(err)?);
+    for (check, lo, hi, message, a, b) in boundary_issues(&bounds, &starts, &funcs, &fills, ghi) {
+        out.conflict2("error", &check, lo, hi, message, &a, &b);
+    }
+    Ok(())
+}
+
+/// L10.unexplained: code inside a game unit's extent no source explains, though a source claims it.
+pub fn l10_unexplained(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let mut walk: HashMap<i64, std::rc::Rc<SFact>> = HashMap::new();
+    for f in syms.iter().filter(|f| &*f.rule == "S.codewalk" && f.s("skind") == Some("func")) {
+        walk.insert(f.lo, f.clone());
+    }
+    let owned: HashSet<i64> = syms.iter().filter(|f| &*f.rule == "L.src.extent" && f.s("skind") == Some("func")).map(|f| f.lo).collect();
+    let sources = store::facts(db, &ctx.db, "source", &ctx.needed, |_| true).map_err(err)?;
+    let mut matched: HashMap<i64, std::rc::Rc<SFact>> = HashMap::new();
+    for f in sources.iter().filter(|f| f.s("what") == Some("match")) {
+        matched.insert(f.lo, f.clone());
+    }
+    let mut dead: Vec<(i64, i64)> = syms.iter().filter(|f| &*f.rule == "L.decl" && matches!(f.s("skind"), Some("dead") | Some("foreign")))
+        .map(|f| (f.lo, f.hi)).collect();
+    dead.sort();
+    for s in sources.iter().filter(|f| &*f.rule == "L.src" && f.s("what") == Some("func")) {
+        let Some(i) = unit_at(&units, s.lo) else { continue };
+        let (w, m) = (walk.get(&s.lo), matched.get(&s.lo));
+        let (file, sym) = (s.s("file").unwrap_or(""), s.s("symbol").unwrap_or(""));
+        if w.is_none() && m.is_none() && !owned.contains(&s.lo) {
+            out.conflict("warn", "L10", s.lo, s.lo + 1,
+                         format!("unit {}: {file} ({sym}) owns no bytes: the walk does not know its start and it does not byte-match, so its \
+                                  code stays open", units[i].tu), &s.by);
+            continue;
+        }
+        let (Some(w), Some(m)) = (w, m) else { continue };
+        if w.hi <= m.hi {
+            continue;
+        }
+        let left = w.hi - m.hi - dead.iter().filter(|&&(a, b)| a < w.hi && b > m.hi).map(|&(a, b)| (b.min(w.hi) - a.max(m.hi)).max(0)).sum::<i64>();
+        if left > 0 {
+            out.conflict2("warn", "L10", m.hi, w.hi,
+                          format!("unit {}: the walk of {:#x} ({sym}) runs to {:#x}, its byte-matched compile ends at {:#x}: {left} bytes of walked \
+                                   code no source explains (a missed start, or dead code to declare `bytes dead`)", units[i].tu, s.lo, w.hi, m.hi),
+                          &w.by, &m.by);
+        }
+    }
+    Ok(())
+}
+
+/// A unit as L14 reads it: (tu, lo, hi, start_by).
+pub type UnitExt = (String, i64, i64, String);
+/// A library unit: (tu, lo, hi, by) of its `libunit` declaration.
+pub type LibUnit = (String, i64, i64, String);
+
+/// layout.outside_unit_issues: L14 over the game units, the sourced functions, the units with a declared
+/// boundary, the game code and the library units (sorted by unit).
+pub fn outside_unit_issues(units: &[UnitExt], srcs: &[SrcFn], declared: &HashSet<String>, game: (i64, i64), libs: &[LibUnit]) -> Vec<Issue> {
+    let (glo, ghi) = game;
+    let mut out = vec![];
+    let ext: HashMap<&str, &UnitExt> = units.iter().map(|u| (u.0.as_str(), u)).collect();
+    for (tu, lo, hi, by) in libs {
+        if *lo < ghi && glo < *hi {
+            out.push(("L14".into(), *lo, *hi, format!("library unit {tu} declares the member range {:#x}..{:#x}, inside the game code {:#x}..{:#x}",
+                                                      lo, hi, glo, ghi), by.clone(), String::new()));
+        }
+    }
+    for (a, unit, name, sby) in srcs {
+        let a = *a;
+        if let Some((_, lo, hi, by)) = libs.iter().find(|l| l.0 == *unit) {
+            if !(*lo <= a && a < *hi) {
+                out.push(("L14".into(), a, a + 1, format!("function of library unit {unit} ({name}) at {:#x} lies outside its declared member \
+                                                           range {:#x}..{:#x}", a, lo, hi), sby.clone(), by.clone()));
+            }
+            continue;
+        }
+        let Some(u) = ext.get(unit.as_str()) else { continue };
+        if !declared.contains(unit) || (u.1 <= a && a < u.2) || (glo <= a && a < ghi) {
+            continue;
+        }
+        out.push(("L14".into(), a, a + 1, format!("function of unit {unit} ({name}) at {:#x} lies outside the unit's declared extent {:#x}..{:#x}",
+                                                  a, u.1, u.2), sby.clone(), u.3.clone()));
+    }
+    out
+}
+
+/// outside_unit_issues for Python (its tests).
+#[pyfunction]
+#[pyo3(name = "outside_unit_issues")]
+pub fn py_outside_unit_issues(units: Vec<UnitExt>, srcs: Vec<SrcFn>, declared: HashSet<String>, game: (i64, i64), mut libs: Vec<LibUnit>) -> Vec<Issue> {
+    libs.sort();
+    outside_unit_issues(&units, &srcs, &declared, game, &libs)
+}
+
+/// L14.unit.outside: a sourced function of a declared unit (or a library unit) outside its extent.
+pub fn l14_unit_outside(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let img = image(&ctx.image)?;
+    let extra: serde_json::Value = serde_json::from_str(&ctx.extra).unwrap_or(serde_json::Value::Null);
+    let mut libs: Vec<LibUnit> = extra["libs"].as_object().map(|m| m.iter().map(|(k, v)| {
+        (k.clone(), v[0].as_i64().unwrap_or(0), v[1].as_i64().unwrap_or(0), v[2].as_str().unwrap_or("").to_string())
+    }).collect()).unwrap_or_default();
+    libs.sort();
+    let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let game = game_range(&img, &lib_starts_of(&syms));
+    let declared: HashSet<String> = store::facts(db, &ctx.db, "boundary", &ctx.needed, |_| true).map_err(err)?
+        .iter().map(|f| f.s("tu").unwrap_or("").to_string()).collect();
+    let units: Vec<UnitExt> = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?)
+        .into_iter().map(|u| (u.tu, u.lo, u.hi, u.start_by)).collect();
+    let srcs: Vec<SrcFn> = store::facts(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func") && f.by.starts_with("src:"))
+        .map_err(err)?.iter().map(|s| (s.lo, s.s("unit").unwrap_or("").to_string(), s.s("symbol").unwrap_or("").to_string(), s.by.clone())).collect();
+    for (check, lo, hi, message, a, b) in outside_unit_issues(&units, &srcs, &declared, game, &libs) {
+        out.conflict2("error", &check, lo, hi, message, &a, &b);
+    }
+    Ok(())
+}

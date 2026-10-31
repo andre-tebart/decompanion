@@ -970,6 +970,10 @@ pub fn run_rule(ctx: Ctx) -> PyResult<(usize, usize, String)> {
         "L.unit.extent" => crate::layout::l_unit_extent(&ctx, db, &mut out),
         "M1.baseline" => crate::layout::m1_baseline(&ctx, db, &mut out),
         "G.grade" => crate::grade::g_grade(&ctx, db, &mut out),
+        "L1.src.start" => crate::layout::l1_src_start(&ctx, db, &mut out),
+        "L4.boundary" => crate::layout::l4_boundary(&ctx, db, &mut out),
+        "L10.unexplained" => crate::layout::l10_unexplained(&ctx, db, &mut out),
+        "L14.unit.outside" => crate::layout::l14_unit_outside(&ctx, db, &mut out),
         other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
     })?;
     let ms = t0.elapsed().as_millis() as i64;

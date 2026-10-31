@@ -586,6 +586,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rules::py_aligned_sites, m)?)?;
     m.add_function(wrap_pyfunction!(rules::py_least_size, m)?)?;
     m.add_function(wrap_pyfunction!(layout::py_compute_units, m)?)?;
+    m.add_function(wrap_pyfunction!(layout::py_boundary_issues, m)?)?;
+    m.add_function(wrap_pyfunction!(layout::py_outside_unit_issues, m)?)?;
     m.add_function(wrap_pyfunction!(rules::py_padding_masked, m)?)?;
     Ok(())
 }
