@@ -961,3 +961,49 @@ down to their definitions, the 8 declared file names in the units' `#line`; ever
 match kept, check and lint as in the scratch clone; d3if_Prerender's readability fall accepted with its reason);
 docs/layout.md, docs/match.md, README.md and the skills dcp-layout / dcp-match-base describe the unit file;
 `dcp unit fold` and source/fold.py are gone (git history holds them), as is the declaration block's old heading.
+
+## 20. The native core (planned 2026-10-31, user decisions: "we go native core. Speed is an absolute priority
+here", Rust, each rule proven by a shadow run before its Python version is deleted)
+
+Why: after the loop fixes of 2026-10-31 a build after an edit is ~2 .. 3 s on gildegold and the rule refresh is
+the larger half of it (a line move: ~2.0 s, a body edit ~1.1 s). The refresh is no hotspot any more but ~15 rules of
+40 .. 300 ms each plus the store's writes (the 26k source facts recorded again: ~0.28 s; the byte map ~0.1 ..
+0.27 s). Making the Python cheaper gains ~1.3 .. 1.5x (measured: the store's read overhead, which a profile put at
+~25 %, was ~5 % of the wall time); the goal is ~10x, so the rules, the store's hot paths and in the end the engine
+move to native code.
+
+The model:
+- A Rust crate (native/dcp_core: pyo3 with the stable ABI, so any CPython from 3.9 loads it; rusqlite with its
+  bundled SQLite; capstone where the comparison disassembles), built for x86_64-pc-windows-gnu (no MSVC on the
+  machine: rustup's GNU toolchain). Built on first use like data/native/dcp_clang.c: `cargo build --release`
+  into build/native/ of decompanion, the module named by the crate's source hash; no Python fallback.
+- The SQLite store is the boundary. A native rule opens the project's store itself (WAL: a second connection
+  beside Python's), reads the facts of its needed runs and records its run, with the same run key and the same
+  out_hash; Python rules not ported yet read those facts as before. No fact crosses as a Python object.
+- out_hash must be byte for byte Python's: canonical() is json.dumps(sort_keys, separators=(",", ":"),
+  ensure_ascii), with Python's repr of floats.
+- The proof per rule: shadow mode (DCP_SHADOW=<rule,..>): the engine runs the Python rule as the reference and the
+  native one beside it, and a different out_hash is an error naming the first differing fact. A rule moves when
+  its shadow agrees over tools/bench.py's scenarios and a forced recompute of gildegold; its Python version is
+  deleted in the same commit.
+
+Stages (each measured with tools/bench.py on gildegold, `--verify` after each):
+- N0: the crate, its build, the canonical hash and record_run in Rust (every rule's record goes through it: the
+  shadow compares all 56 rules' out_hash at once), the facts reader.
+- N1: what every build reruns: the shared function comparison (match/compare.py, objfmt/coff.py, the image),
+  M.match, M.draft, M8.reloc, G.grade (with diffclass and readability), D.data, M.data.content, M.data.site.
+- N2: the line-move cascade: L.src's recording, the byte map, L9.analyzer.span, L.src.extent, L.unit.extent,
+  L13, L5, M.lint, M1.
+- N3: the remaining rules and the engine (scheduling, run keys, input hashes).
+
+Done, N0 (2026-10-31): native/dcp_core (pyo3 0.30 abi3, rusqlite 0.41 with its SQLite, built with Rust 1.99 for
+x86_64-pc-windows-gnu); src/decompanion/native.py builds and loads it; Store.record_run writes through it. Shadow:
+canonical() equal on all 107229 stored fact values of gildegold and on the edge values (DEL is escaped, as every
+character above 0x7e), out_hash equal for every rule's run over the bench scenarios S1 .. S7 and the test suite,
+`--verify` ok; the Python hash is deleted. Also: StoredFact carries the fact's fields (no __getattr__ per read) and
+a store keeps the merged, sorted fact list per selection of runs.
+Measured: recording a line move's runs ~0.48 .. 0.57 s -> ~0.36 .. 0.40 s (L.src's 26k facts ~0.28 s -> ~0.22 s).
+The lesson for N1 .. N3: a fact that is a Python object costs nearly as much to hand to Rust (seven attributes and
+a dict walked through the C API) as Python's own record did; the gain comes when a rule's facts are made and
+recorded natively, and when the rules that read them read the store natively too, so producers and consumers
+move together.

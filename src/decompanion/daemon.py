@@ -57,8 +57,8 @@ def info_path(root: Path) -> Path:
 
 
 def code_stamp() -> str:
-    """The stamps (path, size, modification time) of every .py and .c (the native walk) of the package: changed
-    code changes it."""
+    """The stamps (path, size, modification time) of every .py and .c (the native walk) of the package and the
+    native core's source hash (native/dcp_core: a loaded module cannot be replaced): changed code changes it."""
     h = hashlib.sha256()
 
     def rec(d):
@@ -70,6 +70,8 @@ def code_stamp() -> str:
                     st = e.stat()
                     h.update(f"{e.path}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
     rec(PKG)
+    from .native import source_hash
+    h.update(source_hash().encode())
     return h.hexdigest()
 
 

@@ -6,3 +6,4 @@ __pycache__/
 .dcp/
 src/decompanion/data/native/*.dll
 src/decompanion/data/native/*.tmp
+/native/dcp_core/target/

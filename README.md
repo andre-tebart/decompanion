@@ -114,6 +114,10 @@ translation unit the Python bindings parsed): it needs `gcc` on PATH (MinGW-w64,
 LLVM installation's headers (`<llvm>/include/clang-c`); the DLL is built on first use, named by the source's hash.
 Without them a command that scans the sources fails and says what is missing.
 
+The native core (native/dcp_core, Rust: docs/plan.md section 20) needs rustup's GNU toolchain (`rustup default
+stable-x86_64-pc-windows-gnu`; cargo on PATH or in ~/.cargo/bin). It is built on first use into
+build/native/_core-<source hash>.pyd of the decompanion checkout (the first build takes about a minute).
+
 What makes the loop fast, in the daemon and outside it: content hashes of the source files persisted per project
 (build/cache/stamps.pickle, trusted only for an unchanged, non-racy stamp; fsmemo.py), one plan per source state,
 the compare of each function memoised by its object, address and next start (an edit compares one unit's

@@ -28,7 +28,7 @@ import json
 import os
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .fact import Conflict, Fact, Kind, Level, canonical
@@ -82,6 +82,25 @@ class StoredFact:
     id: int
     run: str          # the rule id of the producing run
     fact: Fact
+    # the fact's fields, copied: the rules read them millions of times per refresh, a slot is a plain lookup where
+    # __getattr__ (still there for the rest of Fact) is a Python call
+    lo: int = field(init=False, compare=False, repr=False)
+    hi: int = field(init=False, compare=False, repr=False)
+    kind: Kind = field(init=False, compare=False, repr=False)
+    value: dict = field(init=False, compare=False, repr=False)
+    level: Level = field(init=False, compare=False, repr=False)
+    by: str = field(init=False, compare=False, repr=False)
+    reason: str | None = field(init=False, compare=False, repr=False)
+
+    def __post_init__(self):
+        f, s = self.fact, object.__setattr__
+        s(self, "lo", f.lo)
+        s(self, "hi", f.hi)
+        s(self, "kind", f.kind)
+        s(self, "value", f.value)
+        s(self, "level", f.level)
+        s(self, "by", f.by)
+        s(self, "reason", f.reason)
 
     def __getattr__(self, item):
         return getattr(self.fact, item)
@@ -187,48 +206,12 @@ class Store:
         """Store a finished run with its output, make it current, drop the facts of the rule's older runs
         (only the latest run of a rule is kept: the store is a cache, not a history). When the output equals the
         current run's (out_hash), the run row takes the new key and its facts stay as they are, ids and all
-        (the conflicts are written again: out_hash does not cover their a / b)."""
-        keyed = sorted(((f.key(), f) for f in facts), key=lambda t: t[0])
-        conflicts = sorted(conflicts, key=lambda c: (c.lo, c.hi, c.check, c.message))
-        out_hash = sha256(*(canonical(k + (int(f.level), f.by, f.reason or "")) for k, f in keyed),
-                          *(canonical((c.lo, c.hi, c.check, c.severity.value, c.message)) for c in conflicts))
-        self.db.execute("BEGIN")
-        try:
-            same = None if os.environ.get("DCP_NO_SHORTCUTS") else self.db.execute(
-                "SELECT id FROM run WHERE rule=? AND current=1 AND out_hash=?", (rule, out_hash)).fetchone()
-            if same is not None:
-                run_id = same[0]
-                for (oid,) in self.db.execute("SELECT id FROM run WHERE rule=? AND id<>?", (rule, run_id)).fetchall():
-                    self.db.execute("DELETE FROM fact WHERE run_id=?", (oid,))
-                    self.db.execute("DELETE FROM conflict WHERE run_id=?", (oid,))
-                    self.db.execute("DELETE FROM run WHERE id=?", (oid,))
-                self.db.execute("UPDATE run SET version=?, code_hash=?, input_hash=?, ms=? WHERE id=?",
-                                (version, code_hash, input_hash, ms, run_id))
-                self.db.execute("DELETE FROM conflict WHERE run_id=?", (run_id,))
-                self.db.executemany(
-                    "INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)",
-                    [(run_id, c.severity.value, c.check, c.lo, c.hi, c.message, c.a, c.b) for c in conflicts])
-                self.db.execute("COMMIT")
-                return run_id
-            old = [r[0] for r in self.db.execute("SELECT id FROM run WHERE rule=?", (rule,)).fetchall()]
-            for oid in old:
-                self.db.execute("DELETE FROM fact WHERE run_id=?", (oid,))
-                self.db.execute("DELETE FROM conflict WHERE run_id=?", (oid,))
-                self.db.execute("DELETE FROM run WHERE id=?", (oid,))
-            cur = self.db.execute(
-                "INSERT INTO run (rule, version, code_hash, input_hash, out_hash, current, ms, at) VALUES (?,?,?,?,?,1,?,?)",
-                (rule, version, code_hash, input_hash, out_hash, ms, time.time()))
-            run_id = cur.lastrowid
-            self.db.executemany(
-                "INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)",
-                [(run_id, f.lo, f.hi, f.kind.value, k[3], int(f.level), f.by, f.reason) for k, f in keyed])
-            self.db.executemany(
-                "INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)",
-                [(run_id, c.severity.value, c.check, c.lo, c.hi, c.message, c.a, c.b) for c in conflicts])
-            self.db.execute("COMMIT")
-        except Exception:
-            self.db.execute("ROLLBACK")
-            raise
+        (the conflicts are written again: out_hash does not cover their a / b). Written by the native core
+        (dcp_core record_run) on its own connection: the same SQL and out_hash Python's version wrote (proven by
+        a shadow run on gildegold before it was deleted, docs/plan.md section 20)."""
+        from .. import native
+        run_id, _ = native.core().record_run(str(self.path), rule, version, code_hash, input_hash, list(facts),
+                                             list(conflicts), ms, not os.environ.get("DCP_NO_SHORTCUTS"))
         return run_id
 
     def runs(self):
@@ -273,18 +256,33 @@ class Store:
         for k in [k for k in cache if k[:2] not in live]:         # a run recorded again: its old facts go
             del cache[k]
         want = set(rules) if rules else None
+        chosen = [(rid, rule, at) for rid, rule, at in runs if want is None or rule in want]
+        # the merged list of one selection of runs, kept while those runs stay current (most rules of a refresh
+        # read the same kinds of the same runs)
+        merged_key = ("merged", kind, tuple((rid, at) for rid, _, at in chosen))
+        merged = self.__dict__.setdefault("_merged", {})
+        hit = merged.get(merged_key)
+        if hit is not None:
+            return list(hit)
         rows = []
-        for rid, rule, at in runs:
-            if want is not None and rule not in want:
-                continue
+        for n, (rid, rule, at) in enumerate(chosen):
             got = cache.get((rid, at, kind))          # (id, at): an id SQLite reuses after a delete is another run
             if got is None:
+                # (lo, hi, value text, run, row, fact): the order of (lo, hi, value) with ties in run and row order,
+                # as tuples that sort in C without touching the fact
                 got = cache[(rid, at, kind)] = [
-                    (r[4], self._row_fact((r[0], rule, *r[1:]))) for r in self.db.execute(
-                        "SELECT id, lo, hi, kind, value, level, by, reason FROM fact WHERE run_id=? AND kind=?", (rid, kind.value))]
-            rows.extend(got)
-        rows.sort(key=lambda x: (x[1].lo, x[1].hi, x[0]))
-        return [f for _, f in rows]
+                    (r[1], r[2], r[4], k, self._row_fact((r[0], rule, *r[1:]))) for k, r in enumerate(self.db.execute(
+                        "SELECT id, lo, hi, kind, value, level, by, reason FROM fact WHERE run_id=? AND kind=?", (rid, kind.value)))]
+            rows.extend((lo, hi, v, n, k, f) for lo, hi, v, k, f in got)
+        rows.sort()
+        out = [r[5] for r in rows]
+        if len(merged) > 256:
+            merged.clear()
+        live_keys = {(rid, at) for rid, _, at in runs}
+        for k in [k for k in merged if not set(k[2]) <= live_keys]:
+            del merged[k]
+        merged[merged_key] = out
+        return list(out)
 
     def fact(self, fid: int) -> StoredFact | None:
         row = self.db.execute("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f "
