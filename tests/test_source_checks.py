@@ -161,8 +161,7 @@ def test_headers_conflicts(tiny):
 
 @pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")
 def test_headers_conflicts_warnings(tiny):
-    """prototyped calls by argument class; the declaration-set warning; a dropped duplicate that carries the only
-    description of its function (Q6)."""
+    """prototyped calls by argument class; the declaration-set warning."""
     write(tiny, "include/net.h", "int add2(int a, int b);  /* 0x10001020 */\nvoid setf(float f);\nint spare(void);\n")
     head = "int add2(int a, int b);  /* 0x10001020, adds two numbers */\n"
     add2 = "/* 0x10001020 */\nint add2(int a, int b)\n{\n    return a + b;\n}\n"
@@ -174,7 +173,6 @@ def test_headers_conflicts_warnings(tiny):
     assert "src/net.c:12 (an integer constant to a floating parameter: re-grade)" in out, out
     assert "src/net.c:13 (expressions: re-grade)" in out, out
     assert "warning=declaration-set  added=2  duplicates=1  functions=2  byte=0  shape=0" in out, out      # setf, spare
-    assert "warning=q6  name=add2  at=src/net.c:1  addr=0x10001020" in out, out
     # a call with constant integer arguments to an int prototype is safe
     write(tiny, "include/net.h", "int add2(int a, int b);\nint add3(int a, char *s);\n")
     unit(tiny, "net", head, add2, "/* 0x10001030, logs hello */\nvoid log_hello(int x)\n{\n"
@@ -188,7 +186,7 @@ def test_headers_conflicts_warnings(tiny):
 def test_headers_conflicts_multi_name_and_position(tiny):
     """Every name of a multi-name `extern a, b, c;` line is a duplicate (the line keeps its other names when
     written); the include goes before the first statement using a duplicate when that is above the last
-    include (--at LINE chooses); q6 is about functions only, a datum's only description is no q6."""
+    include (--at LINE chooses)."""
     write(tiny, "include/net.h", "extern int counter;\nextern int width;\nextern int height;\n")
     write(tiny, "include/late.h", "typedef int LATE;\n")
     write(tiny, "include/base.h", "typedef int BASE;\n")
@@ -199,7 +197,7 @@ def test_headers_conflicts_multi_name_and_position(tiny):
     assert code == 0, out
     for n, ln in (("counter", 2), ("width", 2), ("height", 3)):
         assert f"kind=duplicate  name={n}  at=src/net.c:{ln}" in out, out
-    assert "duplicate=3" in out and "warning=q6" not in out, out      # 0x10002000 is data
+    assert "duplicate=3" in out, out
     code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
     assert code == 0 and "at=4" in out and "dropped=3  lines=2" in out, out
     text = (tiny / "src/net.c").read_text()

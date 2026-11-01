@@ -29,12 +29,10 @@
 //!   other       any other new error
 //!
 //! Then the functions to re-grade (a `call` / `vc6` / `supersedes` / `other` line in their span, a `prototyped` call
-//! that is not safe) and two warnings:
+//! that is not safe) and a warning:
 //!   declaration-set  the includes add declarations to the unit, or --write drops head duplicates: under VC6 /O2 the
 //!                    declaration set of a unit alone moves code generation (gildegold: removing uncalled prototypes
 //!                    flipped byte matches to shape), so every function of the unit is re-graded, byte ones first
-//!   q6               a duplicate's comment is the only text describing a function's address (rule Q6 reads it):
-//!                    dropping the line drops the function to draft; move the words to its address comment first
 //! The tool reads only; `--write` inserts the includes and drops the `duplicate` declarations of the head (a line
 //! whose names are all duplicates goes, comment and all; a multi-name extern line keeps its other declarators), and
 //! only when the trial without them has no new error at all (clang's or VC6's). `--trial` compiles the unit as --write
@@ -638,7 +636,6 @@ struct Analysis {
     items: Vec<Item>,
     vc6: bool,
     added: usize,
-    q6: Vec<(usize, i64)>, // (the duplicate's item index, the address)
 }
 
 fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i64>) -> PyResult<Result<Analysis, String>> {
@@ -800,8 +797,7 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
         }
     }
     let added = declaration_set(x, &t.unit, &head, &hdr_names);
-    let q6 = only_descriptions(x, &head, &old_lines, &items);
-    Ok(Ok(Analysis { unit: t.unit, items, vc6: t.vc6.is_some(), added, q6 }))
+    Ok(Ok(Analysis { unit: t.unit, items, vc6: t.vc6.is_some(), added }))
 }
 
 /// (file, line) of every call of `callee` inside a function body of the unit's file.
@@ -834,53 +830,6 @@ fn declaration_set(x: &Ctx, a: &crate::plan::Tu, head: &str, hdr_names: &[(Strin
         have.extend(x.declared_names(&rel, &read(&x.root, &rel)).into_iter().map(|n| n.0));
     }
     hdr_names.iter().map(|h| &h.0).collect::<HashSet<_>>().iter().filter(|n| !have.contains(**n)).count()
-}
-
-/// (duplicate, address) for each head duplicate whose comment is the only text describing a function's address in
-/// the tree (readability rule Q6 reads it): only a line --write drops whole counts, each once, and only a
-/// function's address.
-fn only_descriptions(x: &Ctx, head: &str, old_lines: &[&str], items: &[Item]) -> Vec<(usize, i64)> {
-    let dups: Vec<usize> = (0..items.len()).filter(|&i| items[i].kind == "duplicate").collect();
-    if dups.is_empty() {
-        return vec![];
-    }
-    let mut total: HashMap<u64, i64> = HashMap::new();
-    for p in &x.scan.parts {
-        for a in &p.described {
-            *total.entry(*a).or_default() += 1;
-        }
-    }
-    let functions: HashSet<u64> = x.scan.functions().flat_map(|f| f.0 .4.iter().map(|a| a.1)).collect();
-    let mut per_line: HashMap<i64, HashSet<String>> = HashMap::new();
-    for (n, ln) in x.declared_names(head, &old_lines.join("\n")) {
-        per_line.entry(ln).or_default().insert(n);
-    }
-    let dup_names: HashSet<String> = dups.iter().filter_map(|&i| items[i].name.clone()).collect();
-    let empty = HashSet::new();
-    let (mut out, mut done) = (vec![], HashSet::new());
-    for i in dups {
-        let ln: i64 = items[i].at.rsplit(':').next().and_then(|n| n.parse().ok()).unwrap_or(0);
-        let line = if ln > 0 && ln as usize <= old_lines.len() { old_lines[ln as usize - 1] } else { "" };
-        if done.contains(&ln) || drop_line(line, &dup_names, per_line.get(&ln).unwrap_or(&empty)).is_some() {
-            continue;
-        }
-        done.insert(ln);
-        let m = x.model_alone(head, line);
-        let Ok(part) = crate::srcscan::scan_file_rs(head, line, &m, &[]) else { continue };
-        let mut mine: Vec<(u64, i64)> = vec![];
-        for a in &part.described {
-            match mine.iter_mut().find(|m| m.0 == *a) {
-                Some(m) => m.1 += 1,
-                None => mine.push((*a, 1)),
-            }
-        }
-        for (addr, n) in mine {
-            if functions.contains(&addr) && total.get(&addr).copied().unwrap_or(0) - n <= 0 {
-                out.push((i, addr as i64));
-            }
-        }
-    }
-    out
 }
 
 /// int | float | string | expr: the class of one call argument.
@@ -1207,12 +1156,6 @@ pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone
                 out.push(format!("  {}", record(&[("fn", Tok::I(*addr)), ("name", s(name.clone())), ("code", os(code.clone()))])));
             }
         }
-    }
-    for (i, addr) in &an.q6 {
-        let it = &an.items[*i];
-        out.push(record(&[("warning", s("q6")), ("name", os(it.name.clone())), ("at", s(it.at.clone())), ("addr", Tok::I(*addr))])
-                 + "  (the duplicate's comment is the only description of the function: Q6 fails when it is dropped; move the words to the \
-                    function's address comment first)");
     }
     let blocking: i64 = BLOCKING.iter().map(|k| count(k)).sum();
     let mut drop: BTreeMap<i64, HashSet<String>> = BTreeMap::new();

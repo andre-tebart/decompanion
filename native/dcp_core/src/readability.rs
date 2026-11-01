@@ -409,7 +409,7 @@ pub fn readability(src: Option<&Source>, f: &Fn, addr: i64, cx: &Context, lint: 
         fails.push(format!("Q5 markers: {}", marks.join(", ")));
     }
     if !cx.described.contains(&addr) {
-        fails.push("Q6 described: no text after the address, no other comment describes it".into());
+        fails.push("Q6 described: no text after the address at the definition, nor at the declaration in its owner header (include/<unit>.h)".into());
     }
     if let Some(bad) = lint {
         if !bad.is_empty() {

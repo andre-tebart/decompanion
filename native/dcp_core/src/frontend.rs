@@ -464,7 +464,9 @@ pub fn scan(root: &str, tree_hash: Option<&str>) -> Result<Rc<Scan>, String> {
     Ok(s)
 }
 
-/// (raw macro names (Q4), described addresses (Q6)) over every source and header of a scan.
+/// (raw macro names (Q4), described addresses (Q6)) of a scan: the macros over every source and header, a
+/// function's description only from its own documentation (its definition's address comment, its owner header's
+/// declaration).
 pub fn context(s: &Scan) -> (Vec<String>, Vec<i64>) {
     use std::sync::LazyLock;
     static DEREF_CAST: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -498,7 +500,23 @@ pub fn context(s: &Scan) -> (Vec<String>, Vec<i64>) {
         }
         raw.extend(more);
     }
-    let mut described: Vec<i64> = s.parts.iter().flat_map(|p| p.described.iter().map(|&a| a as i64)).collect();
+    // Q6 reads a function's own documentation only: its definition's address comment (all a unit file's part holds,
+    // srcscan) and its declaration's comment in its owner header, include/<unit>.h; a copy elsewhere is not it. A
+    // function's address is the first its comment lists per target (address_for): a later one of the same target
+    // (`/* 0x4d3ac0, 0x402480 on the attacker's record */`) names another function, it is no definition of it.
+    let mut owner: HashMap<u64, Vec<(&str, String)>> = HashMap::new();
+    for f in s.functions() {
+        let mut seen: Vec<&Option<String>> = vec![];
+        for (t, a) in &f.0 .4 {
+            if !seen.contains(&t) {
+                seen.push(t);
+                owner.entry(*a).or_default().push((f.0 .0.as_str(), format!("include/{}.h", f.0 .2)));
+            }
+        }
+    }
+    let own = |p: &FilePart, a: &u64| owner.get(a).is_some_and(|v| v.iter().any(|(def, hdr)| p.rel == *def || p.rel == *hdr));
+    let mut described: Vec<i64> =
+        s.parts.iter().flat_map(|p| p.described.iter().filter(|a| own(p, a)).map(|&a| a as i64).collect::<Vec<_>>()).collect();
     described.sort();
     described.dedup();
     (raw.into_iter().map(|x| x.to_string()).collect(), described)

@@ -91,8 +91,8 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
   prototyped, per call `safe` or re-grade) and the functions to re-grade; `--write` makes the include when only
   duplicates are in the way (`--at LINE` places the include when the default line fails the trial). `warning=declaration-set`: re-grade every function of the unit after the include,
   byte ones first (VC6 /O2 moves code by the declaration set alone): `--trial` compiles the unit with the include
-  (nothing written) and lists the functions whose grade would fall (`fall=ADDR ... code=byte trial=shape`). `warning=q6`: move the dropped duplicate's
-  words into the function's address comment first, or the function falls to draft.
+  (nothing written) and lists the functions whose grade would fall (`fall=ADDR ... code=byte trial=shape`). A dropped duplicate's
+  comment never describes its function (Q6 reads the function's own documentation only), so no words are lost to Q6.
 
 ### 2.2 Code below shape (`section=draft`)
 Explain every `code` hunk from the evidence and fix the C's meaning: a wrong condition, operand or constant, a
@@ -132,7 +132,10 @@ work, however long.
   array in the macro's file: its name is its address, N counts elements). `(*(T *)datum)` / `(*(T *)(ptr + N))`
   (no `&`, no array: through the datum's value) is raw access and keeps the function at draft.
 - Q5 markers (ROUGH, TODO, `@rough`): remove them once the function is written.
-- Q6: the address comment says what the function does (`/* 0x4a3000, sends the login reply */`).
+- Q6: the address comment says what the function does (`/* 0x4a3000, sends the login reply */`). Only the
+  function's own documentation counts: the address comment above its definition, or its declaration's comment in
+  its owner header `include/<unit>.h`. A copy's comment in another unit's head or header does not, nor a text that
+  only names a file (`/* 0x4025c0, ch.h */`, `as in dd_vesa.h`, `defined elsewhere`).
 - Q7: every call has a prototype (`dcp lint` evaluates it): the callee's prototype lives in its defining unit's
   header `include/<unit>.h`; include that header, never write a second prototype (`dcp refs NAME` shows them).
   When that include does not compile because the unit's head redeclares the header's symbols (its own

@@ -65,6 +65,22 @@ def test_unit_file_order_and_fn(tiny):
     assert len(errs) == 1 and "unexpected source file src/old/f_10001020.c" in errs[0][3], errs
 
 
+def test_q6_reads_a_functions_own_documentation(tiny):
+    """Q6's described addresses: a function's definition comment and its declaration in its owner header
+    include/<unit>.h; never a copy in another unit's header or source, nor a later address in another function's
+    comment, nor a text that only names a file."""
+    write(tiny, "include/net.h", "int get(void);  /* 0x10001020, reads the counter */\n"
+                                 "void log3(void);  /* 0x10001030, logs three times */\n")
+    write(tiny, "include/log.h", "void log3(void);  /* 0x10001030, net.h */\n")
+    unit(tiny, "net", '#include "net.h"\nvoid log4(void);  /* 0x10001040, logs four times */\n',
+         "/* 0x10001020 */\nint get(void)\n{\n    return 1;\n}\n",
+         "/* 0x10001060, 0x10001030 on the record */\nvoid put(void)\n{\n}\n")      # 0x10001030 is log3's
+    unit(tiny, "log", "int get(void);  /* 0x10001020, as in net.h */\n",
+         "/* 0x10001030 */\nvoid log3(void)\n{\n}\n", "/* 0x10001040, defined in log.c */\nvoid log4(void)\n{\n}\n",
+         "/* 0x10001050, logs five times */\nvoid log5(void)\n{\n}\n")
+    assert scan(tiny).context()[1] == [0x10001020, 0x10001050, 0x10001060]
+
+
 def test_unit_targets(tiny2):
     unit(tiny2, "net", "/* 0x10001020, other:0x10001020, both */\nint get(void)\n{\n    return 1;\n}\n",
          "#if defined(DCP_TARGET_other)\n/* other:0x10001030, only the second target */\nvoid only(void)\n{\n}\n#endif\n",

@@ -44,6 +44,9 @@ static DESCRIBED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\A\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)").unwrap());
 static MORE_ADDRS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A(?:\s*[,/]\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+)*").unwrap());
+static FILE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\w./\\-]+\.[ch]\b").unwrap());
+/// the words of a note where a declaration comes from, none a description (describes)
+const POINTER_WORDS: [&str; 12] = ["as", "in", "see", "from", "defined", "declared", "elsewhere", "also", "the", "same", "copy", "of"];
 static SPACES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+").unwrap());
 const TYPEP: &str = r"[^()]*(?:\([^()]*\)[^()]*)*";
@@ -100,6 +103,17 @@ fn literal_value(s: &str) -> Option<u64> {
 /// text before the first @deep / @stuck / @rough
 fn before_tags(s: &str) -> &str {
     TAGS.find(s).map(|m| &s[..m.start()]).unwrap_or(s)
+}
+
+/// Whether an address comment describes what its addresses are (Q6): text after the addresses, before the tags, that
+/// is more than file names (`ch.h`, `dd_vesa.c`) and the words pointing at them (`as in dd_vesa.h`, `defined
+/// elsewhere`): a copy's note where the declaration comes from is no description.
+fn describes(body: &str) -> bool {
+    let Some(m) = DESCRIBED.captures(body) else { return false };
+    let rest = before_tags(m.get(2).unwrap().as_str());
+    let rest = &rest[MORE_ADDRS.find(rest).map(|x| x.end()).unwrap_or(0)..];
+    let rest = FILE_NAME.replace_all(rest, " ");
+    WORD.find_iter(&rest).any(|w| !POINTER_WORDS.contains(&w.as_str().to_ascii_lowercase().as_str()))
 }
 
 /// srcscan.assign: a comment's addresses over n declarators.
@@ -380,6 +394,7 @@ pub(crate) type ErrRow = (String, i64, String, String);
 /// One file's part of the scan: the rows of srcscan's dataclasses (macros, described, functions, data, ptrcasts,
 /// views, rawobj, errors, placeholders) and the file's piece.
 pub(crate) struct FilePart {
+    pub rel: String,
     pub macros: Vec<(String, String)>,
     pub described: Vec<u64>,
     pub functions: Vec<FnRow>,
@@ -403,16 +418,6 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
             let rest = &text[(s + name.len()).min(*e)..*e];
             let k = rest.find(')').map(|k| k + 1).unwrap_or(0);
             macros.push((name.clone(), py_strip(&rest[k..]).to_string()));
-        }
-    }
-    let mut described: Vec<u64> = vec![];
-    for &(_, _, body) in &sf.comments {
-        if let Some(m) = DESCRIBED.captures(body) {
-            let rest = before_tags(m.get(2).unwrap().as_str());
-            let rest = &rest[MORE_ADDRS.find(rest).map(|x| x.end()).unwrap_or(0)..];
-            if !rest.trim_matches(|c| " \t\r\n,.-:;*/".contains(c)).is_empty() {
-                described.extend(lead_addrs(body).0.into_iter().map(|x| x.1));
-            }
         }
     }
     let unit = std::path::Path::new(rel).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -468,6 +473,15 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         let unlinked = um.is_some() && addrs.is_empty();
         functions.push(((rel.to_string(), line, unit.clone(), fname, addrs, unlinked, what),
                         (deep, stuck, ROUGH.is_match(body), sf.line_of(sf.comments[k].0), fstatic, end.map(|e| e.0).unwrap_or(0), ts)));
+    }
+    // the addresses the file's comments describe (Q6): a unit file's only by its definitions' address comments (a
+    // declaration in a unit file is a copy), any other file's by every comment (frontend::context keeps a header's
+    // only for the functions of the unit it is named after, include/<unit>.h)
+    let mut described: Vec<u64> = vec![];
+    for (k, &(_, _, body)) in sf.comments.iter().enumerate() {
+        if (!is_unit || skip.contains(&k)) && describes(body) {
+            described.extend(lead_addrs(body).0.into_iter().map(|x| x.1));
+        }
     }
     // the data declarators, one address comment per statement (Source.model_data)
     let vars = &model.vars;
@@ -588,7 +602,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
     };
     let lint = views.iter().map(|(t, m)| Ok((t.clone(), crate::lint::file_lint(rel, &sf, m)?))).collect::<PyResult<Vec<_>>>()?;
     let piece = hold(Piece { view, rel: rel.to_string(), defs: defs_of, lint, sysinc: crate::lint::system_includes(text) });
-    Ok(FilePart { macros, described, functions, data, ptrcasts, views: vrows, rawobj, errors, placeholders, piece })
+    Ok(FilePart { rel: rel.to_string(), macros, described, functions, data, ptrcasts, views: vrows, rawobj, errors, placeholders, piece })
 }
 
 #[cfg(test)]
