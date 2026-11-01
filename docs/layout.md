@@ -61,7 +61,6 @@ src/<unit>.c             one translation unit: the head region (includes, local 
                          declaration block, leading data: everything above the first function), then the
                          functions with the file-scope data between them, in the original's TU order
 include/<unit>.h         public prototypes and extern declarations
-notes/units/<unit>.md    the unit's notes: Open work first, then findings
 ```
 
 The file is compiled as it stands: its text order is the TU order (CL compiles a caller differently once a
@@ -247,7 +246,7 @@ uv run dcp rename OLD NEW [OLD NEW ...] --why "..."  # identifiers (OLD: a name,
 ```
 
 `dcp unit new` = `dcp layout unit propose` (refuses its own L3 / L4 / L7 / L8 errors) + `src/<unit>.c` (its head),
-`include/<unit>.h` (with its guard) and `notes/units/<unit>.md` (Open work first, then findings).
+and `include/<unit>.h` (with its guard).
 
 `dcp draft` inserts the function into `src/<unit>.c` (the core's draft.rs) before the address comment of the unit's
 next function of the target (else at the end; another target than the default: under its `#if`): the address
@@ -272,11 +271,10 @@ drafted=0x10001310  name=deflate_10001310  unit=deflate  file=src/deflate.c  bod
 ```
 
 `dcp unit join A B` puts the lines of B's head A lacks into A's head and B's functions after A's (src/A.c),
-merges the headers and the notes, points
+merges the headers, points
 the includes at A's header, drops B's start boundary and A's end at it (B's end becomes A's), renames
 `B_<addr>` placeholders to `A_<addr>`, builds before and after and exits 1 when a function's code grade or the
-error count changed (evidence to keep them apart). `dcp unit rename` moves the unit's file, header (and guard) and
-notes, fixes includes, the boundary lines' `tu=` (and `by=` on the start), the placeholders. `dcp rename`
+error count changed (evidence to keep them apart). `dcp unit rename` moves the unit's file and header (and guard), fixes includes, the boundary lines' `tu=` (and `by=` on the start), the placeholders. `dcp rename`
 replaces whole words in code and comments of src/ and include/ (not in string literals or #include lines),
 refuses a name that is already an identifier of the code, renames `name` declarations. OLD may
 be an address (`0x4a3000`, `exe:0x4a3000`): the ledger's name of it on that target. Every outcome is printed:

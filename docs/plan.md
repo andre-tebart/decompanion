@@ -241,7 +241,7 @@ the ROUGH/SKELETON words), unit **data** `draft → placed → byte`. Level ladd
 or (deep) an instruction count beyond max(12, 1/100) of the original's without `--size-explained`:
 reconstruction and reading are base work). Queues `dcp next
 --base|--deep|--names|--data` with the rea ordering rules; no skipping; rendezvous sharding by unit start kept.
-Checks `M1` grade fell vs baseline, `M2` stale level tag, `M3` stuck without open.md entry, `M4` distance WORSE
+Checks `M1` grade fell vs baseline, `M2` stale level tag, `M3` (dropped: a `@stuck` tag carries its reason; there are no unit notes), `M4` distance WORSE
 without `dcp accept`, `M5`/`M6` clang cross-TU / in-TU conflicts, `M7` K&R call, `M8` reloc-site contradiction
 (our object references X where the original's site holds Y — exact for every function of a DLL), `M9`/`M10`
 literal text / float bits differ, `M11` byte match depending on foreign code above it, `M12` header-only commit
@@ -294,8 +294,8 @@ kept from rea: `dcp session start` prints gate + shard + first queue item; own b
 on `dcp next`; one commit per raise / escalate / draft batch (`<unit>: <verb> 0x.. (<skill>)`); `dcp session wrap`
 builds, links, checks, prints the computed report. `dcp session prepare B D [--layout]` = gates + `wt new` per
 worker + shards + prompts in `build/session/prompts/<w>.md`; the orchestrator launches all workers in one message
-and only merges. `dcp session report` is computed from git + ledger + `names.log` (no hand-written session logs;
-`src/<unit>/open.md` is the only prose state).
+and only merges. `dcp session report` is computed from git + ledger + `names.log` (no hand-written session logs
+or unit notes: the open work is in the sources, the `@rough` / `@deep` / `@stuck` tags and the unit's lead comment).
 
 ## 6. Repository layout
 
@@ -325,7 +325,7 @@ decompanion/
   README.md   (the model, the ladder, the phases, the CLI)
 
 guild-server/   (target project, created by `dcp init`; sibling of rea)
-  decompanion.toml  decl/{text,data}.dcl  names.log  claims.log  ledger/grades.tsv  libs/  include/  src/<unit>/{head.c,f_<addr>.c,open.md}
+  decompanion.toml  decl/{text,data}.dcl  names.log  claims.log  ledger/grades.tsv  libs/  include/  src/<unit>/{head.c,f_<addr>.c}
   build/ (ignored)  .claude/skills/ (installed)  pyproject.toml (depends on ../decompanion by path)
 ```
 
@@ -335,7 +335,7 @@ guild-server/   (target project, created by `dcp init`; sibling of rea)
 |---|---|---|
 | M1 setup byte map | fact/store/engine, pe32, coff, vc6 rich/fill, disasm, all `S.*` + `B.bytemap` + setup checks, `dcp init`, `dcp setup`, `dcp why`, `dcp facts`, `dcp conflicts`, `dcp rules`, `dcp toolchain` | on server.dll: every byte has exactly one `symbol`/`region` fact; LIBC members placed proven with `.reloc` coincidence; report shows 37 user objects C, static LIBC, CRT region with gaps listed, exports + DllMain starts, toolchain = declared flags; `dcp why` < 100 ms; rerun runs zero rules; unit tests on a synthetic PE |
 | M2 declarations + layout | the target dimension (section 1.5: `[[target]]`, store per target, `--target`, target prefixes in the address-comment and `.dcl` grammars, `dcp target add`), `decl.py`, `srcscan.py`, `L.*`, boundary rules, Ghidra import, `dcp layout *`, `dcp decl add`, `dcp check` (loader + conflict gate), `dcp wt new/seed` (overlay store) | first unit declared on server.dll from `Init` outward; a deliberately wrong boundary and a walk crossing a start are caught (L1/L3/L4); a second target added to a scratch project gets its own store and `dcp why --target` answers for both |
-| M3 build + compare + grades (done 2026-10-29) | `toolchains/vc6/cl.py` (`/E` include sets: the `/P` listing on stdout), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.site/.content/.draft`, capstone asmdiff/diffclass, `G.grade`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote/escalate/stuck/asmdiff/diffclass/lint`, full `/DLL` link with generated `.def`, lint, checks M1, M2 (stale / double level tag), M5..M10, D1, D4..D6; open: M3, M4, M11, M12, D2, D3, `M.data.iat/.lib/.fill`, `M.bytes.declared` | first functions byte-match (server.dll DllMain / Init / Exit, relocs 0/0, 2/2, 4/4); `dcp toolchain probe` runs the grid and says *indistinguishable* for most flags with three anchors from one unit (correct: proven needs anchors from two units); a header edit recompiles only its includers (shown) |
+| M3 build + compare + grades (done 2026-10-29) | `toolchains/vc6/cl.py` (`/E` include sets: the `/P` listing on stdout), pool compile, amalgamation, `M.match` with reloc aid, `M.draft`, `M.data.site/.content/.draft`, capstone asmdiff/diffclass, `G.grade`, `ledger/grades.tsv`, `dcp build/link/grade/next/promote/escalate/stuck/asmdiff/diffclass/lint`, full `/DLL` link with generated `.def`, lint, checks M1, M2 (stale / double level tag), M5..M10, D1, D4..D6; open: M4, M11, M12, D2, D3, `M.data.iat/.lib/.fill`, `M.bytes.declared` | first functions byte-match (server.dll DllMain / Init / Exit, relocs 0/0, 2/2, 4/4); `dcp toolchain probe` runs the grid and says *indistinguishable* for most flags with three anchors from one unit (correct: proven needs anchors from two units); a header edit recompiles only its includers (shown) |
 | M4 layout tooling (done 2026-10-29) | Ghidra headless export (since the amendment of section 12: the analyzer seam inside `dcp setup`, its lines in `dcp report`), L9, reading tools (`dcp disasm`, `dcp dump`, `dcp refs`, `dcp layout literals`, `dcp layout starts`), drafting (`dcp unit new`, `dcp unit join`, `dcp unit rename`, `dcp draft [--next]`, `dcp rename` + `names.log`), unlinked helpers and `bytes dead` in the unit byte map, L10, `dcp session start`, `dcp session wrap`, the skill `dcp-layout` (`dcp init` / `dcp skills install`) | on a scratch project of server.dll: export, status, starts / literals of a range, the first ten minutes of a layout session (unit new, five drafts, build, grade, refs, rename, unit rename, check, session wrap); shown: 678 Ghidra drafts in ~30 s (all 311 game functions), four units declared around 0x10001000 (zlib's adler32 and crc32, a broadcast helper, deflate), five drafts, two of them byte-identical after the hand fixes, `dcp check` and `dcp session wrap` ok with the undrafted externals classified |
 | M5 layout experiment | the user runs layout sessions on server.dll (`../guild-server`) by hand with the skill; findings go back into the tooling | the units of server.dll's game code drafted and separated, the session reports computed |
 | M6 match toolbox | try/vargen/respell on fragments with the shared pool and hash cache, listing, slotmap, siblings, spell/idioms catalogue, tuorder, c2prio plugin, `dcp escalate/stuck/accept`, `dcp data *` | a respell round on a shape-grade function runs with cache hits for repeated variants; deep queue reproducible |
@@ -400,7 +400,7 @@ zero rule runs.
 - The level tags are removed by `dcp build` when a function reaches byte + readable (auto-clear); a remaining
   stale tag is the warning M2.
 - The toolchain not installed: units are not compiled and M.compile warns instead of failing the gate.
-- Open (M6 or later): M3 (stuck without open.md), M4 (distance WORSE without `dcp accept`), M11, M12 (the
+- Open (M6 or later): M4 (distance WORSE without `dcp accept`), M11, M12 (the
   header-commit distance check), D2 / D3, `M.data.iat` / `.lib` / `.fill`, `M.bytes.declared`, `dcp accept`.
 
 ## 12. Milestone 4 as built (2026-10-29): what changed against the plan, and why
@@ -908,7 +908,7 @@ headers, 4668 files in gildegold. The unit is the unit of work and of ownership 
 
 The model:
 - `src/<unit>.c` is the translation unit; its text order is the TU order. The head region is everything before
-  the first function definition (the includes, the dcp declaration block). Notes: `notes/units/<unit>.md`.
+  the first function definition (the includes, the dcp declaration block). No notes file (removed 2026-11-01).
 - A function's address comment is the own-line comment directly above its definition (`/* unlinked, what */`
   for a function the binary does not hold); data comments stay trailing.
 - `__FILE__`: the unit carries its `#line 1 "<original path>"` and its `#line N` pins itself; diagnostics map
@@ -946,7 +946,7 @@ Done, stages 2 and 3 (2026-10-30; one commit: the editors cannot stay on fragmen
 - D4 ranks by the unit file's lines, a header's definitions at the line that includes it (zlib's trees.h).
 - The editors: draft inserts in address order (before the next function of the target, a target other than the
   default under its `#if`), the declaration block and the includes stay in the head region (edit.head_end), unit
-  new / join / rename on src/<unit>.c and notes/units/<unit>.md, data fix and headers on the file's text, the
+  new / join / rename on src/<unit>.c and include/<unit>.h, data fix and headers on the file's text, the
   session's change list from the address comments; `dcp fn KEY` prints one function; `dcp unit cat` is gone;
   `dcp unit fold` converts the old layout (to be removed after the migration).
 - The readability memo keys on the span's text without the positions (an edit above a function moves it), and

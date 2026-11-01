@@ -390,7 +390,7 @@ uv run dcp refs Init                           # everything that names a functio
 uv run dcp layout starts 0x10008c00..0x10009000     # every start with its evidence
 uv run dcp layout literals 0x10008c00..0x10009000   # the literal-pool view (B-LIT): first users, blocks, interleaving
 uv run dcp layout fptrs UNIT                        # function pointers in data (tables) with their units
-uv run dcp unit new NAME --range 0xA..0xB --by guess --why "..."   # propose + src/NAME.c, include/NAME.h, notes/units/NAME.md
+uv run dcp unit new NAME --range 0xA..0xB --by guess --why "..."   # propose + src/NAME.c, include/NAME.h
 uv run dcp draft --next                        # the next function into its unit's file (the analyzer's pseudocode or a @rough skeleton)
 uv run dcp fn NAME|0xADDR                      # one function of the sources: its file, lines and text
 uv run dcp unit join A B --why "..."           # B into A (grades must not change)

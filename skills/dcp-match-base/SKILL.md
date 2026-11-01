@@ -26,7 +26,9 @@ Hard rules
   and `#define` continuations with an editing tool, then check the bytes with `dcp dump` / `dcp asmdiff`.
 - The sources are the state: the address comment directly above every function's definition
   (`/* 0x10001234, what it does */`), the declarations in `decl/*.dcl`, renames in `names.log` (written by
-  `dcp rename`), notes in `notes/units/<unit>.md`. Nothing else; no session log.
+  `dcp rename`), the unit's current state in its lead comment (the first comment of `src/<unit>.c`: what the
+  unit is, then its open questions as `Open:` lines). The lead comment is a brief snapshot, rewritten, never
+  appended to: no dates, no history (git is the history). Nothing else; no notes files, no session log.
 - A unit is one file, `src/<unit>.c`, in the original's TU order: its head region (includes, types, prototypes,
   the dcp declaration block: everything above the first function), then the functions with the data between
   them. `uv run dcp fn NAME|0xADDR` prints one function with its file and lines (`at=src/<unit>.c:FIRST-LAST`);
@@ -47,8 +49,8 @@ Hard rules
    again; an `obligation=toolchain.*` / `obligation=libs.archives` line is a human decision: stop and hand it to
    the user. The session clock it mentions bounds layout sessions; a match-base session is counted in functions
    (section 4), not minutes.
-2. `uv run dcp next` - the base queue, first item first. Read `notes/units/<unit>.md` of its unit (its **Open work**
-   first) when it exists.
+2. `uv run dcp next` - the base queue, first item first. Read the lead comment of its unit's `src/<unit>.c` (its
+   `Open:` lines).
 
 ## 2. Work loop: one function at a time, always the first item
 
@@ -100,7 +102,7 @@ wrong offset), a call with the wrong arguments, a loop of another form. Stop whe
 work, however long.
 - Note `dist` before an edit; after `uv run dcp build`, `uv run dcp grade NAME`: when the distance grew and the
   edit corrected no meaning, revert it (Edit back, or `git checkout -- <file>`). A meaning fix that costs
-  distance is kept: say why in the commit message and in the unit's notes.
+  distance is kept: say why in the commit message.
 - The original walks pointers, not indices; a `cmp reg, <address>` loop end is an array of structs walked to
   its end (write the array, not address arithmetic). Five fields of one record are one struct, not five
   symbols: separate symbols cost a relocated base each.
@@ -148,8 +150,8 @@ work, however long.
   cast macro in the unit's head next to the include (`#define d2_MoveObjS ((void (*)(short, short, int))d2_MoveObj)
   /* @original main passes shorts */`), used at those calls. A fall is no way around a conflict (2.6 says when
   one is right), and neither is a copied prototype or a local struct view. A conflict you cannot settle in the
-  session: leave it, note `head: include/<x>.h, <symbol> unsettled (<why>)` under **Open work** in the
-  unit's notes, and leave Q7 open for the calls it blocks.
+  session: leave it, add `Open: head: include/<x>.h, <symbol> unsettled (<why>)` to the
+  unit's lead comment, and leave Q7 open for the calls it blocks.
 - `extern GAPDATA name[]` (`__declspec(align(1)) unsigned char`) is for the unnamed gap blocks only
   (`full_data_<addr>`; it keeps the full rebuild's data packed). An object you name gets its real type and one
   declaration, in its unit's header (section 2.5, gap data).
@@ -183,8 +185,8 @@ One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte 
     still matching confirms the address (`M.data.site`). A move that breaks one of these was the wrong owner or
     the wrong size: undo it, do not answer it with alignment or padding tricks.
   - An address between two units' blocks with users in both is a boundary question for layout: name and type
-    it in place if you must, leave it in the gap block, and note `data: <addr> <name>, owner <A> or <B>
-    (<evidence>)` under **Open work** in the unit's notes.
+    it in place if you must, leave it in the gap block, and add `Open: data: <addr> <name>, owner <A> or
+    <B> (<evidence>)` to the unit's lead comment.
 
 ### 2.6 Accepted falls (your judgement)
 The goal is a code base that is, as a whole, closer to the original's source, not the largest count of
@@ -230,8 +232,10 @@ of a session; that is expected base work, not a reason to escalate it.
 2. `uv run dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
    computed report (errors, byte and readable counts before -> after, `grades changed` per function, renames,
    the next item). It must say `gate: ok`.
-3. Update `notes/units/<unit>.md` of every unit you touched: **Open work** first (escalated functions with the
-   remaining hunk, near-misses), then the findings (what the functions do, the types and names you derived).
-4. Commit: `git add -A && git commit -m "session: match-base wrap (<units>)"` (the baseline and the notes).
+3. Rewrite the lead comment of every unit you touched to its current state (a few lines): what the unit is,
+   then one `Open:` line per unit-level question still open (head conflicts, data owners). Drop what is
+   settled; never add a dated or "this session" line. Escalated functions carry their reason in their tag,
+   what a function does goes into its address comment, types and names into the code.
+4. Commit: `git add -A && git commit -m "session: match-base wrap (<units>)"` (the baseline).
 5. Final message: the report's first lines (byte / readable before -> after), each function raised or
    escalated with its new grade, the renames, the next `dcp next` item. Stop.

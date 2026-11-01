@@ -1,7 +1,7 @@
 //! The file side of unit commands: `dcp unit new` (the skeleton files), `dcp unit join` and `dcp unit rename`.
 //!
-//! A unit's files: src/<unit>.c (the translation unit: its head region, then its functions in TU order),
-//! notes/units/<unit>.md (the unit's notes: Open work first, then findings) and include/<unit>.h. Its boundaries are
+//! A unit's files: src/<unit>.c (the translation unit: its head region, then its functions in TU order) and
+//! include/<unit>.h. Its boundaries are
 //! `boundary start|end tu=<unit>` lines of decl/text.dcl (any target prefix). Placeholders of its functions are
 //! spelled `<unit>_<addr>` (draft.rs), so a join or a rename of the unit renames them too.
 
@@ -39,24 +39,9 @@ fn read(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n").replace('\r', "\n")
 }
 
-/// The project-relative path of a unit's notes.
-fn notes(unit: &str) -> String {
-    format!("notes/units/{unit}.md")
-}
-
-fn today() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
-}
-
 fn head_text(unit: &str, lo: i64, hi: Option<i64>, by: Option<&str>, why: &str) -> String {
     let rng = match hi { Some(h) => format!("{lo:#010x}..{h:#010x}"), None => format!("{lo:#010x}..") };
-    format!("/* {unit}: {why}\n   unit {rng}, named by {}; boundaries in decl/text.dcl, notes in {} */\n#include \"{unit}.h\"\n", by.unwrap_or("-"), notes(unit))
-}
-
-fn open_md(unit: &str, lo: i64, hi: Option<i64>, by: Option<&str>, why: &str) -> String {
-    let rng = match hi { Some(h) => format!("{lo:#010x}..{h:#010x}"), None => format!("from {lo:#010x}") };
-    format!("# {unit}\n\n## Open work\n\n- draft every function {rng} in address order (`dcp draft --next`)\n\n## Findings\n\n- {}: unit declared ({rng}, named by {}): {why}\n",
-            today(), by.unwrap_or("-"))
+    format!("/* {unit}: {why}\n   unit {rng}, named by {}; boundaries in decl/text.dcl */\n#include \"{unit}.h\"\n", by.unwrap_or("-"))
 }
 
 /// Write the skeleton files of a new unit (those that do not exist): `wrote <path>` lines.
@@ -69,8 +54,7 @@ pub fn unit_create(root: &str, unit: &str, range: &str, by: Option<String>, why:
         None => (pa(range)?, None),
     };
     let mut out = vec![];
-    for (rel, text) in [(format!("src/{unit}.c"), head_text(unit, lo, hi, by.as_deref(), why)), (format!("include/{unit}.h"), E::header_text(unit, why)),
-                        (notes(unit), open_md(unit, lo, hi, by.as_deref(), why))] {
+    for (rel, text) in [(format!("src/{unit}.c"), head_text(unit, lo, hi, by.as_deref(), why)), (format!("include/{unit}.h"), E::header_text(unit, why))] {
         if !exists(root, &rel) {
             E::write(&p_of(root, &rel), &text).map_err(err)?;
             out.push(format!("wrote {rel}"));
@@ -160,7 +144,7 @@ fn merge_lines(into: &str, extra: &str, drop: &HashSet<String>) -> String {
 
 /// Move unit b into unit a (the caller checked that b directly follows a): a's head region plus the lines of b's head
 /// a lacks (b's include of its own header becomes a's, b's leading comment goes), then a's functions, then b's.
-fn join(root: &str, a: &str, b: &str, why: &str) -> Result<Join, String> {
+fn join(root: &str, a: &str, b: &str) -> Result<Join, String> {
     let mut j = Join::default();
     let (fa, fb) = (p_of(root, &format!("src/{a}.c")), p_of(root, &format!("src/{b}.c")));
     if Path::new(&fb).exists() {
@@ -217,15 +201,6 @@ fn join(root: &str, a: &str, b: &str, why: &str) -> Result<Join, String> {
             E::write(&p, &(out.join("\n") + "\n"))?;
         }
     }
-    // notes
-    let (ob, oa) = (p_of(root, &notes(b)), p_of(root, &notes(a)));
-    if Path::new(&ob).exists() {
-        let text = if Path::new(&oa).exists() { read(&oa) } else { format!("# {a}\n\n## Open work\n\n## Findings\n") };
-        let tb = read(&ob);
-        let rest = tb.split_once('\n').map(|x| x.1).unwrap_or("");
-        E::write(&oa, &(text.trim_end_matches('\n').to_string() + &format!("\n\n## joined from {b} ({}): {why}\n", today()) + &rest.replace("\n## ", "\n### ")))?;
-        E::remove(root, &ob)?;
-    }
     // decl: b's start goes, b's end becomes a's end, a's own end (at b's start) goes
     let mut b_start: HashMap<Option<String>, i64> = HashMap::new();
     rewrite_boundaries(root, &mut |d: &Decl| {
@@ -264,18 +239,17 @@ struct Rename {
     includes: i64,
 }
 
-/// Rename unit old to new: its file and notes, the header (and its guard), the includes, the boundary lines' tu= (and
+/// Rename unit old to new: its file, the header (and its guard), the includes, the boundary lines' tu= (and
 /// the start's by=), the placeholders `<old>_<addr>`.
 fn rename(root: &str, old: &str, new: &str, by: Option<&str>) -> Result<Rename, String> {
     let mut r = Rename::default();
     if exists(root, &format!("src/{new}.c")) || exists(root, &format!("include/{new}.h")) {
         return Err(format!("unit {new} exists (src/{new}.c or include/{new}.h)"));
     }
-    for (f, dst) in [(format!("src/{old}.c"), format!("src/{new}.c")), (notes(old), notes(new))] {
-        if exists(root, &f) {
-            E::move_file(root, &p_of(root, &f), &p_of(root, &dst))?;
-            r.moved.push(format!("{f} -> {dst}"));
-        }
+    let (so, sn) = (format!("src/{old}.c"), format!("src/{new}.c"));
+    if exists(root, &so) {
+        E::move_file(root, &p_of(root, &so), &p_of(root, &sn))?;
+        r.moved.push(format!("{so} -> {sn}"));
     }
     let (ho, hn) = (format!("include/{old}.h"), format!("include/{new}.h"));
     if exists(root, &ho) {
@@ -299,14 +273,7 @@ fn rename(root: &str, old: &str, new: &str, by: Option<&str>) -> Result<Rename, 
         let t = read(&sn);
         let lead = format!("/* {old}:");
         if let Some(rest) = t.strip_prefix(&lead) {
-            E::write(&sn, &(format!("/* {new}:") + &rest.replacen(&notes(old), &notes(new), 1)))?;
-        }
-    }
-    let md = p_of(root, &notes(new));
-    if Path::new(&md).exists() {
-        let t = read(&md);
-        if let Some(rest) = t.strip_prefix(&format!("# {old}\n")) {
-            E::write(&md, &(format!("# {new}\n") + rest))?;
+            E::write(&sn, &(format!("/* {new}:") + rest))?;
         }
     }
     r.decl = rewrite_boundaries(root, &mut |d: &Decl| {
@@ -362,7 +329,7 @@ pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str
     build.call0()?;
     let db = p.store_path();
     let (before, err_before) = byte_state(&db)?;
-    let j = match join(&root, a, b, why) {
+    let j = match join(&root, a, b) {
         Ok(j) => j,
         Err(e) => return Ok((vec![], Some(e), 1)),
     };

@@ -22,8 +22,10 @@ Hard rules
   state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp accept` write it).
 - The sources are the state: the address comment directly above every function's definition
   (`/* 0x10001234, what it does */`), the declarations in `decl/*.dcl` (unit boundaries, dead bytes, starts,
-  names; always with a reason after ` -- `), renames in `names.log` (written by the dcp commands), notes in
-  `notes/units/<unit>.md`. Nothing else.
+  names; always with a reason after ` -- `), renames in `names.log` (written by the dcp commands), the unit's
+  current state in its lead comment (the first comment of `src/<unit>.c`: what the unit is, then its open
+  questions as `Open:` lines). The lead comment is a brief snapshot, rewritten, never appended to: no dates, no
+  history, no session log (git is the history). Nothing else: no notes files.
 - A unit is one file, `src/<unit>.c`, in the original's TU order: the head region (includes, types, prototypes,
   the dcp declaration block: everything above the first function), then the functions with the data between
   them. `uv run dcp fn NAME|0xADDR` prints one function with its file and lines (`at=src/<unit>.c:FIRST-LAST`):
@@ -54,7 +56,7 @@ Hard rules
    checks, no estimating. Until a clock line says `over=yes` the session is not over. The 30 minutes bound the
    work loop only: the wrap-up has no time limit. The only failure is ending the turn before `over=yes` (a
    complete layout is the one exception, below), not the clock running out mid-function.
-3. Read `notes/units/<unit>.md` of the unit the `next=` line names (its **Open work** first) when it exists.
+3. Read the lead comment of `src/<unit>.c` of the unit the `next=` line names (its `Open:` lines) when it exists.
 
 ## 2. Work loop (until the clock says over=yes)
 
@@ -85,8 +87,8 @@ Always work the first open function; never skip one, never stop early, never end
    function a description in its address comment (`/* 0x10001234, sends the login reply */`) and better names
    for what you understood (section 4).
 4. `uv run dcp grade <unit>` - grades and distance per function. Only quick byte fixes (the original's size, a
-   few bytes off, one local cause in `uv run dcp asmdiff NAME`); at most two attempts, then note the near-miss
-   in the unit's notes.
+   few bytes off, one local cause in `uv run dcp asmdiff NAME`); at most two attempts, then leave it: the
+   grade and `dcp asmdiff` show the near-miss to the next session.
 5. Commit every few functions: `git add -A && git commit -m "<unit>: drafts 0x10001130..0x10001510 (layout)"`
    (`dcp build` exits 0 first).
 
@@ -149,7 +151,7 @@ Proof is often impossible; spend effort only on contrary evidence. Each kind and
 
 Commands: `uv run dcp unit new NAME --range 0xSTART..0xEND --by ... --why "..."` (runs L3 / L4 / L7 / L8 on the
 proposal first and refuses errors, writes the boundary lines and the files `src/NAME.c` (its head),
-`include/NAME.h`, `notes/units/NAME.md`); `uv run dcp layout units -v` (every unit: range, status, boundary
+`include/NAME.h`); `uv run dcp layout units -v` (every unit: range, status, boundary
 levels, open bytes, undrafted functions, dead bytes, unlinked helpers, L10); `uv run dcp layout unit propose`
 (the check without the files); `uv run dcp decl add "LINE"` (one declaration, inserted in order).
 
@@ -191,11 +193,11 @@ A helper the original inlined everywhere (so no address) stands in its unit's fi
 2. `uv run dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
    computed report (check before -> after, units declared / joined / renamed, functions drafted with their
    grades, renames, the units touched with their boundary levels, the next item). It must say `gate: ok`.
-3. Update `notes/units/<unit>.md` of every unit you touched: **Open work** first (rough functions, near-misses,
-   boundary doubts with their leads), then the findings (what the unit is, the evidence for its boundaries).
-   No session log: git and the report are the record.
-4. Commit: `git add -A && git commit -m "session: layout wrap (<units>)"` (the baseline `ledger/grades.tsv` and the
-   notes).
+3. Rewrite the lead comment of every unit you touched to its current state (a few lines): what the unit is,
+   then one `Open:` line per boundary doubt you leave open, with its lead. Drop what is settled; never add a
+   dated or "this session" line. The evidence for a boundary goes into its decl line's reason. Rough functions
+   and near-misses need no note (`@rough`, the grades). Git and the report are the record.
+4. Commit: `git add -A && git commit -m "session: layout wrap (<units>)"` (the baseline `ledger/grades.tsv`).
 5. Final message: the report's first lines (check before -> after, units, functions drafted), the open
    boundaries with their leads, the next item. Stop.
 

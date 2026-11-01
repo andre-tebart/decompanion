@@ -40,7 +40,7 @@ def rebuilt(args, p=None, e=None):
 # ------------------------------------------------------------------------------------------------ units
 def cmd_unit_new(args):
     """`dcp layout unit propose` (L3 / L4 / L7 / L8 on the proposal, the boundary lines written to decl/text.dcl),
-    then the unit's skeleton files: src/<unit>.c, include/<unit>.h, notes/units/<unit>.md (the ones missing)."""
+    then the unit's skeleton files: src/<unit>.c and include/<unit>.h (the ones missing)."""
     from . import native
     from .cli import cmd_layout_propose
     ns = argparse.Namespace(**{**vars(args), "dry_run": False})
@@ -63,7 +63,7 @@ def report(cmd: str, res) -> int:
 
 def cmd_unit_join(args):
     """Join unit B into unit A (B directly follows A; the core's units.rs): B's head lines A lacks go into A's head
-    region, B's functions follow A's in src/A.c, the headers and the notes merge, includes of B's header name A's,
+    region, B's functions follow A's in src/A.c, the headers merge, includes of B's header name A's,
     B's start boundary goes and its end becomes A's, the placeholders `B_<addr>` become `A_<addr>` (names.log). Both
     are built before and after: every function's code grade and the error count must stay as they were (a change is
     evidence to keep the units apart: revert with git); exit 1 otherwise."""
@@ -76,7 +76,7 @@ def cmd_unit_join(args):
 
 
 def cmd_unit_rename(args):
-    """Rename a unit (the core's units.rs): git mv of src/<old>.c, notes/units/<old>.md and include/<old>.h (its guard
+    """Rename a unit (the core's units.rs): git mv of src/<old>.c and include/<old>.h (its guard
     follows), every #include of the header, the boundary lines' tu= (and by= on the start line), the placeholders
     `<old>_<addr>` of its functions; names.log records each rename."""
     from . import native

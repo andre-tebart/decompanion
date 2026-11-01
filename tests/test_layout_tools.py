@@ -105,10 +105,10 @@ def test_unit_new_draft_rename(tiny, tmp_path):
                             (0x10001020, "FUN_10001020", F2, [(0x10001020, 0x10001026)])])
     code, out = dcp(tiny, "unit", "new", "net", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code")
     assert code == 0, out
-    for f in ("src/net.c", "include/net.h", "notes/units/net.md"):
+    for f in ("src/net.c", "include/net.h"):
         assert (tiny / f).exists(), f
-    assert (tiny / "notes/units/net.md").read_text().startswith("# net\n\n## Open work\n")
-    assert "notes in notes/units/net.md */" in (tiny / "src/net.c").read_text()
+    assert not (tiny / "notes").exists()
+    assert "boundaries in decl/text.dcl */" in (tiny / "src/net.c").read_text()
     assert "NET_H" in (tiny / "include/net.h").read_text()
     n_err = len(errors(tiny))
 
@@ -155,14 +155,14 @@ def test_unit_new_draft_rename(tiny, tmp_path):
     code, out = dcp(tiny, "rename", "net_10001030", "GetCounter", "--why", "x")
     assert code == 1
     assert len(errors(tiny)) == n_err
-    # unit rename: its file and notes, header, guard, includes, boundary lines, placeholders
+    # unit rename: its file, header, guard, includes, boundary lines, placeholders
     code, out = dcp(tiny, "unit", "rename", "net", "netcode", "--by", "tag", "--why", "the tag string 'net:'")
     assert code == 0, out
-    assert not (tiny / "src/net.c").exists() and (tiny / "src/netcode.c").exists() and (tiny / "notes/units/netcode.md").exists()
+    assert not (tiny / "src/net.c").exists() and (tiny / "src/netcode.c").exists()
     hdr = (tiny / "include/netcode.h").read_text()
     assert "NETCODE_H" in hdr and "NET_H" not in hdr and not (tiny / "include/net.h").exists()
     text = (tiny / "src/netcode.c").read_text()
-    assert text.startswith("/* netcode:") and "notes in notes/units/netcode.md */" in text
+    assert text.startswith("/* netcode:")
     assert '#include "netcode.h"' in text and "netcode_10001000" in text
     text = (tiny / "decl/text.dcl").read_text()
     assert "boundary start by=tag tu=netcode" in text and "tu=net " not in text
@@ -184,7 +184,7 @@ def test_unit_join(tiny):
     assert code == 1                                          # the earlier unit first
     code, out = dcp(tiny, "unit", "join", "a", "b", "--why", "one literal block")
     assert code == 0, out
-    assert not (tiny / "src/b.c").exists() and not (tiny / "include/b.h").exists() and not (tiny / "notes/units/b.md").exists()
+    assert not (tiny / "src/b.c").exists() and not (tiny / "include/b.h").exists()
     text = (tiny / "src/a.c").read_text()
     at = [text.index(f"/* {a:#010x}") for a in (0x10001000, 0x10001020, 0x10001030, 0x10001050)]
     assert at == sorted(at) and text.count('#include "a.h"') == 1 and "/* b:" not in text, text
@@ -192,7 +192,6 @@ def test_unit_join(tiny):
     decl = [l for l in (tiny / "decl/text.dcl").read_text().splitlines() if "boundary" in l]
     # b ran to the end of the game code without an end line: a's end at b's start goes, a runs on
     assert len(decl) == 1 and decl[0].startswith("0x10001000 boundary start by=guess tu=a")
-    assert "joined from b" in (tiny / "notes/units/a.md").read_text()
     assert "- unit b -> a by:main why:join: one literal block" in (tiny / "names.log").read_text()
     assert len(errors(tiny)) == before and "grades_changed=0" in out
     code, out = dcp(tiny, "layout", "units")
