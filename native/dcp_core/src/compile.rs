@@ -606,6 +606,36 @@ fn renamed_tokens(text: &str, mapping: &std::collections::BTreeMap<String, Strin
     out
 }
 
+/// The tu rows as they are (every column), for `tu_restore`: a rename refused after its write puts the sources
+/// back and with them the rows, so the build finds the objects from before current instead of compiling again.
+pub fn tu_snapshot(p: &Project) -> Result<Vec<Vec<rusqlite::types::Value>>, String> {
+    let db = p.store_path();
+    with_db(&db, |c| {
+        let mut st = c.prepare("SELECT unit, amalg, src_hash, flags, flags_hash, include_hash, obj_hash, ok, log, diags, at FROM tu")?;
+        let rows = st.query_map([], |r| (0..11).map(|i| r.get::<_, rusqlite::types::Value>(i)).collect::<Result<Vec<_>, _>>())?;
+        rows.collect()
+    }).map_err(|e| e.to_string())
+}
+
+/// Put back the tu rows of a `tu_snapshot`.
+pub fn tu_restore(p: &Project, rows: &[Vec<rusqlite::types::Value>]) -> Result<(), String> {
+    let db = p.store_path();
+    with_db(&db, |c| {
+        let tx = c.unchecked_transaction()?;
+        tx.execute("DELETE FROM tu", [])?;
+        {
+            let mut st = tx.prepare("INSERT INTO tu (unit, amalg, src_hash, flags, flags_hash, include_hash, obj_hash, ok, log, diags, at) \
+                                     VALUES (?,?,?,?,?,?,?,?,?,?,?)")?;
+            for r in rows {
+                st.execute(rusqlite::params_from_iter(r.iter()))?;
+            }
+        }
+        tx.commit()
+    }).map_err(|e| e.to_string())?;
+    p.forget_input("objects");
+    Ok(())
+}
+
 /// After a rename's write: each unit of `before` whose preprocessed text is now its text then with the old
 /// identifiers replaced by the new ones (and none of the new names occurred then) compiles to the same object but
 /// for the names of the renamed symbols: its object is the one from before with those symbols renamed, its tu row

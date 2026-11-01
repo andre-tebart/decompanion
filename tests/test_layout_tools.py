@@ -391,6 +391,10 @@ def test_rename_is_symbol_exact(tiny):
     assert "s.a_10001000 = count;" in text and "return s.a_10001000;" in text
     assert "int a_10001000 = 1;" in text and "return a_10001000 + checksum + a_10001000;" in text
     assert "struct S { int a_10001000; };" in text
+    # the replacements inside comments are listed for review (a match-base report: a note arguing from two names
+    # read "NEW ... NEW" after the rename)
+    assert "  comments: 1 line(s) where a_10001000 stood inside a comment now read checksum" in out, out
+    assert "    src/a.c:4: /* 0x10001000, checksum */" in out, out
 
 
 def test_rename_collides_only_with_code(tiny):

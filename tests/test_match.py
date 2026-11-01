@@ -136,6 +136,8 @@ def test_compile_and_byte_match(tiny):
     unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return nothing;\n}\n")
     code, out = dcp(tiny, "build")
     assert code == 1 and "src/net.c(6)" in out and "C2065" in out, out
+    # the last line names the failed unit, not the grades (a report: `| tail -1` read as a grade fall)
+    assert out.rstrip().splitlines()[-1].startswith("  FAILED units=net  "), out
     code, out = dcp(tiny, "check")
     assert code == 1 and "M.compile" in out
 
@@ -195,6 +197,12 @@ def test_rename_counts_the_errors_of_the_tree_as_from_before(tiny):
     assert code == 0, out
     code, out = dcp(tiny, "rename", "counter_value", "FUN_10001021", "--why", "a placeholder of no start (L5)")
     assert code == 1 and "check: 1 new error(s) after the rename, 0 from before" in out and "L5" in out, out
+    # a refusal writes nothing (a match-base report: the rename stayed written although it failed the check): the
+    # files, names.log and the objects are put back, nothing compiles again
+    assert "nothing renamed" in out and "counter_value(void)" in (tiny / "src/net.c").read_text(), out
+    assert "FUN_10001021" not in (tiny / "names.log").read_text()
+    code, out = dcp(tiny, "build")
+    assert code == 0 and "compiled=0" in out, out
 
 
 @needs_vc6
