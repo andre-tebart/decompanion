@@ -101,7 +101,7 @@ fn private_violations(root: &str, private: &BTreeMap<String, BTreeSet<String>>) 
 pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let front = Front::of(&root)?;
     let version = crate::clang::clang_version().map_err(|e| e.to_string())?;
     let clang = [CPARSE_VERSION.to_string(), version, canonical(&json!(frontend::ARGS)), canonical(&json!(front.sysdirs))];
@@ -188,7 +188,7 @@ pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
         "errors": errors, "cross": conflicts,
         "calls": calls.into_iter().map(|(f, cs)| (f, json!(cs.into_iter().map(|(l, t)| json!([l, t])).collect::<Vec<_>>()))).collect::<serde_json::Map<_, _>>(),
     });
-    crate::pystore::st_set_meta(&db, "lint", &canonical(&res)).map_err(|e| e.to_string())?;
+    crate::storedb::st_set_meta(&db, "lint", &canonical(&res)).map_err(|e| e.to_string())?;
     p.forget_input("lint");
     Ok((res, unit_jobs, units.len() - unit_jobs))
 }
@@ -197,8 +197,8 @@ pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
 /// was no lint run.
 pub fn stale(p: &Project) -> Result<Option<Vec<String>>, String> {
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
-    let Some(m) = crate::pystore::st_meta(&db, "lint").map_err(|e| e.to_string())? else { return Ok(None) };
+    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    let Some(m) = crate::storedb::st_meta(&db, "lint").map_err(|e| e.to_string())? else { return Ok(None) };
     let m: Value = serde_json::from_str(&m).unwrap_or(Value::Null);
     let tus = crate::compile::tu_keys(&db).map_err(|e| e.to_string())?;
     let mut changed: BTreeSet<String> = tus.iter().filter(|(u, r)| {

@@ -56,7 +56,7 @@ mod pe;
 mod plan;
 mod probe;
 mod project;
-mod pystore;
+mod storedb;
 mod queues;
 mod readability;
 mod registry;
@@ -151,17 +151,17 @@ pub(crate) fn put_str(out: &mut String, s: &str) {
 // ------------------------------------------------------------------------------------------------ runs
 
 /// One fact of a run as record_run writes it.
-pub(crate) struct Row {
+pub(crate) struct ClaimRow {
     pub lo: i64,
     pub hi: i64,
     pub kind: String,
     pub value: String, // canonical(value)
-    pub level: i64,
+    pub support: store::Support,
     pub by: String,
     pub reason: Option<String>,
 }
 
-pub(crate) struct ConflictRow {
+pub(crate) struct Finding {
     pub severity: String,
     pub check: String,
     pub lo: i64,
@@ -186,16 +186,16 @@ pub(crate) fn hash_parts<'a>(parts: impl Iterator<Item = String>) -> String {
     s
 }
 
-/// The out_hash of a run: sha256 over canonical(key + (level, by, reason)) of each fact in key order, then
+/// The out_hash of a run: sha256 over canonical(key + (support, by, reason)) of each fact in key order, then
 /// canonical((lo, hi, check, severity, message)) of each conflict in (lo, hi, check, message) order.
-pub(crate) fn run_hash(rows: &[Row], conflicts: &[ConflictRow]) -> String {
+pub(crate) fn run_hash(rows: &[ClaimRow], conflicts: &[Finding]) -> String {
     let facts = rows.iter().map(|r| {
         let mut s = String::from("[");
         let _ = write!(s, "{},{},", r.lo, r.hi);
         put_str(&mut s, &r.kind);
         s.push(',');
         put_str(&mut s, &r.value);
-        let _ = write!(s, ",{},", r.level);
+        let _ = write!(s, ",{},", r.support.code());
         put_str(&mut s, &r.by);
         s.push(',');
         put_str(&mut s, r.reason.as_deref().unwrap_or(""));
@@ -267,16 +267,16 @@ pub(crate) fn with_conn<T>(path: &str, f: impl FnOnce(&mut Connection) -> Result
     CONNS.with(|c| f(c.borrow_mut().get_mut(path).unwrap()))
 }
 
-type FactKey = (i64, i64, String, String, i64, String, Option<String>);
+type FactKey = (i64, i64, String, String, store::Support, String, Option<String>);
 type ConflictKey = (String, String, i64, i64, String, String, String);
 
 /// Make a run's facts the given rows, writing only the difference: the facts the run holds that the rows do not
 /// are deleted, the rows it does not hold are inserted (a line move changes the facts of the functions below it,
 /// not the 26k of the sources).
-fn sync_facts(tx: &rusqlite::Transaction, run_id: i64, rows: &[Row]) -> rusqlite::Result<()> {
+fn sync_facts(tx: &rusqlite::Transaction, run_id: i64, rows: &[ClaimRow]) -> rusqlite::Result<()> {
     let mut have: HashMap<FactKey, std::collections::VecDeque<i64>> = HashMap::new();
     {
-        let mut st = tx.prepare("SELECT id, lo, hi, kind, value, level, by, reason FROM fact WHERE run_id=? ORDER BY id")?;
+        let mut st = tx.prepare("SELECT id, lo, hi, kind, value, support, by, reason FROM claim WHERE run_id=? ORDER BY id")?;
         let mut q = st.query([run_id])?;
         while let Some(r) = q.next()? {
             let k: FactKey = (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?);
@@ -285,76 +285,76 @@ fn sync_facts(tx: &rusqlite::Transaction, run_id: i64, rows: &[Row]) -> rusqlite
     }
     let mut add = Vec::new();
     for r in rows {
-        let k: FactKey = (r.lo, r.hi, r.kind.clone(), r.value.clone(), r.level, r.by.clone(), r.reason.clone());
+        let k: FactKey = (r.lo, r.hi, r.kind.clone(), r.value.clone(), r.support, r.by.clone(), r.reason.clone());
         match have.get_mut(&k).and_then(|q| q.pop_front()) {
             Some(_) => {}
             None => add.push(r),
         }
     }
     {
-        let mut st = tx.prepare("DELETE FROM fact WHERE id=?")?;
+        let mut st = tx.prepare("DELETE FROM claim WHERE id=?")?;
         for ids in have.values() {
             for id in ids {
                 st.execute([id])?;
             }
         }
     }
-    let mut st = tx.prepare("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
+    let mut st = tx.prepare("INSERT INTO claim (run_id, lo, hi, kind, value, support, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
     for r in add {
-        st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
+        st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.support, r.by, r.reason])?;
     }
     Ok(())
 }
 
 /// sync_facts against the run as memory holds it (the store's rows of the run, with their ids): no read of the
 /// store; the run as written, for memory.
-fn sync_facts_held(tx: &rusqlite::Transaction, run_id: i64, rows: &[Row], held: &store::RunFacts) -> rusqlite::Result<store::RunFacts> {
-    type Key<'a> = (i64, i64, &'a str, &'a str, i64, &'a str, Option<&'a str>);
-    let mut have: rustc_hash::FxHashMap<Key, std::collections::VecDeque<&Rc<store::SFact>>> = Default::default();
-    let mut all: Vec<(&str, &Rc<store::SFact>)> = held.by_kind.iter().flat_map(|(k, v)| v.iter().map(move |f| (k.as_str(), f))).collect();
+fn sync_facts_held(tx: &rusqlite::Transaction, run_id: i64, rows: &[ClaimRow], held: &store::RunClaims) -> rusqlite::Result<store::RunClaims> {
+    type Key<'a> = (i64, i64, &'a str, &'a str, store::Support, &'a str, Option<&'a str>);
+    let mut have: rustc_hash::FxHashMap<Key, std::collections::VecDeque<&Rc<store::Claim>>> = Default::default();
+    let mut all: Vec<(&str, &Rc<store::Claim>)> = held.by_kind.iter().flat_map(|(k, v)| v.iter().map(move |f| (k.as_str(), f))).collect();
     all.sort_by_key(|(_, f)| f.id);
     for (kind, f) in &all {
-        have.entry((f.lo, f.hi, kind, &f.text, f.level, &f.by, f.reason.as_deref())).or_default().push_back(f);
+        have.entry((f.lo, f.hi, kind, &f.text, f.support, &f.by, f.reason.as_deref())).or_default().push_back(f);
     }
     let rule: Rc<str> = Rc::from(held.rule.as_str());
-    let mut by_kind: HashMap<String, store::Facts> = HashMap::new();
+    let mut by_kind: HashMap<String, store::Claims> = HashMap::new();
     let mut add = Vec::new();
     for r in rows {
-        match have.get_mut(&(r.lo, r.hi, r.kind.as_str(), r.value.as_str(), r.level, r.by.as_str(), r.reason.as_deref())).and_then(|q| q.pop_front()) {
+        match have.get_mut(&(r.lo, r.hi, r.kind.as_str(), r.value.as_str(), r.support, r.by.as_str(), r.reason.as_deref())).and_then(|q| q.pop_front()) {
             Some(f) => by_kind.entry(r.kind.clone()).or_default().push(f.clone()),
             None => add.push(r),
         }
     }
     {
-        let mut st = tx.prepare_cached("DELETE FROM fact WHERE id=?")?;
+        let mut st = tx.prepare_cached("DELETE FROM claim WHERE id=?")?;
         for q in have.values() {
             for f in q {
                 st.execute([f.id])?;
             }
         }
     }
-    let mut st = tx.prepare_cached("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
+    let mut st = tx.prepare_cached("INSERT INTO claim (run_id, lo, hi, kind, value, support, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
     for r in add {
-        st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
+        st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.support, r.by, r.reason])?;
         by_kind.entry(r.kind.clone()).or_default().push(Rc::new(fact_of(tx.last_insert_rowid(), &rule, r)));
     }
     for v in by_kind.values_mut() {
         v.sort_by_key(|f| f.id);
     }
-    Ok(store::RunFacts { rule: held.rule.clone(), by_kind })
+    Ok(store::RunClaims { rule: held.rule.clone(), by_kind })
 }
 
 /// A written row as memory holds a fact.
-fn fact_of(id: i64, rule: &Rc<str>, r: &Row) -> store::SFact {
-    store::SFact { id, rule: rule.clone(), lo: r.lo, hi: r.hi, text: r.value.clone(), value: serde_json::from_str(&r.value).unwrap_or(serde_json::Value::Null),
-                   level: r.level, by: r.by.clone(), reason: r.reason.clone() }
+fn fact_of(id: i64, rule: &Rc<str>, r: &ClaimRow) -> store::Claim {
+    store::Claim { id, rule: rule.clone(), lo: r.lo, hi: r.hi, text: r.value.clone(), value: serde_json::from_str(&r.value).unwrap_or(serde_json::Value::Null),
+                   support: r.support, by: r.by.clone(), reason: r.reason.clone() }
 }
 
 /// The same for a run's conflicts (M.lint's thousands of M7 lines are the same from one run to the next).
-fn sync_conflicts(tx: &rusqlite::Transaction, run_id: i64, confl: &[ConflictRow]) -> rusqlite::Result<()> {
+fn sync_conflicts(tx: &rusqlite::Transaction, run_id: i64, confl: &[Finding]) -> rusqlite::Result<()> {
     let mut have: rustc_hash::FxHashMap<ConflictKey, std::collections::VecDeque<i64>> = Default::default();
     {
-        let mut st = tx.prepare("SELECT id, severity, check_id, lo, hi, message, a, b FROM conflict WHERE run_id=? ORDER BY id")?;
+        let mut st = tx.prepare("SELECT id, severity, check_id, lo, hi, message, a, b FROM finding WHERE run_id=? ORDER BY id")?;
         let mut q = st.query([run_id])?;
         while let Some(r) = q.next()? {
             let k: ConflictKey = (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?);
@@ -370,14 +370,14 @@ fn sync_conflicts(tx: &rusqlite::Transaction, run_id: i64, confl: &[ConflictRow]
         }
     }
     {
-        let mut st = tx.prepare("DELETE FROM conflict WHERE id=?")?;
+        let mut st = tx.prepare("DELETE FROM finding WHERE id=?")?;
         for ids in have.values() {
             for id in ids {
                 st.execute([id])?;
             }
         }
     }
-    let mut st = tx.prepare("INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
+    let mut st = tx.prepare("INSERT INTO finding (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
     for c in add {
         st.execute(params![run_id, c.severity, c.check, c.lo, c.hi, c.message, c.a, c.b])?;
     }
@@ -393,8 +393,8 @@ fn drop_runs(tx: &rusqlite::Transaction, rule: &str, keep: Option<i64>) -> rusql
         if Some(oid) == keep {
             continue;
         }
-        tx.execute("DELETE FROM fact WHERE run_id=?", [oid])?;
-        tx.execute("DELETE FROM conflict WHERE run_id=?", [oid])?;
+        tx.execute("DELETE FROM claim WHERE run_id=?", [oid])?;
+        tx.execute("DELETE FROM finding WHERE run_id=?", [oid])?;
         tx.execute("DELETE FROM run WHERE id=?", [oid])?;
     }
     Ok(())
@@ -413,8 +413,8 @@ pub(crate) fn write_run(
     version: &str,
     code_hash: &str,
     input_hash: &str,
-    rows: &[Row],
-    confl: &[ConflictRow],
+    rows: &[ClaimRow],
+    confl: &[Finding],
     ms: i64,
     shortcuts: bool,
 ) -> rusqlite::Result<(i64, String)> {
@@ -427,7 +427,7 @@ pub(crate) fn write_run(
         None
     };
     let run_id;
-    let mut written: Option<store::RunFacts> = None; // the run's facts as the store now has them, when known
+    let mut written: Option<store::RunClaims> = None; // the run's facts as the store now has them, when known
     match cur {
         Some((id, h, _)) if h == out => {
             run_id = id;
@@ -454,15 +454,15 @@ pub(crate) fn write_run(
                 params![rule, version, code_hash, input_hash, out, ms, at],
             )?;
             run_id = tx.last_insert_rowid();
-            let mut st = tx.prepare("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
+            let mut st = tx.prepare("INSERT INTO claim (run_id, lo, hi, kind, value, support, by, reason) VALUES (?,?,?,?,?,?,?,?)")?;
             let rc: Rc<str> = Rc::from(rule);
-            let mut by_kind: HashMap<String, store::Facts> = HashMap::new();
+            let mut by_kind: HashMap<String, store::Claims> = HashMap::new();
             for r in rows {
-                st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.level, r.by, r.reason])?;
+                st.execute(params![run_id, r.lo, r.hi, r.kind, r.value, r.support, r.by, r.reason])?;
                 by_kind.entry(r.kind.clone()).or_default().push(Rc::new(fact_of(tx.last_insert_rowid(), &rc, r)));
             }
-            written = Some(store::RunFacts { rule: rule.to_string(), by_kind });
-            let mut st = tx.prepare("INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
+            written = Some(store::RunClaims { rule: rule.to_string(), by_kind });
+            let mut st = tx.prepare("INSERT INTO finding (run_id, severity, check_id, lo, hi, message, a, b) VALUES (?,?,?,?,?,?,?,?)")?;
             for c in confl {
                 st.execute(params![run_id, c.severity, c.check, c.lo, c.hi, c.message, c.a, c.b])?;
             }
@@ -538,21 +538,21 @@ pub(crate) fn live_objects(paths: &std::collections::HashSet<String>) {
 mod tests_runs {
     use super::*;
 
-    fn rows(tag: &str) -> Vec<Row> {
-        (0..3).map(|i| Row { lo: 0x1000 + i, hi: 0x1001 + i, kind: "symbol".into(), value: format!("{{\"name\":\"f{i}{tag}\",\"skind\":\"func\"}}"),
-                             level: 2, by: "rule:T@1".into(), reason: None }).collect()
+    fn rows(tag: &str) -> Vec<ClaimRow> {
+        (0..3).map(|i| ClaimRow { lo: 0x1000 + i, hi: 0x1001 + i, kind: "symbol".into(), value: format!("{{\"name\":\"f{i}{tag}\",\"skind\":\"func\"}}"),
+                             support: store::DERIVED, by: "rule:T@1".into(), reason: None }).collect()
     }
 
-    fn warn(a: &str) -> Vec<ConflictRow> {
-        vec![ConflictRow { severity: "warn".into(), check: "X".into(), lo: 1, hi: 2, message: "m".into(), a: a.into(), b: String::new() }]
+    fn warn(a: &str) -> Vec<Finding> {
+        vec![Finding { severity: "warn".into(), check: "X".into(), lo: 1, hi: 2, message: "m".into(), a: a.into(), b: String::new() }]
     }
 
     /// (fact ids, run time, conflict producers, input hash) of the rule's current run.
     fn state(db: &str) -> (Vec<i64>, f64, Vec<String>, String) {
         with_db(db, |c| {
             let (id, at, input): (i64, f64, String) = c.query_row("SELECT id, at, input_hash FROM run WHERE rule='T' AND current=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-            let ids = c.prepare("SELECT id FROM fact WHERE run_id=? ORDER BY lo")?.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
-            let a = c.prepare("SELECT a FROM conflict WHERE run_id=?")?.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+            let ids = c.prepare("SELECT id FROM claim WHERE run_id=? ORDER BY lo")?.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+            let a = c.prepare("SELECT a FROM finding WHERE run_id=?")?.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
             Ok((ids, at, a, input))
         }).unwrap()
     }
@@ -562,7 +562,7 @@ mod tests_runs {
     #[test]
     fn same_output_keeps_the_run() {
         let k = crate::rules::testkit::Kit::new(&crate::pe::testpe::build(None));
-        let write = |input: &str, r: &[Row], c: &[ConflictRow], shortcuts: bool| {
+        let write = |input: &str, r: &[ClaimRow], c: &[Finding], shortcuts: bool| {
             with_db(&k.db, |db| write_run(db, &k.db, "T", "1", "c", input, r, c, 5, shortcuts)).unwrap()
         };
         let (rid, _) = write("in1", &rows("x"), &warn("a:1"), true);
@@ -575,7 +575,7 @@ mod tests_runs {
         write("in3", &rows("y"), &[], true);
         let changed = state(&k.db);
         assert!(changed.1 != after.1 && changed.2.is_empty());
-        let names: Vec<String> = with_db(&k.db, |c| c.prepare("SELECT value FROM fact f JOIN run r ON r.id=f.run_id WHERE r.rule='T' AND r.current=1 ORDER BY lo")?
+        let names: Vec<String> = with_db(&k.db, |c| c.prepare("SELECT value FROM claim f JOIN run r ON r.id=f.run_id WHERE r.rule='T' AND r.current=1 ORDER BY lo")?
             .query_map([], |r| r.get(0))?.collect()).unwrap();
         assert!(names.iter().all(|v| v.contains("y\"")), "{names:?}");
         std::thread::sleep(std::time::Duration::from_millis(10));

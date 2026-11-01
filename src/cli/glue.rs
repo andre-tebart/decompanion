@@ -34,9 +34,9 @@ pub fn open(sel: &Sel, target: Option<&str>) -> Result<Project> {
         let m = open.get_or_insert_with(HashMap::new);
         let known = m.get(&db).cloned();
         if known.is_none() || known != Some(id) || id.is_none() {
-            crate::pystore::st_close(&db);
+            crate::storedb::st_close(&db);
         }
-        crate::pystore::st_open(&db, &p.main_uri())?;
+        crate::storedb::st_open(&db, &p.main_uri())?;
         m.insert(db.clone(), identity(&db));
         Ok(p)
     })
@@ -134,7 +134,7 @@ pub fn build_target(io: &mut Io, sel: &Sel, target: Option<&str>, quiet: bool, f
 
 /// Whether the target was built before (a `build` fact in its store).
 pub fn has_build(p: &Project) -> Result<bool> {
-    Ok(!crate::pystore::st_facts(&p.store_path(), Some("build"), None, None, None)?.is_empty())
+    Ok(!crate::storedb::st_facts(&p.store_path(), Some("build"), None, None, None)?.is_empty())
 }
 
 /// The project after an edit of the sources: the stale units compiled (when the toolchain is installed and the

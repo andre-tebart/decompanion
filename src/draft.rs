@@ -439,7 +439,7 @@ fn declare_uses(x: &Ctx, head: &str, rel: &str, unit: &str, uses: &BTreeMap<Stri
 fn open<'a>(p: &'a Project, capstone: &str) -> Result<Ctx<'a>> {
     let db = p.store_path();
     let main = p.main_uri();
-    crate::pystore::st_open(&db, &main)?;
+    crate::storedb::st_open(&db, &main)?;
     let image = p.target(None).map_err(err)?.path.clone();
     let v = View::load(&db, &main, &image)?;
     let names = Names::build(&db, &main, &image)?;
@@ -462,7 +462,7 @@ pub fn draft_command(p: &crate::project::Project, capstone: &str, addr: Option<S
         let mut e = x.entries.get(&a);
         if e.is_none() {
             let db = p.store_path();
-            let f = crate::with_db(&db, |c| crate::store::facts_of(c, &db, "symbol", None, |f| f.lo <= a && a < f.hi.max(f.lo + 1) && f.s("skind") == Some("func")))?;
+            let f = crate::with_db(&db, |c| crate::store::claims_of(c, &db, "symbol", None, |f| f.lo <= a && a < f.hi.max(f.lo + 1) && f.s("skind") == Some("func")))?;
             if let Some(f) = f.iter().next() {
                 e = x.entries.get(&f.lo);
             }

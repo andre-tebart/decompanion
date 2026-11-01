@@ -292,7 +292,7 @@ fn rename(root: &str, old: &str, new: &str, by: Option<&str>) -> Result<Rename, 
 fn view_units(p: &crate::project::Project) -> Result<Vec<String>> {
     let db = p.store_path();
     let main = p.main_uri();
-    crate::pystore::st_open(&db, &main)?;
+    crate::storedb::st_open(&db, &main)?;
     let image = p.target(None).map_err(err)?.path.clone();
     Ok(crate::layoutview::View::load(&db, &main, &image)?.units.iter().map(|u| u.tu.clone()).collect())
 }
@@ -301,7 +301,7 @@ fn view_units(p: &crate::project::Project) -> Result<Vec<String>> {
 fn byte_state(db: &str) -> Result<(BTreeMap<i64, Option<String>>, usize)> {
     let grades = crate::queues::function_grades(db)?.iter().cloned()
         .filter_map(|r| Some((r.get("addr")?.as_i64()?, r.get("code").and_then(|c| c.as_str()).map(|c| c.to_string())))).collect();
-    let errors = crate::pystore::st_conflicts(db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
+    let errors = crate::storedb::st_conflicts(db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
     Ok((grades, errors))
 }
 

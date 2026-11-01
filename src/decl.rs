@@ -452,7 +452,7 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
             continue;
         }
         let lo = e.lo.filter(|&l| inimg(l)).unwrap_or(base);
-        out.conflict("error", "L.decl", lo, lo + 1, format!("{}:{}: {}", e.file, e.line, e.message), &format!("decl:{}:{}", e.file, e.line));
+        out.finding("error", "L.decl", lo, lo + 1, format!("{}:{}: {}", e.file, e.line, e.message), &format!("decl:{}:{}", e.file, e.line));
     }
     let code = crate::layout::code_ranges(&img);
     let mut file_of: HashMap<String, String> = HashMap::new();
@@ -464,13 +464,13 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         let (s_lo, s_hi) = (img.section_of(d.lo as u32), img.section_of((d.hi - 1) as u32));
         if s_lo.is_none() || s_lo.map(|s| s.index) != s_hi.map(|s| s.index) {
             let at = if inimg(d.lo) { d.lo } else { base };
-            out.conflict("error", "L.decl", at, at + 1, format!("{}:{}: {:#x}..{:#x} is not inside one section of the image", d.file, d.line, d.lo, d.hi), &by);
+            out.finding("error", "L.decl", at, at + 1, format!("{}:{}: {:#x}..{:#x} is not inside one section of the image", d.file, d.line, d.lo, d.hi), &by);
             continue;
         }
         let is_code = code.iter().any(|&(a, b)| a <= d.lo && d.lo < b);
         let name = d.file.rsplit('/').next().unwrap_or("");
         if (name == "text.dcl" && !is_code) || (name == "data.dcl" && is_code) {
-            out.conflict("error", "L.decl", d.lo, d.lo + 1,
+            out.finding("error", "L.decl", d.lo, d.lo + 1,
                          format!("{}:{}: {:#x} lies in {}; text.dcl holds code sections, data.dcl the rest", d.file, d.line, d.lo, s_lo.unwrap().name), &by);
         }
         let ks = |k: &str| d.key(k).map(|v| v.s().to_string()).unwrap_or_default();
@@ -492,10 +492,10 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
             "writes" => {
                 let p = ks("ptr");
                 if !(p.len() > 1 && p.starts_with('a') && p[1..].bytes().all(|b| b.is_ascii_digit())) {
-                    out.conflict("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: writes ptr={p}: the pointer is one argument (a0, a1, ...)", d.file, d.line), &by);
+                    out.finding("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: writes ptr={p}: the pointer is one argument (a0, a1, ...)", d.file, d.line), &by);
                 }
                 if !is_code {
-                    out.conflict("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: writes at {:#x}: not a function (outside every code section)", d.file, d.line, d.lo), &by);
+                    out.finding("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: writes at {:#x}: not a function (outside every code section)", d.file, d.line, d.lo), &by);
                 }
             }
             "file" => {
@@ -504,12 +504,12 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
                 want.push(0);
                 let have = img.read(d.lo as u32, want.len());
                 if have != want {
-                    out.conflict("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: the image holds {} at {:#x}, not the declared file name {}", d.file, d.line,
+                    out.finding("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: the image holds {} at {:#x}, not the declared file name {}", d.file, d.line,
                                                                              py_bytes_repr(&have), d.lo, py_bytes_repr(&want)), &by);
                 }
                 let tu = ks("tu");
                 if let Some(f) = file_of.get(&tu) {
-                    out.conflict("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: unit {tu} already has the file name {f}", d.file, d.line), &by);
+                    out.finding("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: unit {tu} already has the file name {f}", d.file, d.line), &by);
                 }
                 file_of.entry(tu.clone()).or_insert(path.clone());
                 let src = std::path::Path::new(&ctx.root).join("src").join(format!("{tu}.c"));
@@ -518,7 +518,7 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
                     let named: Vec<String> = LINE_DIRECTIVE.captures_iter(&text).filter_map(|m| m.get(2).map(|g| g.as_str().replace("\\\\", "\\"))).collect();
                     if !named.contains(&path) {
                         let esc = path.replace('\\', "\\\\");
-                        out.conflict("error", "L.decl", d.lo, d.lo + 1,
+                        out.finding("error", "L.decl", d.lo, d.lo + 1,
                                      format!("{}:{}: src/{tu}.c names no file {path} in a `#line` directive (its __FILE__ is the file's own name): add `#line 1 \"{esc}\"` at its top",
                                              d.file, d.line), &by);
                     }

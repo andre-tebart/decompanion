@@ -43,7 +43,7 @@ fn disasm_dump_refs() {
     let (_, out) = dcp(&t, &["disasm", "GetCounter"]);
     assert!(out.contains("instructions=2") && out.contains("mov eax, dword ptr [0x10002000]"), "{out}");
     let (code, out) = dcp(&t, &["why", "GetCounter"]); // why takes a name too
-    assert!(code == 0 && out.starts_with("addr=0x10001020") && out.contains("cls=func"), "{out}");
+    assert!(code == 0 && out.starts_with("addr=0x10001020") && out.contains("owner=func"), "{out}");
     let (code, out) = dcp(&t, &["why", "NoSuchName"]);
     assert!(code == 1 && out.contains("name=NoSuchName") && out.contains("unknown"), "{out}");
     let (code, out) = dcp(&t, &["why", "0x10002000"]); // a datum shows its value
@@ -227,13 +227,13 @@ fn bytes_dead_owned_by_the_unit() {
     assert!(line.contains("open_bytes=0") && out.contains("dead_bytes=9") && line.contains("end=open"), "{out}");
     let p = project(&root, None);
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).unwrap();
-    crate::pystore::st_ensure_bytemap(&db).unwrap();
-    let (_, _, cls, _, _, unit, src, _) = crate::pystore::st_bytemap_at(&db, 0x10001059).unwrap().unwrap();
+    crate::storedb::st_open(&db, &p.main_uri()).unwrap();
+    crate::storedb::st_ensure_bytemap(&db).unwrap();
+    let (_, _, cls, _, _, unit, src, _) = crate::storedb::st_bytemap_at(&db, 0x10001059).unwrap().unwrap();
     assert_eq!(cls, "dead");
-    let u = crate::pystore::st_fact(&db, unit.unwrap()).unwrap().unwrap().1;
+    let u = crate::storedb::st_fact(&db, unit.unwrap()).unwrap().unwrap().1;
     assert_eq!(u.value["tu"], "tail");
-    let s = crate::pystore::st_fact(&db, src.unwrap()).unwrap().unwrap().1;
+    let s = crate::storedb::st_fact(&db, src.unwrap()).unwrap().unwrap().1;
     assert_eq!(s.value, json!({"what": "dead", "unit": "tail", "decl": "decl:decl/text.dcl:3"}));
     assert!(errors(&root).is_empty());
 }
@@ -246,7 +246,7 @@ fn declared_start_is_walked() {
     let (code, out) = dcp(&root, &["draft", "0x10001058"]);
     assert_eq!(code, 0, "{out}");
     let w = facts(&root, "symbol", None).into_iter().find(|f| &*f.rule == "S.codewalk" && f.lo == 0x10001058).unwrap();
-    assert!(w.level == DECLARED && w.hi == 0x1000105b); // xor eax,eax; ret
+    assert!(w.support == DECLARED && w.hi == 0x1000105b); // xor eax,eax; ret
     assert!(conflicts_of(&root, None, "L10").is_empty());
     assert_eq!(dcp(&root, &["check"]).0, 0);
 }
@@ -263,7 +263,7 @@ fn source_only_start_owns_its_code() {
     let own: Vec<_> = facts(&root, "symbol", None).into_iter().filter(|f| &*f.rule == "L.src.extent").collect();
     let funcs: Vec<(i64, i64)> = own.iter().filter(|f| f.value["skind"] == "func").map(|f| (f.lo, f.hi)).collect();
     assert_eq!(funcs, [(0x10001058, 0x1000105b)]); // xor eax,eax; ret
-    assert!(own.iter().all(|f| f.level == DECLARED));
+    assert!(own.iter().all(|f| f.support == DECLARED));
     assert!(conflicts_of(&root, None, "L10").is_empty());
     assert_eq!(dcp(&root, &["check"]).0, 0);
 }

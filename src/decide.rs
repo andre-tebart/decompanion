@@ -4,7 +4,7 @@
 //! call (never stored, never written by hand), and `dcp status` prints them in order. A declaration (`dcp toolchain
 //! declare`, `dcp libs declare`, `dcp analyzer declare`) always carries a reason and is always level declared; the
 //! rules raise it (C.toolchain checks the builds against the Rich header, S.crt.code places the archives' members,
-//! M.flags.proven proves flags).
+//! M.flags.probe proves flags).
 //!
 //! The obligations, in order (the ids are stable; Project.waiting names the ones a rule input waits on):
 //!   toolchain.compiler   the compiler build of the user's objects       dcp toolchain declare compiler=...
@@ -141,19 +141,19 @@ struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     fn new(p: &'a Project) -> Result<Ctx<'a>> {
         let db = p.store_path();
-        crate::pystore::st_open(&db, &p.main_uri())?;
+        crate::storedb::st_open(&db, &p.main_uri())?;
         let img = crate::image(&p.target(None).map_err(err)?.path)?;
         let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| err(format!("no toolchain {}", p.toolchain_key())))?;
         let decl = p.toolchain_decl(None).map_err(err)?;
         Ok(Ctx { p, db, img, tc, decl })
     }
 
-    fn facts(&self, kind: &str, rule: &str) -> Result<store::Facts> {
+    fn facts(&self, kind: &str, rule: &str) -> Result<store::Claims> {
         let rules = [rule.to_string()];
-        with_db(&self.db, |c| store::facts_of(c, &self.db, kind, Some(&rules), |_| true))
+        with_db(&self.db, |c| store::claims_of(c, &self.db, kind, Some(&rules), |_| true))
     }
 
-    fn rich(&self) -> Result<Option<std::rc::Rc<store::SFact>>> {
+    fn rich(&self) -> Result<Option<std::rc::Rc<store::Claim>>> {
         Ok(self.facts("toolchain", "S.rich")?.into_iter().next())
     }
 
@@ -174,7 +174,7 @@ impl<'a> Ctx<'a> {
     }
 
     fn c_toolchain_errors(&self) -> Result<Vec<String>> {
-        Ok(crate::pystore::st_conflicts(&self.db, None, None)?.into_iter().filter(|c| c.1 == "C.toolchain").map(|c| c.4).collect())
+        Ok(crate::storedb::st_conflicts(&self.db, None, None)?.into_iter().filter(|c| c.1 == "C.toolchain").map(|c| c.4).collect())
     }
 }
 
@@ -241,7 +241,7 @@ fn declared_build(text: &str) -> Option<u32> {
 
 /// One installation as evidence: its tool versions and which declared (or, before the declaration, which Rich)
 /// builds it makes.
-fn install_text(inst: &Install, c: &Ctx, rich: Option<&store::SFact>) -> String {
+fn install_text(inst: &Install, c: &Ctx, rich: Option<&store::Claim>) -> String {
     let vers: Vec<String> = ["cl", "c2", "link"].iter()
         .filter_map(|k| inst.versions.iter().find(|(x, _)| x == k).map(|(_, v)| format!("{k} {v}"))).collect();
     let mut makes = vec![];
@@ -263,7 +263,7 @@ fn install_text(inst: &Install, c: &Ctx, rich: Option<&store::SFact>) -> String 
 
 /// The last `dcp libs candidates` of this root (meta, cheap), else the command.
 fn libs_evidence(c: &Ctx) -> Result<String> {
-    if let Some(m) = crate::pystore::st_meta(&c.db, CANDIDATES_META)? {
+    if let Some(m) = crate::storedb::st_meta(&c.db, CANDIDATES_META)? {
         let d: Value = serde_json::from_str(&m).unwrap_or(Value::Null);
         if d["root"].as_str().unwrap_or("") == c.decl_str("root") {
             let mut rows: Vec<&Value> = d["archives"].as_array().map(|a| a.iter().collect()).unwrap_or_default();
@@ -645,8 +645,8 @@ pub fn decide_toolchain_view(p: &crate::project::Project) -> Result<Vec<String>>
     let tc = c.tc.as_ref();
     let img = &c.img;
     let mut out = vec![];
-    let probed = c.facts("toolchain", "M.flags.proven")?;
-    let mut proven: Vec<String> = probed.iter().filter(|f| f.level == store::PROVEN).filter_map(|f| f.s("flag").map(|x| x.to_string())).collect();
+    let probed = c.facts("toolchain", "M.flags.probe")?;
+    let mut proven: Vec<String> = probed.iter().filter(|f| f.support == store::REPRODUCED).filter_map(|f| f.s("flag").map(|x| x.to_string())).collect();
     proven.sort();
     out.push(record(&[("target", s(p.target_name.clone())), ("plugin", s(c.decl_str("plugin"))), ("available", Tok::B(p.toolchain_available()))]));
     for k in ["compiler", "linker", "root", "cflags"] {
@@ -659,7 +659,7 @@ pub fn decide_toolchain_view(p: &crate::project::Project) -> Result<Vec<String>>
             "declared-no-reason".to_string()
         };
         if k == "cflags" && !proven.is_empty() {
-            level += &format!(";proven:{}", proven.join(","));
+            level += &format!(";reproduced:{}", proven.join(","));
         }
         let from = c.decl["from"][k].as_str().map(|x| x.to_string());
         let why = Some(c.reason(k)).filter(|r| !r.is_empty());
@@ -682,7 +682,7 @@ pub fn decide_toolchain_view(p: &crate::project::Project) -> Result<Vec<String>>
     match &rich {
         None => out.push("  rich: no Rich header".into()),
         Some(r) => {
-            let level = ["open", "declared", "derived", "proven"].get(r.level as usize).copied().unwrap_or("?");
+            let level = r.support.name();
             for key in ["compilers", "linkers"] {
                 let cands = r.value.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default();
                 out.push(format!("  {} candidates={}  ({level}, {})", &key[..key.len() - 1], cands.len(), r.by));
@@ -734,7 +734,7 @@ pub fn decide_toolchain_view(p: &crate::project::Project) -> Result<Vec<String>>
         out.push("  probe: not run (dcp toolchain probe): flags are declared only".into());
     }
     for f in &probed {
-        let level = ["open", "declared", "derived", "proven"].get(f.level as usize).copied().unwrap_or("?");
+        let level = f.support.name();
         let g = |k: &str| json_tok(f.value.get(k).unwrap_or(&Value::Null));
         out.push(format!("  probe  {}", record(&[("flag", g("flag")), ("group", g("group")), ("anchors", g("anchors")), ("units", g("units")), ("level", s(level))])));
     }

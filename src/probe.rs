@@ -1,5 +1,5 @@
 //! `dcp toolchain probe`: which compiler flags the matched functions prove.
-//! The result feeds M.flags.proven (mrules.rs analyse reads it).
+//! The result feeds M.flags.probe (mrules.rs analyse reads it).
 //!
 //! Anchors: every byte-matched function of the target (code grade byte), compiled as its unit; and, when the
 //! toolchain root holds CRT sources (VC6: VC98/CRT/SRC), every source whose object is a library member placed in the
@@ -62,7 +62,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
     let t0 = std::time::Instant::now();
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let tools = crate::vc6::Tools::of(p);
     let target = p.target(None)?;
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;
@@ -81,7 +81,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
         let text = fsmemo::read_text(&py_path(&format!("{root}/{}", a.file))).map_err(|e| e.to_string())?;
         jobs.push(Job { kind: "user", unit: unit.into(), src: a.file.replace('/', "\\"), base: strip_grid(&flags), dirs: vec!["include".into()], anchors, text });
     }
-    let all = |k: &str| crate::with_db(&db, |c| store::facts_of(c, &db, k, None, |_| true)).map_err(|e| e.to_string());
+    let all = |k: &str| crate::with_db(&db, |c| store::claims_of(c, &db, k, None, |_| true)).map_err(|e| e.to_string());
     let mut lib_names: BTreeMap<(String, String), i64> = BTreeMap::new();
     for f in all("name")? {
         if f.s("origin") == Some("lib") {
@@ -247,7 +247,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
     let decl = p.toolchain_decl(None)?;
     let result = json!({"grid": GRID.iter().map(|(g, a)| json!([g, a])).collect::<Vec<_>>(), "anchors": anchors_out, "combos": out_combos,
                         "declared": decl["cflags"], "defaults": DEFAULTS});
-    crate::pystore::st_set_meta(&db, "probe", &canonical(&result)).map_err(|e| e.to_string())?;
+    crate::storedb::st_set_meta(&db, "probe", &canonical(&result)).map_err(|e| e.to_string())?;
     let ms = t0.elapsed().as_millis() as i64;
     let mut result = result;
     result["ms"] = json!(ms);

@@ -278,8 +278,8 @@ fn our_starts(p: &Project, img: &crate::pe::Image) -> Result<Vec<i64>> {
     let db = p.store_path();
     let code: Vec<(i64, i64)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va as i64, s.end() as i64)).collect();
     let (starts, syms) = crate::with_db(&db, |c| {
-        Ok((crate::store::facts_of(c, &db, "start", None, |f| &*f.rule != "L.analyzer")?,
-            crate::store::facts_of(c, &db, "symbol", None, |f| f.s("skind") == Some("func") && f.level > crate::store::OPEN && !f.rule.starts_with("M."))?))
+        Ok((crate::store::claims_of(c, &db, "start", None, |f| &*f.rule != "L.analyzer")?,
+            crate::store::claims_of(c, &db, "symbol", None, |f| f.s("skind") == Some("func") && f.support > crate::store::OPEN && !f.rule.starts_with("M."))?))
     })?;
     let mut out: BTreeSet<i64> = starts.iter().map(|f| f.lo).collect();
     let mut inner: BTreeSet<i64> = BTreeSet::new();
@@ -296,7 +296,7 @@ fn export_key(az: &Analyzer, sha: &str, starts: &[i64]) -> String {
 
 /// Make these entries the store's drafts (every older draft of this store goes) and set meta `drafts`.
 fn replace(db: &str, sha: &str, entries: &[Value]) -> Result<usize> {
-    crate::pystore::st_drop_blobs(db, KIND)?;
+    crate::storedb::st_drop_blobs(db, KIND)?;
     let mut by_start: std::collections::BTreeMap<i64, &Value> = std::collections::BTreeMap::new();
     for e in entries {
         by_start.insert(e["start"].as_i64().unwrap_or(0), e);
@@ -306,10 +306,10 @@ fn replace(db: &str, sha: &str, entries: &[Value]) -> Result<usize> {
         let k = sha256_parts(&[KIND.to_string(), sha.to_string(), format!("{a:08x}")]);
         let mut data = String::new();
         crate::store::canon(&mut data, v);
-        crate::pystore::st_put_blob(db, &k, KIND, data.as_bytes(), true)?;
+        crate::storedb::st_put_blob(db, &k, KIND, data.as_bytes(), true)?;
         h = sha256_parts(&[h, k, data]);
     }
-    crate::pystore::st_set_meta(db, KIND, &h)?;
+    crate::storedb::st_set_meta(db, KIND, &h)?;
     Ok(by_start.len())
 }
 
@@ -320,7 +320,7 @@ fn sha_of(p: &Project) -> Result<String> {
 /// up-to-date | stale | none (never exported).
 pub fn state(p: &Project) -> Result<String> {
     let db = p.store_path();
-    let Some(have) = crate::pystore::st_meta(&db, EXPORT)? else { return Ok("none".into()) };
+    let Some(have) = crate::storedb::st_meta(&db, EXPORT)? else { return Ok("none".into()) };
     let az = Analyzer::of(p).map_err(crate::project::cfg_err)?;
     let img = crate::image(&p.target(None).map_err(err)?.path)?;
     let key = export_key(&az, &sha_of(p)?, &our_starts(p, &img)?);
@@ -346,12 +346,12 @@ fn run(p: &Project, force: bool) -> Result<Value> {
     let starts = our_starts(p, &img)?;
     let key = export_key(&az, &sha, &starts);
     o["where"] = json!(inst.at);
-    if !force && crate::pystore::st_meta(&db, EXPORT)?.as_deref() == Some(key.as_str()) {
+    if !force && crate::storedb::st_meta(&db, EXPORT)?.as_deref() == Some(key.as_str()) {
         o["status"] = json!("up-to-date");
         o["note"] = json!(inst.note);
         return Ok(o);
     }
-    let prev = crate::pystore::st_meta(&db, STARTS)?;
+    let prev = crate::storedb::st_meta(&db, STARTS)?;
     let fresh = prev.is_some_and(|prev| {
         let ours: BTreeSet<i64> = starts.iter().copied().collect();
         !prev.split(',').filter(|x| !x.is_empty()).filter_map(|x| i64::from_str_radix(x, 16).ok()).all(|a| ours.contains(&a))
@@ -375,8 +375,8 @@ fn run(p: &Project, force: bool) -> Result<Value> {
         return Ok(o);
     }
     let n = replace(&db, &sha, &ex.entries)?;
-    crate::pystore::st_set_meta(&db, EXPORT, &key)?;
-    crate::pystore::st_set_meta(&db, STARTS, &starts.iter().map(|a| format!("{a:x}")).collect::<Vec<_>>().join(","))?;
+    crate::storedb::st_set_meta(&db, EXPORT, &key)?;
+    crate::storedb::st_set_meta(&db, STARTS, &starts.iter().map(|a| format!("{a:x}")).collect::<Vec<_>>().join(","))?;
     p.forget_input("drafts");
     o["status"] = json!("exported");
     o["stored"] = json!(n);

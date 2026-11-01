@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::layoutview::View;
 use crate::names::Names;
 use crate::project::{py_path, Project};
-use crate::store::{self, SFact};
+use crate::store::{self, Claim};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::rc::Rc;
@@ -150,7 +150,7 @@ impl<'a> Reader<'a> {
     fn open(p: &'a Project, capstone: &str) -> Result<Reader<'a>> {
         let db = p.store_path();
         let main = p.main_uri();
-        crate::pystore::st_open(&db, &main)?;
+        crate::storedb::st_open(&db, &main)?;
         let path = p.target(None).map_err(Error::runtime)?.path.clone();
         let img = crate::image(&path)?;
         let names = Names::build(&db, &main, &path)?;
@@ -158,13 +158,13 @@ impl<'a> Reader<'a> {
         Ok(Reader { p, db, img, names, capstone: capstone.into(), fills })
     }
 
-    fn facts(&self, kind: &str) -> Result<Vec<Rc<SFact>>> {
-        crate::with_db(&self.db, |c| store::facts_of(c, &self.db, kind, None, |_| true))
+    fn facts(&self, kind: &str) -> Result<Vec<Rc<Claim>>> {
+        crate::with_db(&self.db, |c| store::claims_of(c, &self.db, kind, None, |_| true))
     }
 
     /// The facts of a kind intersecting [lo, hi), in the store's order.
-    fn facts_in(&self, kind: &str, lo: i64, hi: i64) -> Result<Vec<Rc<SFact>>> {
-        crate::with_db(&self.db, |c| store::facts_of(c, &self.db, kind, None, |f| f.hi > lo && f.lo < hi))
+    fn facts_in(&self, kind: &str, lo: i64, hi: i64) -> Result<Vec<Rc<Claim>>> {
+        crate::with_db(&self.db, |c| store::claims_of(c, &self.db, kind, None, |f| f.hi > lo && f.lo < hi))
     }
 
     /// An address from `0xADDR`, a name the ledger knows, or a placeholder spelling one.
@@ -184,9 +184,9 @@ impl<'a> Reader<'a> {
     }
 
     /// The walked or placed function / thunk symbol covering a (not the match phase's).
-    fn walk_func(&self, a: i64) -> Result<Option<Rc<SFact>>> {
+    fn walk_func(&self, a: i64) -> Result<Option<Rc<Claim>>> {
         Ok(self.facts_in("symbol", a, a + 1)?.into_iter()
-            .find(|f| matches!(f.s("skind"), Some("func" | "thunk")) && !f.rule.starts_with("M.") && f.level > store::OPEN))
+            .find(|f| matches!(f.s("skind"), Some("func" | "thunk")) && !f.rule.starts_with("M.") && f.support > store::OPEN))
     }
 
     fn disasm(&self, code: &[u8], va: i64) -> Result<Vec<(u32, u32, String, bool)>> {
@@ -202,7 +202,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-const LEVEL: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 type Out = (Vec<String>, Option<String>);
 
@@ -321,7 +320,7 @@ fn dump(r: &Reader, addr: &str, len: Option<&str>, strings: bool, dwords: bool, 
     let mut out = vec![record(&[("target", s(target)), ("dump", Tok::R(a, hi)), ("section", s(sec.map(|x| x.name.clone()).unwrap_or_else(|| "(headers)".into()))),
                                 ("rva", s(format!("{:#x}", a - r.img.base as i64))), ("file_off", os(off.map(|o| format!("{o:#x}")))), ("clipped", os(note))])];
     let raw_end = sec.map(|x| (x.va + x.raw_size) as i64).unwrap_or(hi);
-    let mut starts: BTreeMap<i64, Vec<Rc<SFact>>> = BTreeMap::new();
+    let mut starts: BTreeMap<i64, Vec<Rc<Claim>>> = BTreeMap::new();
     for f in r.facts_in("symbol", a, hi)? {
         if !f.rule.starts_with("M.") {
             starts.entry(f.lo.max(a)).or_default().push(f);
@@ -426,7 +425,7 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
             out.push(record(&[("target", s(target)), ("refs", s(what)), ("address", Tok::I(a)), ("name", os(r.name(a))),
                               ("origin", os(r.names.at.get(&a).map(|x| x.1.clone()))), ("symbol", os(sym.as_ref().and_then(|f| f.s("skind").map(|x| x.to_string())))),
                               ("extent", sym.as_ref().map(|f| Tok::R(f.lo, f.hi)).unwrap_or(Tok::No)),
-                              ("level", os(sym.as_ref().map(|f| LEVEL[f.level as usize]))), ("unit", os(unit.as_ref().and_then(|f| f.s("tu").map(|x| x.to_string()))))]));
+                              ("support", os(sym.as_ref().map(|f| f.support.name()))), ("unit", os(unit.as_ref().and_then(|f| f.s("tu").map(|x| x.to_string()))))]));
             if let Some(f) = &src {
                 let file = f.s("file").unwrap_or("");
                 let path = py_path(&format!("{root}/{file}"));
@@ -435,11 +434,11 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
                                                   ("symbol", s(f.s("symbol").unwrap_or(""))), ("comment", s(first))])));
             }
             for f in r.facts_in("name", a, a + 1)?.iter().filter(|f| f.lo == a) {
-                out.push(format!("  {}", record(&[("named", s(f.s("name").unwrap_or(""))), ("origin", os(f.s("origin"))), ("level", s(LEVEL[f.level as usize])),
+                out.push(format!("  {}", record(&[("named", s(f.s("name").unwrap_or(""))), ("origin", os(f.s("origin"))), ("support", s(f.support.name())),
                                                   ("by", s(f.by.clone()))])));
             }
             for f in r.facts_in("start", a, a + 1)?.iter().filter(|f| f.lo == a) {
-                out.push(format!("  {}", record(&[("start", os(f.s("how"))), ("level", s(LEVEL[f.level as usize])), ("by", s(f.by.clone()))])));
+                out.push(format!("  {}", record(&[("start", os(f.s("how"))), ("support", s(f.support.name())), ("by", s(f.by.clone()))])));
             }
             let drafts = crate::with_db(&r.db, |c| crate::names::draft_values(c, &r.p.main_uri()))?;
             if let Some(d) = drafts.iter().find(|d| d["start"].as_i64() == Some(a)) {
@@ -449,9 +448,9 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
             }
             let (lo, hi) = match &sym { Some(f) if f.lo == a => (f.lo, f.hi), _ => (a, a + 1) };
             let all_refs = r.facts("ref")?;
-            let to_of = |f: &SFact| f.value.get("to").and_then(|v| v.as_i64()).unwrap_or(-1);
-            let mut refs_to: Vec<&Rc<SFact>> = all_refs.iter().filter(|f| to_of(f) == a || (lo <= to_of(f) && to_of(f) < hi && !(lo <= f.lo && f.lo < hi))).collect();
-            let mut refs_from: Vec<Rc<SFact>> = if hi > lo + 1 { r.facts_in("ref", lo, hi)? } else { vec![] };
+            let to_of = |f: &Claim| f.value.get("to").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let mut refs_to: Vec<&Rc<Claim>> = all_refs.iter().filter(|f| to_of(f) == a || (lo <= to_of(f) && to_of(f) < hi && !(lo <= f.lo && f.lo < hi))).collect();
+            let mut refs_from: Vec<Rc<Claim>> = if hi > lo + 1 { r.facts_in("ref", lo, hi)? } else { vec![] };
             out.push(format!("  refs_to={}  refs_from={}", refs_to.len(), refs_from.len()));
             refs_to.sort_by_key(|f| f.lo);
             for f in refs_to {

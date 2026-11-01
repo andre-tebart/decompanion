@@ -4,7 +4,7 @@
 use crate::error::{Error, Result};
 use crate::image;
 use crate::rules::Ctx;
-use crate::store::{self, Out, PROVEN};
+use crate::store::{self, Out, Support, OBSERVED};
 use rusqlite::Connection;
 use serde_json::json;
 
@@ -13,7 +13,7 @@ fn err(e: rusqlite::Error) -> Error {
 }
 
 fn region(out: &mut Out, what: &str, lo: u32, hi: u32) {
-    out.fact(lo as i64, hi as i64, "region", json!({"what": what}), PROVEN);
+    out.claim(lo as i64, hi as i64, "region", json!({"what": what}), OBSERVED);
 }
 
 /// S.headers: the format's headers, one region each (pe.header, pe.rich).
@@ -35,9 +35,9 @@ pub fn s_sections(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         if s.va > prev {
             region(out, "unmapped", prev, s.va);
         }
-        out.fact(s.va as i64, s.end() as i64, "section",
+        out.claim(s.va as i64, s.end() as i64, "section",
                  json!({"name": s.name, "chars": s.chars, "raw_lo": s.raw_off, "raw_hi": s.raw_off + s.raw_size, "code": s.code(),
-                        "vsize": s.vsize, "rsize": s.raw_size}), PROVEN);
+                        "vsize": s.vsize, "rsize": s.raw_size}), OBSERVED);
         if s.raw_size > s.vsize {
             region(out, "pad", s.va + s.vsize, s.va + s.raw_size);
         }
@@ -68,8 +68,8 @@ pub fn s_imports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     }
     for imp in img.imports() {
         let (lo, hi, label) = (imp.slot as i64, imp.slot as i64 + 4, imp.label());
-        out.fact(lo, hi, "symbol", json!({"skind": "iat", "name": label, "extent": "proven"}), PROVEN);
-        out.fact(lo, hi, "name", json!({"name": label, "origin": "import"}), PROVEN);
+        out.claim(lo, hi, "symbol", json!({"skind": "iat", "name": label, "extent": "observed"}), OBSERVED);
+        out.claim(lo, hi, "name", json!({"name": label, "origin": "import"}), OBSERVED);
     }
     Ok(())
 }
@@ -87,8 +87,8 @@ pub fn s_exports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
             continue;
         }
         let label = e.name.clone().unwrap_or_else(|| format!("#{}", e.ordinal));
-        out.fact(e.va as i64, e.va as i64 + 1, "start", json!({"skind": "func", "how": "export"}), PROVEN);
-        out.fact(e.va as i64, e.va as i64 + 1, "name", json!({"name": label, "origin": "export", "ordinal": e.ordinal}), PROVEN);
+        out.claim(e.va as i64, e.va as i64 + 1, "start", json!({"skind": "func", "how": "export"}), OBSERVED);
+        out.claim(e.va as i64, e.va as i64 + 1, "name", json!({"name": label, "origin": "export", "ordinal": e.ordinal}), OBSERVED);
     }
     Ok(())
 }
@@ -97,7 +97,7 @@ pub fn s_exports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
 pub fn s_entry(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     if img.entry != 0 {
-        out.fact(img.entry as i64, img.entry as i64 + 1, "start", json!({"skind": "func", "how": "entry"}), PROVEN);
+        out.claim(img.entry as i64, img.entry as i64 + 1, "start", json!({"skind": "func", "how": "entry"}), OBSERVED);
     }
     Ok(())
 }
@@ -106,7 +106,7 @@ pub fn s_entry(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
 pub fn s_relocs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     for site in img.relocations() {
-        out.fact(site as i64, site as i64 + 4, "ref", json!({"rkind": "reloc", "to": img.read_ptr(site)}), PROVEN);
+        out.claim(site as i64, site as i64 + 4, "ref", json!({"rkind": "reloc", "to": img.read_ptr(site)}), OBSERVED);
     }
     Ok(())
 }
@@ -114,11 +114,11 @@ pub fn s_relocs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
 /// S7.entry.section: the entry point and every export lie in a code section.
 pub fn s7_entry_section(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
-    let secs: Vec<(i64, i64)> = store::facts(db, &ctx.db, "section", &ctx.needed, |_| true).map_err(err)?.iter().map(|f| (f.lo, f.hi)).collect();
-    for s in store::facts(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?.iter() {
+    let secs: Vec<(i64, i64)> = store::claims(db, &ctx.db, "section", &ctx.needed, |_| true).map_err(err)?.iter().map(|f| (f.lo, f.hi)).collect();
+    for s in store::claims(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?.iter() {
         let sec = secs.iter().find(|&&(a, b)| a <= s.lo && s.lo < b).and_then(|&(a, _)| img.section_of(a as u32));
         if !sec.is_some_and(|x| x.holds_code()) {
-            out.conflict("error", "S7", s.lo, s.lo + 1, format!("{} start outside an executable section", s.s("how").unwrap_or("")), "");
+            out.finding("error", "S7", s.lo, s.lo + 1, format!("{} start outside an executable section", s.s("how").unwrap_or("")), "");
         }
     }
     Ok(())
@@ -139,7 +139,7 @@ pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> 
     let dlls: std::collections::BTreeSet<String> = img.imports().into_iter().map(|i| i.dll).collect();
     for dll in dlls {
         if !have.contains(&tc.import_library_name(&dll).to_lowercase()) {
-            out.conflict("warn", "S4", img.base as i64, img.base as i64 + 1, format!("no import library for {dll} in the toolchain"), "");
+            out.finding("warn", "S4", img.base as i64, img.base as i64 + 1, format!("no import library for {dll} in the toolchain"), "");
         }
     }
     Ok(())
@@ -147,21 +147,22 @@ pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> 
 
 // ------------------------------------------------------------------------------------------------ facts-only rules
 
-use crate::store::{SFact, DERIVED, OPEN};
+use crate::store::{Claim, DERIVED, OPEN};
 use std::rc::Rc;
 
-pub(crate) fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> Result<Vec<Rc<SFact>>> {
-    store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err)
+pub(crate) fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> Result<Vec<Rc<Claim>>> {
+    store::claims(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err)
 }
 
 /// Store.facts(kind, lo, hi): the facts of a kind that intersect [lo, hi), in the store's order.
-fn facts_in(ctx: &Ctx, db: &Connection, kind: &str, lo: i64, hi: i64) -> Result<Vec<Rc<SFact>>> {
-    store::facts(db, &ctx.db, kind, &ctx.needed, |f| f.hi > lo && f.lo < hi).map_err(err)
+fn facts_in(ctx: &Ctx, db: &Connection, kind: &str, lo: i64, hi: i64) -> Result<Vec<Rc<Claim>>> {
+    store::claims(db, &ctx.db, kind, &ctx.needed, |f| f.hi > lo && f.lo < hi).map_err(err)
 }
 
-/// fact.severity_of: proven against proven is a bug, else an error.
-pub(crate) fn severity_of(a: i64, b: i64) -> &'static str {
-    if a == PROVEN && b == PROVEN { "bug" } else { "error" }
+/// A contradiction's severity: top against top (observed or reproduced on both sides) is a bug in a rule, else an
+/// error.
+pub(crate) fn severity_of(a: Support, b: Support) -> &'static str {
+    if a.is_top() && b.is_top() { "bug" } else { "error" }
 }
 
 /// A value as Python's str() spells it in a message.
@@ -181,11 +182,11 @@ pub(crate) fn toolchain_of(ctx: &Ctx) -> Result<Box<dyn crate::toolchain::Toolch
 
 /// C.overlap: two symbol or region facts that overlap contradict each other.
 pub fn c_overlap(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let mut items: Vec<(&'static str, Rc<SFact>)> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.level > OPEN).map(|f| ("symbol", f)).collect();
+    let mut items: Vec<(&'static str, Rc<Claim>)> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.support > OPEN).map(|f| ("symbol", f)).collect();
     items.extend(facts(ctx, db, "region")?.into_iter().map(|f| ("region", f)));
     items.sort_by_key(|(_, f)| (f.lo, f.hi));
-    let label = |f: &SFact| py_str(f.value.get("skind").or(Some(f.value.get("what").unwrap_or(&serde_json::Value::String(String::new())))));
-    let mut active: Vec<&(&str, Rc<SFact>)> = vec![];
+    let label = |f: &Claim| py_str(f.value.get("skind").or(Some(f.value.get("what").unwrap_or(&serde_json::Value::String(String::new())))));
+    let mut active: Vec<&(&str, Rc<Claim>)> = vec![];
     for item in &items {
         let (fk, f) = item;
         active.retain(|(_, g)| g.hi > f.lo);
@@ -194,7 +195,7 @@ pub fn c_overlap(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 continue;
             }
             if g.lo < f.hi && f.lo < g.hi {
-                out.conflict2(severity_of(f.level, g.level), "C.overlap", f.lo.max(g.lo), f.hi.min(g.hi),
+                out.finding2(severity_of(f.support, g.support), "C.overlap", f.lo.max(g.lo), f.hi.min(g.hi),
                               format!("{gk} {} {:#x}..{:#x} overlaps {fk} {} {:#x}..{:#x}", label(g), g.lo, g.hi, label(f), f.lo, f.hi), &g.by, &f.by);
             }
         }
@@ -205,7 +206,7 @@ pub fn c_overlap(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 
 /// C.ref.target: a direct call whose target lies strictly inside a function contradicts it.
 pub fn c_ref_target(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let mut funcs: Vec<Rc<SFact>> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).collect();
+    let mut funcs: Vec<Rc<Claim>> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.s("skind") == Some("func") && f.support > OPEN).collect();
     funcs.sort_by_key(|f| (f.lo, f.hi));
     let mut starts: std::collections::HashSet<i64> = facts(ctx, db, "start")?.iter().map(|f| f.lo).collect();
     for f in &funcs {
@@ -220,7 +221,7 @@ pub fn c_ref_target(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if i > 0 {
             let f = &funcs[i - 1];
             if f.lo < t && t < f.hi {
-                out.conflict2(severity_of(f.level, r.level), "C.ref.target", t, t + 1,
+                out.finding2(severity_of(f.support, r.support), "C.ref.target", t, t + 1,
                               format!("call from {:#x} targets the inside of the function at {:#x}..{:#x}", r.lo, f.lo, f.hi), &f.by, &r.by);
             }
         }
@@ -242,7 +243,7 @@ pub fn c_name_alias(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     for (a, names) in by_addr.iter().filter(|(_, n)| n.len() > 1) {
         let list: Vec<String> = names.iter().map(|(n, at)| format!("{n} ({})", at.join(", "))).collect();
-        out.conflict("warn", "C.name.alias", *a, a + 1,
+        out.finding("warn", "C.name.alias", *a, a + 1,
                      format!("{} source names declare {a:#x}: {}; one object has one name (dcp rename the others to it)", names.len(), list.join(", ")), "");
     }
     Ok(())
@@ -250,7 +251,7 @@ pub fn c_name_alias(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 
 /// S5.crt.gaps: unknown code between the first and the last placed library function.
 pub fn s5_crt_gaps(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let crt: Vec<Rc<SFact>> = facts(ctx, db, "symbol")?.into_iter()
+    let crt: Vec<Rc<Claim>> = facts(ctx, db, "symbol")?.into_iter()
         .filter(|f| f.s("unit").is_some_and(|u| u.starts_with("lib:")) && f.s("skind") == Some("func")).collect();
     if crt.is_empty() {
         return Ok(());
@@ -260,7 +261,7 @@ pub fn s5_crt_gaps(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for f in facts_in(ctx, db, "symbol", lo, hi)? {
         if f.s("skind") == Some("unknown.code") {
             let (a, b) = (f.lo.max(lo), f.hi.min(hi));
-            out.conflict("warn", "S5", a, b, format!("{} unknown bytes inside the library region", b - a), "");
+            out.finding("warn", "S5", a, b, format!("{} unknown bytes inside the library region", b - a), "");
         }
     }
     Ok(())
@@ -273,7 +274,7 @@ pub fn s_entry_user(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for f in facts(ctx, db, "name")? {
         if f.s("origin") == Some("lib") {
             if let Some(c) = f.s("name").and_then(|n| user.get(n)) {
-                out.fact(f.lo, f.lo + 1, "name", json!({"name": c, "origin": "entry"}), DERIVED);
+                out.claim(f.lo, f.lo + 1, "name", json!({"name": c, "origin": "entry"}), DERIVED);
             }
         }
     }
@@ -311,7 +312,7 @@ pub fn s_strings(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         last_hi = t + run.len() as i64 + 1;
         let text: String = run.iter().take(60).map(|&c| c as char).collect();
-        out.fact(t, last_hi, "symbol", json!({"skind": "string", "extent": "derived", "text": text}), DERIVED);
+        out.claim(t, last_hi, "symbol", json!({"skind": "string", "extent": "derived", "text": text}), DERIVED);
     }
     Ok(())
 }
@@ -349,7 +350,7 @@ pub fn s_fill(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 }
             };
             if ok && !b.is_empty() {
-                out.fact(lo, hi, "symbol", json!({"skind": "fill", "extent": "derived"}), DERIVED);
+                out.claim(lo, hi, "symbol", json!({"skind": "fill", "extent": "derived"}), DERIVED);
             }
         }
     }
@@ -367,12 +368,12 @@ pub fn s_unknown(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let mut pos = va;
         for (a, b) in claimed {
             if a > pos {
-                out.fact(pos, a, "symbol", json!({"skind": sk, "extent": "open"}), OPEN);
+                out.claim(pos, a, "symbol", json!({"skind": sk, "extent": "open"}), OPEN);
             }
             pos = pos.max(b);
         }
         if end > pos {
-            out.fact(pos, end, "symbol", json!({"skind": sk, "extent": "open"}), OPEN);
+            out.claim(pos, end, "symbol", json!({"skind": sk, "extent": "open"}), OPEN);
         }
     }
     Ok(())
@@ -410,8 +411,8 @@ mod tests {
         let k = Kit::new(&build(None));
         let (rows, _) = k.run("S.imports", &[], "");
         let d = (BASE + DATA) as i64;
-        assert_eq!(of(&rows, "symbol"), vec![(d + 0x150, d + 0x154, json!({"skind": "iat", "name": "KERNEL32.dll!GetTickCount", "extent": "proven"})),
-                                             (d + 0x154, d + 0x158, json!({"skind": "iat", "name": "KERNEL32.dll!#3", "extent": "proven"}))]);
+        assert_eq!(of(&rows, "symbol"), vec![(d + 0x150, d + 0x154, json!({"skind": "iat", "name": "KERNEL32.dll!GetTickCount", "extent": "observed"})),
+                                             (d + 0x154, d + 0x158, json!({"skind": "iat", "name": "KERNEL32.dll!#3", "extent": "observed"}))]);
         assert_eq!(of(&rows, "name")[1].2, json!({"name": "KERNEL32.dll!#3", "origin": "import"}));
         assert_eq!(of(&rows, "region").len(), 5);
         let (rows, _) = k.run("S.exports", &[], "");
@@ -432,7 +433,7 @@ mod tests {
         let t = (BASE + TEXT) as i64;
         k.record("S.sections", &[], "");
         k.record("S.relocs", &[], "");
-        let func = |lo: i64, hi: i64| (lo, hi, "symbol", json!({"skind": "func"}), 3);
+        let func = |lo: i64, hi: i64| (lo, hi, "symbol", json!({"skind": "func"}), crate::store::DERIVED);
         k.put("S.codewalk", &[func(t, t + 0x0f), func(t + 0x20, t + 0x26), func(t + 0x30, t + 0x3e), func(t + 0x50, t + 0x57)]);
         let (rows, _) = k.run("S.fill", &["S.sections", "S.codewalk"], "");
         let fills: Vec<(i64, i64)> = of(&rows, "symbol").iter().map(|x| (x.0 - t, x.1 - t)).collect();
@@ -453,9 +454,9 @@ mod tests {
     fn overlaps_and_call_targets() {
         let k = Kit::new(&build(None));
         let t = (BASE + TEXT) as i64;
-        k.put("A", &[(t, t + 0x10, "symbol", json!({"skind": "func"}), 3), (t + 0x20, t + 0x30, "symbol", json!({"skind": "func"}), 3)]);
-        k.put("B", &[(t + 8, t + 0x18, "symbol", json!({"skind": "func"}), 3), (t + 0x20, t + 0x30, "symbol", json!({"skind": "func"}), 2),
-                     (t, t + 4, "symbol", json!({"skind": "string"}), 0), (t + 0x40, t + 0x41, "ref", json!({"rkind": "call", "to": t + 0x24}), 3)]);
+        k.put("A", &[(t, t + 0x10, "symbol", json!({"skind": "func"}), crate::store::REPRODUCED), (t + 0x20, t + 0x30, "symbol", json!({"skind": "func"}), crate::store::REPRODUCED)]);
+        k.put("B", &[(t + 8, t + 0x18, "symbol", json!({"skind": "func"}), crate::store::REPRODUCED), (t + 0x20, t + 0x30, "symbol", json!({"skind": "func"}), crate::store::DERIVED),
+                     (t, t + 4, "symbol", json!({"skind": "string"}), crate::store::OPEN), (t + 0x40, t + 0x41, "ref", json!({"rkind": "call", "to": t + 0x24}), crate::store::REPRODUCED)]);
         let (_, c) = k.run("C.overlap", &["A", "B"], "");
         // the same interval and kind of symbol is no contradiction; open facts are not counted
         assert_eq!(c.iter().map(|x| (x.severity.as_str(), x.lo - t, x.hi - t)).collect::<Vec<_>>(), [("bug", 8, 0x10)]);
@@ -490,7 +491,7 @@ mod tests {
                                 (0x1000, "d3_Origin", "data address comment (extern)", "src:include/d3.h:9"),
                                 (0x2000, "x", "data address comment (def)", "src:src/a.c:4"), (0x2000, "xB", "view of x +0x0", "src:include/v.h:1"),
                                 (0x3000, "f", "address comment", "src:src/a.c:9"), (0x3000, "g", "address comment", "src:src/b.c:9")] {
-            out.fact(a, a + 1, "name", json!({"name": n, "origin": "source"}), crate::store::DECLARED);
+            out.claim(a, a + 1, "name", json!({"name": n, "origin": "source"}), crate::store::DECLARED);
             let r = out.rows.last_mut().unwrap();
             (r.reason, r.by) = (Some(why.to_string()), by.to_string());
         }

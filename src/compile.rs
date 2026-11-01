@@ -210,7 +210,7 @@ pub fn ensure(p: &Project, force: bool, jobs: Option<usize>) -> Result<Report, S
     let t0 = std::time::Instant::now();
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let mut rep = Report { target: p.target_name.clone(), ..Default::default() };
     fsmemo::new_epoch();
     p.forget_input("src");
@@ -407,7 +407,7 @@ pub fn ensure_variant(p: &Project, v: &crate::run::Variant, force: bool) -> Resu
     let t0 = std::time::Instant::now();
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let mut rep = Report { target: p.target_name.clone(), ..Default::default() };
     let units = plan::plan(p)?;
     let mine: Vec<(&Tu, Vec<String>)> = units.iter().filter_map(|a| {

@@ -4,7 +4,7 @@
 //! order (tests/test_match.py).
 
 use super::*;
-use crate::store::PROVEN;
+use crate::store::REPRODUCED;
 
 const VC6: &str = "C:/Tools/MSVC600-SP5PP";
 
@@ -115,9 +115,9 @@ fn compile_and_byte_match() {
     let (code, out) = dcp(&t, &["build"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("compiled=1") && out.contains("grades: byte+readable=1"), "{out}");
-    let sym: Vec<(i64, i64, i64, String)> = facts(&t, "symbol", None).iter().filter(|f| &*f.rule == "M.match")
-        .map(|f| (f.lo, f.hi, f.level, f.value["relocs"].as_str().unwrap_or("").to_string())).collect();
-    assert_eq!(sym, [(0x10001020, 0x10001026, PROVEN, "1/1".to_string())]);
+    let sym: Vec<(i64, i64, crate::store::Support, String)> = facts(&t, "symbol", None).iter().filter(|f| &*f.rule == "M.match")
+        .map(|f| (f.lo, f.hi, f.support, f.value["relocs"].as_str().unwrap_or("").to_string())).collect();
+    assert_eq!(sym, [(0x10001020, 0x10001026, REPRODUCED, "1/1".to_string())]);
     assert!(dcp(&t, &["build"]).1.contains("compiled=0")); // nothing changed: nothing compiles, no rule runs
     let (_, out) = dcp(&t, &["grade", "get"]);
     assert!(out.contains("code=byte") && out.contains("readability=readable"), "{out}");

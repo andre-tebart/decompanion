@@ -269,7 +269,7 @@ fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> Result<Resul
         let sym = x.names.symbol_at(a).cloned();
         let sk = sym.as_ref().and_then(|f| f.s("skind").map(|s| s.to_string()));
         let db = x.p.store_path();
-        let starts = crate::with_db(&db, |c| crate::store::facts_of(c, &db, "start", None, |f| f.lo <= a && a < f.hi.max(f.lo + 1)))?;
+        let starts = crate::with_db(&db, |c| crate::store::claims_of(c, &db, "start", None, |f| f.lo <= a && a < f.hi.max(f.lo + 1)))?;
         let at_start = starts.iter().any(|f| f.lo == a);
         kind = if matches!(sk.as_deref(), Some("func" | "thunk")) && (sym.as_ref().is_some_and(|f| f.lo == a) || at_start) { "func" } else { "data" };
     }
@@ -394,7 +394,7 @@ fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
 }
 
 fn errors_of(db: &str) -> Result<Vec<(String, String, i64, String)>> {
-    Ok(crate::pystore::st_conflicts(db, None, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").map(|c| (c.0, c.1, c.2, c.4)).collect())
+    Ok(crate::storedb::st_conflicts(db, None, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").map(|c| (c.0, c.1, c.2, c.4)).collect())
 }
 
 /// `dcp rename` (rename_command): `rebuild()` compiles and refreshes after the write.
@@ -402,7 +402,7 @@ pub fn rename_command(p: &crate::project::Project, pairs: Vec<(String, String, S
     -> Result<(Vec<String>, Vec<String>, i32)> {
     let db = p.store_path();
     let main = p.main_uri();
-    crate::pystore::st_open(&db, &main)?;
+    crate::storedb::st_open(&db, &main)?;
     let image = p.target(None).map_err(err)?.path.clone();
     let mut x = Ctx { p, root: p.root.to_string_lossy().into_owned(), names: Names::build(&db, &main, &image)?, out: vec![] };
     let before: HashSet<(String, i64, String)> = errors_of(&db)?.into_iter().map(|e| (e.1, e.2, e.3)).collect();

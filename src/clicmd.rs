@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, tok, Tok};
 use crate::project::{py_path, Project};
-use crate::store::{self, SFact};
+use crate::store::{self, Claim, Support};
 use crate::with_db;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
@@ -14,7 +14,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 
-const LEVELS: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 /// (lines, error for stderr as `dcp CMD: error`, exit code).
 type Out = (Vec<String>, Option<String>, i32);
@@ -31,8 +30,8 @@ fn os(x: Option<impl Into<String>>) -> Tok {
     x.map(|v| Tok::S(v.into())).unwrap_or(Tok::No)
 }
 
-fn level(l: i64) -> &'static str {
-    LEVELS.get(l as usize).copied().unwrap_or("open")
+fn level(l: Support) -> &'static str {
+    l.name()
 }
 
 /// fmt_range: one address when the interval is one byte.
@@ -118,9 +117,9 @@ fn fmt_value(v: &Value) -> String {
 }
 
 /// Fact.line: the one-line spelling `dcp facts` prints.
-pub fn fact_line(kind: &str, f: &SFact) -> String {
+pub fn fact_line(kind: &str, f: &Claim) -> String {
     let vals: Vec<String> = f.value.as_object().map(|m| m.iter().map(|(k, v)| format!("{k}={}", fmt_value(v))).collect()).unwrap_or_default();
-    let mut out = format!("{}  {kind}  {}  {}  by={}", fmt_range(f.lo, f.hi), vals.join("  "), level(f.level), f.by);
+    let mut out = format!("{}  {kind}  {}  {}  by={}", fmt_range(f.lo, f.hi), vals.join("  "), level(f.support), f.by);
     if let Some(r) = f.reason.as_ref().filter(|r| !r.is_empty()) {
         out += &format!("  reason={}", crate::decl::py_repr(r));
     }
@@ -128,10 +127,10 @@ pub fn fact_line(kind: &str, f: &SFact) -> String {
 }
 
 /// A conflict row (severity, check, lo, hi, message, a, b).
-type ConflictRow = (String, String, i64, i64, String, String, String);
+type Finding = (String, String, i64, i64, String, String, String);
 
 /// Conflict.line.
-pub fn conflict_line(c: &ConflictRow) -> String {
+pub fn conflict_line(c: &Finding) -> String {
     let mut out = format!("{}  {}  {}  {}", c.0, c.1, fmt_range(c.2, c.3), c.4);
     if !c.5.is_empty() {
         out += &format!("  a={}", c.5);
@@ -142,11 +141,11 @@ pub fn conflict_line(c: &ConflictRow) -> String {
     out
 }
 
-fn conflicts(db: &str, severity: Option<String>) -> Result<Vec<ConflictRow>> {
-    crate::pystore::st_conflicts(db, severity, None)
+fn conflicts(db: &str, severity: Option<String>) -> Result<Vec<Finding>> {
+    crate::storedb::st_conflicts(db, severity, None)
 }
 
-fn severity_counts(c: &[ConflictRow]) -> String {
+fn severity_counts(c: &[Finding]) -> String {
     let mut n: BTreeMap<&str, usize> = BTreeMap::new();
     for x in c {
         *n.entry(x.0.as_str()).or_default() += 1;
@@ -155,8 +154,8 @@ fn severity_counts(c: &[ConflictRow]) -> String {
 }
 
 /// Facts of current runs, of one kind or all, intersecting [lo, hi): (kind, fact), sorted by (lo, hi, kind, value).
-fn facts_in(db: &str, kind: Option<&str>, lo: i64, hi: i64) -> Result<Vec<(String, SFact)>> {
-    let mut q = String::from("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f \
+fn facts_in(db: &str, kind: Option<&str>, lo: i64, hi: i64) -> Result<Vec<(String, Claim)>> {
+    let mut q = String::from("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.support, f.by, f.reason FROM claim f \
                               JOIN run r ON r.id = f.run_id WHERE r.current=1 AND f.hi>? AND f.lo<?");
     let mut args: Vec<rusqlite::types::Value> = vec![lo.into(), hi.into()];
     if let Some(k) = kind {
@@ -171,29 +170,29 @@ fn facts_in(db: &str, kind: Option<&str>, lo: i64, hi: i64) -> Result<Vec<(Strin
     })
 }
 
-fn row_fact(r: &rusqlite::Row) -> rusqlite::Result<(String, SFact)> {
+fn row_fact(r: &rusqlite::Row) -> rusqlite::Result<(String, Claim)> {
     let text: String = r.get(5)?;
-    Ok((r.get(4)?, SFact {
+    Ok((r.get(4)?, Claim {
         id: r.get(0)?, rule: Rc::from(r.get::<_, String>(1)?.as_str()), lo: r.get(2)?, hi: r.get(3)?,
-        value: serde_json::from_str(&text).unwrap_or(Value::Null), text, level: r.get(6)?, by: r.get(7)?, reason: r.get(8)?,
+        value: serde_json::from_str(&text).unwrap_or(Value::Null), text, support: r.get(6)?, by: r.get(7)?, reason: r.get(8)?,
     }))
 }
 
 /// The fact of a row id.
-fn fact_by_id(db: &str, id: i64) -> Result<Option<(String, SFact)>> {
+fn fact_by_id(db: &str, id: i64) -> Result<Option<(String, Claim)>> {
     with_db(db, |c| {
-        c.query_row("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f JOIN run r ON r.id = f.run_id \
+        c.query_row("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.support, f.by, f.reason FROM claim f JOIN run r ON r.id = f.run_id \
                      WHERE f.id=?", [id], row_fact).optional()
     })
 }
 
-fn all(db: &str, kind: &str) -> Result<store::Facts> {
-    with_db(db, |c| store::facts_of(c, db, kind, None, |_| true))
+fn all(db: &str, kind: &str) -> Result<store::Claims> {
+    with_db(db, |c| store::claims_of(c, db, kind, None, |_| true))
 }
 
 fn opened(p: &Project) -> Result<String> {
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri())?;
+    crate::storedb::st_open(&db, &p.main_uri())?;
     Ok(db)
 }
 
@@ -356,12 +355,12 @@ fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -
         }
         let place = match v.container(*a) {
             Some(f) => format!("inside {:#x}", f.lo),
-            None => crate::pystore::st_bytemap_at(db, *a)?.map(|r| r.2).unwrap_or_else(|| "-".into()),
+            None => crate::storedb::st_bytemap_at(db, *a)?.map(|r| r.2).unwrap_or_else(|| "-".into()),
         };
         a_only.push((*a, en, place));
     }
     let mut o_only: Vec<(i64, &String)> = ours.iter().filter(|(a, _)| glo <= **a && **a < ghi && !ents.contains_key(a)).map(|(a, h)| (*a, h)).collect();
-    let l9: Vec<ConflictRow> = conflicts(db, None)?.into_iter().filter(|c| c.1 == "L9").collect();
+    let l9: Vec<Finding> = conflicts(db, None)?.into_iter().filter(|c| c.1 == "L9").collect();
     let game: Vec<i64> = v.funcs.iter().map(|f| f.lo).filter(|a| glo <= *a && *a < ghi).collect();
     let state = crate::analyzers::state(p)?;
     let key = crate::analyzers::Analyzer::of(p).map_err(crate::project::cfg_err)?.key;
@@ -413,7 +412,7 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
         Value::Array(a) if !a.is_empty() => a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "),
         _ => "-".into(),
     };
-    let rich = with_db(&db, |c| store::facts_of(c, &db, "toolchain", Some(&["S.rich".to_string()]), |_| true))?;
+    let rich = with_db(&db, |c| store::claims_of(c, &db, "toolchain", Some(&["S.rich".to_string()]), |_| true))?;
     let rich = match rich.first() {
         Some(f) => {
             let n = |k: &str| f.value.get(k).and_then(|x| x.as_array()).map_or(0, |a| a.len());
@@ -423,16 +422,16 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
     };
     let r = |x: String| crate::decl::py_repr(&x);
     out.push(format!("toolchain: compiler={} linker={} cflags={} root={}{rich}", r(ds("compiler")), r(ds("linker")), r(ds("cflags")), r(ds("root"))));
-    // bytes per section per class and level, sections in map order
-    let rows = with_db(&db, |c| crate::pystore::bytemap_rows(c, &db, None, None))?;
+    // bytes per section per owner and support, sections in map order
+    let rows = with_db(&db, |c| crate::storedb::bytemap_rows(c, &db, None, None))?;
     let secs: HashMap<i64, String> = all(&db, "section")?.iter().map(|f| (f.id, f.s("name").unwrap_or("").to_string())).collect();
-    let mut by_sec: Vec<(String, Vec<(String, i64)>, [i64; 4])> = vec![];
+    let mut by_sec: Vec<(String, Vec<(String, i64)>, [i64; 5])> = vec![];
     for (lo, hi, cls, lvl, _, _, _, sec) in rows {
         let name = sec.and_then(|x| secs.get(&x).cloned()).unwrap_or_else(|| "(headers)".into());
         let i = match by_sec.iter().position(|x| x.0 == name) {
             Some(i) => i,
             None => {
-                by_sec.push((name, vec![], [-1; 4]));
+                by_sec.push((name, vec![], [-1; 5]));
                 by_sec.len() - 1
             }
         };
@@ -441,11 +440,11 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
             Some(x) => x.1 += hi - lo,
             None => e.1.push((cls, hi - lo)),
         }
-        let l = (lvl as usize).min(3);
+        let l = lvl.code() as usize;
         e.2[l] = e.2[l].max(0) + hi - lo;
     }
     for (name, mut classes, levels) in by_sec {
-        let lv: Vec<String> = (0..4).rev().filter(|&l| levels[l] >= 0).map(|l| format!("{}={:#x}", LEVELS[l], levels[l])).collect();
+        let lv: Vec<String> = (0..5).rev().filter(|&l| levels[l] >= 0).map(|l| format!("{}={:#x}", Support::ALL[l], levels[l])).collect();
         classes.sort_by_key(|x| -x.1);
         out.push(format!("section {name}: {}", lv.join("  ")));
         out.push(format!("  {}", classes.iter().map(|(k, v)| format!("{k}={v:#x}")).collect::<Vec<_>>().join("  ")));
@@ -461,14 +460,14 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
             None => libs.push((lib, 1)),
         }
     }
-    let funcs: Vec<Rc<SFact>> = all(&db, "symbol")?.into_iter().filter(|f| f.s("skind") == Some("func") && !f.rule.starts_with("M.")).collect();
-    let n_at = |l: i64| funcs.iter().filter(|f| f.level == l).count();
-    out.push(format!("functions: {} (proven {}, derived {}); library members placed: {} {}", funcs.len(), n_at(store::PROVEN), n_at(store::DERIVED),
+    let funcs: Vec<Rc<Claim>> = all(&db, "symbol")?.into_iter().filter(|f| f.s("skind") == Some("func") && !f.rule.starts_with("M.")).collect();
+    let n_at = |l: Support| funcs.iter().filter(|f| f.support == l).count();
+    out.push(format!("functions: {} (reproduced {}, derived {}); library members placed: {} {}", funcs.len(), n_at(store::REPRODUCED), n_at(store::DERIVED),
                      units.len(), libs.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("  ")));
     for f in all(&db, "name")?.iter().filter(|f| matches!(f.s("origin"), Some("export" | "entry"))) {
         out.push(format!("  {} {} at {}", f.s("origin").unwrap_or(""), f.s("name").unwrap_or(""), fmt_addr(f.lo)));
     }
-    let game: Vec<&Rc<SFact>> = unit_facts.iter().filter(|f| f.value.get("status").is_some()).collect();
+    let game: Vec<&Rc<Claim>> = unit_facts.iter().filter(|f| f.value.get("status").is_some()).collect();
     if !game.is_empty() {
         let mut c: BTreeMap<String, usize> = BTreeMap::new();
         for f in &game {
@@ -534,7 +533,7 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
     let t = &p.target_name;
     let mut out = vec![];
     let mut missing = 0;
-    let mut ref_facts: Option<store::Facts> = None;
+    let mut ref_facts: Option<store::Claims> = None;
     for key in &keys {
         let a = match parse_addr(key) {
             Ok(a) => a,
@@ -547,7 +546,7 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
                 }
             },
         };
-        let Some(row) = crate::pystore::st_bytemap_at(&db, a)? else {
+        let Some(row) = crate::storedb::st_bytemap_at(&db, a)? else {
             out.push(format!("addr={}  target={t}  not in the image", fmt_addr(a)));
             continue;
         };
@@ -556,16 +555,16 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
             Some(sec) => format!("  section={}  off=+{:#x}", sec.name, a - sec.va as i64),
             None => "  (headers)".into(),
         };
-        out.push(format!("addr={}  target={t}{off}  cls={cls}  level={}  owner={}", fmt_addr(a), level(lvl), fmt_range(lo, hi)));
+        out.push(format!("addr={}  target={t}{off}  owner={cls}  support={}  owner={}", fmt_addr(a), level(lvl), fmt_range(lo, hi)));
         if let Some(line) = value_line(&img, a, hi) {
             out.push(line);
         }
         let facts = facts_in(&db, None, a, a + 1)?;
-        let mut probed: Vec<&SFact> = facts.iter().filter(|(k, f)| k == "toolchain" && f.value.get("flag").is_some()).map(|x| &x.1).collect();
+        let mut probed: Vec<&Claim> = facts.iter().filter(|(k, f)| k == "toolchain" && f.value.get("flag").is_some()).map(|x| &x.1).collect();
         if let Some(first) = probed.first().copied() {
             probed.sort_by(|x, y| py_str(&x.value["group"]).cmp(&py_str(&y.value["group"])));
             out.push(format!("  {}  toolchain probe  {}  (dcp toolchain)  by={}", fmt_range(first.lo, first.hi),
-                             probed.iter().map(|f| format!("{}={}", py_str(&f.value["flag"]), level(f.level))).collect::<Vec<_>>().join(" "), first.by));
+                             probed.iter().map(|f| format!("{}={}", py_str(&f.value["flag"]), level(f.support))).collect::<Vec<_>>().join(" "), first.by));
         }
         for (k, f) in &facts {
             if k == "toolchain" && f.value.get("flag").is_some() {
@@ -574,12 +573,12 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
             if k == "toolchain" && f.value.get("compilers").is_some() {
                 let n = |x: &str| f.value.get(x).and_then(|v| v.as_array()).map_or(0, |a| a.len());
                 out.push(format!("  {}  toolchain  compilers={}  linkers={}  (dcp toolchain)  {}  by={}", fmt_range(f.lo, f.hi), n("compilers"),
-                                 n("linkers"), level(f.level), f.by));
+                                 n("linkers"), level(f.support), f.by));
                 continue;
             }
             out.push(format!("  {}", fact_line(k, f)));
         }
-        let (mut to, mut from): (Vec<Rc<SFact>>, Vec<(String, SFact)>) = (vec![], vec![]);
+        let (mut to, mut from): (Vec<Rc<Claim>>, Vec<(String, Claim)>) = (vec![], vec![]);
         if let Some((_, symf)) = sym.map(|id| fact_by_id(&db, id)).transpose()?.flatten() {
             if ref_facts.is_none() {
                 ref_facts = Some(all(&db, "ref")?);
@@ -591,7 +590,7 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
             from = facts_in(&db, Some("ref"), symf.lo, symf.hi)?;
         }
         if refs {
-            let tgt = |f: &SFact| fmt_addr(f.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0));
+            let tgt = |f: &Claim| fmt_addr(f.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0));
             for f in &to {
                 out.push(format!("  ref->  {} from={} to={}  by={}", py_str(&f.value["rkind"]), fmt_addr(f.lo), tgt(f), f.by));
             }
@@ -612,7 +611,7 @@ pub fn facts_command(p: &crate::project::Project, range: &str, kind: Option<Stri
     let facts = facts_in(&db, kind.as_deref().filter(|k| !k.is_empty()), lo, hi)?;
     if json {
         return Ok(facts.iter().map(|(k, f)| {
-            let v = serde_json::json!({"lo": f.lo, "hi": f.hi, "kind": k, "value": f.value, "level": level(f.level), "by": f.by, "reason": f.reason});
+            let v = serde_json::json!({"lo": f.lo, "hi": f.hi, "kind": k, "value": f.value, "support": level(f.support), "by": f.by, "reason": f.reason});
             let mut o = String::new();
             crate::store::canon(&mut o, &v);
             o
@@ -652,7 +651,7 @@ pub fn map_command(p: &crate::project::Project, range: Option<String>) -> Result
             (img.base as i64, img.end() as i64)
         }
     };
-    let rows = crate::pystore::st_bytemap_rows(&db, Some(lo), Some(hi))?;
+    let rows = crate::storedb::st_bytemap_rows(&db, Some(lo), Some(hi))?;
     let mut out = vec![format!("target={}  rows={}  range={}", p.target_name, rows.len(), fmt_range(lo, hi))];
     for (rlo, rhi, cls, lvl, sym, unit, _, _) in rows {
         let f = sym.map(|id| fact_by_id(&db, id)).transpose()?.flatten();
@@ -678,9 +677,9 @@ pub fn rules_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<S
     let db = opened(p)?;
     let mut rows = vec![];
     for r in crate::engine::order(None)? {
-        let cur = crate::pystore::st_current_run(&db, r.id)?;
+        let cur = crate::storedb::st_current_run(&db, r.id)?;
         let (n, ms) = match &cur {
-            Some(c) => crate::pystore::st_run_stats(&db, c.0)?,
+            Some(c) => crate::storedb::st_run_stats(&db, c.0)?,
             None => (0, 0),
         };
         let ins: Vec<String> = r.inputs.iter().map(|x| x.to_string()).collect();
@@ -692,7 +691,7 @@ pub fn rules_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<S
     for (r, cur, ms, n, waits) in &rows {
         let state = if !waits.is_empty() { "waiting" } else if *cur { "current" } else { "missing" };
         let needs = crate::engine::resolve_needs(r)?.join(",");
-        out.push(format!("{:<18} v{:<3} {:<9} {state:<8} {ms:>6} ms {n:>6} facts  needs={}  inputs={}{}", r.id, r.version, level(r.ceiling),
+        out.push(format!("{:<18} v{:<3} {:<9} {state:<8} {ms:>6} ms {n:>6} facts  needs={}  inputs={}{}", r.id, r.version, level(r.max_support),
                          if needs.is_empty() { "-".into() } else { needs }, if r.inputs.is_empty() { "-".into() } else { r.inputs.join(",") },
                          if r.loader { "  loader" } else { "" }));
         if !waits.is_empty() {
@@ -713,12 +712,12 @@ pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64),
     let db = opened(p)?;
     let mut builds = all(&db, "build")?;
     builds.sort_by(|a, b| py_str(&a.value["tu"]).cmp(&py_str(&b.value["tu"])));
-    let ok = |f: &SFact| f.value.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
-    let bad: Vec<&Rc<SFact>> = builds.iter().filter(|f| !ok(f)).collect();
+    let ok = |f: &Claim| f.value.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
+    let bad: Vec<&Rc<Claim>> = builds.iter().filter(|f| !ok(f)).collect();
     let (n, compiled, removed, ms) = compile;
     let mut out = vec![record(&[("target", s(p.target_name.clone())), ("units", Tok::I(n)), ("compiled", Tok::I(compiled)), ("failed", Tok::I(bad.len() as i64)),
                                 ("fresh", Tok::I(n - compiled)), ("removed", Tok::I(removed)), ("ms", Tok::I(ms))])];
-    let shown: Vec<&Rc<SFact>> = if units { builds.iter().collect() } else { bad.clone() };
+    let shown: Vec<&Rc<Claim>> = if units { builds.iter().collect() } else { bad.clone() };
     for f in shown {
         let v = &f.value;
         let errors = v.get("errors").and_then(|x| x.as_array()).cloned().unwrap_or_default();
@@ -753,7 +752,7 @@ pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64),
 pub fn check_conflicts(p: &crate::project::Project, strict: bool) -> Result<(Vec<String>, Vec<String>)> {
     let db = opened(p)?;
     let conf = conflicts(&db, None)?;
-    let bad: Vec<&ConflictRow> = conf.iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
+    let bad: Vec<&Finding> = conf.iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
     let mut out = vec![format!("check target={}: {}", p.target_name, if conf.is_empty() { "no conflicts".into() } else { severity_counts(&conf) })];
     out.extend(bad.iter().map(|c| conflict_line(c)));
     let mut reasons = vec![];
@@ -777,7 +776,7 @@ pub fn gate_target(p: &crate::project::Project, units: i64, quiet: bool) -> Resu
     let obls = crate::decide::gate_records(p)?;
     let builds = all(&db, "build")?;
     let bad: Vec<String> = builds.iter().filter(|f| !f.value.get("ok").and_then(|x| x.as_bool()).unwrap_or(false)).map(|f| py_str(&f.value["tu"])).collect();
-    let errors: Vec<ConflictRow> = conflicts(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
+    let errors: Vec<Finding> = conflicts(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
     let link = if !builds.is_empty() && p.toolchain_available() { Some(crate::matchcmd::link_lines(p)?) } else { None };
     let good = obls.is_empty() && bad.is_empty() && errors.is_empty() && link.as_ref().is_none_or(|l| l.1);
     let mut out = vec![];
@@ -902,7 +901,7 @@ pub fn decl_add(p: &crate::project::Project, line: &str) -> Result<(Vec<String>,
 /// The conflicts a producer takes part in (after `dcp decl add` refreshed the target); exit 1 on a bug or error.
 pub fn decl_conflicts(p: &crate::project::Project, by: &str) -> Result<(Vec<String>, i32)> {
     let db = opened(p)?;
-    let mine: Vec<ConflictRow> = conflicts(&db, None)?.into_iter().filter(|c| c.5 == by || c.6 == by).collect();
+    let mine: Vec<Finding> = conflicts(&db, None)?.into_iter().filter(|c| c.5 == by || c.6 == by).collect();
     let bad = mine.iter().any(|c| c.0 == "bug" || c.0 == "error");
     Ok((mine.iter().map(conflict_line).collect(), if bad { 1 } else { 0 }))
 }
@@ -1103,8 +1102,8 @@ pub fn propose_verdict(p: &crate::project::Project, name: &str) -> Result<(Vec<S
     let text = crate::fsmemo::read_text(&py_path(&p.root.join("decl").join("text.dcl").to_string_lossy())).map_err(err)?;
     let bys: HashSet<String> = text.lines().enumerate().filter(|(_, l)| format!("{l} ").contains(&format!("tu={name} ")))
         .map(|(i, _)| format!("decl:decl/text.dcl:{}", i + 1)).collect();
-    let bad: Vec<ConflictRow> = conflicts(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
-    let mine: Vec<&ConflictRow> = bad.iter().filter(|c| bys.contains(&c.5) || bys.contains(&c.6)).collect();
+    let bad: Vec<Finding> = conflicts(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
+    let mine: Vec<&Finding> = bad.iter().filter(|c| bys.contains(&c.5) || bys.contains(&c.6)).collect();
     let mut out = vec![record(&[("proposal", s(if mine.is_empty() { "ok" } else { "FAIL" })), ("proposal_errors", Tok::I(mine.len() as i64)),
                                 ("other_errors", Tok::I((bad.len() - mine.len()) as i64))])
         + if bad.len() > mine.len() { "  (the other errors are not the proposal's: dcp check lists them)" } else { "" }];
@@ -1126,7 +1125,7 @@ mod tests {
         assert_eq!(parse_range("0x10").unwrap(), (16, 17));
         assert_eq!((fmt_range(16, 17), fmt_range(16, 32)), ("0x00000010".to_string(), "0x00000010..0x00000020".to_string()));
         let v: Value = serde_json::from_str(r#"{"a": 4096, "b": [1, "x y"], "c": true, "d": "", "e": {"k": null}}"#).unwrap();
-        let f = SFact { id: 1, rule: Rc::from("r"), lo: 0x1000, hi: 0x1004, text: String::new(), value: v, level: 2, by: "rule:r@1".into(), reason: Some("why".into()) };
+        let f = Claim { id: 1, rule: Rc::from("r"), lo: 0x1000, hi: 0x1004, text: String::new(), value: v, support: store::DERIVED, by: "rule:r@1".into(), reason: Some("why".into()) };
         assert_eq!(fact_line("symbol", &f), "0x00001000..0x00001004  symbol  a=0x1000  b=1,'x y'  c=yes  d=''  e={'k': None}  derived  by=rule:r@1  reason='why'");
         assert_eq!(J::O(o(vec![("a", J::R(1, 2)), ("b", J::V(serde_json::json!({"x": "é"})))])).json().replace('\\', "/"), r#"{"a": [1, 2], "b": {"x": "/u00e9"}}"#);
     }

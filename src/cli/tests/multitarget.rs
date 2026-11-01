@@ -66,7 +66,7 @@ fn toolchain_missing_reason_and_compiler() {
     assert!(out.contains("obligation=toolchain.compiler  target=tiny  missing=\"the compiler build that made the user's objects (missing)\""), "{out}");
     assert!(out.contains("obligation=toolchain.linker  target=tiny  missing='the linker build (declared without a reason)'"), "{out}");
     let (_, rules) = dcp(&t, &["rules"]);
-    assert!(rules.contains("C.toolchain        v2   proven    waiting") && rules.contains("waiting: toolchain.compiler  (dcp status)"), "{rules}");
+    assert!(rules.contains("C.toolchain        v2   reproduced waiting") && rules.contains("waiting: toolchain.compiler  (dcp status)"), "{rules}");
     // other: its own compiler with a reason; the inherited linker and cflags have none -> C.toolchain errors
     let msgs: Vec<String> = conflicts_of(&t, Some("other"), "C.toolchain").into_iter().map(|c| c.4).collect();
     assert_eq!(msgs, ["target other: the cflags declaration has no reason", "target other: the linker declaration has no reason"]);

@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::diffclass::{self, Env, Verdict};
 use crate::readability::{self, Context, Source};
 use crate::rules::{compiled_functions, Ctx};
-use crate::store::{self, Out, SFact, DECLARED, PROVEN};
+use crate::store::{self, Out, Claim, DECLARED, REPRODUCED};
 use crate::image;
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -25,7 +25,7 @@ fn rank(c: &str) -> usize {
 
 /// One function's code grade row: (code, why, hunks, dist).
 struct Row {
-    src: Rc<SFact>,
+    src: Rc<Claim>,
     code: String,
     why: Vec<String>,
     hunks: Value,
@@ -42,7 +42,7 @@ fn read_text(path: &std::path::Path) -> Option<String> {
 /// inside the function), its address, the next start, the walk's or the source extent's end.
 type Key = (Vec<u8>, Vec<u8>, Option<u32>, Vec<(u32, u32, Option<i64>)>, i64, u32, Option<i64>);
 
-fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<SFact>>) -> Key {
+fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>) -> Key {
     let code = &f.code;
     let obj = &f.obj.0;
     let tbl = match code.code_len {
@@ -140,9 +140,9 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let x = &ctx.inputs;
     let scan_defs = crate::srcscan::defs(&x.scan)?;
     let (funcs, missing) = compiled_functions(ctx, db)?;
-    let symbols = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let symbols = store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
     let matched: HashSet<i64> = symbols.iter().filter(|f| &*f.rule == "M.match").map(|f| f.lo).collect();
-    let mut walk: HashMap<i64, Rc<SFact>> = HashMap::new();
+    let mut walk: HashMap<i64, Rc<Claim>> = HashMap::new();
     for f in symbols.iter().filter(|f| f.s("skind") == Some("func") && matches!(&*f.rule, "S.codewalk" | "L.src.extent")) {
         walk.insert(f.lo, f.clone());
     }
@@ -302,15 +302,15 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             g["hunks"] = r.hunks.clone();
         }
         if has("deep") && has("stuck") {
-            out.conflict("error", "M2", s.lo, s.lo + 1, format!("{name}: carries both @deep and @stuck"), &s.by);
+            out.finding("error", "M2", s.lo, s.lo + 1, format!("{name}: carries both @deep and @stuck"), &s.by);
         } else if !level.is_empty() && r.code == "byte" && q == "readable" {
-            out.conflict("warn", "M2", s.lo, s.lo + 1, format!("{name}: byte + readable, its @{level} tag is stale (dcp build clears it)"), &s.by);
+            out.finding("warn", "M2", s.lo, s.lo + 1, format!("{name}: byte + readable, its @{level} tag is stale (dcp build clears it)"), &s.by);
         }
-        out.fact(s.lo, s.lo + 1, "grade", g, if r.code == "byte" { PROVEN } else { DECLARED });
+        out.claim(s.lo, s.lo + 1, "grade", g, if r.code == "byte" { REPRODUCED } else { DECLARED });
         per_unit.entry(unit).or_default().push((r.code.clone(), q));
     }
     FILES.with(|h| *h.borrow_mut() = (files.0, used_files));
-    for u in store::facts(db, &ctx.db, "unit", &ctx.needed, |f| f.value.get("status").is_some()).map_err(err)? {
+    for u in store::claims(db, &ctx.db, "unit", &ctx.needed, |f| f.value.get("status").is_some()).map_err(err)? {
         let tu = u.s("tu").unwrap_or("");
         let Some(fs) = per_unit.get(tu) else { continue };
         let code = fs.iter().map(|f| f.0.as_str()).min_by_key(|c| rank(c)).unwrap_or("draft");
@@ -320,8 +320,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             Some(n) if n.as_str() != Some("") => n.clone(),
             _ => json!("-"),
         };
-        out.fact(u.lo, u.hi, "grade", json!({"of": "unit", "unit": tu, "code": code, "readability": if readable { "readable" } else { "draft" },
-                                            "functions": fs.len(), "named_by": named_v}), u.level.min(DECLARED));
+        out.claim(u.lo, u.hi, "grade", json!({"of": "unit", "unit": tu, "code": code, "readability": if readable { "readable" } else { "draft" },
+                                            "functions": fs.len(), "named_by": named_v}), u.support.min(DECLARED));
     }
     Ok(())
 }

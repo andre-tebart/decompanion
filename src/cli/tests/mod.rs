@@ -14,8 +14,8 @@ mod servers;
 mod source_checks;
 mod targets;
 
-use crate::pystore;
-use crate::store::SFact;
+use crate::storedb;
+use crate::store::Claim;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -97,11 +97,11 @@ pub fn project(root: &Path, target: Option<&str>) -> crate::project::Project {
 }
 
 /// The facts of one kind of a target's current runs.
-pub fn facts(root: &Path, kind: &str, target: Option<&str>) -> Vec<Rc<SFact>> {
+pub fn facts(root: &Path, kind: &str, target: Option<&str>) -> Vec<Rc<Claim>> {
     let p = project(root, target);
     let db = p.store_path();
-    pystore::st_open(&db, &p.main_uri()).unwrap();
-    pystore::st_facts(&db, Some(kind), None, None, None).unwrap().into_iter().map(|(_, f)| f).collect()
+    storedb::st_open(&db, &p.main_uri()).unwrap();
+    storedb::st_facts(&db, Some(kind), None, None, None).unwrap().into_iter().map(|(_, f)| f).collect()
 }
 
 /// A conflict: (severity, check, lo, hi, message, a, b).
@@ -110,8 +110,8 @@ pub type Conflict = (String, String, i64, i64, String, String, String);
 pub fn conflicts(root: &Path, target: Option<&str>) -> Vec<Conflict> {
     let p = project(root, target);
     let db = p.store_path();
-    pystore::st_open(&db, &p.main_uri()).unwrap();
-    pystore::st_conflicts(&db, None, None).unwrap()
+    storedb::st_open(&db, &p.main_uri()).unwrap();
+    storedb::st_conflicts(&db, None, None).unwrap()
 }
 
 pub fn conflicts_of(root: &Path, target: Option<&str>, check: &str) -> Vec<Conflict> {
@@ -121,7 +121,7 @@ pub fn conflicts_of(root: &Path, target: Option<&str>, check: &str) -> Vec<Confl
 /// The rules of a target refreshed as a command refreshes them: whether any ran.
 pub fn engine_ran(root: &Path, target: Option<&str>) -> bool {
     let p = project(root, target);
-    pystore::st_open(&p.store_path(), &p.main_uri()).unwrap();
+    storedb::st_open(&p.store_path(), &p.main_uri()).unwrap();
     crate::engine::engine_run(&p, "", None, false).unwrap().iter().any(|r| r.ran)
 }
 

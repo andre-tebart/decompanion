@@ -1,11 +1,11 @@
-//! M.compile and M.flags.proven (and probe.analyse, which M.flags.proven reads): the match rules of the build.
+//! M.compile and M.flags.probe (and probe.analyse, which M.flags.probe reads): the match rules of the build.
 
 use crate::error::{Error, Result};
 use crate::compile::{obj_path, tu_rows_of};
 use crate::plan;
 use crate::project::Project;
 use crate::rules::Ctx;
-use crate::store::{Out, DECLARED, PROVEN};
+use crate::store::{Out, DECLARED, OBSERVED, REPRODUCED};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -31,7 +31,7 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 Some(v) => crate::project::toml_json(v).to_string(),
                 None => "None".into(),
             };
-            out.conflict("error", "M.compile", base, base + 1, format!("[[toolchain.unit]] glob={glob}: an override without a reason"), "");
+            out.finding("error", "M.compile", base, base + 1, format!("[[toolchain.unit]] glob={glob}: an override without a reason"), "");
         }
     }
     let tools = crate::vc6::Tools::of(&p);
@@ -41,12 +41,12 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let at = a.first_addr().filter(|&x| in_image(x)).unwrap_or(base);
         let flags = plan::compile_flags(&p, &a.target, &a.unit).map_err(err)?;
         let Some(row) = rows.get(&a.unit) else {
-            out.fact(at, at + 1, "build", json!({"tu": a.unit, "ok": false, "stale": true, "errors": ["not compiled"], "warnings": 0,
-                                                 "functions": a.functions.len()}), PROVEN);
+            out.claim(at, at + 1, "build", json!({"tu": a.unit, "ok": false, "stale": true, "errors": ["not compiled"], "warnings": 0,
+                                                 "functions": a.functions.len()}), OBSERVED);
             if tools.available() {
-                out.conflict("error", "M.compile", at, at + 1, format!("unit {} is not compiled (dcp build)", a.unit), "");
+                out.finding("error", "M.compile", at, at + 1, format!("unit {} is not compiled (dcp build)", a.unit), "");
             } else {
-                out.conflict("warn", "M.compile", at, at + 1, format!("unit {} is not compiled: the toolchain is not available (root {})", a.unit,
+                out.finding("warn", "M.compile", at, at + 1, format!("unit {} is not compiled: the toolchain is not available (root {})", a.unit,
                                                                       tools.root.as_deref().unwrap_or("None")), "");
             }
             continue;
@@ -63,15 +63,15 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if !errors.is_empty() {
             v["errors"] = json!(errors.iter().take(20).collect::<Vec<_>>());
         }
-        out.fact(at, at + 1, "build", v, PROVEN);
+        out.claim(at, at + 1, "build", v, OBSERVED);
         if !row.ok {
             let trimmed = row.log.trim();
             let last = trimmed.lines().last().filter(|_| !trimmed.is_empty()).unwrap_or("no diagnostics");
             let why = if errors.is_empty() { last.to_string() } else { errors.iter().take(3).cloned().collect::<Vec<_>>().join("; ") };
-            out.conflict("error", "M.compile", at, at + 1, format!("unit {} does not compile: {why}", a.unit), "");
+            out.finding("error", "M.compile", at, at + 1, format!("unit {} does not compile: {why}", a.unit), "");
             continue;
         } else if stale {
-            out.conflict("warn", "M.compile", at, at + 1, format!("unit {} changed since its compile (dcp build)", a.unit), "");
+            out.finding("warn", "M.compile", at, at + 1, format!("unit {} changed since its compile (dcp build)", a.unit), "");
         }
         let Ok(data) = std::fs::read(obj_path(&root, &row.obj_hash)) else { continue };
         let Ok(obj) = crate::coff::Obj::parse(&data) else { continue };
@@ -86,14 +86,14 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         for (name, raw) in &defined {
             if !ours.contains_key(name.as_str()) {
-                out.conflict("error", "M.gen", at, at + 1,
+                out.finding("error", "M.gen", at, at + 1,
                              format!("unit {}: the object defines {name} ({raw}), no address comment of the target in {} does", a.unit, a.file), "");
             }
         }
         for (name, addr) in &ours {
             let where_ = addr.filter(|&x| in_image(x)).unwrap_or(at);
             if !defined.contains_key(*name) {
-                out.conflict("error", "M.gen", where_, where_ + 1,
+                out.finding("error", "M.gen", where_, where_ + 1,
                              format!("{}: the object of unit {} defines no function {name} (dropped by the compiler as an unreferenced static, or not parsed as a definition)",
                                      a.file, a.unit), "");
             }
@@ -173,10 +173,10 @@ pub fn analyse(result: &Value) -> Value {
     json!({"best": best, "matched": top, "groups": groups, "ranked": ranked})
 }
 
-/// M.flags.proven: from the last probe, one `toolchain` fact per flag group naming the best combination's flag and
+/// M.flags.probe: from the last probe, one `toolchain` fact per flag group naming the best combination's flag and
 /// how many anchors and units distinguish it; proven from two units on, else declared; a proven flag the declared
 /// cflags lack is an error (M.flags).
-pub fn m_flags_proven(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
+pub fn m_flags_probe(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let p = project_of(ctx)?;
     let _ = p;
     use rusqlite::OptionalExtension;
@@ -193,12 +193,12 @@ pub fn m_flags_proven(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let an = analyse(&res);
     for g in an["groups"].as_array().into_iter().flatten() {
         let n = |k: &str| g[k].as_array().map(|a| a.len()).unwrap_or(0);
-        let lvl = if n("units") >= 2 { PROVEN } else { DECLARED };
+        let lvl = if n("units") >= 2 { REPRODUCED } else { DECLARED };
         let flag = g["flag"].as_str().unwrap_or("");
-        out.fact(base, end, "toolchain", json!({"flag": flag, "group": g["group"], "anchors": n("anchors"), "units": n("units"),
+        out.claim(base, end, "toolchain", json!({"flag": flag, "group": g["group"], "anchors": n("anchors"), "units": n("units"),
                                                 "crt_anchors": n("crt_anchors")}), lvl);
-        if lvl == PROVEN && !declared.contains(&flag.to_lowercase()) {
-            out.conflict("error", "M.flags", base, base + 1,
+        if lvl == REPRODUCED && !declared.contains(&flag.to_lowercase()) {
+            out.finding("error", "M.flags", base, base + 1,
                          format!("the probe proves {flag} ({}, {} anchors from {} units); the declared cflags do not hold it",
                                  g["group"].as_str().unwrap_or(""), n("anchors"), n("units")), "");
         }

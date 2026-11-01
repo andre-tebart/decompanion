@@ -981,7 +981,7 @@ fn call_evidence(x: &Ctx, capstone: &str, names: &crate::names::Names, func: Opt
         return Ok(vec![format!("{callee}: no address known")]);
     };
     let db = x.p.store_path();
-    let syms = crate::with_db(&db, |c| store::facts_of(c, &db, "symbol", None, |f| f.lo == func && f.s("skind") == Some("func") && !f.rule.starts_with("M.")))?;
+    let syms = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |f| f.lo == func && f.s("skind") == Some("func") && !f.rule.starts_with("M.")))?;
     let Some(sym) = syms.iter().next() else { return Ok(vec![]) };
     let img = crate::image(&x.p.target(None).map_err(err)?.path)?;
     let fills = crate::toolchain::of(&x.p.toolchain_key()).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default();
@@ -1066,7 +1066,7 @@ fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str)
     let relocs: Option<Vec<u32>> = if img.relocations().is_empty() {
         None
     } else {
-        let mut v: Vec<u32> = crate::with_db(&db, |c| store::facts_of(c, &db, "ref", None, |f| f.s("rkind") == Some("reloc")))?.iter().map(|f| f.lo as u32).collect();
+        let mut v: Vec<u32> = crate::with_db(&db, |c| store::claims_of(c, &db, "ref", None, |f| f.s("rkind") == Some("reloc")))?.iter().map(|f| f.lo as u32).collect();
         v.sort_unstable();
         (!v.is_empty()).then_some(v)
     };
@@ -1116,7 +1116,7 @@ pub fn headers_conflicts(p: &crate::project::Project, capstone: &str, unit: &str
             }
         }
     }
-    crate::pystore::st_open(&p.store_path(), &p.main_uri())?;
+    crate::storedb::st_open(&p.store_path(), &p.main_uri())?;
     let scan = frontend::scan(&root, p.input_hash("src").map_err(err)?.as_deref()).map_err(err)?;
     let x = Ctx { p, t: Texts { root: root.clone(), front: Front::of(&root).map_err(err)?, scan: Some(scan.clone()) }, scan };
     let an = match analyse(&x, capstone, unit, &hdrs, at)? {

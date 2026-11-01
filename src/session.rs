@@ -78,15 +78,15 @@ fn load(root: &str) -> Option<Value> {
 /// The counts a session report compares: functions, units, grades, errors.
 fn state(p: &Project) -> Result<Value> {
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri())?;
+    crate::storedb::st_open(&db, &p.main_uri())?;
     let rows = crate::queues::function_grades(&db)?;
     let str_of = |r: &Map<String, Value>, k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let units = crate::with_db(&db, |c| crate::store::facts_of(c, &db, "unit", None, |f| f.value.get("status").is_some()))?;
+    let units = crate::with_db(&db, |c| crate::store::claims_of(c, &db, "unit", None, |f| f.value.get("status").is_some()))?;
     let mut grades: BTreeMap<String, i64> = BTreeMap::new();
     for r in rows.iter() {
         *grades.entry(format!("{}+{}", str_of(r, "code"), str_of(r, "readability"))).or_default() += 1;
     }
-    let errors = crate::pystore::st_conflicts(&db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
+    let errors = crate::storedb::st_conflicts(&db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
     Ok(json!({"functions": rows.len(), "byte": rows.iter().filter(|r| str_of(r, "code") == "byte").count(),
               "readable": rows.iter().filter(|r| str_of(r, "readability") == "readable").count(), "units": units.len(),
               "separated": units.iter().filter(|f| f.s("status") == Some("separated")).count(), "errors": errors, "grades": grades}))
@@ -149,7 +149,7 @@ pub(crate) fn unit_rows(v: &crate::layoutview::View) -> Vec<UnitRow> {
     ufs.iter().map(|f| {
         let st = |k: &str| f.s(k).unwrap_or("").to_string();
         let n = |k: &str| f.value.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
-        UnitRow { unit: st("tu"), lo: f.lo, hi: f.hi, status: st("status"), start: st("start_level"), end: st("end_level"),
+        UnitRow { unit: st("tu"), lo: f.lo, hi: f.hi, status: st("status"), start: st("start_support"), end: st("end_support"),
                   named_by: f.s("named_by").filter(|x| !x.is_empty()).map(|x| x.to_string()), functions: n("functions"),
                   undrafted: n("functions") - n("sourced"), open_bytes: n("open_bytes") }
     }).collect()
@@ -159,9 +159,9 @@ pub(crate) fn unit_rows(v: &crate::layoutview::View) -> Vec<UnitRow> {
 pub(crate) fn view_of(p: &Project) -> Result<std::rc::Rc<crate::layoutview::View>> {
     let db = p.store_path();
     let main = p.main_uri();
-    crate::pystore::st_open(&db, &main)?;
+    crate::storedb::st_open(&db, &main)?;
     let image = p.target(None).map_err(err)?.path.clone();
-    let drafts = (crate::pystore::st_meta(&db, "drafts")?, crate::pystore::st_main_meta(&db, &main, "drafts")?);
+    let drafts = (crate::storedb::st_meta(&db, "drafts")?, crate::storedb::st_main_meta(&db, &main, "drafts")?);
     crate::store::derived(&db, &format!("view {main} {image} {drafts:?}"), || crate::layoutview::View::load(&db, &main, &image))
 }
 
@@ -191,12 +191,12 @@ pub fn session_overview(p: &crate::project::Project, analyzer: &str) -> Result<V
     }
     let decl = p.toolchain_decl(None).map_err(err)?;
     let db = p.store_path();
-    let probed = crate::with_db(&db, |c| crate::store::facts_of(c, &db, "toolchain", None, |f| &*f.rule == "M.flags.proven"))?;
-    let mut proven: Vec<String> = probed.iter().filter(|f| f.level == crate::store::PROVEN).filter_map(|f| f.s("flag").map(|x| x.to_string())).collect();
+    let probed = crate::with_db(&db, |c| crate::store::claims_of(c, &db, "toolchain", None, |f| &*f.rule == "M.flags.probe"))?;
+    let mut proven: Vec<String> = probed.iter().filter(|f| f.support == crate::store::REPRODUCED).filter_map(|f| f.s("flag").map(|x| x.to_string())).collect();
     proven.sort();
     let compiler = decl["compiler"].as_str().filter(|c| !c.is_empty()).map(|c| c.to_string());
     let cflags = decl["cflags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" ")).filter(|c| !c.is_empty());
-    let level = if proven.is_empty() { "declared".to_string() } else { format!("proven:{}", proven.join(",")) };
+    let level = if proven.is_empty() { "declared".to_string() } else { format!("reproduced:{}", proven.join(",")) };
     out.push(format!("  {}", record(&[("toolchain", os(compiler)), ("cflags", os(cflags)), ("level", s(level))])));
     let n = crate::with_db(&db, |c| crate::names::draft_values(c, &p.main_uri()))?.len();
     out.push(format!("  {}", if analyzer == "none" && n == 0 {

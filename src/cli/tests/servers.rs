@@ -79,9 +79,9 @@ fn setup_server_pe_facts_and_total_map() {
     assert!(img.rich().contains(&(48, 9044, 37)));
     assert_eq!(dcp(&d, &["setup", "--no-analyzer"]).0, 0);
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).unwrap();
-    crate::pystore::st_ensure_bytemap(&db).unwrap();
-    let rows = crate::pystore::st_bytemap_rows(&db, None, None).unwrap();
+    crate::storedb::st_open(&db, &p.main_uri()).unwrap();
+    crate::storedb::st_ensure_bytemap(&db).unwrap();
+    let rows = crate::storedb::st_bytemap_rows(&db, None, None).unwrap();
     // total and non-overlapping over the mapped image
     assert!(rows[0].0 == img.base as i64 && rows[rows.len() - 1].1 == img.end() as i64);
     for w in rows.windows(2) {
@@ -290,7 +290,7 @@ fn setup_exe() {
     let (_, out) = dcp(&g, &["toolchain"]);
     assert!(out.matches("C.toolchain: ok").count() == 2 && out.contains("link 5.12.9049 (Linker512 - x3)"), "{out}");
     // the exe's landmarks
-    let syms: std::collections::HashMap<i64, std::rc::Rc<crate::store::SFact>> = facts(&g, "symbol", Some("exe")).into_iter().map(|f| (f.lo, f)).collect();
+    let syms: std::collections::HashMap<i64, std::rc::Rc<crate::store::Claim>> = facts(&g, "symbol", Some("exe")).into_iter().map(|f| (f.lo, f)).collect();
     assert!(syms[&0x422d90].hi == 0x422dbc && syms[&0x422d90].value["skind"] == "func");
     assert!(syms[&0x42c3a0].value["skind"] == "func" && syms[&0x42c3a0].hi == 0x42c3a6);
     assert_eq!(syms[&0x5de450].value["skind"], "thunk");
@@ -310,6 +310,6 @@ fn setup_exe() {
     let (code, out) = dcp(&g, &["--target", "exe", "setup", "--no-analyzer"]);
     assert_eq!(code, 0, "{out}");
     let w = walked(&g);
-    assert!(w[&0x4eba80].level == DECLARED && w[&0x4eb480].hi <= 0x4eba80 && w[&0x4eb480].level == DERIVED);
+    assert!(w[&0x4eba80].support == DECLARED && w[&0x4eb480].hi <= 0x4eba80 && w[&0x4eb480].support == DERIVED);
     assert!(conflicts_of(&g, Some("exe"), "L.decl").is_empty());
 }

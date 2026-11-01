@@ -9,7 +9,7 @@
 //!   without compiler / linker) does not run its criterion: its run is empty, keyed by what it waits on, so the
 //!   rules that need it run on its (empty) output and the declaration that ends the wait changes the key.
 //! - A native rule's output is checked against its declaration: only its declared outputs, no level above its
-//!   ceiling, declared producers (decl: / src:) only from a loader.
+//!   max support, declared producers (decl: / src:) only from a loader.
 //!
 
 use crate::error::{Error, Result};
@@ -17,7 +17,7 @@ use crate::project::{sha256_parts, Project};
 use crate::registry::{RuleDef, RULES};
 use crate::rules::{dispatch, Ctx, Inputs};
 use crate::store::DECLARED;
-use crate::{with_db, write_run, Row};
+use crate::{with_db, write_run, ClaimRow};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -84,21 +84,21 @@ pub fn native_code_hash(r: &RuleDef, core_hash: &str) -> String {
     sha256_parts(&["rule", r.id, r.version, core_hash])[..16].to_string()
 }
 
-/// Its output against its declaration: declared outputs only, no level above the ceiling, decl: / src: producers
+/// Its output against its declaration: declared outputs only, no support above the max, decl: / src: producers
 /// only from a loader (and then with a reason).
-fn check_output(r: &RuleDef, rows: &[Row]) -> Result<()> {
+fn check_output(r: &RuleDef, rows: &[ClaimRow]) -> Result<()> {
     for f in rows {
         if !r.outputs.contains(&f.kind.as_str()) {
             return Err(rule_err(format!("{} emits {} but lists outputs {:?}", r.id, f.kind, r.outputs)));
         }
-        if f.level > r.ceiling {
-            return Err(rule_err(format!("{} emits {} at {:#x} as level {} above its ceiling {}", r.id, f.kind, f.lo, f.level, r.ceiling)));
+        if f.support > r.max_support {
+            return Err(rule_err(format!("{} emits {} at {:#x} as {} above its max support {}", r.id, f.kind, f.lo, f.support, r.max_support)));
         }
         if f.by.starts_with("decl:") || f.by.starts_with("src:") {
             if !r.loader {
                 return Err(rule_err(format!("{} is not a loader: it may not emit {} facts", r.id, f.by)));
             }
-            if f.level != DECLARED || f.reason.as_deref().is_none_or(|s| s.trim().is_empty()) {
+            if f.support != DECLARED || f.reason.as_deref().is_none_or(|s| s.trim().is_empty()) {
                 return Err(rule_err(format!("{}: declared {} at {:#x} ({}) without a reason", r.id, f.kind, f.lo, f.by)));
             }
         }
@@ -163,7 +163,7 @@ impl<'a> Engine<'a> {
     fn run_key(&self, r: &RuleDef, code: &str, needed: &[&str]) -> Result<String> {
         let mut parts = vec![code.to_string(), r.version.to_string(), self.input_hash_of("image")?, self.input_hash_of("plugins")?];
         for n in needed {
-            let cur = crate::pystore::st_current_run(&self.db, n)?;
+            let cur = crate::storedb::st_current_run(&self.db, n)?;
             let Some((_, _, out)) = cur else { return Err(rule_err(format!("{} needs {n}, which has no current run", r.id))) };
             parts.push(format!("{n}={out}"));
         }
@@ -247,16 +247,16 @@ impl<'a> Engine<'a> {
     }
 
     fn make_current_if(&self, r: &RuleDef, place: &str, run_id: i64) -> Result<()> {
-        let cur = crate::pystore::st_current_run(&self.db, r.id)?;
+        let cur = crate::storedb::st_current_run(&self.db, r.id)?;
         if cur.is_none_or(|c| c.0 != run_id) || place != "main" {
-            crate::pystore::st_make_current(&self.db, &self.main, r.id, place, run_id)?;
+            crate::storedb::st_make_current(&self.db, &self.main, r.id, place, run_id)?;
         }
         Ok(())
     }
 
     /// Bring the rules (all, or `ids` and what they need) up to date.
     pub fn run(&mut self, ids: Option<&[String]>, force: bool) -> Result<Vec<Result_>> {
-        crate::pystore::st_open(&self.db, &self.main)?;
+        crate::storedb::st_open(&self.db, &self.main)?;
         let mut results = vec![];
         for r in order(ids)? {
             let needed = resolve_needs(r)?;
@@ -267,7 +267,7 @@ impl<'a> Engine<'a> {
                 let mut parts = vec![code.clone(), r.version.to_string(), "waiting".into()];
                 parts.extend(waits.iter().cloned());
                 let ih = sha256_parts(&parts);
-                if let Some((place, run_id, _)) = crate::pystore::st_find_run(&self.db, &self.main, r.id, &ih)? {
+                if let Some((place, run_id, _)) = crate::storedb::st_find_run(&self.db, &self.main, r.id, &ih)? {
                     self.make_current_if(r, &place, run_id)?;
                     results.push(Result_ { rule: r.id, waiting: waits, ..Default::default() });
                     continue;
@@ -277,7 +277,7 @@ impl<'a> Engine<'a> {
                 continue;
             }
             let ih = self.run_key(r, &code, &needed)?;
-            let found = if force { None } else { crate::pystore::st_find_run(&self.db, &self.main, r.id, &ih)? };
+            let found = if force { None } else { crate::storedb::st_find_run(&self.db, &self.main, r.id, &ih)? };
             if let Some((place, run_id, _)) = found {
                 self.make_current_if(r, &place, run_id)?;
                 results.push(Result_ { rule: r.id, ..Default::default() });
@@ -350,7 +350,7 @@ mod tests {
         let mut e2 = Engine::new(&p, "core2", ""); // another core: another code hash, another key
         assert_eq!(ran(e2.run(Some(&ids), false).unwrap()), ["S.sections"]);
         let path = p.store_path();
-        let n = with_db(&path, |db| crate::store::facts_of(db, &path, "section", None, |_| true)).unwrap().len();
+        let n = with_db(&path, |db| crate::store::claims_of(db, &path, "section", None, |_| true)).unwrap().len();
         assert!(n >= 3, "{n} sections");
         crate::forget_conn(&p.store_path());
         let _ = std::fs::remove_dir_all(&d);
@@ -359,16 +359,16 @@ mod tests {
     #[test]
     fn outputs_checked_against_the_declaration() {
         let r = rule("S.sections").unwrap();
-        let row = |kind: &str, level: i64, by: &str| Row { lo: 0, hi: 1, kind: kind.into(), value: "{}".into(), level, by: by.into(), reason: None };
-        assert!(check_output(r, &[row("section", 3, "rule:S.sections@1")]).is_ok());
-        assert!(check_output(r, &[row("name", 3, "rule:S.sections@1")]).is_err());
+        let row = |kind: &str, support: crate::store::Support, by: &str| ClaimRow { lo: 0, hi: 1, kind: kind.into(), value: "{}".into(), support, by: by.into(), reason: None };
+        assert!(check_output(r, &[row("section", crate::store::OBSERVED, "rule:S.sections@1")]).is_ok());
+        assert!(check_output(r, &[row("name", crate::store::OBSERVED, "rule:S.sections@1")]).is_err());
         let d = rule("S.unknown").unwrap();
-        assert!(check_output(d, &[row("symbol", d.ceiling + 1, "rule:x")]).is_err());
-        assert!(check_output(r, &[row("section", 1, "decl:decl/text.dcl:3")]).is_err());
+        assert!(check_output(d, &[row("symbol", crate::store::DECLARED, "rule:x")]).is_err());
+        assert!(check_output(r, &[row("section", crate::store::DECLARED, "decl:decl/text.dcl:3")]).is_err());
         // a loader's declared fact carries its reason
         let l = rule("L.decl").unwrap();
         let k = l.outputs[0];
-        assert!(check_output(l, &[row(k, 1, "decl:decl/text.dcl:3")]).is_err());
-        assert!(check_output(l, &[Row { reason: Some("a leaked path".into()), ..row(k, 1, "decl:decl/text.dcl:3") }]).is_ok());
+        assert!(check_output(l, &[row(k, crate::store::DECLARED, "decl:decl/text.dcl:3")]).is_err());
+        assert!(check_output(l, &[ClaimRow { reason: Some("a leaked path".into()), ..row(k, crate::store::DECLARED, "decl:decl/text.dcl:3") }]).is_ok());
     }
 }

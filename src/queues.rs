@@ -44,7 +44,7 @@ pub fn function_grades(db: &str) -> Result<Rc<Vec<Row>>> {
 }
 
 fn function_rows(db: &str) -> Result<Vec<Row>> {
-    let facts = with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("function")))?;
+    let facts = with_db(db, |c| store::claims_of(c, db, "grade", None, |f| f.s("of") == Some("function")))?;
     let mut out: Vec<Row> = facts.iter().map(|f| {
         let mut m = f.value.as_object().cloned().unwrap_or_default();
         m.insert("addr".into(), Value::from(f.lo));
@@ -60,7 +60,7 @@ pub fn unit_grades(db: &str) -> Result<Rc<Vec<Row>>> {
 }
 
 fn unit_rows(db: &str) -> Result<Vec<Row>> {
-    let facts = with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("unit")))?;
+    let facts = with_db(db, |c| store::claims_of(c, db, "grade", None, |f| f.s("of") == Some("unit")))?;
     let mut out: Vec<Row> = facts.iter().map(|f| {
         let mut m = f.value.as_object().cloned().unwrap_or_default();
         m.insert("lo".into(), Value::from(f.lo));
@@ -73,7 +73,7 @@ fn unit_rows(db: &str) -> Result<Vec<Row>> {
 
 /// The game units of L.unit.extent: (tu, lo, status), by address.
 fn game_units(db: &str) -> Result<Vec<(String, i64, String)>> {
-    let facts = with_db(db, |c| store::facts_of(c, db, "unit", None, |f| f.value.get("status").is_some()))?;
+    let facts = with_db(db, |c| store::claims_of(c, db, "unit", None, |f| f.value.get("status").is_some()))?;
     let mut out: Vec<(String, i64, String)> = facts.iter().map(|f| (f.s("tu").unwrap_or("").into(), f.lo, f.s("status").unwrap_or("").into())).collect();
     out.sort_by_key(|u| u.1);
     Ok(out)
@@ -412,16 +412,16 @@ mod tests {
         use serde_json::json;
         let k = Kit::new(&crate::pe::testpe::build(None));
         let units = [("a", 0x1000, 0x2000, "separated"), ("b", 0x2000, 0x3000, "separated"), ("c", 0x3000, 0x4000, "separated"), ("open", 0x4000, 0x5000, "open")];
-        let uf: Vec<(i64, i64, &str, Value, i64)> = units.iter().map(|&(tu, lo, hi, status)| {
-            (lo, hi, "unit", json!({"tu": tu, "status": status, "start_level": "declared", "end_level": "declared", "start_by": "x", "end_by": "y"}), 1)
+        let uf: Vec<(i64, i64, &str, Value, crate::store::Support)> = units.iter().map(|&(tu, lo, hi, status)| {
+            (lo, hi, "unit", json!({"tu": tu, "status": status, "start_support": "declared", "end_support": "declared", "start_by": "x", "end_by": "y"}), crate::store::DECLARED)
         }).collect();
         let funcs = [(0x1000, "a1", "a", "draft", "draft", "", 9), (0x1100, "a2", "a", "draft", "readable", "", 3), (0x1200, "a3", "a", "shape", "draft", "", 2),
                      (0x2000, "b1", "b", "draft", "draft", "", 50), (0x2100, "b2", "b", "byte", "readable", "", 0),
                      (0x3000, "c1", "c", "shape", "readable", "", 7), (0x3100, "c2", "c", "byte", "draft", "deep", 0),
                      (0x3200, "c3", "c", "draft", "draft", "stuck", 4), (0x4000, "o1", "open", "draft", "draft", "", 1)];
-        let gf: Vec<(i64, i64, &str, Value, i64)> = funcs.iter().map(|&(a, n, u, code, q, lvl, d)| {
+        let gf: Vec<(i64, i64, &str, Value, crate::store::Support)> = funcs.iter().map(|&(a, n, u, code, q, lvl, d)| {
             (a, a + 1, "grade", json!({"of": "function", "name": n, "unit": u, "file": format!("src/{u}.c"), "code": code, "readability": q, "level": lvl,
-                                       "failing": [], "dist": {"ins": d, "bytes": d, "size": 1, "orig": 1}}), 1)
+                                       "failing": [], "dist": {"ins": d, "bytes": d, "size": 1, "orig": 1}}), crate::store::DECLARED)
         }).collect();
         k.put("L.unit.extent", &uf);
         k.put("G.grade", &gf);

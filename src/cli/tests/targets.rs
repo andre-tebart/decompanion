@@ -19,7 +19,7 @@ fn two_targets_two_stores() {
     assert!(t.join("build/tiny.sqlite").exists() && t.join("build/other.sqlite").exists());
     // --target after the command works too, and why answers for both
     let (code, out) = dcp(&t, &["why", "0x10001020", "--target", "other"]);
-    assert!(code == 0 && out.contains("target=other") && out.contains("cls=func"), "{out}");
+    assert!(code == 0 && out.contains("target=other") && out.contains("owner=func"), "{out}");
     let (_, out) = dcp(&t, &["why", "0x10001020"]);
     assert!(out.contains("target=tiny"));
     let (code, out) = dcp(&t, &["check"]);

@@ -177,8 +177,8 @@ pub fn find_function(db: &str, key: &str) -> Result<Option<Value>> {
 /// Every known function start (start facts, function and thunk symbols above open) and the end of every code
 /// section: what bounds a function's slot.
 pub fn all_starts(db: &str, img: &crate::pe::Image) -> Result<Vec<i64>> {
-    let mut s: BTreeSet<i64> = crate::with_db(db, |c| store::facts_of(c, db, "start", None, |_| true))?.iter().map(|f| f.lo).collect();
-    s.extend(crate::with_db(db, |c| store::facts_of(c, db, "symbol", None, |f| matches!(f.s("skind"), Some("func" | "thunk")) && f.level > store::OPEN))?
+    let mut s: BTreeSet<i64> = crate::with_db(db, |c| store::claims_of(c, db, "start", None, |_| true))?.iter().map(|f| f.lo).collect();
+    s.extend(crate::with_db(db, |c| store::claims_of(c, db, "symbol", None, |f| matches!(f.s("skind"), Some("func" | "thunk")) && f.support > store::OPEN))?
         .iter().map(|f| f.lo));
     s.extend(img.sections.iter().filter(|x| x.holds_code()).map(|x| x.end() as i64));
     Ok(s.into_iter().collect())
@@ -210,7 +210,7 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
     let (extent, slot) = match (d.get("extent").and_then(|v| v.as_i64()), d.get("slot").and_then(|v| v.as_i64())) {
         (Some(x), Some(s)) => (x, s),
         _ => {
-            let walk = crate::with_db(&db, |c| store::facts_of(c, &db, "symbol", None, |f| {
+            let walk = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |f| {
                 f.lo == a && matches!(&*f.rule, "S.codewalk" | "L.src.extent") && f.s("skind") == Some("func")
             }))?;
             let extent = match walk.first() {

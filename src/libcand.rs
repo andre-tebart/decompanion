@@ -84,7 +84,7 @@ fn conflicts(results: &[Value]) -> Vec<Value> {
 pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, Vec<String>), String> {
     let t0 = std::time::Instant::now();
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let target = p.target(None)?;
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let img_sha = fsmemo::sha256(&target.path).map_err(|e| e.to_string())?;
@@ -124,7 +124,7 @@ pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, V
         "archives": results.iter().map(|r| json!({"archive": r["archive"], "members": r["members"], "placed": r["placed"], "bytes": r["bytes"]})).collect::<Vec<_>>(),
         "conflicts": conflicts(&results),
     });
-    crate::pystore::st_set_meta(&db, "libs.candidates", &canonical(&summary)).map_err(|e| e.to_string())?;
+    crate::storedb::st_set_meta(&db, "libs.candidates", &canonical(&summary)).map_err(|e| e.to_string())?;
     summary["ms"] = json!(t0.elapsed().as_millis() as i64);
     summary["cached"] = json!(cached);
     Ok((summary, log))

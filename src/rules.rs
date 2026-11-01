@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::compare::{compare, Compared};
-use crate::store::{self, Out, SFact, DECLARED, DERIVED, OPEN};
+use crate::store::{self, Out, Claim, Support, DECLARED, DERIVED, OPEN};
 use crate::{image, with_conn};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -65,7 +65,7 @@ impl Inputs {
 /// One sourced function with its compiled code compared (match.compiled_functions' rows).
 pub struct Compiled {
     pub obj: crate::ObjIndex,
-    pub src: Rc<SFact>,
+    pub src: Rc<Claim>,
     pub c: Rc<Compared>,
     pub code: Rc<crate::coff::FunctionCode>,
     pub next: u32, // the next known start (the end of the function's slot)
@@ -122,7 +122,7 @@ thread_local! {
 
 /// match.compiled_functions: every L.src function source of the current target whose unit compiled and whose
 /// object defines it, compared with the image (sorted by address); the others as (source, why).
-pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, Vec<(Rc<SFact>, String)>)> {
+pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, Vec<(Rc<Claim>, String)>)> {
     let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
     // the relocation sites only for an image that has base relocations (Python reads them, then drops them)
@@ -140,7 +140,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, 
     // starts_of: start facts, function / thunk symbols above open, the end of every code section
     let mut starts: Vec<u32> = store::los(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?.into_iter().map(|x| x as u32).collect();
     starts.extend(
-        store::los(db, &ctx.db, "symbol", &ctx.needed, |f| matches!(f.s("skind"), Some("func") | Some("thunk")) && f.level > OPEN)
+        store::los(db, &ctx.db, "symbol", &ctx.needed, |f| matches!(f.s("skind"), Some("func") | Some("thunk")) && f.support > OPEN)
             .map_err(err)?
             .into_iter()
             .map(|x| x as u32),
@@ -150,7 +150,7 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, 
     }
     starts.sort_unstable();
     starts.dedup();
-    let srcs = store::facts(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("func"))
+    let srcs = store::claims(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("func"))
         .map_err(err)?;
     let forms = crate::compare::fill_order(&ctx.fill_forms);
     let (mut out, mut missing) = (vec![], vec![]);
@@ -217,9 +217,9 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, 
 /// M.draft (R2): a sourced function that is no byte match owns the code walk's extent of its start.
 fn m_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let (funcs, _) = compiled_functions(ctx, db)?;
-    let mut walk: HashMap<i64, Rc<SFact>> = HashMap::new();
-    let keep = |f: &SFact| &*f.rule == "S.codewalk" && f.s("skind") == Some("func");
-    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed, keep).map_err(|e| Error::runtime(e.to_string()))? {
+    let mut walk: HashMap<i64, Rc<Claim>> = HashMap::new();
+    let keep = |f: &Claim| &*f.rule == "S.codewalk" && f.s("skind") == Some("func");
+    for f in store::claims(db, &ctx.db, "symbol", &ctx.needed, keep).map_err(|e| Error::runtime(e.to_string()))? {
         walk.insert(f.lo, f); // a later fact of the same start wins, as the dict comprehension does
     }
     for x in &funcs {
@@ -229,7 +229,7 @@ fn m_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let Some(w) = walk.get(&x.src.lo) else { continue };
         let v = json!({"file": x.src.value["file"], "unit": x.src.value["unit"], "symbol": x.src.value["symbol"],
                        "what": "draft", "why": x.c.why()});
-        out.fact(x.src.lo, w.hi, "source", v, w.level.min(x.src.level).min(DERIVED));
+        out.claim(x.src.lo, w.hi, "source", v, w.support.min(x.src.support).min(DERIVED));
     }
     Ok(())
 }
@@ -274,8 +274,8 @@ fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms:
 fn m_match(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let (funcs, _) = compiled_functions(ctx, db)?;
     let img = image(&ctx.image)?;
-    let keep = |f: &SFact| matches!(f.s("skind"), Some("jumptable") | Some("idxtable"));
-    let mut tables: Vec<(i64, Option<i64>)> = store::facts(db, &ctx.db, "symbol", &ctx.needed, keep)
+    let keep = |f: &Claim| matches!(f.s("skind"), Some("jumptable") | Some("idxtable"));
+    let mut tables: Vec<(i64, Option<i64>)> = store::claims(db, &ctx.db, "symbol", &ctx.needed, keep)
         .map_err(|e| Error::runtime(e.to_string()))?
         .iter()
         .map(|f| (f.lo, f.value.get("fn").and_then(|v| v.as_i64())))
@@ -299,10 +299,10 @@ fn m_match(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             Some(m) => format!("{}/{}", x.c.abs_ours, m),
         };
         let v = x.src.value.clone();
-        out.fact(a, code_end, "symbol", json!({"skind": "func", "extent": "matched", "name": v["symbol"], "unit": v["unit"],
-                                              "file": v["file"], "relocs": aid}), crate::store::PROVEN);
-        out.fact(a, end, "source", json!({"file": v["file"], "unit": v["unit"], "symbol": v["symbol"], "what": "match",
-                                          "relocs": aid}), crate::store::PROVEN);
+        out.claim(a, code_end, "symbol", json!({"skind": "func", "extent": "matched", "name": v["symbol"], "unit": v["unit"],
+                                              "file": v["file"], "relocs": aid}), crate::store::REPRODUCED);
+        out.claim(a, end, "source", json!({"file": v["file"], "unit": v["unit"], "symbol": v["symbol"], "what": "match",
+                                          "relocs": aid}), crate::store::REPRODUCED);
     }
     Ok(())
 }
@@ -429,7 +429,7 @@ fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let aligned = aligned_sites(&ctx.capstone, &x.code.data, &x.code.mask, &orig, va, x.c.matched(), &sites)
             .map_err(Error::runtime)?;
         for (site, width, rule, msg) in constant_mismatches(&img, x, &aligned) {
-            out.conflict("error", rule, site as i64, (site + width) as i64, msg, &x.src.by);
+            out.finding("error", rule, site as i64, (site + width) as i64, msg, &x.src.by);
         }
         let (obj, _) = &*x.obj;
         let symbol = x.src.s("symbol").unwrap_or("");
@@ -456,10 +456,10 @@ fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 Some(o) if !o.is_empty() => o,
                 _ => "nothing registered".to_string(),
             };
-            let sev = if *lvl == crate::store::PROVEN { "bug" } else { "error" };
+            let sev = if lvl.is_top() { "bug" } else { "error" };
             let msg = format!("{symbol} at {:#x}: our object references {cname} (registered at {:#x}) where the original's site \
                                refers to {:#x} ({others})", x.src.lo, b, to);
-            out.conflict(sev, "M8", site as i64, (site + width) as i64, msg, &x.src.by);
+            out.finding(sev, "M8", site as i64, (site + width) as i64, msg, &x.src.by);
         }
     }
     Ok(())
@@ -531,7 +531,7 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let base = img.base as i64;
     let mut by: HashMap<String, Vec<(i64, i64, i64)>> = HashMap::new();
-    for f in store::facts(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func")).map_err(err)?.iter() {
+    for f in store::claims(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func")).map_err(err)?.iter() {
         let file = f.s("file").unwrap_or("").to_string();
         let first = f.value.get("comment").or_else(|| f.value.get("line")).and_then(|v| v.as_i64()).unwrap_or(0);
         let last = f.value.get("end").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -556,7 +556,7 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 Some((f, l)) => at(Some(f), Some(l)),
                 None => base,
             };
-            out.conflict("error", check, a, a + 1, e, "");
+            out.finding("error", check, a, a + 1, e, "");
         }
     }
     if let Some(calls) = res.get("calls").and_then(|c| c.as_object()) {
@@ -565,7 +565,7 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 let line = c.get(0).and_then(|v| v.as_i64());
                 let text = c.get(1).and_then(|v| v.as_str()).unwrap_or("");
                 let a = at(Some(f), line);
-                out.conflict("warn", "M7", a, a + 1, format!("{f}: call without a prototype: {text}"), "");
+                out.finding("warn", "M7", a, a + 1, format!("{f}: call without a prototype: {text}"), "");
             }
         }
     }
@@ -575,7 +575,7 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     stale.sort();
     if !stale.is_empty() {
         let names: Vec<&str> = stale.iter().map(|s| s.as_str()).collect();
-        out.conflict("warn", "M.lint", base, base + 1,
+        out.finding("warn", "M.lint", base, base + 1,
                      format!("the last lint did not parse today's text of: {} (dcp lint)", names.join(", ")), "");
     }
     Ok(())
@@ -583,14 +583,14 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 
 // ------------------------------------------------------------------------------------------------ data rules
 
-type Registry = (HashMap<String, std::collections::BTreeMap<i64, i64>>, HashMap<i64, std::collections::BTreeSet<String>>);
+type Registry = (HashMap<String, std::collections::BTreeMap<i64, Support>>, HashMap<i64, std::collections::BTreeSet<String>>);
 
 /// match.name_registry: C name -> {address: the producer's best level}, address -> {C names}.
 fn name_registry(ctx: &Ctx, db: &Connection) -> Result<Registry> {
     let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
-    let mut by_name: HashMap<String, std::collections::BTreeMap<i64, i64>> = HashMap::new();
+    let mut by_name: HashMap<String, std::collections::BTreeMap<i64, Support>> = HashMap::new();
     let mut by_addr: HashMap<i64, std::collections::BTreeSet<String>> = HashMap::new();
-    for f in store::facts(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?.iter() {
+    for f in store::claims(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?.iter() {
         let raw = f.s("name").unwrap_or("");
         let origin = f.s("origin");
         for n in raw.split('|') {
@@ -600,7 +600,7 @@ fn name_registry(ctx: &Ctx, db: &Connection) -> Result<Registry> {
                 _ => n.to_string(),
             };
             let e = by_name.entry(n.clone()).or_default().entry(f.lo).or_insert(OPEN);
-            *e = (*e).max(f.level);
+            *e = (*e).max(f.support);
             by_addr.entry(f.lo).or_default().insert(n);
         }
     }
@@ -610,7 +610,7 @@ fn name_registry(ctx: &Ctx, db: &Connection) -> Result<Registry> {
 /// One data definition of the sources with an address (match_data.data_objects): its L.src fact, its unit's
 /// object and the data symbol of its C name there (kind, size).
 struct DataObj {
-    f: Rc<SFact>,
+    f: Rc<Claim>,
     obj: Option<crate::ObjIndex>,
     sym: Option<(usize, &'static str, u32)>,
 }
@@ -641,7 +641,7 @@ fn data_objects(ctx: &Ctx, db: &Connection) -> Result<Vec<DataObj>> {
         }
         index.insert(unit.clone(), (o, idx));
     }
-    let mut fs: Vec<Rc<SFact>> = store::facts(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("data"))
+    let mut fs: Vec<Rc<Claim>> = store::claims(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("data"))
         .map_err(err)?;
     fs.sort_by(|a, b| (a.lo, a.s("file")).cmp(&(b.lo, b.s("file"))));
     Ok(fs
@@ -727,7 +727,7 @@ fn m_data_site(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for d in data_objects(ctx, db)? {
         if confirmed.get(&(d.f.lo as u32)).map(|s| s.as_str()) == d.f.s("symbol") {
             let (lo, hi) = data_extent(&d);
-            out.fact(lo, hi, "symbol", global(&d, "site", d.kind().unwrap_or("-")), crate::store::PROVEN);
+            out.claim(lo, hi, "symbol", global(&d, "site", d.kind().unwrap_or("-")), crate::store::REPRODUCED);
         }
     }
     Ok(())
@@ -805,9 +805,9 @@ fn m_data_content(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let hits = content_hits(&img, data, &mask);
         if hits.len() == 1 && hits[0] as i64 == d.f.lo {
             let (lo, hi) = data_extent(&d);
-            out.fact(lo, hi, "symbol", global(&d, "content", kind), crate::store::PROVEN);
+            out.claim(lo, hi, "symbol", global(&d, "content", kind), crate::store::REPRODUCED);
         } else if hits.len() == 1 && !masked_equal(&img, d.f.lo as u32, data, &mask) {
-            out.conflict("error", "M.data.content", d.f.lo, d.f.lo + 1,
+            out.finding("error", "M.data.content", d.f.lo, d.f.lo + 1,
                          format!("{}: its bytes occur once in the image, at {:#x}, not at the declared {:#x}",
                                  d.f.s("symbol").unwrap_or(""), hits[0], d.f.lo), &d.f.by);
         }
@@ -825,7 +825,7 @@ fn m_data_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             continue;
         }
         let (lo, hi) = data_extent(&d);
-        out.fact(lo, hi, "symbol", global(&d, "draft", d.kind().unwrap_or("-")), DECLARED);
+        out.claim(lo, hi, "symbol", global(&d, "draft", d.kind().unwrap_or("-")), DECLARED);
     }
     Ok(())
 }
@@ -978,11 +978,11 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                     let least = least_size(d).unwrap_or(0) as i64;
                     let room = starts[i] - d.f.lo;
                     if room < least {
-                        out.conflict("error", "D1", d.f.lo, d.f.lo + size as i64,
+                        out.finding("error", "D1", d.f.lo, d.f.lo + size as i64,
                                      format!("{name} at {:#x} ({least} bytes at least) overlaps the symbol at {:#x}", d.f.lo, starts[i]),
                                      &d.f.by);
                     } else {
-                        out.conflict("warn", "D1", d.f.lo, d.f.lo + size as i64,
+                        out.finding("warn", "D1", d.f.lo, d.f.lo + size as i64,
                                      format!("{name} at {:#x}: the object gives it {size} bytes, the symbol at {:#x} leaves {room}; fine if \
                                               the last {} are alignment padding", d.f.lo, starts[i], size as i64 - room), &d.f.by);
                     }
@@ -992,7 +992,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if d.symbol().map(|s| s.common()).unwrap_or(false) {
             let va = d.f.lo as u32;
             if img.section_of(va).is_some() && img.off(va).is_none() {
-                out.conflict("error", "D5", d.f.lo, d.f.lo + 1,
+                out.finding("error", "D5", d.f.lo, d.f.lo + 1,
                              format!("{name} at {:#x} lies in uninitialised data and is a tentative definition: write it `= 0` so \
                                       it is placed with its unit", d.f.lo), &d.f.by);
             }
@@ -1000,7 +1000,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     // D7: a view whose offset lies at or past its container's end (a view of a view: of the definition the chain
     // ends at)
-    let views: HashMap<String, (i64, String, String)> = store::facts(db, &ctx.db, "name", &ctx.needed, |f| f.s("view").is_some())
+    let views: HashMap<String, (i64, String, String)> = store::claims(db, &ctx.db, "name", &ctx.needed, |f| f.s("view").is_some())
         .map_err(err)?
         .iter()
         .map(|f| (f.s("name").unwrap_or("").to_string(), (f.lo, f.s("view").unwrap_or("").to_string(), f.by.clone())))
@@ -1027,7 +1027,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let off = at - d.f.lo;
         if off >= size as i64 {
             let via = if c == first { String::new() } else { format!(" (through {first})") };
-            out.conflict2("error", "D7", *at, *at + 1,
+            out.finding2("error", "D7", *at, *at + 1,
                           format!("view {vname} at {at:#x} is {c}{via} +{off:#x}, outside {c} ({size} bytes): the view reads whatever the \
                                    linker puts after {c}; declare {c} as large as the original's object (a struct or an array)"),
                           by, &d.f.by);
@@ -1035,7 +1035,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     // D8: the original's code proves a range one object (S.extent): one declaration must hold all of it
     let (by_name, by_addr) = name_registry(ctx, db)?;
-    let ev: Vec<ExtentEv> = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("extent")).map_err(err)?
+    let ev: Vec<ExtentEv> = store::claims(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("extent")).map_err(err)?
         .iter()
         .map(|f| {
             let i = |k: &str| f.value.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1049,7 +1049,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         .collect();
     let named = |a: i64| by_addr.get(&a).and_then(|s| s.iter().next().cloned());
     for (sev, lo, hi, msg, by) in d8(&decls, &ev, named) {
-        out.conflict(sev, "D8", lo, hi, msg, &by);
+        out.finding(sev, "D8", lo, hi, msg, &by);
     }
     // D4: per unit and section kind, in the unit file's text order
     let mut per: std::collections::BTreeMap<(String, &'static str), Vec<&DataObj>> = std::collections::BTreeMap::new();
@@ -1067,7 +1067,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         for w in order.windows(2) {
             let (a, b) = (w[0], w[1]);
             if b.f.lo < a.f.lo {
-                out.conflict2("error", "D4", b.f.lo, b.f.lo + 1,
+                out.finding2("error", "D4", b.f.lo, b.f.lo + 1,
                               format!("unit {unit} ({kind}): {} ({:#x}) is defined after {} ({:#x}) but lies before it",
                                       b.f.s("symbol").unwrap_or(""), b.f.lo, a.f.s("symbol").unwrap_or(""), a.f.lo),
                               &b.f.by, &a.f.by);
@@ -1104,7 +1104,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             let (b, lvl) = regs.iter().next().unwrap();
             let others = by_addr.get(&(to as i64)).map(|s| s.iter().cloned().collect::<Vec<_>>().join(", ")).unwrap_or_default();
             let others = if others.is_empty() { "nothing registered".to_string() } else { others };
-            out.conflict(if *lvl == crate::store::PROVEN { "bug" } else { "error" }, "D6", site as i64, (site + width) as i64,
+            out.finding(if lvl.is_top() { "bug" } else { "error" }, "D6", site as i64, (site + width) as i64,
                          format!("{} +{:#x}: our entry refers to {cname} (registered at {:#x}), the original's to {:#x} ({others})",
                                  d.f.s("symbol").unwrap_or(""), r.offset - sym.value, b, to), &d.f.by);
         }
@@ -1138,7 +1138,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> Result<Out> {
         "S.codewalk" => crate::walk::s_codewalk(ctx, db, &mut out),
         "S.extent" => crate::extent::s_extent(ctx, db, &mut out),
         "M.compile" => crate::mrules::m_compile(ctx, db, &mut out),
-        "M.flags.proven" => crate::mrules::m_flags_proven(ctx, db, &mut out),
+        "M.flags.probe" => crate::mrules::m_flags_probe(ctx, db, &mut out),
         "L.decl.start" => crate::decl::l_decl_start(ctx, db, &mut out),
         "L.analyzer" => crate::layout::l_analyzer(ctx, db, &mut out),
         "L.analyze" => crate::layout::l_analyze(ctx, db, &mut out),
@@ -1187,14 +1187,15 @@ pub(crate) mod testkit {
     //! A store in a temporary directory with an image beside it; rules run on it as the engine runs them.
     use crate::{with_db, write_run};
     use super::*;
-    use crate::{ConflictRow, Row};
+    use crate::{ClaimRow, Finding};
+    use crate::store::{Support, REPRODUCED};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static N: AtomicUsize = AtomicUsize::new(0);
 
     /// The declaration a test's toy rule name runs under (every output, any level).
     pub static TEST_RULE: crate::registry::RuleDef = crate::registry::RuleDef {
-        id: "T", version: "1", ceiling: 3, phase: "T", loader: true, needs: &[], outputs: &[
+        id: "T", version: "1", max_support: REPRODUCED, phase: "T", loader: true, needs: &[], outputs: &[
             "section", "region", "symbol", "start", "name", "source", "unit", "boundary", "toolchain", "ref", "grade", "build", "evidence"],
         inputs: &[], doc: "",
     };
@@ -1225,7 +1226,7 @@ pub(crate) mod testkit {
         }
 
         /// A rule's output, sorted as recorded.
-        pub fn run(&self, rule: &str, needed: &[&str], extra: &str) -> (Vec<Row>, Vec<ConflictRow>) {
+        pub fn run(&self, rule: &str, needed: &[&str], extra: &str) -> (Vec<ClaimRow>, Vec<Finding>) {
             dispatch(&self.ctx(rule, needed, extra)).unwrap().sorted()
         }
 
@@ -1234,11 +1235,11 @@ pub(crate) mod testkit {
             crate::engine::run_native(crate::engine::rule(rule).unwrap_or(&TEST_RULE), &self.ctx(rule, needed, extra)).unwrap();
         }
 
-        /// Record a run of these facts (lo, hi, kind, value, level) under a rule's name, `by` its producer.
-        pub fn put(&self, rule: &str, facts: &[(i64, i64, &str, serde_json::Value, i64)]) {
+        /// Record a run of these claims (lo, hi, kind, value, support) under a rule's name, `by` its producer.
+        pub fn put(&self, rule: &str, facts: &[(i64, i64, &str, serde_json::Value, Support)]) {
             let mut out = Out::new(rule, "1");
-            for (lo, hi, kind, v, level) in facts {
-                out.fact(*lo, *hi, kind, v.clone(), *level);
+            for (lo, hi, kind, v, support) in facts {
+                out.claim(*lo, *hi, kind, v.clone(), *support);
             }
             let (rows, confl) = out.sorted();
             with_db(&self.db, |db| write_run(db, &self.db, rule, "1", "test", &format!("put:{rule}"), &rows, &confl, 0, true)).unwrap();
@@ -1253,7 +1254,7 @@ pub(crate) mod testkit {
     }
 
     /// (lo, hi, kind, value) of the rows of one kind.
-    pub fn of(rows: &[Row], kind: &str) -> Vec<(i64, i64, serde_json::Value)> {
+    pub fn of(rows: &[ClaimRow], kind: &str) -> Vec<(i64, i64, serde_json::Value)> {
         rows.iter().filter(|r| r.kind == kind).map(|r| (r.lo, r.hi, serde_json::from_str(&r.value).unwrap())).collect()
     }
 }

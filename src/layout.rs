@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::rules::Ctx;
-use crate::store::{self, Out, SFact, DECLARED, OPEN};
+use crate::store::{self, Out, Claim, Support, DECLARED, OPEN};
 use crate::image;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
@@ -22,7 +22,7 @@ pub fn code_ranges(img: &crate::pe::Image) -> Vec<(i64, i64)> {
 }
 
 /// layout.lib_starts_of: placed library members (unit lib:...) and import thunks among symbol facts.
-pub fn lib_starts_of(facts: &[std::rc::Rc<SFact>]) -> Vec<i64> {
+pub fn lib_starts_of(facts: &[std::rc::Rc<Claim>]) -> Vec<i64> {
     facts.iter().filter(|f| match f.s("skind") {
         Some("thunk") => true,
         Some("func") => f.s("unit").is_some_and(|u| u.starts_with("lib:")),
@@ -104,13 +104,13 @@ pub fn l9_analyzer_span(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()>
     let img = image(&ctx.image)?;
     // our_starts: {start: how} (a later fact of the same start wins), function / thunk symbols above open
     let mut ours: HashMap<i64, String> = HashMap::new();
-    for f in store::facts(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)? {
+    for f in store::claims(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)? {
         ours.insert(f.lo, f.s("how").unwrap_or("").to_string());
     }
-    let symbols = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let symbols = store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
     let mut inner: HashSet<i64> = HashSet::new();
     for f in &symbols {
-        if matches!(f.s("skind"), Some("func") | Some("thunk")) && f.level > OPEN {
+        if matches!(f.s("skind"), Some("func") | Some("thunk")) && f.support > OPEN {
             ours.entry(f.lo).or_insert_with(|| "symbol".to_string());
             if let Some(a) = f.value.get("inner").and_then(|v| v.as_array()) {
                 inner.extend(a.iter().filter_map(|x| x.as_i64()));
@@ -143,7 +143,7 @@ pub fn l9_analyzer_span(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()>
         let size = e.size.map(|s| s.to_string()).unwrap_or_else(|| "None".to_string());
         let name = if e.name.is_empty() { "-" } else { &e.name };
         let hi = e.ranges.iter().map(|r| r.1).max().unwrap_or(0);
-        out.conflict("warn", "L9", e.start, hi,
+        out.finding("warn", "L9", e.start, hi,
                      format!("{}'s function {:#x} ({name}, {size} bytes) spans our start{} {}{more}: its draft holds more than one function",
                              e.analyzer, e.start, if hits.len() > 1 { "s" } else { "" }, listed.join(", ")),
                      &format!("decl:analyzer:{}:{}", e.analyzer, e.source));
@@ -175,10 +175,10 @@ pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let forms = crate::compare::fill_order(&ctx.fill_forms);
     let code: Vec<(i64, i64)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va as i64, s.end() as i64)).collect();
     let in_code = |a: i64| code.iter().any(|&(lo, hi)| lo <= a && a < hi);
-    let fs = |kind: &str| store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
+    let fs = |kind: &str| store::claims(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
     let symbols = fs("symbol")?;
     let sources = fs("source")?;
-    let mut claimed: Vec<(i64, i64)> = symbols.iter().filter(|f| f.level > OPEN).map(|f| (f.lo, f.hi)).collect();
+    let mut claimed: Vec<(i64, i64)> = symbols.iter().filter(|f| f.support > OPEN).map(|f| (f.lo, f.hi)).collect();
     claimed.sort();
     let mut regions: Vec<(i64, i64)> = fs("region")?.iter().map(|f| (f.lo, f.hi)).collect();
     regions.sort();
@@ -190,8 +190,8 @@ pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     stops.sort();
     stops.dedup();
     let los: Vec<i64> = claimed.iter().map(|c| c.0).collect();
-    let is_match = |f: &SFact| &*f.rule == "M.match" && f.s("what") == Some("match");
-    let mut ends: Vec<i64> = symbols.iter().filter(|f| f.level > OPEN && in_code(f.lo)).map(|f| f.hi).collect();
+    let is_match = |f: &Claim| &*f.rule == "M.match" && f.s("what") == Some("match");
+    let mut ends: Vec<i64> = symbols.iter().filter(|f| f.support > OPEN && in_code(f.lo)).map(|f| f.hi).collect();
     ends.extend(sources.iter().filter(|f| is_match(f)).map(|f| f.hi));
     let match_hi: HashMap<i64, i64> = sources.iter().filter(|f| is_match(f)).map(|f| (f.lo, f.hi)).collect();
     let mut pad: HashMap<i64, i64> = HashMap::new();
@@ -227,10 +227,10 @@ pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             continue;
         }
         let v = &s.value;
-        out.fact(a, a + cut as i64, "symbol", serde_json::json!({"skind": "func", "extent": "source", "name": v["symbol"],
+        out.claim(a, a + cut as i64, "symbol", serde_json::json!({"skind": "func", "extent": "source", "name": v["symbol"],
                                                                   "unit": v["unit"], "file": v["file"]}), DECLARED);
         if cut < data.len() {
-            out.fact(a + cut as i64, end, "symbol", serde_json::json!({"skind": "fill", "extent": "source"}), DECLARED);
+            out.claim(a + cut as i64, end, "symbol", serde_json::json!({"skind": "fill", "extent": "source"}), DECLARED);
         }
     }
     // the gap after any claimed code up to the next stop: a match's proven padding, then alignment fill
@@ -244,10 +244,10 @@ pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         let p = (*pad.get(&e).unwrap_or(&e)).min(stop);
         if p > e {
-            out.fact(e, p, "symbol", serde_json::json!({"skind": "fill", "extent": "matched"}), DECLARED);
+            out.claim(e, p, "symbol", serde_json::json!({"skind": "fill", "extent": "matched"}), DECLARED);
         }
         if stop > p && crate::compare::is_fill(&img.read(p as u32, (stop - p) as usize), &forms) {
-            out.fact(p, stop, "symbol", serde_json::json!({"skind": "fill", "extent": "source"}), DECLARED);
+            out.claim(p, stop, "symbol", serde_json::json!({"skind": "fill", "extent": "source"}), DECLARED);
         }
     }
     Ok(())
@@ -374,7 +374,7 @@ pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let x = scan_inputs(ctx)?;
     let names = &x.targets;
     let mut starts: HashSet<i64> = store::los(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?.into_iter().collect();
-    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed, |f| f.s("skind") == Some("func")).map_err(err)? {
+    for f in store::claims(db, &ctx.db, "symbol", &ctx.needed, |f| f.s("skind") == Some("func")).map_err(err)? {
         if let Some(a) = f.value.get("inner").and_then(|v| v.as_array()) {
             starts.extend(a.iter().filter_map(|x| x.as_i64()));
         }
@@ -391,7 +391,7 @@ pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if mine.contains(cur) && section_at(&img, v) {
             let v = v.unwrap() as i64;
             if code.iter().any(|&(lo, hi)| lo <= v && v < hi) && !starts.contains(&v) {
-                out.conflict("error", "L5", v, v + 1, format!("{file}:{line}: {ident}: no function starts at 0x{hex}"), &by);
+                out.finding("error", "L5", v, v + 1, format!("{file}:{line}: {ident}: no function starts at 0x{hex}"), &by);
             }
         } else if default {
             let mut anywhere = false;
@@ -413,7 +413,7 @@ pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             if !anywhere {
                 let listed: Vec<&str> = names.iter().filter(|n| mine.contains(n)).map(|s| s.as_str()).collect();
                 let base = img.base as i64;
-                out.conflict("error", "L5", base, base + 1,
+                out.finding("error", "L5", base, base + 1,
                              format!("{file}:{line}: {ident}: 0x{hex} is not an address of {} (a dropped or extra digit?)", listed.join(", ")),
                              &by);
             }
@@ -426,13 +426,13 @@ pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 
 const NAME_ORIGINS: [&str; 4] = ["source", "decl", "export", "entry"];
 
-type Sym = (i64, i64, std::rc::Rc<SFact>);
+type Sym = (i64, i64, std::rc::Rc<Claim>);
 
 /// layout.what_is_at: what the facts know at address a (its names, else the symbol containing it).
-fn what_is_at(a: i64, names: &HashMap<i64, Vec<std::rc::Rc<SFact>>>, syms: &[Sym]) -> String {
+fn what_is_at(a: i64, names: &HashMap<i64, Vec<std::rc::Rc<Claim>>>, syms: &[Sym]) -> String {
     let name_of = |x: i64| -> Vec<String> {
-        let mut fs: Vec<&std::rc::Rc<SFact>> = names.get(&x).map(|v| v.iter().collect()).unwrap_or_default();
-        let rank = |f: &SFact| f.s("origin").and_then(|o| NAME_ORIGINS.iter().position(|n| *n == o)).unwrap_or(NAME_ORIGINS.len());
+        let mut fs: Vec<&std::rc::Rc<Claim>> = names.get(&x).map(|v| v.iter().collect()).unwrap_or_default();
+        let rank = |f: &Claim| f.s("origin").and_then(|o| NAME_ORIGINS.iter().position(|n| *n == o)).unwrap_or(NAME_ORIGINS.len());
         fs.sort_by(|p, q| (rank(p), p.s("name").unwrap_or("")).cmp(&(rank(q), q.s("name").unwrap_or(""))));
         let mut out: Vec<String> = vec![];
         for f in fs {
@@ -468,15 +468,15 @@ fn what_is_at(a: i64, names: &HashMap<i64, Vec<std::rc::Rc<SFact>>>, syms: &[Sym
     "nothing known".to_string()
 }
 
-fn sorted_syms(facts: Vec<std::rc::Rc<SFact>>) -> Vec<Sym> {
+fn sorted_syms(facts: Vec<std::rc::Rc<Claim>>) -> Vec<Sym> {
     let mut v: Vec<Sym> = facts.into_iter().map(|f| (f.lo, f.hi, f)).collect();
     v.sort_by_key(|s| (s.0, s.1));
     v
 }
 
-fn names_by_lo(db: &Connection, ctx: &Ctx, keep: impl Fn(&SFact) -> bool) -> Result<HashMap<i64, Vec<std::rc::Rc<SFact>>>> {
-    let mut names: HashMap<i64, Vec<std::rc::Rc<SFact>>> = HashMap::new();
-    for f in store::facts(db, &ctx.db, "name", &ctx.needed, keep).map_err(err)? {
+fn names_by_lo(db: &Connection, ctx: &Ctx, keep: impl Fn(&Claim) -> bool) -> Result<HashMap<i64, Vec<std::rc::Rc<Claim>>>> {
+    let mut names: HashMap<i64, Vec<std::rc::Rc<Claim>>> = HashMap::new();
+    for f in store::claims(db, &ctx.db, "name", &ctx.needed, keep).map_err(err)? {
         names.entry(f.lo).or_default().push(f);
     }
     Ok(names)
@@ -491,7 +491,7 @@ pub fn a1_addr_cast(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     let owners = line_targets(&x.scan, &x.targets);
     let names = names_by_lo(db, ctx, |_| true)?;
-    let syms = sorted_syms(store::facts(db, &ctx.db, "symbol", &ctx.needed, |f| f.level > OPEN).map_err(err)?);
+    let syms = sorted_syms(store::claims(db, &ctx.db, "symbol", &ctx.needed, |f| f.support > OPEN).map_err(err)?);
     let (base, end) = (img.base as u64, img.end() as u64);
     for (file, line, text, hex) in &x.scan.ptrcasts {
         let mine: &[String] = owners.at(file, *line).filter(|m| !m.is_empty()).map(|m| m.as_slice()).unwrap_or(&x.targets);
@@ -505,7 +505,7 @@ pub fn a1_addr_cast(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             Some(n) => format!("reference {} by name", n.split(" / ").next().unwrap_or("")),
             None => "declare the object at that address and reference it by name".to_string(),
         };
-        out.conflict("error", "A1", v, v + 1,
+        out.finding("error", "A1", v, v + 1,
                      format!("{file}:{line}: `{text}` casts the image address 0x{hex} to a pointer; the image has {what} there: {hint} \
                               (a relinked image places it elsewhere)"),
                      &format!("src:{file}:{line}"));
@@ -518,12 +518,12 @@ const TABLE_KINDS: [&str; 3] = ["jumptable", "idxtable", "fptr"];
 /// L13.data.code: a data declaration of the sources at a known function start or inside a known function.
 pub fn l13_data_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let x = scan_inputs(ctx)?;
-    let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
-    let funcs = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > DECLARED).cloned().collect());
+    let syms = store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let funcs = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.support > DECLARED).cloned().collect());
     let mut tables: Vec<(i64, i64)> = syms.iter()
-        .filter(|f| f.s("skind").is_some_and(|k| TABLE_KINDS.contains(&k)) && f.level >= DECLARED).map(|f| (f.lo, f.hi)).collect();
+        .filter(|f| f.s("skind").is_some_and(|k| TABLE_KINDS.contains(&k)) && f.support >= DECLARED).map(|f| (f.lo, f.hi)).collect();
     tables.sort();
-    let mut starts: HashSet<i64> = store::los(db, &ctx.db, "start", &ctx.needed, |f| f.level > DECLARED).map_err(err)?.into_iter().collect();
+    let mut starts: HashSet<i64> = store::los(db, &ctx.db, "start", &ctx.needed, |f| f.support > DECLARED).map_err(err)?.into_iter().collect();
     starts.extend(funcs.iter().map(|f| f.0));
     if funcs.is_empty() && starts.is_empty() {
         return Ok(());
@@ -550,7 +550,7 @@ pub fn l13_data_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             _ => "the start of".to_string(),
         };
         let rng = fnx.map(|f| format!(" {:#x}..{:#x}", f.0, f.1)).unwrap_or_default();
-        out.conflict2("error", "L13", a, a + 1,
+        out.finding2("error", "L13", a, a + 1,
                       format!("{file}:{line}: data {} {name} at {:#x} lies at {place} the function{rng} ({what}): declare it as a function \
                                (or fix the address)", if kind == "def" { "definition" } else { "extern" }, a),
                       &format!("src:{file}:{line}"), fnx.map(|f| f.2.by.as_str()).unwrap_or(""));
@@ -564,8 +564,8 @@ pub struct Unit {
     pub tu: String,
     pub lo: i64,
     pub hi: i64,
-    pub start_level: i64,
-    pub end_level: i64,
+    pub start_support: Support,
+    pub end_support: Support,
     pub start_by: String,
     pub end_by: String,
     pub named_by: Option<String>,
@@ -579,14 +579,14 @@ fn issue(lo: i64, hi: i64, message: String, a: &str, b: &str) -> Issue {
     ("L7".to_string(), lo, hi, message, a.to_string(), b.to_string())
 }
 
-type Placed = (String, (i64, i64, String, Option<String>)); // tu, (addr, level, by, named_by)
+type Placed = (String, (i64, Support, String, Option<String>)); // tu, (addr, support, by, named_by)
 
 fn find(t: &[Placed], tu: &str) -> Option<usize> {
     t.iter().position(|e| e.0 == tu)
 }
 
 /// layout.compute_units: the units of the game code (lo, hi, level of hi) and the L7 issues.
-pub fn compute_units(game: (i64, i64, i64), bounds: &[Bound], srcs: &[SrcFn], func_starts: &[i64]) -> (Vec<Unit>, Vec<Issue>) {
+pub fn compute_units(game: (i64, i64, Support), bounds: &[Bound], srcs: &[SrcFn], func_starts: &[i64]) -> (Vec<Unit>, Vec<Issue>) {
     let (glo, ghi, glevel) = game;
     let mut issues = vec![];
     // the start and end boundaries by unit, in insertion order (dicts)
@@ -671,7 +671,7 @@ pub fn compute_units(game: (i64, i64, i64), bounds: &[Bound], srcs: &[SrcFn], fu
             issues.push(issue(a, a + 1, format!("unit {tu} has an empty extent {:#x}..{:#x}", a, hi), by, ""));
             continue;
         }
-        units.push(Unit { tu: tu.clone(), lo: a, hi, start_level: *lvl, end_level: elvl, start_by: by.clone(), end_by: eby,
+        units.push(Unit { tu: tu.clone(), lo: a, hi, start_support: *lvl, end_support: elvl, start_by: by.clone(), end_by: eby,
                           named_by: named.clone() });
     }
     for s in srcs {
@@ -691,7 +691,6 @@ pub fn compute_units(game: (i64, i64, i64), bounds: &[Bound], srcs: &[SrcFn], fu
 }
 
 
-const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 /// L.unit.extent: the units of the game code as `unit` facts, the L7 issues of their computation.
 pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
@@ -699,14 +698,14 @@ pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
     let lib_decls = crate::decl::lib_units(&decls, &target, targets.first().map(|s| s.as_str()).unwrap_or(""));
     let libs: HashSet<&str> = lib_decls.keys().map(|s| s.as_str()).collect();
-    let fs = |kind: &str| store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
+    let fs = |kind: &str| store::claims(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
     let syms = fs("symbol")?;
     let lib_starts = lib_starts_of(&syms);
     let (glo, ghi) = game_range(&img, &lib_starts);
     let code = code_ranges(&img);
     let glevel = if lib_starts.iter().any(|&a| code.iter().any(|&(l, h)| l <= a && a < h)) { crate::store::DERIVED }
-                 else { crate::store::PROVEN };
-    let funcs: Vec<i64> = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).cloned().collect())
+                 else { crate::store::OBSERVED };
+    let funcs: Vec<i64> = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.support > OPEN).cloned().collect())
         .iter().map(|f| f.0).filter(|&lo| glo <= lo && lo < ghi).collect();
     let srcs: Vec<SrcFn> = fs("source")?.iter().filter(|f| f.s("what") == Some("func"))
         .map(|f| (f.lo, f.s("unit").unwrap_or("").to_string(), f.s("symbol").unwrap_or("").to_string(), f.by.clone()))
@@ -716,7 +715,7 @@ pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                   f.s("named_by").map(|s| s.to_string()))).collect();
     let (units, issues) = compute_units((glo, ghi, glevel), &bounds, &srcs, &funcs);
     for (check, lo, hi, message, a, b) in issues {
-        out.conflict2("error", &check, lo, hi, message, &a, &b);
+        out.finding2("error", &check, lo, hi, message, &a, &b);
     }
     let mut unknown: Vec<(i64, i64)> = syms.iter().filter(|f| f.s("skind") == Some("unknown.code")).map(|f| (f.lo, f.hi)).collect();
     unknown.sort();
@@ -725,7 +724,7 @@ pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     dead.sort();
     let mut walks: Vec<i64> = vec![];
     {
-        let mut st = db.prepare_cached("SELECT c.lo FROM conflict c JOIN run r ON r.id=c.run_id WHERE r.current=1 AND r.rule=? AND c.check_id='C.walk'")
+        let mut st = db.prepare_cached("SELECT c.lo FROM finding c JOIN run r ON r.id=c.run_id WHERE r.current=1 AND r.rule=? AND c.check_id='C.walk'")
             .map_err(err)?;
         for r in &ctx.needed {
             for lo in st.query_map([r], |row| row.get::<_, i64>(0)).map_err(err)? {
@@ -744,16 +743,16 @@ pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let inside: Vec<i64> = funcs.iter().copied().filter(|&a| u.lo <= a && a < u.hi).collect();
         let inside_set: HashSet<i64> = inside.iter().copied().collect();
         let extra: HashSet<i64> = srcs.iter().map(|s| s.0).filter(|&a| u.lo <= a && a < u.hi && !inside_set.contains(&a)).collect();
-        let status = unit_status(u.start_level, u.end_level, open_bytes, n_walk);
+        let status = unit_status(u.start_support, u.end_support, open_bytes, n_walk);
         let mut v = serde_json::json!({
-            "tu": u.tu, "status": status, "start_level": LEVEL_NAMES[u.start_level as usize], "end_level": LEVEL_NAMES[u.end_level as usize],
+            "tu": u.tu, "status": status, "start_support": u.start_support.name(), "end_support": u.end_support.name(),
             "start_by": u.start_by, "end_by": u.end_by, "open_bytes": open_bytes, "dead_bytes": overlap(&dead, u),
             "walk_conflicts": n_walk, "functions": inside.len() + extra.len(),
             "sourced": inside.iter().filter(|a| sourced.contains(a)).count() + extra.len()});
         if let Some(n) = u.named_by.as_ref().filter(|n| !n.is_empty()) {
             v["named_by"] = serde_json::json!(n);
         }
-        out.fact(u.lo, u.hi, "unit", v, u.start_level.min(u.end_level).min(DECLARED));
+        out.claim(u.lo, u.hi, "unit", v, u.start_support.min(u.end_support).min(DECLARED));
     }
     Ok(())
 }
@@ -782,8 +781,8 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             base.insert(a, f);
         }
     }
-    let mut now: HashMap<i64, std::rc::Rc<SFact>> = HashMap::new();
-    for f in store::facts(db, &ctx.db, "grade", &ctx.needed, |f| f.s("of") == Some("function")).map_err(err)? {
+    let mut now: HashMap<i64, std::rc::Rc<Claim>> = HashMap::new();
+    for f in store::claims(db, &ctx.db, "grade", &ctx.needed, |f| f.s("of") == Some("function")).map_err(err)? {
         now.insert(f.lo, f);
     }
     for (a, r) in &base {
@@ -805,7 +804,7 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };
         for what in falls {
-            out.conflict("error", "M1", at, at + 1, format!("{name} at {:#x}: {what} (baseline ledger/grades.tsv)", a), "");
+            out.finding("error", "M1", at, at + 1, format!("{name} at {:#x}: {what} (baseline ledger/grades.tsv)", a), "");
         }
     }
     Ok(())
@@ -829,10 +828,10 @@ pub(crate) fn py_int16(s: &str) -> Option<i64> {
 // ------------------------------------------------------------------------------------------------ L1 / L4 / L10 / L14
 
 /// layout.game_units: the game units of L.unit.extent facts (library members have no status), by address.
-pub(crate) fn game_units(facts: &[std::rc::Rc<SFact>]) -> Vec<Unit> {
-    let lvl = |s: Option<&str>| LEVEL_NAMES.iter().position(|n| Some(*n) == s).unwrap_or(0) as i64;
+pub(crate) fn game_units(facts: &[std::rc::Rc<Claim>]) -> Vec<Unit> {
+    let lvl = |s: Option<&str>| s.and_then(Support::parse).unwrap_or(OPEN);
     let mut out: Vec<Unit> = facts.iter().filter(|f| f.value.get("status").is_some()).map(|f| Unit {
-        tu: f.s("tu").unwrap_or("").to_string(), lo: f.lo, hi: f.hi, start_level: lvl(f.s("start_level")), end_level: lvl(f.s("end_level")),
+        tu: f.s("tu").unwrap_or("").to_string(), lo: f.lo, hi: f.hi, start_support: lvl(f.s("start_support")), end_support: lvl(f.s("end_support")),
         start_by: f.s("start_by").unwrap_or("").to_string(), end_by: f.s("end_by").unwrap_or("").to_string(),
         named_by: f.s("named_by").map(|s| s.to_string()),
     }).collect();
@@ -848,8 +847,8 @@ pub(crate) fn unit_at(units: &[Unit], a: i64) -> Option<usize> {
 
 /// L1.src.start: the address of a sourced function is the start of a function (or unknown code).
 pub fn l1_src_start(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let syms = sorted_syms(store::facts(db, &ctx.db, "symbol", &ctx.needed, |f| f.level > OPEN).map_err(err)?);
-    for s in store::facts(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func")).map_err(err)? {
+    let syms = sorted_syms(store::claims(db, &ctx.db, "symbol", &ctx.needed, |f| f.support > OPEN).map_err(err)?);
+    for s in store::claims(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func")).map_err(err)? {
         let a = s.lo;
         let i = syms.partition_point(|x| x.0 <= a) as i64 - 1;
         let mut hit = None;
@@ -880,7 +879,7 @@ pub fn l1_src_start(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             serde_json::Value::String(s) => s.clone(),
             x => x.to_string(),
         };
-        out.conflict2("error", "L1", a, a + 1,
+        out.finding2("error", "L1", a, a + 1,
                       format!("{}:{line}: {} starts at {:#x}, inside the {} {:#x}..{:#x}", s.s("file").unwrap_or(""), s.s("symbol").unwrap_or(""),
                               a, sk.unwrap_or("None"), hit.lo, hit.hi), &s.by, &hit.by);
     }
@@ -913,7 +912,7 @@ pub fn boundary_issues(bounds: &[Bound], starts: &HashSet<i64>, funcs: &[(i64, i
     out
 }
 
-pub(crate) fn bounds_of(facts: &[std::rc::Rc<SFact>]) -> Vec<Bound> {
+pub(crate) fn bounds_of(facts: &[std::rc::Rc<Claim>]) -> Vec<Bound> {
     facts.iter().map(|f| (f.lo, f.s("side").unwrap_or("").to_string(), f.s("tu").unwrap_or("").to_string(), f.by.clone(),
                           f.s("named_by").map(|s| s.to_string()))).collect()
 }
@@ -921,8 +920,8 @@ pub(crate) fn bounds_of(facts: &[std::rc::Rc<SFact>]) -> Vec<Bound> {
 /// L4.boundary: a declared boundary lies at a function start, never inside fill or strictly inside a function.
 pub fn l4_boundary(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
-    let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
-    let funcs: Vec<(i64, i64)> = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).cloned().collect())
+    let syms = store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let funcs: Vec<(i64, i64)> = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.support > OPEN).cloned().collect())
         .iter().map(|f| (f.0, f.1)).collect();
     let mut fills: Vec<(i64, i64)> = syms.iter().filter(|f| f.s("skind") == Some("fill")).map(|f| (f.lo, f.hi)).collect();
     fills.sort();
@@ -933,24 +932,24 @@ pub fn l4_boundary(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
     }
     let (_, ghi) = game_range(&img, &lib_starts_of(&syms));
-    let bounds = bounds_of(&store::facts(db, &ctx.db, "boundary", &ctx.needed, |_| true).map_err(err)?);
+    let bounds = bounds_of(&store::claims(db, &ctx.db, "boundary", &ctx.needed, |_| true).map_err(err)?);
     for (check, lo, hi, message, a, b) in boundary_issues(&bounds, &starts, &funcs, &fills, ghi) {
-        out.conflict2("error", &check, lo, hi, message, &a, &b);
+        out.finding2("error", &check, lo, hi, message, &a, &b);
     }
     Ok(())
 }
 
 /// L10.unexplained: code inside a game unit's extent no source explains, though a source claims it.
 pub fn l10_unexplained(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
-    let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
-    let mut walk: HashMap<i64, std::rc::Rc<SFact>> = HashMap::new();
+    let units = game_units(&store::claims(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    let syms = store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let mut walk: HashMap<i64, std::rc::Rc<Claim>> = HashMap::new();
     for f in syms.iter().filter(|f| &*f.rule == "S.codewalk" && f.s("skind") == Some("func")) {
         walk.insert(f.lo, f.clone());
     }
     let owned: HashSet<i64> = syms.iter().filter(|f| &*f.rule == "L.src.extent" && f.s("skind") == Some("func")).map(|f| f.lo).collect();
-    let sources = store::facts(db, &ctx.db, "source", &ctx.needed, |_| true).map_err(err)?;
-    let mut matched: HashMap<i64, std::rc::Rc<SFact>> = HashMap::new();
+    let sources = store::claims(db, &ctx.db, "source", &ctx.needed, |_| true).map_err(err)?;
+    let mut matched: HashMap<i64, std::rc::Rc<Claim>> = HashMap::new();
     for f in sources.iter().filter(|f| f.s("what") == Some("match")) {
         matched.insert(f.lo, f.clone());
     }
@@ -962,7 +961,7 @@ pub fn l10_unexplained(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> 
         let (w, m) = (walk.get(&s.lo), matched.get(&s.lo));
         let (file, sym) = (s.s("file").unwrap_or(""), s.s("symbol").unwrap_or(""));
         if w.is_none() && m.is_none() && !owned.contains(&s.lo) {
-            out.conflict("warn", "L10", s.lo, s.lo + 1,
+            out.finding("warn", "L10", s.lo, s.lo + 1,
                          format!("unit {}: {file} ({sym}) owns no bytes: the walk does not know its start and it does not byte-match, so its \
                                   code stays open", units[i].tu), &s.by);
             continue;
@@ -973,7 +972,7 @@ pub fn l10_unexplained(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> 
         }
         let left = w.hi - m.hi - dead.iter().filter(|&&(a, b)| a < w.hi && b > m.hi).map(|&(a, b)| (b.min(w.hi) - a.max(m.hi)).max(0)).sum::<i64>();
         if left > 0 {
-            out.conflict2("warn", "L10", m.hi, w.hi,
+            out.finding2("warn", "L10", m.hi, w.hi,
                           format!("unit {}: the walk of {:#x} ({sym}) runs to {:#x}, its byte-matched compile ends at {:#x}: {left} bytes of walked \
                                    code no source explains (a missed start, or dead code to declare `bytes dead`)", units[i].tu, s.lo, w.hi, m.hi),
                           &w.by, &m.by);
@@ -1020,8 +1019,8 @@ pub fn outside_unit_issues(units: &[UnitExt], srcs: &[SrcFn], declared: &HashSet
 
 /// separated when both boundaries are at least declared, no open byte and no C.walk conflict lies inside the unit;
 /// else open.
-pub fn unit_status(start_level: i64, end_level: i64, open_bytes: i64, walk_conflicts: i64) -> &'static str {
-    if start_level >= DECLARED && end_level >= DECLARED && open_bytes == 0 && walk_conflicts == 0 { "separated" } else { "open" }
+pub fn unit_status(start_support: Support, end_support: Support, open_bytes: i64, walk_conflicts: i64) -> &'static str {
+    if start_support >= DECLARED && end_support >= DECLARED && open_bytes == 0 && walk_conflicts == 0 { "separated" } else { "open" }
 }
 
 /// L14.unit.outside: a sourced function of a declared unit (or a library unit) outside its extent.
@@ -1031,16 +1030,16 @@ pub fn l14_unit_outside(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()>
     let mut libs: Vec<LibUnit> = crate::decl::lib_units(&decls, &target, targets.first().map(|s| s.as_str()).unwrap_or(""))
         .into_iter().map(|(k, d)| (k, d.lo, d.hi, d.by())).collect();
     libs.sort();
-    let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let syms = store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
     let game = game_range(&img, &lib_starts_of(&syms));
-    let declared: HashSet<String> = store::facts(db, &ctx.db, "boundary", &ctx.needed, |_| true).map_err(err)?
+    let declared: HashSet<String> = store::claims(db, &ctx.db, "boundary", &ctx.needed, |_| true).map_err(err)?
         .iter().map(|f| f.s("tu").unwrap_or("").to_string()).collect();
-    let units: Vec<UnitExt> = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?)
+    let units: Vec<UnitExt> = game_units(&store::claims(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?)
         .into_iter().map(|u| (u.tu, u.lo, u.hi, u.start_by)).collect();
-    let srcs: Vec<SrcFn> = store::facts(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func") && f.by.starts_with("src:"))
+    let srcs: Vec<SrcFn> = store::claims(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func") && f.by.starts_with("src:"))
         .map_err(err)?.iter().map(|s| (s.lo, s.s("unit").unwrap_or("").to_string(), s.s("symbol").unwrap_or("").to_string(), s.by.clone())).collect();
     for (check, lo, hi, message, a, b) in outside_unit_issues(&units, &srcs, &declared, game, &libs) {
-        out.conflict2("error", &check, lo, hi, message, &a, &b);
+        out.finding2("error", &check, lo, hi, message, &a, &b);
     }
     Ok(())
 }
@@ -1072,7 +1071,7 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let base = img.base as i64;
     let in_image = |a: i64| base <= a && a < img.end() as i64;
     let sc = &x.scan.items;
-    let err = |out: &mut Out, check: &str, lo: i64, msg: String, a: &str, b: &str| out.conflict2("error", check, lo, lo + 1, msg, a, b);
+    let err = |out: &mut Out, check: &str, lo: i64, msg: String, a: &str, b: &str| out.finding2("error", check, lo, lo + 1, msg, a, b);
     if *cur == default {
         for (check, file, line, message) in &sc.errors {
             err(out, check, base, format!("{file}:{line}: {message}"), &format!("src:{file}:{line}"), "");
@@ -1224,14 +1223,14 @@ pub struct Leak {
     pub header: bool,
 }
 
-pub fn lits_of(ev: &[std::rc::Rc<SFact>]) -> Vec<Lit> {
+pub fn lits_of(ev: &[std::rc::Rc<Claim>]) -> Vec<Lit> {
     ev.iter().filter(|f| f.s("ekind") == Some("lit")).map(|f| Lit {
         lo: f.lo, hi: f.hi, first: f.value.get("first").and_then(|v| v.as_i64()).unwrap_or(0), section: f.s("section").unwrap_or("").to_string(),
         data_refs: f.value.get("data_refs").and_then(|v| v.as_i64()).unwrap_or(0),
     }).collect()
 }
 
-pub fn leaks_of(ev: &[std::rc::Rc<SFact>]) -> Vec<Leak> {
+pub fn leaks_of(ev: &[std::rc::Rc<Claim>]) -> Vec<Leak> {
     ev.iter().filter(|f| f.s("ekind") == Some("leak")).map(|f| Leak {
         func: f.lo, path: crate::setup::py_str(f.value.get("path")), stem: crate::setup::py_str(f.value.get("stem")),
         header: f.value.get("header").is_some_and(|h| h.as_bool() == Some(true) || h.as_i64().is_some_and(|n| n != 0)),
@@ -1307,22 +1306,22 @@ pub fn leak_issues(units: &[Unit], leaks: &[Leak]) -> Vec<Issue> {
 
 fn emit(out: &mut Out, issues: Vec<Issue>) {
     for (check, lo, hi, message, a, b) in issues {
-        out.conflict2("error", &check, lo, hi, message, &a, &b);
+        out.finding2("error", &check, lo, hi, message, &a, &b);
     }
 }
 
 /// L3.lit.order: the literals' first users never go back to an earlier unit within a data section.
 pub fn l3_lit_order(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
-    let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("lit")).map_err(err)?;
+    let units = game_units(&store::claims(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    let ev = store::claims(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("lit")).map_err(err)?;
     emit(out, lit_issues(&units, &lits_of(&ev)));
     Ok(())
 }
 
 /// L8.leak: the leaked .c / .cpp paths of one unit's functions name one file.
 pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
-    let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("leak")).map_err(err)?;
+    let units = game_units(&store::claims(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    let ev = store::claims(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("leak")).map_err(err)?;
     emit(out, leak_issues(&units, &leaks_of(&ev)));
     Ok(())
 }
@@ -1331,45 +1330,45 @@ pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 pub fn l6_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let code = code_ranges(&img);
-    let symbols = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
-    let starts_all = store::facts(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?;
-    let mut mine: Vec<(bool, std::rc::Rc<SFact>)> = symbols.iter().filter(|f| &*f.rule == "L.decl").map(|f| (false, f.clone())).collect();
+    let symbols = store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
+    let starts_all = store::claims(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?;
+    let mut mine: Vec<(bool, std::rc::Rc<Claim>)> = symbols.iter().filter(|f| &*f.rule == "L.decl").map(|f| (false, f.clone())).collect();
     mine.extend(starts_all.iter().filter(|f| &*f.rule == "L.decl").map(|f| (true, f.clone())));
     if mine.is_empty() {
         return Ok(());
     }
-    let other: Vec<&std::rc::Rc<SFact>> = symbols.iter().filter(|f| &*f.rule != "L.decl" && f.level > OPEN).collect();
-    let mut funcs: Vec<&std::rc::Rc<SFact>> = other.iter().copied().filter(|f| f.s("skind") == Some("func")).collect();
+    let other: Vec<&std::rc::Rc<Claim>> = symbols.iter().filter(|f| &*f.rule != "L.decl" && f.support > OPEN).collect();
+    let mut funcs: Vec<&std::rc::Rc<Claim>> = other.iter().copied().filter(|f| f.s("skind") == Some("func")).collect();
     funcs.sort_by_key(|f| (f.lo, f.hi));
-    let tables: Vec<&std::rc::Rc<SFact>> = other.iter().copied().filter(|f| matches!(f.s("skind"), Some("jumptable" | "idxtable"))).collect();
+    let tables: Vec<&std::rc::Rc<Claim>> = other.iter().copied().filter(|f| matches!(f.s("skind"), Some("jumptable" | "idxtable"))).collect();
     let starts: HashSet<i64> = starts_all.iter().filter(|f| &*f.rule != "L.decl").map(|f| f.lo).collect();
-    let all_refs = store::facts(db, &ctx.db, "ref", &ctx.needed, |_| true).map_err(err)?;
-    let refs: Vec<&std::rc::Rc<SFact>> = all_refs.iter().filter(|r| matches!(r.s("rkind"), Some("call" | "jmp" | "tail" | "immediate"))).collect();
+    let all_refs = store::claims(db, &ctx.db, "ref", &ctx.needed, |_| true).map_err(err)?;
+    let refs: Vec<&std::rc::Rc<Claim>> = all_refs.iter().filter(|r| matches!(r.s("rkind"), Some("call" | "jmp" | "tail" | "immediate"))).collect();
     let mut relocs: HashMap<i64, i64> = HashMap::new();
     for r in all_refs.iter().filter(|r| r.s("rkind") == Some("reloc")) {
         relocs.insert(r.lo, r.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0));
     }
     let covering = |lo: i64, hi: i64| funcs.iter().copied().filter(move |f| f.lo < hi && lo < f.hi);
-    let to = |r: &SFact| r.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0);
+    let to = |r: &Claim| r.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0);
     for (is_start, d) in &mine {
         let sk = d.s("skind").unwrap_or("");
         if *is_start {
-            let inner = |f: &SFact| f.value.get("inner").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|x| x.as_i64() == Some(d.lo)));
+            let inner = |f: &Claim| f.value.get("inner").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|x| x.as_i64() == Some(d.lo)));
             if let Some(hit) = covering(d.lo, d.hi).find(|f| f.lo < d.lo && !inner(f)) {
-                out.conflict2("error", "L6", d.lo, d.hi, format!("declared start {:#x} lies inside the function {:#x}..{:#x}", d.lo, hit.lo, hit.hi), &d.by, &hit.by);
+                out.finding2("error", "L6", d.lo, d.hi, format!("declared start {:#x} lies inside the function {:#x}..{:#x}", d.lo, hit.lo, hit.hi), &d.by, &hit.by);
             }
             continue;
         }
         match sk {
             "dead" | "foreign" => {
                 for f in covering(d.lo, d.hi) {
-                    out.conflict2("error", "L6", d.lo.max(f.lo), d.hi.min(f.hi),
+                    out.finding2("error", "L6", d.lo.max(f.lo), d.hi.min(f.hi),
                                   format!("declared {sk} bytes {:#x}..{:#x} are code of the function {:#x}..{:#x}", d.lo, d.hi, f.lo, f.hi), &d.by, &f.by);
                 }
                 for r in &refs {
                     let t = to(r);
                     if d.lo <= t && t < d.hi {
-                        out.conflict2("error", "L6", t, t + 1, format!("declared {sk} bytes {:#x}..{:#x} are reached by the {} at {:#x}", d.lo, d.hi,
+                        out.finding2("error", "L6", t, t + 1, format!("declared {sk} bytes {:#x}..{:#x} are reached by the {} at {:#x}", d.lo, d.hi,
                                                                           r.s("rkind").unwrap_or(""), r.lo), &d.by, &r.by);
                     }
                 }
@@ -1377,16 +1376,16 @@ pub fn l6_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             "jumptable" | "idxtable" => {
                 let fnv = d.value.get("fn").and_then(|v| v.as_i64()).unwrap_or(0);
                 if !starts.contains(&fnv) {
-                    out.conflict("error", "L6", d.lo, d.hi, format!("declared {sk} {:#x}..{:#x}: no function starts at fn={fnv:#x}", d.lo, d.hi), &d.by);
+                    out.finding("error", "L6", d.lo, d.hi, format!("declared {sk} {:#x}..{:#x}: no function starts at fn={fnv:#x}", d.lo, d.hi), &d.by);
                 }
                 for f in covering(d.lo, d.hi) {
-                    out.conflict2("error", "L6", d.lo.max(f.lo), d.hi.min(f.hi),
+                    out.finding2("error", "L6", d.lo.max(f.lo), d.hi.min(f.hi),
                                   format!("declared {sk} {:#x}..{:#x} lies inside the code of the function {:#x}..{:#x}", d.lo, d.hi, f.lo, f.hi), &d.by, &f.by);
                 }
                 for t in &tables {
                     let tfn = t.value.get("fn").and_then(|v| v.as_i64());
                     if t.lo < d.hi && d.lo < t.hi && (t.lo, t.hi, tfn) != (d.lo, d.hi, Some(fnv)) {
-                        out.conflict2("error", "L6", t.lo.max(d.lo), t.hi.min(d.hi),
+                        out.finding2("error", "L6", t.lo.max(d.lo), t.hi.min(d.hi),
                                       format!("declared {sk} {:#x}..{:#x} fn={fnv:#x}, the walk finds {} {:#x}..{:#x} fn={:#x}", d.lo, d.hi,
                                               t.s("skind").unwrap_or(""), t.lo, t.hi, tfn.unwrap_or(0)), &d.by, &t.by);
                     }
@@ -1396,7 +1395,7 @@ pub fn l6_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 let mut a = d.lo;
                 while a <= d.hi - 4 {
                     if !relocs.get(&a).is_some_and(|&t| code.iter().any(|&(lo, hi)| lo <= t && t < hi)) {
-                        out.conflict("error", "L6", a, a + 4, format!("declared fptr {:#x}..{:#x}: the dword at {a:#x} is not a relocated code address", d.lo, d.hi), &d.by);
+                        out.finding("error", "L6", a, a + 4, format!("declared fptr {:#x}..{:#x}: the dword at {a:#x} is not a relocated code address", d.lo, d.hi), &d.by);
                         break;
                     }
                     a += 4;
@@ -1410,23 +1409,23 @@ pub fn l6_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 
 /// M.bytes.declared (R5): declared dead or foreign bytes inside a game unit belong to it (a source fact).
 pub fn m_bytes_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
-    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)? {
+    let units = game_units(&store::claims(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
+    for f in store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)? {
         let sk = f.s("skind").unwrap_or("");
         if &*f.rule != "L.decl" || !matches!(sk, "dead" | "foreign") {
             continue;
         }
         let (i, j) = (unit_at(&units, f.lo), unit_at(&units, f.hi - 1));
         if i.is_none() && j.is_none() {
-            out.conflict("warn", "M.bytes.declared", f.lo, f.hi, format!("declared {sk} bytes {:#x}..{:#x} lie in no unit", f.lo, f.hi), &f.by);
+            out.finding("warn", "M.bytes.declared", f.lo, f.hi, format!("declared {sk} bytes {:#x}..{:#x} lie in no unit", f.lo, f.hi), &f.by);
             continue;
         }
         if i != j {
-            out.conflict("error", "M.bytes.declared", f.lo, f.hi, format!("declared {sk} bytes {:#x}..{:#x} cross a unit boundary", f.lo, f.hi), &f.by);
+            out.finding("error", "M.bytes.declared", f.lo, f.hi, format!("declared {sk} bytes {:#x}..{:#x} cross a unit boundary", f.lo, f.hi), &f.by);
             continue;
         }
         let v = serde_json::json!({"what": sk, "unit": units[i.unwrap()].tu, "decl": f.by});
-        out.fact_reason(f.lo, f.hi, "source", v, f.level.min(DECLARED), f.reason.clone());
+        out.claim_reason(f.lo, f.hi, "source", v, f.support.min(DECLARED), f.reason.clone());
     }
     Ok(())
 }
@@ -1437,8 +1436,8 @@ mod tests_2b {
     use crate::rules::testkit::{of, Kit};
     use serde_json::json;
 
-    fn unit(tu: &str, lo: i64, hi: i64) -> (i64, i64, &'static str, serde_json::Value, i64) {
-        (lo, hi, "unit", json!({"tu": tu, "status": "x", "start_level": "declared", "end_level": "declared", "start_by": format!("decl:{tu}"), "end_by": ""}), 1)
+    fn unit(tu: &str, lo: i64, hi: i64) -> (i64, i64, &'static str, serde_json::Value, crate::store::Support) {
+        (lo, hi, "unit", json!({"tu": tu, "status": "x", "start_support": "declared", "end_support": "declared", "start_by": format!("decl:{tu}"), "end_by": ""}), crate::store::DECLARED)
     }
 
     #[test]
@@ -1459,18 +1458,18 @@ mod tests_2b {
         let k = Kit::new(&build(None));
         let t = (BASE + TEXT) as i64;
         k.put("L.unit.extent", &[unit("a", t, t + 0x30), unit("b", t + 0x30, t + 0x60)]);
-        k.put("L.decl", &[(t + 0x10, t + 0x20, "symbol", json!({"skind": "dead"}), 1), (t + 0x2c, t + 0x34, "symbol", json!({"skind": "foreign"}), 1)]);
+        k.put("L.decl", &[(t + 0x10, t + 0x20, "symbol", json!({"skind": "dead"}), crate::store::DECLARED), (t + 0x2c, t + 0x34, "symbol", json!({"skind": "foreign"}), crate::store::DECLARED)]);
         let (rows, c) = k.run("M.bytes.declared", &["L.decl", "L.unit.extent"], "");
         assert_eq!(of(&rows, "source"), vec![(t + 0x10, t + 0x20, json!({"what": "dead", "unit": "a", "decl": "rule:L.decl@1"}))]);
         assert_eq!(c.iter().map(|x| (x.severity.as_str(), x.message.as_str())).collect::<Vec<_>>(),
                    [("error", &*format!("declared foreign bytes {:#x}..{:#x} cross a unit boundary", t + 0x2c, t + 0x34))]);
-        k.put("L.analyze", &[(t + 0x10, t + 0x11, "evidence", json!({"ekind": "leak", "path": "c:/a.c", "stem": "a", "header": false, "string": 1}), 2),
-                             (t + 0x20, t + 0x21, "evidence", json!({"ekind": "leak", "path": "c:/b.c", "stem": "b", "header": false, "string": 2}), 2),
-                             (t + 0x40, t + 0x41, "evidence", json!({"ekind": "leak", "path": "c:/x.h", "stem": "x", "header": true, "string": 3}), 2)]);
+        k.put("L.analyze", &[(t + 0x10, t + 0x11, "evidence", json!({"ekind": "leak", "path": "c:/a.c", "stem": "a", "header": false, "string": 1}), crate::store::DERIVED),
+                             (t + 0x20, t + 0x21, "evidence", json!({"ekind": "leak", "path": "c:/b.c", "stem": "b", "header": false, "string": 2}), crate::store::DERIVED),
+                             (t + 0x40, t + 0x41, "evidence", json!({"ekind": "leak", "path": "c:/x.h", "stem": "x", "header": true, "string": 3}), crate::store::DERIVED)]);
         let (_, c) = k.run("L8.leak", &["L.analyze", "L.unit.extent"], "");
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].message, format!("unit a holds functions that leak 2 source files: c:/a.c ({:#x}), c:/b.c ({:#x})", t + 0x10, t + 0x20));
-        k.put("S.codewalk", &[(t + 0x18, t + 0x28, "symbol", json!({"skind": "func"}), 3)]);
+        k.put("S.codewalk", &[(t + 0x18, t + 0x28, "symbol", json!({"skind": "func"}), crate::store::REPRODUCED)]);
         for r in ["S.crt.code", "S.thunk", "S.relocs", "S.sections"] {
             k.put(r, &[]);
         }
@@ -1507,21 +1506,21 @@ static LEAK: std::sync::LazyLock<fancy_regex::Regex> =
 
 /// L.analyze: boundary evidence (lit, leak, fill) once per image.
 pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    use crate::store::{DERIVED, PROVEN};
+    use crate::store::{DERIVED, REPRODUCED};
     let img = image(&ctx.image)?;
     let tc = crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| Error::runtime("L.analyze: no toolchain"))?;
-    let fs = |kind: &str| store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
+    let fs = |kind: &str| store::claims(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
     let secs: Vec<(i64, i64, String)> = fs("section")?.iter().map(|f| (f.lo, f.hi, f.s("name").unwrap_or("").to_string())).collect();
     let code = code_ranges(&img);
     let in_code = |a: i64| code.iter().any(|&(lo, hi)| lo <= a && a < hi);
     let syms = fs("symbol")?;
-    let mut funcs: Vec<&std::rc::Rc<SFact>> = syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).collect();
+    let mut funcs: Vec<&std::rc::Rc<Claim>> = syms.iter().filter(|f| f.s("skind") == Some("func") && f.support > OPEN).collect();
     funcs.sort_by_key(|f| (f.lo, f.hi));
     let at = |a: i64| {
         let i = funcs.partition_point(|f| f.lo <= a);
         (i > 0 && a < funcs[i - 1].hi).then(|| funcs[i - 1])
     };
-    let strings: Vec<&std::rc::Rc<SFact>> = syms.iter().filter(|f| f.s("skind") == Some("string")).collect();
+    let strings: Vec<&std::rc::Rc<Claim>> = syms.iter().filter(|f| f.s("skind") == Some("string")).collect();
     let mut users: HashMap<i64, std::collections::BTreeSet<i64>> = HashMap::new();
     let mut data_refs: HashMap<i64, i64> = HashMap::new();
     for r in fs("ref")?.iter().filter(|r| r.s("rkind") == Some("reloc")) {
@@ -1539,16 +1538,16 @@ pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             *data_refs.entry(s.lo).or_insert(0) += 1;
         }
     }
-    let mut fn_at: HashMap<i64, &std::rc::Rc<SFact>> = HashMap::new();
+    let mut fn_at: HashMap<i64, &std::rc::Rc<Claim>> = HashMap::new();
     for f in &funcs {
         fn_at.insert(f.lo, f);
     }
     for s in &strings {
-        let us: Vec<&std::rc::Rc<SFact>> = users.get(&s.lo).into_iter().flatten().map(|a| fn_at[a]).collect();
+        let us: Vec<&std::rc::Rc<Claim>> = users.get(&s.lo).into_iter().flatten().map(|a| fn_at[a]).collect();
         let Some(first) = us.first() else { continue };
-        let lvl = us.iter().map(|u| u.level).chain([s.level, DERIVED]).min().unwrap();
+        let lvl = us.iter().map(|u| u.support).chain([s.support, DERIVED]).min().unwrap();
         let sec = secs.iter().find(|(lo, hi, _)| *lo <= s.lo && s.lo < *hi).map(|x| x.2.clone()).unwrap_or_default();
-        out.fact(s.lo, s.hi, "evidence", serde_json::json!({"ekind": "lit", "first": first.lo, "users": us.len(), "data_refs": data_refs.get(&s.lo).copied().unwrap_or(0),
+        out.claim(s.lo, s.hi, "evidence", serde_json::json!({"ekind": "lit", "first": first.lo, "users": us.len(), "data_refs": data_refs.get(&s.lo).copied().unwrap_or(0),
                                                             "section": sec}), lvl);
         let text: String = img.cstr(s.lo as u32).iter().map(|&c| c as char).collect();
         for m in LEAK.captures_iter(&text) {
@@ -1557,22 +1556,22 @@ pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             let stem = m.get(2).unwrap().as_str().to_lowercase();
             let header = m.get(3).unwrap().as_str().eq_ignore_ascii_case("h");
             for u in &us {
-                out.fact(u.lo, u.lo + 1, "evidence", serde_json::json!({"ekind": "leak", "path": path, "stem": stem, "header": header, "string": s.lo}),
-                         lvl.min(u.level).min(PROVEN));
+                out.claim(u.lo, u.lo + 1, "evidence", serde_json::json!({"ekind": "leak", "path": path, "stem": stem, "header": header, "string": s.lo}),
+                         lvl.min(u.support).min(REPRODUCED));
             }
         }
     }
     let mut ends: HashSet<i64> = HashSet::new();
-    let mut fills: HashMap<i64, &std::rc::Rc<SFact>> = HashMap::new();
+    let mut fills: HashMap<i64, &std::rc::Rc<Claim>> = HashMap::new();
     let mut opens: HashSet<i64> = HashSet::new();
     for f in &syms {
-        if f.level > OPEN && f.s("skind") != Some("fill") {
+        if f.support > OPEN && f.s("skind") != Some("fill") {
             ends.insert(f.hi);
         }
         if f.s("skind") == Some("fill") {
             fills.insert(f.hi, f);
         }
-        if f.level == OPEN {
+        if f.support == OPEN {
             opens.insert(f.hi);
         }
     }
@@ -1590,7 +1589,7 @@ pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         } else {
             continue;
         };
-        out.fact(f.lo, f.lo + 1, "evidence", v, f.level.min(DERIVED));
+        out.claim(f.lo, f.lo + 1, "evidence", v, f.support.min(DERIVED));
     }
     Ok(())
 }
@@ -1600,7 +1599,7 @@ mod tests_pure {
     use super::*;
 
     fn u(tu: &str, lo: i64, hi: i64, start_by: &str, end_by: &str) -> Unit {
-        Unit { tu: tu.into(), lo, hi, start_level: DECLARED, end_level: DECLARED, start_by: start_by.into(), end_by: end_by.into(), named_by: None }
+        Unit { tu: tu.into(), lo, hi, start_support: DECLARED, end_support: DECLARED, start_by: start_by.into(), end_by: end_by.into(), named_by: None }
     }
 
     fn src(addr: i64, unit: &str, name: &str, by: &str) -> SrcFn {

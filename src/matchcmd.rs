@@ -47,7 +47,7 @@ fn int(r: &Row, k: &str) -> i64 {
 
 fn opened(p: &crate::project::Project) -> Result<String> {
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri())?;
+    crate::storedb::st_open(&db, &p.main_uri())?;
     Ok(db)
 }
 

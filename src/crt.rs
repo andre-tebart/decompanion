@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::coff::{self, Obj, ABSOLUTE, RELATIVE};
 use crate::image;
 use crate::rules::Ctx;
-use crate::store::{self, Out, SFact, DERIVED, PROVEN};
+use crate::store::{self, Out, Claim, DERIVED, REPRODUCED};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -27,8 +27,8 @@ fn toolchain(x: &crate::rules::Inputs) -> Result<Box<dyn crate::toolchain::Toolc
     crate::toolchain::of(&x.toolchain).ok_or_else(|| Error::runtime("no such toolchain"))
 }
 
-fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> Result<Vec<Rc<SFact>>> {
-    store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err)
+fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> Result<Vec<Rc<Claim>>> {
+    store::claims(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err)
 }
 
 /// (archive file name, its objects) of the archives an input lists.
@@ -62,7 +62,7 @@ pub fn s_rich(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let libs = archives(x, "archives")?;
     let stamps = coff::comp_ids(libs.iter().flat_map(|(_, os)| os.iter()));
     let tools = tc.archive_tools(&stamps);
-    out.fact(img.base as i64, img.end() as i64, "toolchain", tc.rich_candidates(&entries, &tools), DERIVED);
+    out.claim(img.base as i64, img.end() as i64, "toolchain", tc.rich_candidates(&entries, &tools), DERIVED);
     Ok(())
 }
 
@@ -218,18 +218,18 @@ pub fn s_crt_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let libs = archives(x, "libs")?;
     for p in place_members(&img, &libs, &reloc_sites(ctx, db)?) {
         match p {
-            Placed::Issue(what, lo, hi, msg) => out.conflict("warn", &format!("S.crt.{what}"), lo, hi, msg, ""),
+            Placed::Issue(what, lo, hi, msg) => out.finding("warn", &format!("S.crt.{what}"), lo, hi, msg, ""),
             Placed::At(pl) => {
-                let mut v = json!({"skind": "func", "name": pl.name, "extent": "proven", "unit": pl.unit});
+                let mut v = json!({"skind": "func", "name": pl.name, "extent": "reproduced", "unit": pl.unit});
                 if pl.members > 1 {
                     v["candidates"] = json!(pl.members);
                 }
-                out.fact(pl.lo, pl.hi, "symbol", v, PROVEN);
-                out.fact(pl.lo, pl.hi, "unit", json!({"tu": pl.unit, "lib": pl.lib}), PROVEN);
+                out.claim(pl.lo, pl.hi, "symbol", v, REPRODUCED);
+                out.claim(pl.lo, pl.hi, "unit", json!({"tu": pl.unit, "lib": pl.lib}), REPRODUCED);
                 for (value, ns) in &pl.values {
                     let a = pl.lo + *value as i64;
-                    out.fact(a, a + 1, "start", json!({"skind": "func", "how": "crt"}), PROVEN);
-                    out.fact(a, a + 1, "name", json!({"name": ns.join("|"), "origin": "lib", "unit": pl.unit}), PROVEN);
+                    out.claim(a, a + 1, "start", json!({"skind": "func", "how": "crt"}), REPRODUCED);
+                    out.claim(a, a + 1, "name", json!({"name": ns.join("|"), "origin": "lib", "unit": pl.unit}), REPRODUCED);
                 }
             }
         }
@@ -240,7 +240,7 @@ pub fn s_crt_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 // ------------------------------------------------------------------------------------------------ S.crt.refs, S.crt.data
 
 /// unit:name -> the placed func symbol (S.crt.code's), and the units placed.
-fn placed_funcs(ctx: &Ctx, db: &Connection) -> Result<(HashMap<String, Rc<SFact>>, HashSet<String>)> {
+fn placed_funcs(ctx: &Ctx, db: &Connection) -> Result<(HashMap<String, Rc<Claim>>, HashSet<String>)> {
     let mut placed = HashMap::new();
     for f in facts(ctx, db, "symbol")? {
         if f.s("skind") == Some("func") && f.s("unit").is_some_and(|u| u.starts_with("lib:")) {
@@ -252,7 +252,7 @@ fn placed_funcs(ctx: &Ctx, db: &Connection) -> Result<(HashMap<String, Rc<SFact>
 }
 
 /// (section number, its placed func symbol) of every code section of an object that S.crt.code placed whole.
-fn placed_sections<'a>(o: &Obj, unit: &str, placed: &'a HashMap<String, Rc<SFact>>) -> Vec<(usize, &'a Rc<SFact>)> {
+fn placed_sections<'a>(o: &Obj, unit: &str, placed: &'a HashMap<String, Rc<Claim>>) -> Vec<(usize, &'a Rc<Claim>)> {
     o.code_sections()
         .into_iter()
         .filter_map(|k| {
@@ -300,7 +300,7 @@ pub fn s_crt_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for (name, addrs) in resolved {
         let lo = *addrs.keys().next().unwrap();
         if addrs.len() > 1 {
-            out.conflict("bug", "S.crt.refs", lo, lo + 1, format!("{name} resolves to {} addresses: {}", addrs.len(),
+            out.finding("bug", "S.crt.refs", lo, lo + 1, format!("{name} resolves to {} addresses: {}", addrs.len(),
                                                                    addrs.iter().map(|(a, n)| format!("{a:#x}x{n}")).collect::<Vec<_>>().join(", ")), "");
             continue;
         }
@@ -308,9 +308,9 @@ pub fn s_crt_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if !img.in_image(lo as u32) {
             continue;
         }
-        out.fact(lo, lo + 1, "name", json!({"name": name, "origin": "lib", "sites": n}), PROVEN);
+        out.claim(lo, lo + 1, "name", json!({"name": name, "origin": "lib", "sites": n}), REPRODUCED);
         if functions.contains(&name) {
-            out.fact(lo, lo + 1, "start", json!({"skind": "func", "how": "libref"}), PROVEN);
+            out.claim(lo, lo + 1, "start", json!({"skind": "func", "how": "libref"}), REPRODUCED);
         }
     }
     Ok(())
@@ -347,7 +347,7 @@ pub fn s_crt_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 let sec = &o.sections[secnum];
                 let lo = *bs.keys().next().unwrap();
                 if bs.len() > 1 {
-                    out.conflict("warn", "S.crt.data", lo, lo + 1, format!("{unit} {}#{secnum} has {} bases: {}", sec.name, bs.len(),
+                    out.finding("warn", "S.crt.data", lo, lo + 1, format!("{unit} {}#{secnum} has {} bases: {}", sec.name, bs.len(),
                                                                             bs.iter().map(|(b, n)| format!("{b:#x}x{n}")).collect::<Vec<_>>().join(", ")), "");
                     continue;
                 }
@@ -356,18 +356,18 @@ pub fn s_crt_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 }
                 let hi = lo + sec.size as i64;
                 if done.iter().any(|&(a, b)| lo < b && a < hi) {
-                    out.conflict("warn", "S.crt.data", lo, hi, format!("{unit} {}#{secnum} overlaps another placed data section", sec.name), "");
+                    out.finding("warn", "S.crt.data", lo, hi, format!("{unit} {}#{secnum} overlaps another placed data section", sec.name), "");
                     continue;
                 }
                 done.push((lo, hi));
                 let named: Vec<&coff::Symbol> = sec.syms.iter().map(|&k| &o.symbols[k]).filter(|s| s.named()).collect();
                 let name = named.first().map(|s| s.name.clone()).unwrap_or_else(|| format!("{}:{}#{secnum}", o.name, sec.name));
-                out.fact(lo, hi, "symbol", json!({"skind": "crt.data", "name": name, "extent": "proven", "unit": unit, "section": sec.name,
-                                                  "bss": sec.data.is_none()}), PROVEN);
-                out.fact(lo, hi, "unit", json!({"tu": unit, "lib": lib}), PROVEN);
+                out.claim(lo, hi, "symbol", json!({"skind": "crt.data", "name": name, "extent": "reproduced", "unit": unit, "section": sec.name,
+                                                  "bss": sec.data.is_none()}), REPRODUCED);
+                out.claim(lo, hi, "unit", json!({"tu": unit, "lib": lib}), REPRODUCED);
                 for s in named {
                     let a = lo + s.value as i64;
-                    out.fact(a, a + 1, "name", json!({"name": s.name, "origin": "lib", "unit": unit}), PROVEN);
+                    out.claim(a, a + 1, "name", json!({"name": s.name, "origin": "lib", "unit": unit}), REPRODUCED);
                 }
             }
         }
@@ -425,7 +425,7 @@ pub fn s_lib_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 let unit = format!("lib:{lib}/{}", o.name);
                 let named: Vec<(u32, String)> = sec.syms.iter().map(|&s| &o.symbols[s]).filter(|s| s.named()).map(|s| (s.value, s.name.clone())).collect();
                 let name = named.first().map(|s| s.1.clone()).unwrap_or_else(|| format!("{}:{}", o.name, sec.name));
-                let v = json!({"skind": "crt.data", "name": name, "extent": "proven", "unit": unit, "section": sec.name, "bss": false, "how": "content",
+                let v = json!({"skind": "crt.data", "name": name, "extent": "reproduced", "unit": unit, "section": sec.name, "bss": false, "how": "content",
                                "candidates": 1});
                 seen.insert((lo, data.clone()), pending.len());
                 done.push((lo, hi));
@@ -434,11 +434,11 @@ pub fn s_lib_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
     }
     for (lo, hi, v, unit, lib, named) in pending {
-        out.fact(lo, hi, "symbol", v, PROVEN);
-        out.fact(lo, hi, "unit", json!({"tu": unit, "lib": lib}), PROVEN);
+        out.claim(lo, hi, "symbol", v, REPRODUCED);
+        out.claim(lo, hi, "unit", json!({"tu": unit, "lib": lib}), REPRODUCED);
         for (value, name) in named {
             let a = lo + value as i64;
-            out.fact(a, a + 1, "name", json!({"name": name, "origin": "lib", "unit": unit}), PROVEN);
+            out.claim(a, a + 1, "name", json!({"name": name, "origin": "lib", "unit": unit}), REPRODUCED);
         }
     }
     Ok(())
@@ -471,8 +471,8 @@ pub fn s_thunk(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let at: HashSet<i64> = cands.iter().map(|c| c.0).collect();
     for (va, name) in cands {
         if first_lib.is_some_and(|f| va >= f) || (packed && (at.contains(&(va - size)) || at.contains(&(va + size)))) {
-            out.fact(va, va + size, "symbol", json!({"skind": "thunk", "name": name, "extent": "proven"}), DERIVED);
-            out.fact(va, va + 1, "name", json!({"name": format!("thunk:{name}"), "origin": "import"}), DERIVED);
+            out.claim(va, va + size, "symbol", json!({"skind": "thunk", "name": name, "extent": "derived"}), DERIVED);
+            out.claim(va, va + 1, "name", json!({"name": format!("thunk:{name}"), "origin": "import"}), DERIVED);
         }
     }
     Ok(())
@@ -532,7 +532,7 @@ pub fn c_toolchain(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for key in ["compiler", "linker", "cflags"] {
         let reason = decl["reasons"][key].as_str().unwrap_or("");
         if truthy(&decl[key]) && reason.trim().is_empty() {
-            out.conflict("error", "C.toolchain", base, base + 1, format!("target {t}: the {key} declaration has no reason"), &by);
+            out.finding("error", "C.toolchain", base, base + 1, format!("target {t}: the {key} declaration has no reason"), &by);
         }
     }
     let Some(rich) = facts(ctx, db, "toolchain")?.into_iter().next() else { return Ok(()) };
@@ -546,12 +546,12 @@ pub fn c_toolchain(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                                                  c["tool"].as_str().unwrap_or(""), c["count"])).collect::<Vec<_>>().join(", ");
         let d = decl[key].as_str().unwrap_or("");
         if d.is_empty() {
-            out.conflict2("error", "C.toolchain", base, base + 1, format!("target {t}: no {key} declared; the Rich header's {key} candidates: {spelled}"), &by, &rich.by);
+            out.finding2("error", "C.toolchain", base, base + 1, format!("target {t}: no {key} declared; the Rich header's {key} candidates: {spelled}"), &by, &rich.by);
             continue;
         }
         let b = declared_build(d);
         if !cands.iter().any(|c| c["build"].as_i64() == b) {
-            out.conflict2("error", "C.toolchain", base, base + 1,
+            out.finding2("error", "C.toolchain", base, base + 1,
                           format!("target {t}: declared {key} {} names build {}, no {key} entry of the Rich header has it (candidates: {spelled})", py_repr(d),
                                   b.map(|b| b.to_string()).unwrap_or_else(|| "None".into())), &by, &rich.by);
         }
@@ -568,7 +568,7 @@ pub fn s2_rich_members(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> 
     let members: HashSet<String> = facts(ctx, db, "unit")?.iter().filter_map(|f| f.s("tu").map(|s| s.to_string())).collect();
     let counted: i64 = rich.value["compilers"].as_array().into_iter().flatten().filter(|c| c["build"].as_i64() != Some(b)).filter_map(|c| c["count"].as_i64()).sum();
     if counted != 0 && (members.len() as i64) < counted {
-        out.conflict("warn", "S2", img.base as i64, img.base as i64 + 1,
+        out.finding("warn", "S2", img.base as i64, img.base as i64 + 1,
                      format!("Rich header counts {counted} library objects (compiler entries of other builds than {b}), {} members placed", members.len()), "");
     }
     Ok(())
@@ -626,7 +626,7 @@ mod tests {
         let (rows, c) = k.run("S.crt.code", &["S.relocs"], &x);
         assert!(c.is_empty());
         let t = (BASE + TEXT) as i64;
-        assert_eq!(of(&rows, "symbol"), vec![(t, t + 0x20, json!({"skind": "func", "name": "_f1", "extent": "proven", "unit": "lib:LIBC.LIB/f1.obj"}))]);
+        assert_eq!(of(&rows, "symbol"), vec![(t, t + 0x20, json!({"skind": "func", "name": "_f1", "extent": "reproduced", "unit": "lib:LIBC.LIB/f1.obj"}))]);
         assert_eq!(of(&rows, "unit")[0].2, json!({"tu": "lib:LIBC.LIB/f1.obj", "lib": "LIBC.LIB"}));
         assert_eq!(of(&rows, "name")[0].2, json!({"name": "_f1", "origin": "lib", "unit": "lib:LIBC.LIB/f1.obj"}));
         k.record("S.crt.code", &["S.relocs"], &x);

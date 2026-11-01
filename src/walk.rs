@@ -569,41 +569,41 @@ pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         let (walked, table) = w.counts(r, r, e);
         let holes = (e - r) as i64 - walked - table;
-        out.fact(r as i64, r as i64 + 1, "start", json!({"skind": "func", "how": how}), level_of(Some(r)));
+        out.claim(r as i64, r as i64 + 1, "start", json!({"skind": "func", "how": how}), level_of(Some(r)));
         let mut v = json!({"skind": "func", "extent": "derived", "walked": walked, "holes": holes});
         let labels: Vec<u32> = inner.iter().filter(|(_, o)| **o == r).map(|(&t, _)| t).collect();
         if !labels.is_empty() {
             v["inner"] = json!(labels);
         }
-        out.fact(r as i64, e as i64, "symbol", v, level_of(Some(r)));
+        out.claim(r as i64, e as i64, "symbol", v, level_of(Some(r)));
     }
     for &(tlo, thi, owner, sk) in &w.tables {
         if thi > tlo {
-            out.fact(tlo as i64, thi as i64, "symbol", json!({"skind": sk, "extent": "derived", "fn": owner}), level_of(Some(owner)));
+            out.claim(tlo as i64, thi as i64, "symbol", json!({"skind": sk, "extent": "derived", "fn": owner}), level_of(Some(owner)));
         }
     }
     for (&t, sites) in &w.calls {
         for &s in sites {
-            out.fact(s as i64, (s + w.call_size[&s]) as i64, "ref", json!({"rkind": "call", "to": t}), level_of(owner_at(s)));
+            out.claim(s as i64, (s + w.call_size[&s]) as i64, "ref", json!({"rkind": "call", "to": t}), level_of(owner_at(s)));
         }
     }
     for (table, rk) in [(&w.tails, "tail"), (&w.imms, "immediate")] {
         for (&t, sites) in table {
             for &s in sites {
-                out.fact(s as i64, s as i64 + 1, "ref", json!({"rkind": rk, "to": t}), level_of(owner_at(s)));
+                out.claim(s as i64, s as i64 + 1, "ref", json!({"rkind": rk, "to": t}), level_of(owner_at(s)));
             }
         }
     }
     let mut seen = HashSet::new();
     for &(site, size, target, osize) in &w.operands {
         if seen.insert((site, target)) {
-            out.fact(site as i64, (site + size) as i64, "ref", json!({"rkind": "operand", "to": target, "size": osize}), level_of(owner_at(site)));
+            out.claim(site as i64, (site + size) as i64, "ref", json!({"rkind": "operand", "to": target, "size": osize}), level_of(owner_at(site)));
         }
     }
     let overlaps: BTreeSet<(u32, u32, u32)> = w.overlaps.iter().copied().collect();
     for (owner, addr, other) in overlaps {
         let how = roots.get(&owner).map(|s| s.as_str()).unwrap_or("inner");
-        out.conflict2("error", "C.walk", addr as i64, addr as i64 + 1,
+        out.finding2("error", "C.walk", addr as i64, addr as i64 + 1,
                       format!("the walk from {owner:#x} ({how}) runs into bytes owned by {other:#x}: one start is wrong"),
                       &format!("start:{owner:#x}"), &format!("start:{other:#x}"));
     }
@@ -658,7 +658,7 @@ pub fn l_src_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for r in found {
         for (site, size, rk, to, osize) in r.map_err(err)? {
             let v = if rk == "operand" { json!({"rkind": rk, "to": to, "size": osize}) } else { json!({"rkind": rk, "to": to}) };
-            out.fact(site as i64, (site + size) as i64, "ref", v, DECLARED);
+            out.claim(site as i64, (site + size) as i64, "ref", v, DECLARED);
         }
     }
     Ok(())
@@ -751,7 +751,7 @@ pub(crate) mod tests {
         let k = Kit::new(&build(None));
         let (t, d) = ((BASE + TEXT) as i64, (BASE + DATA) as i64);
         k.put("S.exports", &[(t, t + 1, "start", json!({"skind": "func", "how": "export"}), DERIVED)]);
-        let relocs: Vec<(i64, i64, &str, serde_json::Value, i64)> = [(t + 0x21, d), (t + 0x31, d + 0x10), (t + 0x36, d + 0x30), (t + 0x51, d + 0x38), (d + 0x40, t + 0x50)]
+        let relocs: Vec<(i64, i64, &str, serde_json::Value, crate::store::Support)> = [(t + 0x21, d), (t + 0x31, d + 0x10), (t + 0x36, d + 0x30), (t + 0x51, d + 0x38), (d + 0x40, t + 0x50)]
             .iter().map(|&(s, to)| (s, s + 4, "ref", json!({"rkind": "reloc", "to": to}), DERIVED)).collect();
         k.put("S.relocs", &relocs);
         let ctx = Ctx { capstone: capstone(), ..k.ctx("S.codewalk", &["S.exports", "S.relocs"], r#"{"toolchain": "vc6"}"#) };
@@ -774,12 +774,12 @@ pub(crate) mod tests {
         let t = (BASE + TEXT) as i64;
         let d = (BASE + DATA) as i64;
         k.put("L.src.extent", &[(t + 0x20, t + 0x26, "symbol", json!({"skind": "func", "extent": "source"}), crate::store::DECLARED)]);
-        k.put("M.match", &[(t + 0x30, t + 0x3e, "symbol", json!({"skind": "func", "extent": "matched"}), crate::store::PROVEN)]);
+        k.put("M.match", &[(t + 0x30, t + 0x3e, "symbol", json!({"skind": "func", "extent": "matched"}), crate::store::REPRODUCED)]);
         k.put("S.codewalk", &[(t + 0x30, t + 0x3e, "symbol", json!({"skind": "func", "extent": "derived"}), DERIVED)]);
         let ctx = Ctx { capstone: capstone(), ..k.ctx("L.src.refs", &["L.src.extent", "M.match", "S.codewalk"], r#"{"toolchain": "vc6"}"#) };
         let (rows, _) = dispatch(&ctx).unwrap().sorted();
-        let refs: Vec<(i64, i64, serde_json::Value, i64)> = rows.iter().filter(|r| r.kind == "ref")
-            .map(|r| (r.lo - t, r.hi - t, serde_json::from_str(&r.value).unwrap(), r.level)).collect();
+        let refs: Vec<(i64, i64, serde_json::Value, crate::store::Support)> = rows.iter().filter(|r| r.kind == "ref")
+            .map(|r| (r.lo - t, r.hi - t, serde_json::from_str(&r.value).unwrap(), r.support)).collect();
         assert_eq!(refs, [(0x20, 0x25, json!({"rkind": "operand", "to": d, "size": 4}), crate::store::DECLARED)]);
     }
 }

@@ -40,7 +40,7 @@ fn units_from_decl_and_sources() {
     names.sort();
     assert_eq!(names, [("counter".to_string(), 0x10002000), ("get".to_string(), 0x10001020)]);
     let src = facts(&t, "source", None);
-    assert!(!src.is_empty() && src.iter().all(|f| f.level == DECLARED && f.by.starts_with("src:") && f.reason.as_deref().is_some_and(|r| !r.is_empty())));
+    assert!(!src.is_empty() && src.iter().all(|f| f.support == DECLARED && f.by.starts_with("src:") && f.reason.as_deref().is_some_and(|r| !r.is_empty())));
     // an end boundary separates it
     let (code, out) = dcp(&t, &["decl", "add", "0x10001050 boundary end tu=net -- f4 is reached only through data"]);
     assert_eq!(code, 0, "{out}");
@@ -114,8 +114,8 @@ fn ghidra_analyzer() {
     let (code, out) = dcp(&t, &["setup"]);
     assert!(code == 0 && out.contains("analyzer=ghidra  exported=1  failed=1"), "{out}");
     assert!(out.contains("analyzer=ghidra  drafts=1  export=up-to-date"), "{out}");
-    let starts: Vec<(i64, i64, Option<String>, String)> = facts(&t, "start", None).iter().filter(|s| s.value["how"] == "ghidra")
-        .map(|s| (s.lo, s.level, s.reason.clone(), s.by.clone())).collect();
+    let starts: Vec<(i64, crate::store::Support, Option<String>, String)> = facts(&t, "start", None).iter().filter(|s| s.value["how"] == "ghidra")
+        .map(|s| (s.lo, s.support, s.reason.clone(), s.by.clone())).collect();
     assert_eq!(starts, [(0x10001050, DECLARED, Some("ghidra analysis".to_string()), "decl:analyzer:ghidra:export.json".to_string())]);
     let (code, out) = dcp(&t, &["setup"]);
     assert!(code == 0 && !out.contains("exported="), "{out}"); // the same image, script and starts: nothing runs

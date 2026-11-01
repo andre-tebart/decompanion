@@ -455,15 +455,15 @@ impl Project {
             "objects" | "probe" | "lint" | "drafts" => {
                 let path = self.store_path();
                 let main = self.main_uri();
-                crate::pystore::st_open(&path, &main).map_err(|e| e.to_string())?;
-                let meta = |k: &str| crate::pystore::st_meta(&path, k).map_err(|e| e.to_string()).map(|v| v.unwrap_or_default());
+                crate::storedb::st_open(&path, &main).map_err(|e| e.to_string())?;
+                let meta = |k: &str| crate::storedb::st_meta(&path, k).map_err(|e| e.to_string()).map(|v| v.unwrap_or_default());
                 match name {
                     "objects" => {
-                        let tu = crate::pystore::tu_hash(&path).map_err(|e| e.to_string())?;
+                        let tu = crate::storedb::tu_hash(&path).map_err(|e| e.to_string())?;
                         sha256_parts(&[tu.as_str(), if self.toolchain_available() { "True" } else { "False" }])
                     }
                     "drafts" => {
-                        let m = crate::pystore::st_main_meta(&path, &main, "drafts").map_err(|e| e.to_string())?.unwrap_or_default();
+                        let m = crate::storedb::st_main_meta(&path, &main, "drafts").map_err(|e| e.to_string())?.unwrap_or_default();
                         sha256_parts(&[m, meta("drafts")?])
                     }
                     k => sha256_parts(&[meta(k)?]),

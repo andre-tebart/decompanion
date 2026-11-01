@@ -3,7 +3,7 @@
 use crate::error::Result;
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
-use crate::store::{self, canon, SFact};
+use crate::store::{self, canon, Claim};
 use crate::vc6::{LinkJob, Tools};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -73,8 +73,8 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    fn facts(&self, kind: &str) -> Result<Vec<Rc<SFact>>, String> {
-        crate::with_db(&self.db, |c| store::facts_of(c, &self.db, kind, None, |_| true)).map_err(|e| e.to_string())
+    fn facts(&self, kind: &str) -> Result<Vec<Rc<Claim>>, String> {
+        crate::with_db(&self.db, |c| store::claims_of(c, &self.db, kind, None, |_| true)).map_err(|e| e.to_string())
     }
 
     /// Where an archive of the link may come from: the project's libs/, then the toolchain's library directories.
@@ -349,7 +349,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let t0 = std::time::Instant::now();
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let target = p.target(None)?.clone();
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let x = Ctx { p, root: root.clone(), db: db.clone(), img: img.clone(), tools: Tools::of(p) };
@@ -362,7 +362,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let tus = crate::compile::tu_rows(&db).map_err(|e| e.to_string())?;
     let mut builds = x.facts("build")?;
     builds.sort_by(|a, b| (a.lo, a.s("tu")).cmp(&(b.lo, b.s("tu"))));
-    let ok = |f: &SFact| f.value.get("ok").and_then(|v| v.as_bool()) == Some(true);
+    let ok = |f: &Claim| f.value.get("ok").and_then(|v| v.as_bool()) == Some(true);
     let failed: Vec<&str> = builds.iter().filter(|f| !ok(f)).filter_map(|f| f.s("tu")).collect();
     if !failed.is_empty() {
         rep.errors.push(format!("units that do not compile: {}", failed.join(", ")));
@@ -563,7 +563,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
 #[cfg(test)]
 pub fn link_classify(p: &crate::project::Project, names: Vec<String>) -> Result<Vec<(String, Vec<String>)>> {
     let db = p.store_path();
-    crate::pystore::st_open(&db, &p.main_uri())?;
+    crate::storedb::st_open(&db, &p.main_uri())?;
     let target = p.target(None).map_err(crate::error::Error::runtime)?;
     let img = crate::image(&target.path)?;
     let x = Ctx { p, root: p.root.to_string_lossy().into_owned(), db, img, tools: Tools::of(p) };

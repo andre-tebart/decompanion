@@ -976,7 +976,7 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if to != 0 {
             v["to"] = json!(to);
         }
-        out.fact(lo, hi, "evidence", v, DERIVED);
+        out.claim(lo, hi, "evidence", v, DERIVED);
     }
     Ok(())
 }
@@ -1031,7 +1031,7 @@ mod tests {
         let (c, fns) = code();
         let k = Kit::new(&build_with(None, Some(&c)));
         let t = (BASE + TEXT) as i64;
-        let syms: Vec<(i64, i64, &str, serde_json::Value, i64)> =
+        let syms: Vec<(i64, i64, &str, serde_json::Value, crate::store::Support)> =
             fns.iter().map(|&(a, b)| (t + a as i64, t + b as i64, "symbol", json!({"skind": "func", "extent": "derived"}), DERIVED)).collect();
         k.put("S.codewalk", &syms);
         std::fs::create_dir_all(k.dir.join("decl")).unwrap();

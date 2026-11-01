@@ -35,7 +35,7 @@ use crate::clang::{Decl, FileModel};
 use crate::project::{py_path, Project};
 use crate::readability::Source;
 use crate::srcscan::{py_space, py_strip};
-use crate::store::{self, SFact};
+use crate::store::{self, Claim};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -50,7 +50,6 @@ const C_WORDS: &[&str] = &["auto", "break", "case", "char", "const", "continue",
                            "float", "for", "goto", "if", "int", "long", "register", "return", "short", "signed", "sizeof", "static",
                            "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "__int8", "__int16",
                            "__int32", "__int64", "__cdecl", "__stdcall", "__fastcall", "__declspec"];
-const LEVEL: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 static IDENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z_]\w*").unwrap());
 
@@ -82,7 +81,7 @@ pub struct DataDef {
     pub kind: String, // def | extern
     pub addr: i64,
     pub statik: bool,
-    pub level: String,   // proven / declared, from the `global` symbol at addr
+    pub level: String,   // the support of the `global` symbol at addr (reproduced / declared)
     pub extent: String,  // site / content / draft
     pub section: String, // data / rdata / bss / common, the object's section kind
     pub size: Option<i64>,
@@ -91,7 +90,7 @@ pub struct DataDef {
     pub warnings: Vec<(String, String)>,  // (check, message) of the warnings at it
 }
 
-fn vstr(f: &SFact, k: &str) -> String {
+fn vstr(f: &Claim, k: &str) -> String {
     match f.value.get(k) {
         None | Some(serde_json::Value::Null) => "-".into(),
         Some(serde_json::Value::String(x)) => x.clone(),
@@ -116,8 +115,8 @@ pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataD
     }
     let img = crate::image(&p.target(None).map_err(err)?.path)?;
     let code: Vec<(i64, i64)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va as i64, s.end() as i64)).collect();
-    let syms = crate::with_db(&db, |c| store::facts_of(c, &db, "symbol", None, |_| true))?;
-    let mut glob: HashMap<i64, Rc<SFact>> = HashMap::new();
+    let syms = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |_| true))?;
+    let mut glob: HashMap<i64, Rc<Claim>> = HashMap::new();
     let mut starts: BTreeSet<i64> = BTreeSet::new();
     for f in syms.iter() {
         let sk = f.s("skind");
@@ -130,14 +129,14 @@ pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataD
         }
     }
     let mut by_addr: HashMap<i64, Vec<(String, String, String, String)>> = HashMap::new();
-    for (sev, check, lo, _, msg, a, _) in crate::pystore::st_conflicts(&db, None, None)? {
+    for (sev, check, lo, _, msg, a, _) in crate::storedb::st_conflicts(&db, None, None)? {
         if CHECKS.contains(&check.as_str()) || check == "M.data.content" {
             by_addr.entry(lo).or_default().push((sev, check, msg, a));
         }
     }
     for d in &mut out {
         if let Some(g) = glob.get(&d.addr).filter(|_| d.kind == "def") {
-            d.level = LEVEL[g.level as usize].into();
+            d.level = g.support.name().into();
             d.extent = vstr(g, "extent");
             d.section = vstr(g, "kind");
             d.size = (g.s("extent") != Some("draft") || g.hi - g.lo > 1).then_some(g.hi - g.lo);
@@ -668,12 +667,12 @@ fn apply(files: &mut Files, edits: &[&Edit]) -> BTreeMap<String, Vec<char>> {
 
 /// address -> unit of every function graded byte.
 fn byte_functions(db: &str) -> Result<HashMap<i64, String>> {
-    let fs = crate::with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("function") && f.s("code") == Some("byte")))?;
+    let fs = crate::with_db(db, |c| store::claims_of(c, db, "grade", None, |f| f.s("of") == Some("function") && f.s("code") == Some("byte")))?;
     Ok(fs.iter().map(|f| (f.lo, f.s("unit").unwrap_or("").to_string())).collect())
 }
 
 fn failed_units(db: &str) -> Result<BTreeSet<String>> {
-    let fs = crate::with_db(db, |c| store::facts_of(c, db, "build", None, |f| f.value.get("ok").and_then(|v| v.as_bool()) == Some(false)))?;
+    let fs = crate::with_db(db, |c| store::claims_of(c, db, "build", None, |f| f.value.get("ok").and_then(|v| v.as_bool()) == Some(false)))?;
     Ok(fs.iter().map(|f| f.s("tu").unwrap_or("").to_string()).collect())
 }
 
@@ -691,7 +690,7 @@ struct Trial<'a> {
     units: HashMap<String, crate::plan::Tu>,
     relocs: Option<Vec<u32>>,
     starts: Vec<u32>,
-    sources: HashMap<String, Vec<Rc<SFact>>>,
+    sources: HashMap<String, Vec<Rc<Claim>>>,
     byte: HashMap<String, HashSet<i64>>,
     forms: Vec<Vec<u8>>,
 }
@@ -710,11 +709,11 @@ impl<'a> Trial<'a> {
         let img = crate::image(&p.target(None).map_err(err)?.path)?;
         let units = crate::plan::plan(p).map_err(err)?.iter().map(|t| (t.unit.clone(), t.clone())).collect();
         let (relocs, starts, srcs) = crate::with_db(&db, |c| {
-            let los = |kind: &str, keep: &dyn Fn(&SFact) -> bool| store::facts_of(c, &db, kind, None, keep).map(|fs| fs.iter().map(|f| f.lo).collect::<Vec<i64>>());
+            let los = |kind: &str, keep: &dyn Fn(&Claim) -> bool| store::claims_of(c, &db, kind, None, keep).map(|fs| fs.iter().map(|f| f.lo).collect::<Vec<i64>>());
             let relocs = los("ref", &|f| f.s("rkind") == Some("reloc"));
             let mut starts: Vec<i64> = los("start", &|_| true)?;
-            starts.extend(los("symbol", &|f| matches!(f.s("skind"), Some("func" | "thunk")) && f.level > store::OPEN)?);
-            let srcs = store::facts_of(c, &db, "source", None, |f| &*f.rule == "L.src" && f.s("what") == Some("func"))?;
+            starts.extend(los("symbol", &|f| matches!(f.s("skind"), Some("func" | "thunk")) && f.support > store::OPEN)?);
+            let srcs = store::claims_of(c, &db, "source", None, |f| &*f.rule == "L.src" && f.s("what") == Some("func"))?;
             Ok((relocs?, starts, srcs))
         })?;
         let mut relocs: Vec<u32> = relocs.into_iter().map(|x| x as u32).collect();
@@ -724,7 +723,7 @@ impl<'a> Trial<'a> {
         starts.extend(img.sections.iter().filter(|s| s.holds_code()).map(|s| s.end()));
         starts.sort_unstable();
         starts.dedup();
-        let mut sources: HashMap<String, Vec<Rc<SFact>>> = HashMap::new();
+        let mut sources: HashMap<String, Vec<Rc<Claim>>> = HashMap::new();
         for f in srcs.iter() {
             sources.entry(f.s("unit").unwrap_or("").to_string()).or_default().push(f.clone());
         }
@@ -883,7 +882,7 @@ fn scan_of(p: &Project) -> Result<Rc<crate::frontend::Scan>> {
 
 /// `dcp data map [UNIT]`: (the lines, the exit status).
 pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool) -> Result<(Vec<String>, i32)> {
-    crate::pystore::st_open(&p.store_path(), &p.main_uri())?;
+    crate::storedb::st_open(&p.store_path(), &p.main_uri())?;
     let model = data_model(p, &*scan_of(p)?)?;
     let mut out = vec![];
     let Some(unit) = unit.filter(|u| !u.is_empty()) else {
@@ -910,7 +909,7 @@ pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool
             out.push(format!("  {}", record(&[("unit", s(u)), ("defs", Tok::I(defs.len() as i64)),
                                               ("externs", Tok::I(ds.iter().filter(|d| d.kind == "extern").count() as i64)), ("data", Tok::I(sec("data"))),
                                               ("rdata", Tok::I(sec("rdata"))), ("bss", Tok::I(sec("bss"))), ("common", Tok::I(sec("common"))),
-                                              ("proven", Tok::I(defs.iter().filter(|d| d.level == "proven").count() as i64)),
+                                              ("reproduced", Tok::I(defs.iter().filter(|d| (d.level == "reproduced" || d.level == "observed")).count() as i64)),
                                               ("conflicts", if checks.is_empty() { Tok::No } else { s(checks) })])));
         }
         return Ok((out, 0));

@@ -3,10 +3,10 @@
 //! units' compile keys, and the materialised byte map. The connection is the core's (the one the native rules
 //! use); a worktree's store reads the main checkout's store through an overlay (main_store, read-only).
 //!
-//! Facts come back as the core's SFact values (store.rs holds the facts of the current runs).
+//! Claims come back as the core's Claim values (store.rs holds the facts of the current runs).
 
 use crate::error::{Error, Result};
-use crate::store::{self, py_float, SFact, SCHEMA, SCHEMA_VERSION};
+use crate::store::{self, py_float, Claim, SCHEMA, SCHEMA_VERSION};
 use crate::{hash_parts, with_db};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -33,23 +33,23 @@ thread_local! {
     static MAPS: RefCell<HashMap<(String, i64, u64), bool>> = RefCell::new(HashMap::new());
 }
 
-fn row_fact(r: &rusqlite::Row) -> rusqlite::Result<(String, SFact)> {
+fn row_fact(r: &rusqlite::Row) -> rusqlite::Result<(String, Claim)> {
     let text: String = r.get(5)?;
-    Ok((r.get(4)?, SFact {
+    Ok((r.get(4)?, Claim {
         id: r.get(0)?, rule: Rc::from(r.get::<_, String>(1)?.as_str()), lo: r.get(2)?, hi: r.get(3)?,
-        value: serde_json::from_str(&text).unwrap_or(Value::Null), text, level: r.get(6)?, by: r.get(7)?, reason: r.get(8)?,
+        value: serde_json::from_str(&text).unwrap_or(Value::Null), text, support: r.get(6)?, by: r.get(7)?, reason: r.get(8)?,
     }))
 }
 
-/// Facts of current runs, optionally of one kind, intersecting [lo, hi), produced by the given rules: (kind,
+/// Claims of current runs, optionally of one kind, intersecting [lo, hi), produced by the given rules: (kind,
 /// fact), sorted by (lo, hi, kind, value).
-pub fn st_facts(path: &str, kind: Option<&str>, lo: Option<i64>, hi: Option<i64>, rules: Option<&[String]>) -> Result<Vec<(String, Rc<SFact>)>> {
+pub fn st_facts(path: &str, kind: Option<&str>, lo: Option<i64>, hi: Option<i64>, rules: Option<&[String]>) -> Result<Vec<(String, Rc<Claim>)>> {
     let rules = rules.filter(|r| !r.is_empty());
     if let (Some(kind), None, None) = (kind, lo, hi) {
-        let facts = with_db(path, |db| store::facts_of(db, path, kind, rules, |_| true))?;
+        let facts = with_db(path, |db| store::claims_of(db, path, kind, rules, |_| true))?;
         return Ok(facts.iter().map(|f| (kind.to_string(), f.clone())).collect());
     }
-    let mut q = String::from("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f \n                              JOIN run r ON r.id = f.run_id WHERE r.current=1");
+    let mut q = String::from("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.support, f.by, f.reason FROM claim f \n                              JOIN run r ON r.id = f.run_id WHERE r.current=1");
     let mut args: Vec<rusqlite::types::Value> = vec![];
     if let Some(k) = kind {
         q.push_str(" AND f.kind=?");
@@ -68,7 +68,7 @@ pub fn st_facts(path: &str, kind: Option<&str>, lo: Option<i64>, hi: Option<i64>
         args.extend(rules.iter().map(|r| r.clone().into()));
     }
     q.push_str(" ORDER BY f.lo, f.hi, f.kind, f.value");
-    let rows: Vec<(String, SFact)> = with_db(path, |db| {
+    let rows: Vec<(String, Claim)> = with_db(path, |db| {
         let mut st = db.prepare(&q)?;
         let rows = st.query_map(rusqlite::params_from_iter(args.iter()), row_fact)?;
         rows.collect()
@@ -78,15 +78,15 @@ pub fn st_facts(path: &str, kind: Option<&str>, lo: Option<i64>, hi: Option<i64>
 
 /// The fact of a row id (None when there is none): (kind, fact).
 #[cfg(test)]
-pub fn st_fact(path: &str, fid: i64) -> Result<Option<(String, SFact)>> {
+pub fn st_fact(path: &str, fid: i64) -> Result<Option<(String, Claim)>> {
     with_db(path, |db| {
-        db.query_row("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f \n                      JOIN run r ON r.id=f.run_id WHERE f.id=?", [fid], row_fact).optional()
+        db.query_row("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.support, f.by, f.reason FROM claim f \n                      JOIN run r ON r.id=f.run_id WHERE f.id=?", [fid], row_fact).optional()
     })
 }
 
 /// Store.conflicts: (severity, check, lo, hi, message, a, b) of current runs (of the given rules), by address.
 pub fn st_conflicts(path: &str, severity: Option<String>, rules: Option<Vec<String>>) -> Result<Vec<(String, String, i64, i64, String, String, String)>> {
-    let mut q = String::from("SELECT c.severity, c.check_id, c.lo, c.hi, c.message, c.a, c.b FROM conflict c JOIN run r ON r.id=c.run_id \
+    let mut q = String::from("SELECT c.severity, c.check_id, c.lo, c.hi, c.message, c.a, c.b FROM finding c JOIN run r ON r.id=c.run_id \
                               WHERE r.current=1");
     let mut args: Vec<String> = vec![];
     if let Some(s) = severity.filter(|s| !s.is_empty()) {
@@ -109,17 +109,24 @@ pub fn st_conflicts(path: &str, severity: Option<String>, rules: Option<Vec<Stri
 
 // ------------------------------------------------------------------------------------------------ open, meta, runs
 
-/// Open (or create) the store at path: the tables when the schema version differs, an error for a store of
-/// another schema; the main checkout's store attached when `main` (a file: URI) is given.
+/// Open (or create) the store at path: the tables when the schema version differs; a store of schema 1 (facts,
+/// conflicts, the byte map) loses its runs, which every rule recomputes, and keeps what is no rule's output (the
+/// compiled units, the analyzer's drafts and other blobs); an error for a store of an unknown schema. The main
+/// checkout's store attached when `main` (a file: URI) is given.
 pub fn st_open(path: &str, main: &str) -> Result<()> {
     if let Some(d) = std::path::Path::new(path).parent() {
         std::fs::create_dir_all(d).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
     }
     let v = with_db(path, |db| {
-        let v: Option<String> = match db.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r.get(0)).optional() {
+        let mut v: Option<String> = match db.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r.get(0)).optional() {
             Ok(v) => v,
             Err(_) => None, // a new store: no meta table yet
         };
+        if v.as_deref() == Some("1") {
+            db.execute_batch("DROP TABLE IF EXISTS fact; DROP TABLE IF EXISTS conflict; DROP TABLE IF EXISTS bytemap; DELETE FROM run;
+                              DELETE FROM meta WHERE key IN ('bytemap', 'schema');")?;
+            v = None;
+        }
         if v.as_deref() != Some(SCHEMA_VERSION) {
             db.execute_batch(SCHEMA)?;
         }
@@ -197,10 +204,10 @@ pub(crate) fn make_current(db: &Connection, main: &str, rule: &str, place: &str,
         db.execute("INSERT INTO run (rule, version, code_hash, input_hash, out_hash, ms, at) \
                     SELECT rule, version, code_hash, input_hash, out_hash, ms, at FROM main_store.run WHERE id=?", [run_id])?;
         let new_id = db.last_insert_rowid();
-        db.execute("INSERT INTO fact (run_id, lo, hi, kind, value, level, by, reason) \
-                    SELECT ?, lo, hi, kind, value, level, by, reason FROM main_store.fact WHERE run_id=?", [new_id, run_id])?;
-        db.execute("INSERT INTO conflict (run_id, severity, check_id, lo, hi, message, a, b) \
-                    SELECT ?, severity, check_id, lo, hi, message, a, b FROM main_store.conflict WHERE run_id=?", [new_id, run_id])?;
+        db.execute("INSERT INTO claim (run_id, lo, hi, kind, value, support, by, reason) \
+                    SELECT ?, lo, hi, kind, value, support, by, reason FROM main_store.claim WHERE run_id=?", [new_id, run_id])?;
+        db.execute("INSERT INTO finding (run_id, severity, check_id, lo, hi, message, a, b) \
+                    SELECT ?, severity, check_id, lo, hi, message, a, b FROM main_store.finding WHERE run_id=?", [new_id, run_id])?;
         run_id = new_id;
     }
     db.execute("UPDATE run SET current=0 WHERE rule=? AND id<>?", params![rule, run_id])?;
@@ -211,7 +218,7 @@ pub(crate) fn make_current(db: &Connection, main: &str, rule: &str, place: &str,
 /// (facts, ms) of a run.
 pub fn st_run_stats(path: &str, run_id: i64) -> Result<(i64, i64)> {
     with_db(path, |db| {
-        let n: i64 = db.query_row("SELECT COUNT(*) FROM fact WHERE run_id=?", [run_id], |r| r.get(0))?;
+        let n: i64 = db.query_row("SELECT COUNT(*) FROM claim WHERE run_id=?", [run_id], |r| r.get(0))?;
         let ms: i64 = db.query_row("SELECT ms FROM run WHERE id=?", [run_id], |r| r.get(0)).optional()?.unwrap_or(0);
         Ok((n, ms))
     })
@@ -274,31 +281,31 @@ pub(crate) fn tu_hash(path: &str) -> Result<String> {
 
 // ------------------------------------------------------------------------------------------------ the byte map
 
-type MapRow = (i64, i64, String, i64, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+type MapRow = (i64, i64, String, store::Support, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
 
 /// The fact of one group that owns each cut, cuts visited in address order: among the facts covering the address
-/// the highest level, then the highest lo, then the highest hi (equal keys: the later fact).
+/// the highest support, then the highest lo, then the highest hi (equal keys: the later fact).
 struct Sweep {
-    items: Vec<Rc<SFact>>,
+    items: Vec<Rc<Claim>>,
     i: usize,
-    active: Vec<Rc<SFact>>,
+    active: Vec<Rc<Claim>>,
 }
 
 impl Sweep {
-    fn new(mut items: Vec<Rc<SFact>>) -> Sweep {
+    fn new(mut items: Vec<Rc<Claim>>) -> Sweep {
         items.sort_by_key(|f| (f.lo, f.hi));
         Sweep { items, i: 0, active: vec![] }
     }
 
-    fn at(&mut self, a: i64) -> Option<Rc<SFact>> {
+    fn at(&mut self, a: i64) -> Option<Rc<Claim>> {
         while self.i < self.items.len() && self.items[self.i].lo <= a {
             self.active.push(self.items[self.i].clone());
             self.i += 1;
         }
         self.active.retain(|f| f.hi > a);
-        let mut best: Option<&Rc<SFact>> = None;
+        let mut best: Option<&Rc<Claim>> = None;
         for f in &self.active {
-            if best.is_none_or(|b| (f.level, f.lo, f.hi) >= (b.level, b.lo, b.hi)) {
+            if best.is_none_or(|b| (f.support, f.lo, f.hi) >= (b.support, b.lo, b.hi)) {
                 best = Some(f);
             }
         }
@@ -321,7 +328,7 @@ pub(crate) fn ensure_bytemap(db: &mut Connection, path: &str) -> rusqlite::Resul
         let has = match MAPS.with(|m| m.borrow().get(&key).copied()) {
             Some(h) => h,
             None => {
-                let h = db.query_row("SELECT 1 FROM fact WHERE run_id=? AND kind IN ('section','region','symbol','unit','source') LIMIT 1",
+                let h = db.query_row("SELECT 1 FROM claim WHERE run_id=? AND kind IN ('section','region','symbol','unit','source') LIMIT 1",
                                      [rid], |_| Ok(())).optional()?.is_some();
                 MAPS.with(|m| m.borrow_mut().insert(key, h));
                 h
@@ -334,11 +341,11 @@ pub(crate) fn ensure_bytemap(db: &mut Connection, path: &str) -> rusqlite::Resul
         }
     }
     let h = hash_parts(parts.into_iter());
-    let cur: Option<String> = db.query_row("SELECT value FROM meta WHERE key='bytemap'", [], |r| r.get(0)).optional()?;
+    let cur: Option<String> = db.query_row("SELECT value FROM meta WHERE key='answers'", [], |r| r.get(0)).optional()?;
     if cur.as_deref() == Some(h.as_str()) {
         return Ok(h);
     }
-    let get = |k: &str| store::facts_of(db, path, k, None, |_| true);
+    let get = |k: &str| store::claims_of(db, path, k, None, |_| true);
     let mut symbols = get("symbol")?;
     symbols.extend(get("region")?);
     let (sections, units, sources) = (get("section")?, get("unit")?, get("source")?);
@@ -356,17 +363,17 @@ pub(crate) fn ensure_bytemap(db: &mut Connection, path: &str) -> rusqlite::Resul
             (Some(k), _) => k.as_str().unwrap_or("").to_string(),
             (None, w) => format!("region.{}", w.and_then(|w| w.as_str()).unwrap_or("")),
         };
-        rows.push((a, b, cls, s.level, Some(s.id), u.map(|f| f.id), src.map(|f| f.id), sec.map(|f| f.id)));
+        rows.push((a, b, cls, s.support, Some(s.id), u.map(|f| f.id), src.map(|f| f.id), sec.map(|f| f.id)));
     }
     let tx = db.transaction()?;
-    tx.execute("DELETE FROM bytemap", [])?;
+    tx.execute("DELETE FROM answer", [])?;
     {
-        let mut st = tx.prepare("INSERT INTO bytemap (lo, hi, cls, level, symbol, unit, source, section) VALUES (?,?,?,?,?,?,?,?)")?;
+        let mut st = tx.prepare("INSERT INTO answer (lo, hi, owner, support, symbol, unit, source, section) VALUES (?,?,?,?,?,?,?,?)")?;
         for r in &rows {
             st.execute(params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7])?;
         }
     }
-    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('bytemap', ?)", [&h])?;
+    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('answers', ?)", [&h])?;
     tx.commit()?;
     Ok(h)
 }
@@ -384,7 +391,7 @@ fn map_row(r: &rusqlite::Row) -> rusqlite::Result<MapRow> {
 pub fn st_bytemap_at(path: &str, addr: i64) -> Result<Option<MapRow>> {
     with_db(path, |db| {
         ensure_bytemap(db, path)?;
-        db.query_row("SELECT lo, hi, cls, level, symbol, unit, source, section FROM bytemap WHERE lo<=? ORDER BY lo DESC LIMIT 1", [addr], map_row)
+        db.query_row("SELECT lo, hi, owner, support, symbol, unit, source, section FROM answer WHERE lo<=? ORDER BY lo DESC LIMIT 1", [addr], map_row)
             .optional()
     })
 }
@@ -397,7 +404,41 @@ pub fn st_bytemap_rows(path: &str, lo: Option<i64>, hi: Option<i64>) -> Result<V
 pub(crate) fn bytemap_rows(db: &mut Connection, path: &str, lo: Option<i64>, hi: Option<i64>) -> rusqlite::Result<Vec<MapRow>> {
     ensure_bytemap(db, path)?;
     let (lo, hi) = (lo.unwrap_or(i64::MIN), hi.unwrap_or(i64::MAX));
-    let mut st = db.prepare_cached("SELECT lo, hi, cls, level, symbol, unit, source, section FROM bytemap WHERE hi>? AND lo<? ORDER BY lo")?;
+    let mut st = db.prepare_cached("SELECT lo, hi, owner, support, symbol, unit, source, section FROM answer WHERE hi>? AND lo<? ORDER BY lo")?;
     let rows = st.query_map([lo, hi], map_row)?;
     rows.collect()
+}
+
+#[cfg(test)]
+mod tests {
+    /// A store of schema 1 opens as schema 2: its runs are gone (the rules recompute them), what no rule makes stays.
+    #[test]
+    fn schema_1_store_keeps_its_blobs_and_units() {
+        let dir = std::env::temp_dir().join(format!("dcp-schema1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.sqlite").to_string_lossy().into_owned();
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT); INSERT INTO meta VALUES ('schema', '1'), ('lint', 'x');
+                CREATE TABLE run (id INTEGER PRIMARY KEY, rule TEXT NOT NULL, version TEXT NOT NULL, code_hash TEXT NOT NULL,
+                    input_hash TEXT NOT NULL, out_hash TEXT NOT NULL DEFAULT '', current INTEGER NOT NULL DEFAULT 0,
+                    ms INTEGER NOT NULL DEFAULT 0, at REAL NOT NULL DEFAULT 0, UNIQUE(rule, input_hash));
+                INSERT INTO run (rule, version, code_hash, input_hash, current) VALUES ('S.sections', '1', 'c', 'i', 1);
+                CREATE TABLE fact (id INTEGER PRIMARY KEY, run_id INTEGER, lo INTEGER, hi INTEGER, kind TEXT, value TEXT, level INTEGER, by TEXT, reason TEXT);
+                CREATE TABLE conflict (id INTEGER PRIMARY KEY, run_id INTEGER);
+                CREATE TABLE blob (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, data BLOB NOT NULL);
+                INSERT INTO blob VALUES ('h', 'drafts', x'00');").unwrap();
+        }
+        super::st_open(&path, "").unwrap();
+        let (runs, blobs, schema, lint) = crate::with_db(&path, |c| Ok((
+            c.query_row("SELECT count(*) FROM run", [], |r| r.get::<_, i64>(0))?,
+            c.query_row("SELECT count(*) FROM blob", [], |r| r.get::<_, i64>(0))?,
+            c.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r.get::<_, String>(0))?,
+            c.query_row("SELECT value FROM meta WHERE key='lint'", [], |r| r.get::<_, String>(0))?,
+        ))).unwrap();
+        assert_eq!((runs, blobs, schema.as_str(), lint.as_str()), (0, 1, crate::store::SCHEMA_VERSION, "x"));
+        crate::forget_conn(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

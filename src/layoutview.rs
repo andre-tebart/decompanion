@@ -6,52 +6,51 @@
 
 use crate::error::Result;
 use crate::layout::{self, Bound as Boundary, Issue, Leak, Lit, Unit};
-use crate::store::{self, SFact, OPEN};
+use crate::store::{self, Claim, OPEN};
 use crate::with_db;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
-const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 /// The layout-relevant facts of one store, indexed.
 pub struct View {
     pub(crate) image: String,
-    pub(crate) syms: Vec<Rc<SFact>>,
-    pub(crate) game: (i64, i64, i64),
-    pub(crate) funcs: Vec<Rc<SFact>>,                 // function symbols above open, by (lo, hi)
-    pub(crate) starts: BTreeMap<i64, Vec<Rc<SFact>>>, // addr -> start facts
-    pub(crate) sources: HashMap<i64, Rc<SFact>>,      // addr -> source fact (functions)
-    pub(crate) src_facts: Vec<Rc<SFact>>,
+    pub(crate) syms: Vec<Rc<Claim>>,
+    pub(crate) game: (i64, i64, crate::store::Support),
+    pub(crate) funcs: Vec<Rc<Claim>>,                 // function symbols above open, by (lo, hi)
+    pub(crate) starts: BTreeMap<i64, Vec<Rc<Claim>>>, // addr -> start facts
+    pub(crate) sources: HashMap<i64, Rc<Claim>>,      // addr -> source fact (functions)
+    pub(crate) src_facts: Vec<Rc<Claim>>,
     pub(crate) units: Vec<Unit>,
-    pub(crate) unit_facts: Vec<Rc<SFact>>,
+    pub(crate) unit_facts: Vec<Rc<Claim>>,
     pub(crate) lits: Vec<Lit>,
     pub(crate) leaks: Vec<Leak>,
     pub(crate) fills: HashMap<i64, Value>,            // start -> fill evidence value
     pub(crate) bounds: Vec<Boundary>,
-    pub(crate) refs: Vec<Rc<SFact>>,
+    pub(crate) refs: Vec<Rc<Claim>>,
     pub(crate) drafted: HashSet<i64>,
 }
 
 impl View {
     pub fn load(db: &str, main: &str, image: &str) -> Result<View> {
         let img = crate::image(image)?;
-        let all = |k: &str| with_db(db, |c| store::facts_of(c, db, k, None, |_| true));
-        let syms: Vec<Rc<SFact>> = all("symbol")?.into_iter().filter(|f| !f.rule.starts_with("M.")).collect();
+        let all = |k: &str| with_db(db, |c| store::claims_of(c, db, k, None, |_| true));
+        let syms: Vec<Rc<Claim>> = all("symbol")?.into_iter().filter(|f| !f.rule.starts_with("M.")).collect();
         let libs = layout::lib_starts_of(&syms);
         let (glo, ghi) = layout::game_range(&img, &libs);
         let rs = layout::code_ranges(&img);
         let derived = libs.iter().any(|&a| rs.iter().any(|&(l, h)| l <= a && a < h));
-        let game = (glo, ghi, if derived { store::DERIVED } else { store::PROVEN });
-        let mut funcs: Vec<Rc<SFact>> = syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).cloned().collect();
+        let game = (glo, ghi, if derived { store::DERIVED } else { store::OBSERVED });
+        let mut funcs: Vec<Rc<Claim>> = syms.iter().filter(|f| f.s("skind") == Some("func") && f.support > OPEN).cloned().collect();
         funcs.sort_by_key(|f| (f.lo, f.hi));
-        let mut starts: BTreeMap<i64, Vec<Rc<SFact>>> = BTreeMap::new();
+        let mut starts: BTreeMap<i64, Vec<Rc<Claim>>> = BTreeMap::new();
         for f in all("start")? {
             starts.entry(f.lo).or_default().push(f);
         }
         let src_facts = all("source")?;
         let sources = src_facts.iter().filter(|f| f.s("what") == Some("func")).map(|f| (f.lo, f.clone())).collect();
-        let unit_facts: Vec<Rc<SFact>> = all("unit")?.into_iter().filter(|f| f.value.get("status").is_some()).collect();
+        let unit_facts: Vec<Rc<Claim>> = all("unit")?.into_iter().filter(|f| f.value.get("status").is_some()).collect();
         let units = layout::game_units(&unit_facts);
         let ev = all("evidence")?;
         let fills = ev.iter().filter(|f| f.s("ekind") == Some("fill")).map(|f| (f.lo, f.value.clone())).collect();
@@ -64,7 +63,7 @@ impl View {
 
     /// The game code in address order as (lo, hi, what, fact): func (a function symbol), start (a declared start
     /// inside unknown code), unknown (open bytes no start explains); other symbols skipped.
-    pub(crate) fn items_of(&self) -> Vec<(i64, i64, &'static str, Rc<SFact>)> {
+    pub(crate) fn items_of(&self) -> Vec<(i64, i64, &'static str, Rc<Claim>)> {
         let (glo, ghi, _) = self.game;
         let mut out = vec![];
         for f in &self.syms {
@@ -72,7 +71,7 @@ impl View {
                 continue;
             }
             match f.s("skind") {
-                Some("func") if f.level > OPEN => out.push((f.lo, f.hi, "func", f.clone())),
+                Some("func") if f.support > OPEN => out.push((f.lo, f.hi, "func", f.clone())),
                 Some("unknown.code") => {
                     let mut pos = f.lo;
                     let inner: Vec<i64> = self.starts.range(f.lo..f.hi).map(|(a, _)| *a).collect();
@@ -119,11 +118,11 @@ impl View {
         layout::unit_at(&self.units, a)
     }
 
-    fn unit_fact(&self, u: &Unit) -> Option<&Rc<SFact>> {
+    fn unit_fact(&self, u: &Unit) -> Option<&Rc<Claim>> {
         self.unit_facts.iter().find(|f| f.lo == u.lo && f.s("tu") == Some(u.tu.as_str()))
     }
 
-    pub(crate) fn container(&self, a: i64) -> Option<&Rc<SFact>> {
+    pub(crate) fn container(&self, a: i64) -> Option<&Rc<Claim>> {
         let i = self.funcs.partition_point(|f| f.lo <= a);
         (i > 0 && a < self.funcs[i - 1].hi && self.funcs[i - 1].lo <= a).then(|| &self.funcs[i - 1])
     }
@@ -266,7 +265,7 @@ impl View {
             let nxt = starts_sorted.get(k).copied().unwrap_or(self.game.1);
             let mut lines: Vec<(&'static str, Vec<(&'static str, LVal)>)> = vec![];
             for s in self.starts.get(lo).into_iter().flatten() {
-                lines.push(("start", vec![("how", ls(s.s("how"))), ("level", LVal::S(LEVEL_NAMES[s.level as usize].into())), ("by", LVal::S(s.by.clone()))]));
+                lines.push(("start", vec![("how", ls(s.s("how"))), ("support", LVal::S(s.support.name().into())), ("by", LVal::S(s.by.clone()))]));
             }
             for (site, rk, fnx) in self.callers_of(*lo) {
                 lines.push(("caller", vec![("site", LVal::I(site)), ("rkind", LVal::S(rk)), ("fn", fnx.map(LVal::I).unwrap_or(LVal::Null)),
@@ -310,18 +309,18 @@ impl View {
 
     /// The unit table: one row per game unit (L.unit.extent's facts), by address.
     pub(crate) fn unit_table(&self) -> Vec<Vec<(&'static str, LVal)>> {
-        let mut ufs: Vec<&Rc<SFact>> = self.unit_facts.iter().collect();
+        let mut ufs: Vec<&Rc<Claim>> = self.unit_facts.iter().collect();
         ufs.sort_by_key(|f| f.lo);
         ufs.into_iter().map(|f| {
             let v = &f.value;
             let leaks: BTreeSet<&str> = self.leaks.iter().filter(|l| f.lo <= l.func && l.func < f.hi && !l.header).map(|l| l.path.as_str()).collect();
             let g = |k: &str| LVal::V(v.get(k).cloned().unwrap_or(Value::Null));
             let n = |k: &str| v.get(k).and_then(|x| x.as_i64()).unwrap_or(0);
-            vec![("unit", g("tu")), ("range", LVal::R(f.lo, f.hi)), ("status", g("status")), ("start", g("start_level")), ("end", g("end_level")),
+            vec![("unit", g("tu")), ("range", LVal::R(f.lo, f.hi)), ("status", g("status")), ("start", g("start_support")), ("end", g("end_support")),
                  ("named_by", g("named_by")), ("open_bytes", g("open_bytes")), ("functions", g("functions")), ("sourced", g("sourced")),
                  ("undrafted", LVal::I(n("functions") - n("sourced"))), ("dead_bytes", LVal::I(n("dead_bytes"))), ("walk_conflicts", LVal::I(n("walk_conflicts"))),
                  ("start_by", g("start_by")), ("end_by", g("end_by")), ("leaks", LVal::L(leaks.into_iter().map(|x| x.to_string()).collect())),
-                 ("level", LVal::S(LEVEL_NAMES[f.level as usize].into()))]
+                 ("support", LVal::S(f.support.name().into()))]
         }).collect()
     }
 

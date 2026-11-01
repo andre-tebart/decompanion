@@ -18,7 +18,7 @@
 //! A thunk or slot imported by ordinal takes the analyzer's name for it when there is one.
 
 use crate::error::Result;
-use crate::store::{self, SFact};
+use crate::store::{self, Claim};
 use crate::with_db;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
@@ -46,7 +46,7 @@ pub fn analyzer_placeholder(analyzer: &str, name: &str) -> bool {
 pub fn draft_values(db: &rusqlite::Connection, main: &str) -> rusqlite::Result<Vec<Value>> {
     let mut by_start: std::collections::BTreeMap<i64, Value> = std::collections::BTreeMap::new();
     let mut sources = vec![];
-    if crate::pystore::ensure_main(db, main)? {
+    if crate::storedb::ensure_main(db, main)? {
         sources.push("main_store.blob");
     }
     sources.push("blob");
@@ -71,7 +71,7 @@ pub struct Names {
     pub(crate) at: HashMap<i64, (String, String)>,
     pub(crate) all_at: HashMap<i64, Vec<(String, String)>>,
     pub(crate) by_name: Vec<(String, Vec<i64>)>,
-    syms: Vec<Rc<SFact>>,
+    syms: Vec<Rc<Claim>>,
     image: String,
     db: String,
     /// every data object's (lo, hi) of every rule (the match phase's too), sorted: Names::end_label, loaded on use
@@ -81,8 +81,8 @@ pub struct Names {
 impl Names {
     pub fn build(db_path: &str, main: &str, image: &str) -> Result<Names> {
         let (names, symbols, drafts) = with_db(db_path, |db| {
-            let names = store::facts_of(db, db_path, "name", None, |_| true)?;
-            let symbols = store::facts_of(db, db_path, "symbol", None, |f| !f.rule.starts_with("M."))?;
+            let names = store::claims_of(db, db_path, "name", None, |_| true)?;
+            let symbols = store::claims_of(db, db_path, "symbol", None, |f| !f.rule.starts_with("M."))?;
             Ok((names, symbols, draft_values(db, main)?))
         })?;
         // within an origin, a lib name chosen from an alias set (`_memcpy|_memmove`: members with identical bytes)
@@ -152,7 +152,7 @@ impl Names {
         self.at.get(&a).map(|x| x.0.as_str())
     }
 
-    pub fn symbol_at(&self, a: i64) -> Option<&Rc<SFact>> {
+    pub fn symbol_at(&self, a: i64) -> Option<&Rc<Claim>> {
         let i = self.syms.partition_point(|f| f.lo <= a) as i64 - 1;
         let mut j = i;
         while j >= 0 && j > i - 4 {
@@ -174,7 +174,7 @@ impl Names {
     /// when the code refers to no named object below it (within 1 MB).
     pub fn end_label(&self, a: i64, used: &[i64]) -> Option<String> {
         let objs = self.objects.get_or_init(|| {
-            let fs = with_db(&self.db, |db| store::facts_of(db, &self.db, "symbol", None, |f| f.s("skind") == Some("global"))).unwrap_or_default();
+            let fs = with_db(&self.db, |db| store::claims_of(db, &self.db, "symbol", None, |f| f.s("skind") == Some("global"))).unwrap_or_default();
             let mut v: Vec<(i64, i64)> = fs.iter().map(|f| (f.lo, f.hi)).collect();
             v.sort();
             v.dedup();
