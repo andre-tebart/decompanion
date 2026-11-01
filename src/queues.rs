@@ -22,6 +22,7 @@ use crate::error::{Error, Result};
 use crate::store;
 use crate::with_db;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::rc::Rc;
 use sha1::{Digest, Sha1};
 
@@ -43,12 +44,36 @@ pub fn function_grades(db: &str) -> Result<Rc<Vec<Row>>> {
     store::derived(db, "grades.function", || function_rows(db))
 }
 
-fn function_rows(db: &str) -> Result<Vec<Row>> {
-    let facts = with_db(db, |c| store::claims_of(c, db, "grade", None, |f| f.s("of") == Some("function")))?;
-    let mut out: Vec<Row> = facts.iter().map(|f| {
+/// One grade row of an object: its experiment (`code`: the outcome, `level`: its @deep / @stuck tag, `failing`)
+/// joined with its readability (`readability`, its failing rules appended to `failing`), the experiment's claim at
+/// (lo, hi) by producer.
+fn grade_rows(db: &str, of: &str) -> Result<Vec<(i64, i64, String, Row)>> {
+    let (exps, reads) = with_db(db, |c| Ok((store::claims_of(c, db, "experiment", None, |f| f.s("of") == Some(of))?,
+                                            store::claims_of(c, db, "readability", None, |f| f.s("of") == Some(of))?)))?;
+    let read: HashMap<(i64, i64), &Rc<store::Claim>> = reads.iter().map(|f| ((f.lo, f.hi), f)).collect();
+    Ok(exps.iter().map(|f| {
         let mut m = f.value.as_object().cloned().unwrap_or_default();
-        m.insert("addr".into(), Value::from(f.lo));
-        m.insert("by".into(), Value::String(f.by.clone()));
+        if let Some(o) = m.remove("outcome") {
+            m.insert("code".into(), o);
+        }
+        if let Some(t) = m.remove("tag") {
+            m.insert("level".into(), t);
+        }
+        let r = read.get(&(f.lo, f.hi));
+        m.insert("readability".into(), r.and_then(|r| r.value.get("grade").cloned()).unwrap_or(Value::from("draft")));
+        if let Some(Value::Array(qf)) = r.and_then(|r| r.value.get("failing")) {
+            if let Some(Value::Array(fl)) = m.get_mut("failing") {
+                fl.extend(qf.iter().cloned());
+            }
+        }
+        (f.lo, f.hi, f.by.clone(), m)
+    }).collect())
+}
+
+fn function_rows(db: &str) -> Result<Vec<Row>> {
+    let mut out: Vec<Row> = grade_rows(db, "function")?.into_iter().map(|(lo, _, by, mut m)| {
+        m.insert("addr".into(), Value::from(lo));
+        m.insert("by".into(), Value::String(by));
         m
     }).collect();
     out.sort_by_key(|r| r["addr"].as_i64());
@@ -60,11 +85,9 @@ pub fn unit_grades(db: &str) -> Result<Rc<Vec<Row>>> {
 }
 
 fn unit_rows(db: &str) -> Result<Vec<Row>> {
-    let facts = with_db(db, |c| store::claims_of(c, db, "grade", None, |f| f.s("of") == Some("unit")))?;
-    let mut out: Vec<Row> = facts.iter().map(|f| {
-        let mut m = f.value.as_object().cloned().unwrap_or_default();
-        m.insert("lo".into(), Value::from(f.lo));
-        m.insert("hi".into(), Value::from(f.hi));
+    let mut out: Vec<Row> = grade_rows(db, "unit")?.into_iter().map(|(lo, hi, _, mut m)| {
+        m.insert("lo".into(), Value::from(lo));
+        m.insert("hi".into(), Value::from(hi));
         m
     }).collect();
     out.sort_by_key(|r| r["lo"].as_i64());
@@ -419,10 +442,12 @@ mod tests {
                      (0x2000, "b1", "b", "draft", "draft", "", 50), (0x2100, "b2", "b", "byte", "readable", "", 0),
                      (0x3000, "c1", "c", "shape", "readable", "", 7), (0x3100, "c2", "c", "byte", "draft", "deep", 0),
                      (0x3200, "c3", "c", "draft", "draft", "stuck", 4), (0x4000, "o1", "open", "draft", "draft", "", 1)];
-        let gf: Vec<(i64, i64, &str, Value, crate::store::Support)> = funcs.iter().map(|&(a, n, u, code, q, lvl, d)| {
-            (a, a + 1, "grade", json!({"of": "function", "name": n, "unit": u, "file": format!("src/{u}.c"), "code": code, "readability": q, "level": lvl,
-                                       "failing": [], "dist": {"ins": d, "bytes": d, "size": 1, "orig": 1}}), crate::store::DECLARED)
-        }).collect();
+        let gf: Vec<(i64, i64, &str, Value, crate::store::Support)> = funcs.iter().flat_map(|&(a, n, u, code, q, lvl, d)| [
+            (a, a + 1, "experiment", json!({"of": "function", "name": n, "unit": u, "file": format!("src/{u}.c"), "outcome": code, "tag": lvl,
+                                            "failing": [], "dist": {"ins": d, "bytes": d, "size": 1, "orig": 1}}), crate::store::DECLARED),
+            (a, a + 1, "readability", json!({"of": "function", "name": n, "unit": u, "file": format!("src/{u}.c"), "grade": q, "failing": []}),
+             crate::store::DECLARED),
+        ]).collect();
         k.put("L.unit.extent", &uf);
         k.put("G.grade", &gf);
         let names = |which: &str, shard: Option<(i64, i64)>| -> Vec<(String, String)> {

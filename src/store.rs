@@ -179,8 +179,10 @@ pub enum Role {
     /// φ: an object of H (or of the toolchain's libraries, or a name the image itself holds) at an address of I
     /// (`name`): phi.rs
     Phi,
-    /// an experiment's result over one object (`grade`): experiment.rs
+    /// an experiment's result over one object (`experiment`: G.grade, the outcome byte / shape / draft)
     Experiment,
+    /// H against its own standard (`readability`: G.grade), no claim about I (§9)
+    Readability,
     /// H's build state (`build`: one per unit)
     Build,
     /// a rule's intermediate result, read by other rules (`evidence`)
@@ -190,7 +192,8 @@ pub enum Role {
 pub fn role(kind: &str) -> Role {
     match kind {
         "name" => Role::Phi,
-        "grade" => Role::Experiment,
+        "experiment" => Role::Experiment,
+        "readability" => Role::Readability,
         "build" => Role::Build,
         "evidence" => Role::Aux,
         k => Question::ALL.iter().copied().find(|q| q.kinds().contains(&k)).map(Role::Claim).unwrap_or(Role::Aux),

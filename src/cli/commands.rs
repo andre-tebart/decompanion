@@ -150,8 +150,8 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         }
         Cmd::Grade { what } => {
             let (p, _) = build_target(io, sel, None, true, false)?;
-            let q7 = current_lint(io, &p)?;
-            let (l, e, c) = crate::matchcmd::grade_command(&p, what, &q7)?;
+            let lint = current_lint(io, &p)?;
+            let (l, e, c) = crate::matchcmd::grade_command(&p, what, &lint)?;
             Ok(io.report("grade", &l, e.as_deref(), c))
         }
         Cmd::Next { base, deep, names, n, unit, shard } => {
@@ -437,8 +437,8 @@ fn toolchain_declare(io: &mut Io, sel: &Sel, pairs: Vec<String>, why: Option<Str
 
 // ------------------------------------------------------------------------------------------------ match
 
-/// Lint again when a unit changed since the last lint (only the changed units parse) so Q7 is current; the note on
-/// where Q7 comes from.
+/// Lint again when a unit changed since the last lint (only the changed units parse) so the consistency
+/// calls (M7) are current; the note on where they come from.
 fn current_lint(io: &mut Io, p: &Project) -> Result<String> {
     let (action, note) = crate::matchcmd::lint_plan(p)?;
     if action == "lint" {

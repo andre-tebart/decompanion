@@ -241,7 +241,7 @@ pub enum Cmd {
         #[arg(long)]
         all_targets: bool,
     },
-    /// clang as the declaration checker (M5 / M6 / M7, readability Q7)
+    /// clang as the declaration checker (M5 / M6, and M7: the consistency convention)
     Lint {
         #[arg(long)]
         all_targets: bool,

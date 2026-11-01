@@ -763,6 +763,7 @@ pub fn role_name(kind: &str) -> &'static str {
         crate::store::Role::Claim(q) => q.name(),
         crate::store::Role::Phi => "phi",
         crate::store::Role::Experiment => "experiment",
+        crate::store::Role::Readability => "readability",
         crate::store::Role::Build => "build",
         crate::store::Role::Aux => "aux",
     }

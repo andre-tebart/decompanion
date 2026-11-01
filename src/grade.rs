@@ -1,6 +1,7 @@
-//! G.grade (rules/grade.py keeps the criteria: its module docstring and the rule's): the code grade of every
-//! sourced function from its compare and instruction diff (diffclass.rs), its readability (readability.rs), the
-//! unit grades.
+//! G.grade: per sourced function the object experiment (docs/mental-model.md §4: its outcome byte / shape / draft
+//! from the compare and the instruction diff, diffclass.rs; what failed, B1..B3; the calls the consistency
+//! convention finds without a declaration, M7) as an `experiment` claim, and its readability (§9, readability.rs:
+//! Q1..Q6, Q8) as a `readability` row, kept apart; the same per unit.
 
 use crate::error::{Error, Result};
 use crate::diffclass::{self, Env, Verdict};
@@ -275,12 +276,12 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         } else {
             None
         };
-        let key: FnKey = (name.to_string(), fnv.def, comment, fnv.end, fnv.rough, s.lo, lint.clone());
+        let key: FnKey = (name.to_string(), fnv.def, comment, fnv.end, fnv.rough, s.lo, None);
         let known = fh.verdicts.borrow().get(&key).cloned();
         let (mut q, mut qf) = match known {
             Some(r) => r,
             None => {
-                let r = readability::readability(fh.src.as_ref(), &fnv, s.lo, &cx, lint.as_deref());
+                let r = readability::readability(fh.src.as_ref(), &fnv, s.lo, &cx);
                 fh.verdicts.borrow_mut().insert(key, r.clone());
                 r
             }
@@ -293,20 +294,27 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             }
         }
         let has = |k: &str| v.get(k).is_some_and(|x| !x.is_null());
-        let level = if has("stuck") { "stuck" } else if has("deep") { "deep" } else { "" };
-        let mut failing = r.why.clone();
-        failing.extend(qf);
-        let mut g = json!({"of": "function", "name": v["symbol"], "unit": v["unit"], "file": v["file"], "comment": comment,
-                           "code": r.code, "readability": q, "level": level, "failing": failing, "dist": r.dist});
+        let tag = if has("stuck") { "stuck" } else if has("deep") { "deep" } else { "" };
+        // the experiment: its outcome, what failed (B1..B3), the distance; the calls the consistency convention
+        // (docs/mental-model.md §8.8, M7) finds without a declaration belong to it, not to readability
+        let mut e = json!({"of": "function", "name": v["symbol"], "unit": v["unit"], "file": v["file"], "comment": comment,
+                           "outcome": r.code, "tag": tag, "failing": r.why, "dist": r.dist});
         if r.hunks.as_object().is_some_and(|h| !h.is_empty()) {
-            g["hunks"] = r.hunks.clone();
+            e["hunks"] = r.hunks.clone();
+        }
+        if let Some(calls) = lint.as_ref().filter(|c| !c.is_empty()) {
+            e["consistency"] = json!(calls);
         }
         if has("deep") && has("stuck") {
             out.finding("error", "M2", s.lo, s.lo + 1, format!("{name}: carries both @deep and @stuck"), &s.by);
-        } else if !level.is_empty() && r.code == "byte" && q == "readable" {
-            out.finding("warn", "M2", s.lo, s.lo + 1, format!("{name}: byte + readable, its @{level} tag is stale (dcp build clears it)"), &s.by);
+        } else if !tag.is_empty() && r.code == "byte" && q == "readable" {
+            out.finding("warn", "M2", s.lo, s.lo + 1, format!("{name}: byte + readable, its @{tag} tag is stale (dcp build clears it)"), &s.by);
         }
-        out.claim(s.lo, s.lo + 1, "grade", g, if r.code == "byte" { REPRODUCED } else { DECLARED });
+        // a passing byte experiment reproduces; anything less rests on the address comment
+        out.claim(s.lo, s.lo + 1, "experiment", e, if r.code == "byte" { REPRODUCED } else { DECLARED });
+        // readability: H against its own standard (§9), no claim about I
+        out.claim(s.lo, s.lo + 1, "readability", json!({"of": "function", "name": v["symbol"], "unit": v["unit"], "file": v["file"],
+                                                        "grade": q, "failing": qf}), DECLARED);
         per_unit.entry(unit).or_default().push((r.code.clone(), q));
     }
     FILES.with(|h| *h.borrow_mut() = (files.0, used_files));
@@ -320,8 +328,10 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             Some(n) if n.as_str() != Some("") => n.clone(),
             _ => json!("-"),
         };
-        out.claim(u.lo, u.hi, "grade", json!({"of": "unit", "unit": tu, "code": code, "readability": if readable { "readable" } else { "draft" },
-                                            "functions": fs.len(), "named_by": named_v}), u.support.min(DECLARED));
+        out.claim(u.lo, u.hi, "experiment", json!({"of": "unit", "unit": tu, "outcome": code, "functions": fs.len(), "named_by": named_v}),
+                  u.support.min(DECLARED));
+        out.claim(u.lo, u.hi, "readability", json!({"of": "unit", "unit": tu, "grade": if readable { "readable" } else { "draft" }}),
+                  u.support.min(DECLARED));
     }
     Ok(())
 }

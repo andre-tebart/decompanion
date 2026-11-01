@@ -1,6 +1,7 @@
-//! rules/grade.py's readability rules Q1..Q7 on a function's text (its module docstring is the criterion), over
-//! srcscan.Source's lexing: comments and strings blanked for the code tests. Positions are in characters, as
-//! Python's str offsets are.
+//! Readability (docs/mental-model.md §9): H against its own standard, whatever the original was; no claim about I.
+//! The rules Q1..Q6 and Q8 on a function's text, over srcscan.Source's lexing: comments and strings blanked for
+//! the code tests. Positions are in characters. (Q7, the calls without a declaration, is the consistency
+//! convention of §8.8: the experiment's, grade.rs.)
 
 use regex::Regex;
 use std::collections::HashSet;
@@ -335,7 +336,7 @@ pub struct Context<'a> {
 }
 
 /// grade.readability: (readable | draft, the failing rules) of one function, its file lexed (None: the file is gone).
-pub fn readability(src: Option<&Source>, f: &Fn, addr: i64, cx: &Context, lint: Option<&[String]>) -> (String, Vec<String>) {
+pub fn readability(src: Option<&Source>, f: &Fn, addr: i64, cx: &Context) -> (String, Vec<String>) {
     let Some(s) = src else { return ("draft".into(), vec!["the source is gone".into()]) };
     let Some((sl, sc, e)) = f.def else { return ("draft".into(), vec!["definition not found by the parser".into()]) };
     let off = s.offset(sl, sc);
@@ -410,11 +411,6 @@ pub fn readability(src: Option<&Source>, f: &Fn, addr: i64, cx: &Context, lint: 
     }
     if !cx.described.contains(&addr) {
         fails.push("Q6 described: no text after the address at the definition, nor at the declaration in its owner header (include/<unit>.h)".into());
-    }
-    if let Some(bad) = lint {
-        if !bad.is_empty() {
-            fails.push(format!("Q7 prototypes: {}", bad[..bad.len().min(6)].join(", ")));
-        }
     }
     (if fails.is_empty() { "readable" } else { "draft" }.into(), fails)
 }

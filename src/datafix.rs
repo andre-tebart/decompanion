@@ -667,7 +667,7 @@ fn apply(files: &mut Files, edits: &[&Edit]) -> BTreeMap<String, Vec<char>> {
 
 /// address -> unit of every function graded byte.
 fn byte_functions(db: &str) -> Result<HashMap<i64, String>> {
-    let fs = crate::with_db(db, |c| store::claims_of(c, db, "grade", None, |f| f.s("of") == Some("function") && f.s("code") == Some("byte")))?;
+    let fs = crate::with_db(db, |c| store::claims_of(c, db, "experiment", None, |f| f.s("of") == Some("function") && f.s("outcome") == Some("byte")))?;
     Ok(fs.iter().map(|f| (f.lo, f.s("unit").unwrap_or("").to_string())).collect())
 }
 

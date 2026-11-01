@@ -176,7 +176,7 @@ fn match_server() {
     let (_, out) = dcp(&d, &["grade", "dllmain"]);
     for name in ["DllMain", "Init", "Exit"] {
         let line = out.lines().find(|l| l.contains(&format!("name={name} "))).unwrap();
-        assert!(line.contains("code=byte") && line.contains("readability=readable"), "{out}");
+        assert!(line.contains("experiment=byte") && line.contains("readability=readable"), "{out}");
     }
     let (_, out) = dcp(&d, &["claims", "0x10008cb0..0x10008d20", "--kind", "symbol"]);
     assert!(out.contains("relocs=2/2") && out.contains("relocs=4/4") && out.contains("relocs=0/0"), "{out}");

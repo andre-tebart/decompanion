@@ -82,32 +82,38 @@ fn function_lines(out: &mut Vec<String>, r: &Row, verbose: bool) {
         Some(Value::String(l)) if !l.is_empty() => l.clone(),
         _ => "-".into(),
     };
-    out.push(record(&[("fn", Tok::I(int(r, "addr"))), ("name", vt(r.get("name"))), ("unit", vt(r.get("unit"))), ("code", vt(r.get("code"))),
-                      ("readability", vt(r.get("readability"))), ("level", s(level)), ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
+    out.push(record(&[("fn", Tok::I(int(r, "addr"))), ("name", vt(r.get("name"))), ("unit", vt(r.get("unit"))), ("experiment", vt(r.get("code"))),
+                      ("readability", vt(r.get("readability"))), ("tag", s(level)), ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
     if verbose {
         out.extend(failing(r).iter().map(|x| format!("  {x}")));
+        // the consistency convention (§8.8): calls without a declaration, the experiment's side
+        if let Some(Value::Array(c)) = r.get("consistency") {
+            let calls: Vec<&str> = c.iter().filter_map(|x| x.as_str()).collect();
+            out.push(format!("  M7 consistency: {}", calls[..calls.len().min(6)].join(", ")));
+        }
     }
 }
 
-/// `dcp grade [WHAT]`: without an argument the matrix and the unit table; a unit: its functions with the failing
-/// rules; a function (name or address): its grades, the failing rules with evidence, the distance. `q7`: where Q7
-/// comes from.
-pub fn grade_command(p: &crate::project::Project, what: Option<String>, q7: &str) -> Result<Out> {
+/// `dcp grade [WHAT]`: the experiments (byte / shape / draft) and readability apart; without an argument the matrix
+/// and the unit table; a unit: its functions with the failing
+/// rules; a function (name or address): its grades, the failing rules with evidence, the distance. `lint`: where the
+/// consistency calls (M7) come from.
+pub fn grade_command(p: &crate::project::Project, what: Option<String>, lint: &str) -> Result<Out> {
     let db = opened(p)?;
     let rows = queues::function_grades(&db)?;
     let units = queues::unit_grades(&db)?;
     let mut out = vec![];
     let Some(what) = what.filter(|w| !w.is_empty()) else {
-        out.push(format!("{}  ({q7})", record(&[("target", s(p.target_name.clone())), ("functions", Tok::I(rows.len() as i64)),
+        out.push(format!("{}  ({lint})", record(&[("target", s(p.target_name.clone())), ("functions", Tok::I(rows.len() as i64)),
                                                  ("units", Tok::I(units.len() as i64))])));
-        out.push(format!("  {:<8} {:>7} {:>9} {:>7}", "code", "draft", "readable", "total"));
+        out.push(format!("  {:<10} {:>7} {:>9} {:>7}", "experiment", "draft", "readable", "total"));
         for code in ["byte", "shape", "draft"] {
             let n = |rd: &str| rows.iter().filter(|r| st(r, "code") == code && st(r, "readability") == rd).count();
             let (d, rd) = (n("draft"), n("readable"));
-            out.push(format!("  {code:<8} {d:>7} {rd:>9} {:>7}", d + rd));
+            out.push(format!("  {code:<10} {d:>7} {rd:>9} {:>7}", d + rd));
         }
         for u in units.iter() {
-            out.push(format!("  {}", record(&[("unit", vt(u.get("unit"))), ("range", Tok::R(int(u, "lo"), int(u, "hi"))), ("code", vt(u.get("code"))),
+            out.push(format!("  {}", record(&[("unit", vt(u.get("unit"))), ("range", Tok::R(int(u, "lo"), int(u, "hi"))), ("experiment", vt(u.get("code"))),
                                               ("readability", vt(u.get("readability"))), ("functions", vt(u.get("functions"))),
                                               ("named_by", vt(u.get("named_by")))])));
         }
@@ -121,7 +127,7 @@ pub fn grade_command(p: &crate::project::Project, what: Option<String>, q7: &str
         let all_readable = fs.iter().all(|r| st(r, "readability") == "readable");
         let why = if st(u, "readability") != "readable" && matches!(st(u, "named_by"), "guess" | "-") && all_readable { "  (unit name origin guess)" } else { "" };
         let c = |code: &str| Tok::I(fs.iter().filter(|r| st(r, "code") == code).count() as i64);
-        out.push(record(&[("unit", vt(u.get("unit"))), ("functions", Tok::I(fs.len() as i64)), ("code", vt(u.get("code"))),
+        out.push(record(&[("unit", vt(u.get("unit"))), ("functions", Tok::I(fs.len() as i64)), ("experiment", vt(u.get("code"))),
                           ("readability", vt(u.get("readability"))), ("named_by", vt(u.get("named_by"))), ("byte", c("byte")), ("shape", c("shape")),
                           ("draft", c("draft")), ("readable", Tok::I(fs.iter().filter(|r| st(r, "readability") == "readable").count() as i64))]) + why);
         return Ok((out, None, 0));
@@ -135,7 +141,7 @@ pub fn grade_command(p: &crate::project::Project, what: Option<String>, q7: &str
         hs.sort_by_key(|x| -x.1);
         out.push(format!("  hunks: {}", hs.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ")));
     }
-    out.push(format!("  ({q7})"));
+    out.push(format!("  ({lint})"));
     Ok((out, None, 0))
 }
 
@@ -565,19 +571,19 @@ pub fn probe_report(p: &crate::project::Project, result: &Value) -> Result<Vec<S
 
 // ------------------------------------------------------------------------------------------------ lint
 
-/// What `dcp grade` / `dcp next` do about Q7 before they read the grades: ("lint", note) when a unit changed
+/// What `dcp grade` / `dcp next` do about the consistency calls (M7) before they read the grades: ("lint", note) when a unit changed
 /// since the last lint and libclang is there (the caller lints and refreshes, then prints the note), else ("", note).
 pub fn lint_plan(p: &crate::project::Project) -> Result<(String, String)> {
     let Some(stale) = crate::lintrun::stale(p).map_err(err)? else {
-        return Ok((String::new(), "Q7 not evaluated (no lint run: dcp lint)".into()));
+        return Ok((String::new(), "consistency (M7) not evaluated (no lint run: dcp lint)".into()));
     };
     if stale.is_empty() {
-        return Ok((String::new(), "Q7 current".into()));
+        return Ok((String::new(), "consistency (M7) current".into()));
     }
     if crate::frontend::library(Some(&p.cfg)).is_some() {
-        return Ok(("lint".into(), format!("Q7 linted now ({} changed units)", stale.len())));
+        return Ok(("lint".into(), format!("consistency (M7) linted now ({} changed units)", stale.len())));
     }
-    Ok((String::new(), format!("Q7 stale: {} units changed, libclang not found", stale.len())))
+    Ok((String::new(), format!("consistency (M7) stale: {} units changed, libclang not found", stale.len())))
 }
 
 /// What `dcp lint` says without libclang.

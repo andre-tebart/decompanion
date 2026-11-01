@@ -1175,7 +1175,7 @@ pub(crate) mod testkit {
     /// The declaration a test's toy rule name runs under (every output, any level).
     pub static TEST_RULE: crate::registry::RuleDef = crate::registry::RuleDef {
         id: "T", version: "1", max_support: REPRODUCED, phase: "T", loader: true, needs: &[], outputs: &[
-            "section", "region", "symbol", "start", "name", "source", "unit", "boundary", "toolchain", "ref", "grade", "build", "evidence"],
+            "section", "region", "symbol", "start", "name", "source", "unit", "boundary", "toolchain", "ref", "experiment", "readability", "build", "evidence"],
         inputs: &[], doc: "",
     };
 

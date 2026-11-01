@@ -781,23 +781,26 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             base.insert(a, f);
         }
     }
+    // the experiment's outcome and the readability of every graded function, now
     let mut now: HashMap<i64, std::rc::Rc<Claim>> = HashMap::new();
-    for f in store::claims(db, &ctx.db, "grade", &ctx.needed, |f| f.s("of") == Some("function")).map_err(err)? {
+    for f in store::claims(db, &ctx.db, "experiment", &ctx.needed, |f| f.s("of") == Some("function")).map_err(err)? {
         now.insert(f.lo, f);
     }
+    let read: HashMap<i64, std::rc::Rc<Claim>> = store::claims(db, &ctx.db, "readability", &ctx.needed, |f| f.s("of") == Some("function"))
+        .map_err(err)?.into_iter().map(|f| (f.lo, f)).collect();
     for (a, r) in &base {
         let (name, code, readability) = (&r[2], &r[4], &r[5]);
         let mut falls = vec![];
         match now.get(a) {
             None => falls.push(format!("graded {code} + {readability} in the baseline, no grade now (its source is gone?)")),
             Some(g) => {
-                let nc = g.s("code").unwrap_or("");
+                let nc = g.s("outcome").unwrap_or("");
                 if let (Some(b), Some(n)) = (rank(code), rank(nc)) {
                     if n < b {
                         falls.push(format!("code {code} -> {nc}"));
                     }
                 }
-                if readability == "readable" && g.s("readability") != Some("readable") {
+                if readability == "readable" && read.get(a).and_then(|q| q.s("grade")) != Some("readable") {
                     falls.push("readability readable -> draft".to_string());
                 }
             }

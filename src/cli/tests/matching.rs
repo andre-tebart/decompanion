@@ -120,11 +120,11 @@ fn compile_and_byte_match() {
     assert_eq!(sym, [(0x10001020, 0x10001026, REPRODUCED, "1/1".to_string())]);
     assert!(dcp(&t, &["build"]).1.contains("compiled=0")); // nothing changed: nothing compiles, no rule runs
     let (_, out) = dcp(&t, &["grade", "get"]);
-    assert!(out.contains("code=byte") && out.contains("readability=readable"), "{out}");
+    assert!(out.contains("experiment=byte") && out.contains("readability=readable"), "{out}");
     // a draft: another constant
     unit(&t, "net", &[head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter + 1;\n}\n"]);
     let (_, out) = dcp(&t, &["grade", "get"]);
-    assert!(out.contains("code=draft") && out.contains("B3 draft"), "{out}");
+    assert!(out.contains("experiment=draft") && out.contains("B3 draft"), "{out}");
     assert!(dcp(&t, &["diffclass", "get"]).1.contains("code"));
     // a big code hunk: its first lines and how many more (every line with --all)
     let calls: String = (1..10).map(|k| format!("    put({k});\n")).collect();
@@ -154,14 +154,14 @@ fn byte_match_with_a_differing_literal_is_no_byte() {
     let f = |lit: &str| format!("/* 0x10001020, reads the counter */\nint get(void)\n{{\n    return *(int *)\"{lit}\";\n}}\n");
     unit(&t, "net", &[&f("\\x34\\x12")]);
     assert_eq!(dcp(&t, &["build"]).0, 0);
-    assert!(dcp(&t, &["grade", "get"]).1.contains("code=byte"));
+    assert!(dcp(&t, &["grade", "get"]).1.contains("experiment=byte"));
     let (_, out) = dcp(&t, &["asmdiff", "get", "--symbols"]); // the literal is the original's: one name
     assert!(out.contains("   0x10001020  mov eax, dword ptr [0x10002000]") && !out.contains("\n!  "), "{out}");
     unit(&t, "net", &[&f("\\x34\\x13")]);
     dcp(&t, &["build"]);
     assert_eq!(facts(&t, "symbol", None).iter().filter(|f| &*f.rule == "M.match").map(|f| f.lo).collect::<Vec<_>>(), [0x10001020]);
     let (_, out) = dcp(&t, &["grade", "get"]);
-    assert!(out.contains("code=draft") && out.contains("B1 byte: M9") && out.contains("differs from the original's bytes"), "{out}");
+    assert!(out.contains("experiment=draft") && out.contains("B1 byte: M9") && out.contains("differs from the original's bytes"), "{out}");
     assert!(out.contains("B3 draft: 1 referenced literal(s) / constant(s) differ from the original's (M9)"), "{out}");
     let (_, out) = dcp(&t, &["asmdiff", "get"]); // X on both sides: equal
     assert!(out.contains("differing=0") && !out.contains("... ") && out.contains("   0x10001020  mov eax, dword ptr [X]"), "{out}");
@@ -259,7 +259,7 @@ fn headers_conflicts_trial_grades() {
     assert!(code == 1 && out.contains("falls=1") && out.contains("  fall=0x10001020  name=get  code=byte  trial=draft"), "{out}");
     assert_eq!(read(&t, "src/net.c"), before);
     assert!(std::fs::read_dir(t.join("build/obj/trial")).map(|d| d.count() == 0).unwrap_or(true));
-    assert!(dcp(&t, &["grade", "get"]).1.contains("code=byte"));
+    assert!(dcp(&t, &["grade", "get"]).1.contains("experiment=byte"));
 }
 
 #[test]
@@ -329,7 +329,7 @@ fn has_clang() -> bool {
 
 #[test]
 #[ignore = "e2e: VC6 and libclang"]
-fn lint_q7_and_exemption() {
+fn lint_consistency_and_exemption() {
     if !(has_vc6() && has_clang()) {
         return;
     }
@@ -340,7 +340,7 @@ fn lint_q7_and_exemption() {
     let (code, out) = dcp(&t, &["lint"]);
     assert!(code == 0 && out.contains("m7=1") && out.contains("helper() at line 7"), "{out}");
     let (_, out) = dcp(&t, &["grade", "get"]);
-    assert!(out.contains("Q7 prototypes: helper() at line 7") && out.contains("readability=draft"), "{out}");
+    assert!(out.contains("M7 consistency: helper() at line 7"), "{out}");
     unit(&t, "net", &[head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter + helper(1.5f);  /* @original the original passes a double */\n}\n"]);
     assert!(dcp(&t, &["lint"]).1.contains("m7=0"));
     // a conflict across units: two prototypes of one function
