@@ -511,6 +511,7 @@ impl PyProject {
     #[new]
     #[pyo3(signature = (root, target, core_hash))]
     fn new(root: Option<String>, target: Option<String>, core_hash: &str) -> Result<PyProject> {
+        let _ = core_hash; // the build's own (crate::CORE_HASH)
         let start = match &root {
             Some(r) if Path::new(r).join(CONFIG_NAME).exists() => PathBuf::from(r),
             Some(r) => PathBuf::from(r),
@@ -523,7 +524,7 @@ impl PyProject {
             find_root(&start).ok_or_else(|| cfg_err(format!("no {CONFIG_NAME} in {} or above (run dcp init)", start.display())))?
         };
         let root = PathBuf::from(py_path(&root.to_string_lossy()));
-        Project::open(&root, target.as_deref(), core_hash).map(|p| PyProject { p }).map_err(cfg_err)
+        Project::open(&root, target.as_deref(), crate::CORE_HASH).map(|p| PyProject { p }).map_err(cfg_err)
     }
 
     #[getter]

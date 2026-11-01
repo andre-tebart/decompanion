@@ -1263,8 +1263,7 @@ mod tests_aligned {
     /// M8.reloc's line-up of a relocation site of ours with the original's code.
     #[test]
     fn aligned_sites() {
-        let dll = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.venv/Lib/site-packages/capstone/lib/capstone.dll");
-        let dll = dll.to_string_lossy().into_owned();
+        let dll = crate::cs::library("");
         let ours = b"\x55\x8b\xec\xe8\x00\x00\x00\x00\x5d\xc3"; // push ebp; mov ebp,esp; call f; pop ebp; ret
         let mask = [0u8, 0, 0, 0, 1, 1, 1, 1, 0, 0];
         let aligned = |orig: &[u8]| -> Vec<u32> {

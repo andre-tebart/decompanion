@@ -17,6 +17,9 @@ sha1 = "0.11.0"
 sha2 = "0.11.1"
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 
+[build-dependencies]
+sha2 = "0.11.0"
+
 [lib]
 name = "_core"
 crate-type = ["cdylib"]

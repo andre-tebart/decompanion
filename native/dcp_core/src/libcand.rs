@@ -138,7 +138,8 @@ pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, V
 pub fn libs_candidates_lines(project: PyRef<'_, crate::project::PyProject>, core_hash: &str, force: bool) -> Result<(Vec<String>, Vec<String>)> {
     use crate::cliread::{record, Tok};
     let p = &project.p;
-    let (v, log) = candidates(p, core_hash, force).map_err(Error::runtime)?;
+    let _ = core_hash; // the build's own (crate::CORE_HASH, through the project)
+    let (v, log) = candidates(p, &p.core_hash, force).map_err(Error::runtime)?;
     let declared: Vec<String> = p.archives_decl(None).map_err(Error::runtime)?.0.unwrap_or_default().iter()
         .map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a).to_uppercase()).collect();
     let i = |x: &Value| Tok::I(x.as_i64().unwrap_or(0));

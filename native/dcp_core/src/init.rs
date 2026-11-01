@@ -119,43 +119,24 @@ fn analyzer_lines() -> Vec<String> {
     out
 }
 
-/// Copy the shipped skills (skills/<name>/... of the decompanion repository) into <root>/.claude/skills/; the
-/// paths written (relative, posix). An unchanged file is not written again unless `force`.
-pub fn install_skills(skills: &Path, root: &Path, force: bool) -> std::io::Result<Vec<String>> {
+mod shipped {
+    include!(concat!(env!("OUT_DIR"), "/skills.rs"));
+}
+
+/// Copy the shipped skills (skills/<name>/... of the decompanion repository, built into the core: build.rs) into
+/// <root>/.claude/skills/; the paths written (relative, posix). An unchanged file is not written again unless
+/// `force`.
+pub fn install_skills(root: &Path, force: bool) -> std::io::Result<Vec<String>> {
     let mut out = vec![];
-    if !skills.is_dir() {
-        return Ok(out);
-    }
-    fn files(dir: &Path, rel: &str, out: &mut Vec<(String, PathBuf)>) -> std::io::Result<()> {
-        for e in std::fs::read_dir(dir)?.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            let rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
-            if e.path().is_dir() {
-                files(&e.path(), &rel, out)?;
-            } else if e.path().is_file() {
-                out.push((rel, e.path()));
-            }
+    for (rel, data) in shipped::SKILLS {
+        let to = format!(".claude/skills/{rel}");
+        let dst = root.join(&to);
+        if !force && std::fs::read(&dst).is_ok_and(|old| old == *data) {
+            continue;
         }
-        Ok(())
-    }
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(skills)?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
-    dirs.sort_by_key(|d| d.to_string_lossy().to_lowercase());
-    for d in dirs {
-        let name = d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let mut fs = vec![];
-        files(&d, "", &mut fs)?;
-        fs.sort_by_key(|f| f.0.to_lowercase());
-        for (rel, src) in fs {
-            let to = format!(".claude/skills/{name}/{rel}");
-            let dst = root.join(&to);
-            let data = std::fs::read(&src)?;
-            if !force && std::fs::read(&dst).is_ok_and(|old| old == data) {
-                continue;
-            }
-            std::fs::create_dir_all(dst.parent().unwrap())?;
-            std::fs::write(&dst, &data)?;
-            out.push(to);
-        }
+        std::fs::create_dir_all(dst.parent().unwrap())?;
+        std::fs::write(&dst, data)?;
+        out.push(to);
     }
     Ok(out)
 }
@@ -210,7 +191,7 @@ fn init(dir: &str, target: &str, name: Option<String>, target_name: Option<Strin
             return Err(format!("git init failed in {}", dir.display()));
         }
     }
-    let skills = install_skills(&Path::new(dcp_root).join("skills"), &dir, false).map_err(io)?;
+    let skills = install_skills(&dir, false).map_err(io)?;
     let mut out = vec![
         format!("initialised {} for {target_file} as target {tname} (sha256 {})", dir.display(), &sha[..16]),
         format!("  computed: image={fmt} isa={isa}; declared: nothing (toolchain, libraries, analyzer: the obligations of dcp status)"),
@@ -290,8 +271,8 @@ pub fn target_add(root: &str, name: &str, path: &str) -> (Vec<String>, Option<St
 
 /// `dcp skills install`: the paths written.
 #[pyfunction]
-pub fn skills_install(dcp_root: &str, root: &str, force: bool) -> Result<Vec<String>> {
-    install_skills(&Path::new(dcp_root).join("skills"), Path::new(root), force).map_err(|e| Error::os(e.to_string()))
+pub fn skills_install(_dcp_root: &str, root: &str, force: bool) -> Result<Vec<String>> {
+    install_skills(Path::new(root), force).map_err(|e| Error::os(e.to_string()))
 }
 
 #[cfg(test)]

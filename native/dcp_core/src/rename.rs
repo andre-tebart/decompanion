@@ -405,8 +405,15 @@ fn errors_of(db: &str) -> Result<Vec<(String, String, i64, String)>> {
 /// before: only an error the rename brings is new and fails the call. (stdout lines, stderr lines, the exit status).
 #[pyfunction]
 pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<(String, String, String)>, rebuild: Bound<'_, PyAny>)
+    -> PyResult<(Vec<String>, Vec<String>, i32)> {
+    let slot = std::cell::RefCell::new(None);
+    let r = rename_run(&project.p, pairs, &mut || crate::py_cb(&rebuild, &slot, None));
+    crate::py_result(r, slot)
+}
+
+/// `dcp rename` (rename_command): `rebuild()` compiles and refreshes after the write.
+pub fn rename_run(p: &crate::project::Project, pairs: Vec<(String, String, String)>, rebuild: &mut dyn FnMut() -> Result<()>)
     -> Result<(Vec<String>, Vec<String>, i32)> {
-    let p = &project.p;
     let db = p.store_path();
     let main = p.main_uri();
     crate::pystore::st_open(&db, &main)?;
@@ -557,7 +564,7 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
         x.out.push(format!("build: {} of {read} unit(s) that read the renamed files keep their objects, the symbols renamed (their preprocessed \
                             text differs only by the names)", reused.len()));
     }
-    rebuild.call0()?;
+    rebuild()?;
     // an error from before keeps its rule and address; its message names the new names now (or still the old ones:
     // M1 names a function by the baseline's name)
     let words: Vec<(regex::Regex, &str)> = edits.iter().map(|p| (regex::Regex::new(&format!(r"\b{}\b", regex::escape(&p.old))).unwrap(), p.new.as_str())).collect();
@@ -589,7 +596,7 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
     }
     if stuck.is_empty() {
         crate::compile::tu_restore(p, &tu_rows).map_err(err)?;
-        rebuild.call0()?;
+        rebuild()?;
         x.out.push(format!("rename: refused, every file put back as it was, nothing renamed ({})", pairs_txt.join(", ")));
         errs.push(format!("dcp rename: {msg}: nothing written"));
     } else {

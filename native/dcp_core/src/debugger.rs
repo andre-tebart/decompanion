@@ -872,7 +872,7 @@ mod tests {
         std::fs::write(&spec, "{}").unwrap();
         let env: Vec<(String, String)> = std::env::vars().collect();
         let dirs = dir.to_string_lossy().into_owned();
-        let cs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.venv/Lib/site-packages/capstone/lib/capstone.dll").to_string_lossy().into_owned();
+        let cs = crate::cs::library("");
         let run = |exe: &str, dump: &str| debug_run(&Debuggee { run: "t", exe, cmdline: &format!("\"{exe}\""), dir: &dirs, env: &env, seconds: 20.0, symbols: &syms,
                                                     capstone: &cs, crash_root: &root, dump, spec: &spec.to_string_lossy() }, &mut || false).unwrap();
         // a program that handles its own access violation: no crash report, its own exit code

@@ -314,8 +314,14 @@ fn placeholder_events(renamed: &BTreeMap<String, String>) -> Vec<(Option<i64>, &
 
 /// `dcp unit join A B --why`: (lines, the error for stderr, the exit status). `build()` builds and refreshes the target.
 #[pyfunction]
-pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str, why: &str, build: Bound<'_, PyAny>) -> Result<(Vec<String>, Option<String>, i32)> {
-    let p = &project.p;
+pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str, why: &str, build: Bound<'_, PyAny>) -> PyResult<(Vec<String>, Option<String>, i32)> {
+    let slot = std::cell::RefCell::new(None);
+    let r = unit_join_run(&project.p, a, b, why, &mut || crate::py_cb(&build, &slot, None));
+    crate::py_result(r, slot)
+}
+
+/// `dcp unit join` (unit_join): `build()` builds and refreshes the target.
+pub fn unit_join_run(p: &crate::project::Project, a: &str, b: &str, why: &str, build: &mut dyn FnMut() -> Result<()>) -> Result<(Vec<String>, Option<String>, i32)> {
     let root = p.root.to_string_lossy().into_owned();
     let names = view_units(p)?;
     if let Some(m) = [a, b].into_iter().find(|u| !names.iter().any(|n| n == u)) {
@@ -326,7 +332,7 @@ pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str
     if ib != ia + 1 {
         return Ok((vec![], Some(format!("{b} does not directly follow {a} (join neighbours, the earlier one first)")), 1));
     }
-    build.call0()?;
+    build()?;
     let db = p.store_path();
     let (before, err_before) = byte_state(&db)?;
     let j = match join(&root, a, b) {
@@ -339,7 +345,7 @@ pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str
     let mut out: Vec<String> = j.moved.iter().map(|m| format!("moved {m}")).collect();
     out.extend(j.decl.iter().map(|c| format!("decl  {c}")));
     out.extend(j.renamed.iter().map(|(o, n)| format!("renamed {o} -> {n}")));
-    build.call0()?;
+    build()?;
     let (after, err_after) = byte_state(&db)?;
     let keys: std::collections::BTreeSet<i64> = before.keys().chain(after.keys()).copied().collect();
     let get = |m: &BTreeMap<i64, Option<String>>, k: &i64| m.get(k).cloned().flatten();
@@ -362,8 +368,15 @@ pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str
 #[pyfunction]
 #[pyo3(signature = (project, old, new, by, why, rebuild))]
 pub fn unit_rename(project: PyRef<'_, crate::project::PyProject>, old: &str, new: &str, by: Option<String>, why: &str, rebuild: Bound<'_, PyAny>)
+    -> PyResult<(Vec<String>, Option<String>, i32)> {
+    let slot = std::cell::RefCell::new(None);
+    let r = unit_rename_run(&project.p, old, new, by, why, &mut || crate::py_cb(&rebuild, &slot, None));
+    crate::py_result(r, slot)
+}
+
+/// `dcp unit rename` (unit_rename): `rebuild()` compiles and refreshes.
+pub fn unit_rename_run(p: &crate::project::Project, old: &str, new: &str, by: Option<String>, why: &str, rebuild: &mut dyn FnMut() -> Result<()>)
     -> Result<(Vec<String>, Option<String>, i32)> {
-    let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let names = view_units(p)?;
     if !UNIT.is_match(new) || !E::IDENT.is_match(&E::c_name(new)) {
@@ -382,7 +395,7 @@ pub fn unit_rename(project: PyRef<'_, crate::project::PyProject>, old: &str, new
     let mut out: Vec<String> = r.moved.iter().map(|m| format!("moved {m}")).collect();
     out.extend(r.decl.iter().map(|c| format!("decl  {c}")));
     out.extend(r.renamed.iter().map(|(o, n)| format!("renamed {o} -> {n}")));
-    rebuild.call0()?;
+    rebuild()?;
     let (_, bad) = byte_state(&p.store_path())?;
     out.push(record(&[("unit", s(old)), ("renamed", s(new)), ("by", by.map(Tok::S).unwrap_or(Tok::No)), ("includes", Tok::I(r.includes)),
                       ("placeholders", Tok::I(r.renamed.len() as i64)), ("errors", Tok::I(bad as i64))]));

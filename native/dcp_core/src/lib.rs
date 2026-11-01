@@ -3,6 +3,9 @@
 //! This file holds the module list, the Python module's registry of functions, the store's connections and its
 //! write path (`write_run`: a finished rule run with its facts and conflicts, its out_hash, made current).
 
+/// The hash of the core's sources (build.rs): part of every rule run's key, and the build id.
+pub(crate) const CORE_HASH: &str = env!("DCP_CORE_HASH");
+
 mod analyzers;
 mod asmcmd;
 mod clang;
@@ -99,6 +102,26 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+// --------------------------------------------------------------------------- Python callables as Rust callbacks
+/// Call a Python callable as a Rust callback: its exception is kept in `slot`, so `py_result` raises it again as it
+/// was (a ConfigError of the callback's refresh stays a ConfigError).
+pub(crate) fn py_cb(f: &Bound<'_, PyAny>, slot: &RefCell<Option<PyErr>>, arg: Option<String>) -> Result<()> {
+    let r = match arg {
+        Some(a) => f.call1((a,)),
+        None => f.call0(),
+    };
+    r.map(|_| ()).map_err(|e| {
+        let m = e.to_string();
+        *slot.borrow_mut() = Some(e);
+        Error::runtime(m)
+    })
+}
+
+/// The result of a core function that called Python callbacks: a callback's exception wins.
+pub(crate) fn py_result<T>(r: Result<T>, slot: RefCell<Option<PyErr>>) -> PyResult<T> {
+    r.map_err(|e| slot.into_inner().unwrap_or_else(|| e.into()))
+}
 
 // ------------------------------------------------------------------------------------------------ canonical
 
@@ -521,9 +544,16 @@ pub(crate) fn live_objects(paths: &std::collections::HashSet<String>) {
     OBJS.with(|m| m.borrow_mut().retain(|k, _| paths.contains(k)));
 }
 
+/// The build id: the hash of the core's sources this module was built from (build.rs).
+#[pyfunction]
+fn build_id() -> &'static str {
+    CORE_HASH
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<project::PyProject>()?;
+    m.add_function(wrap_pyfunction!(build_id, m)?)?;
     m.add_class::<names::Names>()?;
     m.add_function(wrap_pyfunction!(link::link_classify, m)?)?;
     m.add_function(wrap_pyfunction!(probe::probe_run, m)?)?;

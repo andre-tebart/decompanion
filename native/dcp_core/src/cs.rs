@@ -47,7 +47,18 @@ pub struct Ins {
     pub op_str: String,
 }
 
+/// The capstone library the core loads: $DCP_CAPSTONE, else the pinned 5.0.9 build vendored beside the crate
+/// (vendor/capstone; its Intel text is part of the listings, so the version is fixed). The path a caller passes is
+/// ignored (it was the DLL of the Python capstone package).
+pub fn library(_given: &str) -> String {
+    match std::env::var("DCP_CAPSTONE") {
+        Ok(p) if !p.is_empty() => p,
+        _ => concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/capstone/capstone.dll").replace('/', "\\"),
+    }
+}
+
 fn engine_for(dll: &str) -> Result<Engine, String> {
+    let dll = &library(dll);
     let wide: Vec<u16> = dll.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         let m = LoadLibraryW(wide.as_ptr());
@@ -84,6 +95,7 @@ pub fn lengths(dll: &str, code: &[u8], va: u32) -> Result<Vec<(u32, u32)>, Strin
 }
 
 fn with_engine<T>(dll: &str, f: impl FnOnce(&Engine) -> Result<T, String>) -> Result<T, String> {
+    let dll = &library(dll);
     ENGINE.with(|e| {
         let mut e = e.borrow_mut();
         if e.as_ref().map(|(d, _)| d != dll).unwrap_or(true) {
@@ -239,6 +251,7 @@ thread_local! {
 
 /// Every instruction of `code` at `va` with its operand details, up to the end or the first that does not decode.
 pub fn disasm_detail(dll: &str, code: &[u8], va: u32) -> Result<Vec<DIns>, String> {
+    let dll = &library(dll);
     DETAIL.with(|e| {
         let mut e = e.borrow_mut();
         if e.as_ref().map(|(d, _)| d != dll).unwrap_or(true) {

@@ -948,8 +948,18 @@ pub fn data_map(project: PyRef<'_, crate::project::PyProject>, unit: Option<Stri
 #[pyo3(signature = (project, checks, unit, write, limit, verbose, sync, emit))]
 #[allow(clippy::too_many_arguments)]
 pub fn data_fix(project: PyRef<'_, crate::project::PyProject>, checks: Option<String>, unit: Option<String>, write: bool, limit: usize, verbose: bool,
-                sync: Bound<'_, PyAny>, emit: Bound<'_, PyAny>) -> Result<i32> {
-    let say = |line: String| emit.call1((line,)).map(|_| ());
+                sync: Bound<'_, PyAny>, emit: Bound<'_, PyAny>) -> PyResult<i32> {
+    let slot = std::cell::RefCell::new(None);
+    let r = data_fix_run(&project.p, checks, unit, write, limit, verbose, &mut || crate::py_cb(&sync, &slot, None),
+                         &mut |line| crate::py_cb(&emit, &slot, Some(line)));
+    crate::py_result(r, slot)
+}
+
+/// `dcp data fix` (data_fix): `sync()` builds and refreshes the store, `emit(line)` prints a line.
+#[allow(clippy::too_many_arguments)]
+pub fn data_fix_run(p: &Project, checks: Option<String>, unit: Option<String>, write: bool, limit: usize, verbose: bool,
+                    sync: &mut dyn FnMut() -> Result<()>, emit: &mut dyn FnMut(String) -> Result<()>) -> Result<i32> {
+    let mut say = |line: String| emit(line);
     let checks: Vec<String> = match &checks {
         Some(c) if !c.is_empty() => c.split(',').map(|x| x.trim().to_uppercase()).collect(),
         _ => CHECKS.iter().map(|c| c.to_string()).collect(),
@@ -959,13 +969,12 @@ pub fn data_fix(project: PyRef<'_, crate::project::PyProject>, checks: Option<St
         say(record(&[("error", s(format!("unknown check {} (known: {})", bad.join(","), CHECKS.join(","))))]))?;
         return Ok(2);
     }
-    let p = &project.p;
     let db = p.store_path();
     let root = p.root.to_string_lossy().into_owned();
     let mut status = 0;
     for check in &checks {
         let t0 = std::time::Instant::now();
-        sync.call0()?; // the data checks read the objects: they must be the sources' own
+        sync()?; // the data checks read the objects: they must be the sources' own
         let scan = scan_of(p)?;
         let model = data_model(p, &scan)?;
         let mut files = Files::new(&root, Some(scan));
@@ -1012,7 +1021,7 @@ pub fn data_fix(project: PyRef<'_, crate::project::PyProject>, checks: Option<St
         for (rel, text) in &new {
             std::fs::write(files.path(rel), files.encode(rel, text)).map_err(err)?;
         }
-        sync.call0()?;
+        sync()?;
         let failed = failed_units(&db)?;
         let now = byte_functions(&db)?;
         let still = before.keys().filter(|a| !now.contains_key(a)).count();
@@ -1023,7 +1032,7 @@ pub fn data_fix(project: PyRef<'_, crate::project::PyProject>, checks: Option<St
                 let old = files.text(rel).to_vec();
                 std::fs::write(files.path(rel), files.encode(rel, &old)).map_err(err)?;
             }
-            sync.call0()?;
+            sync()?;
             let failed = if failed.is_empty() { "-".to_string() } else { failed.iter().cloned().collect::<Vec<_>>().join(",") };
             say(format!("  reverted {}", record(&[("edits", Tok::I(accepted.len() as i64)),
                                                    ("why", s(format!("after writing, {still} byte match(es) lost, failed units: {failed}")))])))?;

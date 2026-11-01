@@ -741,11 +741,9 @@ pub(crate) mod tests {
     use crate::store::DERIVED;
     use serde_json::json;
 
-    /// capstone of the project's environment (the library the Python package `capstone` ships).
+    /// The capstone library the core loads (the vendored 5.0.9 build, cs::library).
     pub(crate) fn capstone() -> String {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.venv/Lib/site-packages/capstone/lib/capstone.dll");
-        assert!(p.exists(), "{}: run `uv sync` first", p.display());
-        p.to_string_lossy().into_owned()
+        crate::cs::library("")
     }
 
     #[test]

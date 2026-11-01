@@ -322,7 +322,8 @@ fn results_py<'py>(py: Python<'py>, res: Vec<Result_>) -> PyResult<Bound<'py, Py
 #[pyo3(signature = (project, core_hash, capstone, ids=None, force=false))]
 pub fn engine_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, core_hash: &str, capstone: &str,
                        ids: Option<Vec<String>>, force: bool) -> Result<Bound<'py, PyList>> {
-    let mut e = Engine::new(&project.p, core_hash, capstone);
+    let _ = core_hash; // the build's own (crate::CORE_HASH, through the project)
+    let mut e = Engine::new(&project.p, &project.p.core_hash, capstone);
     let res = e.run(ids.as_deref(), force)?;
     Ok(results_py(py, res)?)
 }
