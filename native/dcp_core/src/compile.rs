@@ -381,6 +381,137 @@ fn run_threads<T: Sync, R: Send>(n: usize, items: &[T], f: impl Fn(&T) -> R + Sy
     out.into_inner().unwrap().into_iter().map(|r| r.unwrap()).collect()
 }
 
+// ------------------------------------------------------------------------------------------------ a variant's objects
+
+/// A variant's row of one unit (build/variant/<target>/<variant>.json).
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct VariantRow {
+    amalg: String,
+    src_hash: String,
+    flags_hash: String,
+    include_hash: String,
+    obj_hash: String,
+    ok: bool,
+    log: String,
+}
+
+pub fn variant_rows_path(p: &Project, variant: &str) -> String {
+    py_path(&format!("{}/build/variant/{}/{variant}.json", p.root.to_string_lossy(), p.target_name))
+}
+
+/// The objects of a run::Variant (run.rs) of the current target: the units its flags reach, compiled with the unit's
+/// flags plus the variant's, into the shared object store; staleness as `ensure` decides it, the rows in the
+/// variant's own file (the store's tu table and the "objects" input stay the main build's). The report and unit ->
+/// object path of every unit that compiled. The main build must be current: the other units link its objects.
+pub fn ensure_variant(p: &Project, v: &crate::run::Variant, force: bool) -> Result<(Report, HashMap<String, String>), String> {
+    let t0 = std::time::Instant::now();
+    let root = p.root.to_string_lossy().into_owned();
+    let db = p.store_path();
+    crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    let mut rep = Report { target: p.target_name.clone(), ..Default::default() };
+    let units = plan::plan(p)?;
+    let mine: Vec<(&Tu, Vec<String>)> = units.iter().filter_map(|a| {
+        let extra = v.extra(&a.unit);
+        (!extra.is_empty()).then_some((a, extra))
+    }).collect();
+    rep.units = mine.len();
+    let tools = Tools::of(p);
+    if !mine.is_empty() && !tools.available() {
+        rep.unavailable = true;
+        rep.log.push(format!("build: the toolchain is not available (root {}): {} units not compiled", tools.root.as_deref().unwrap_or("None"), mine.len()));
+        return Ok((rep, HashMap::new()));
+    }
+    let path = variant_rows_path(p, &v.name);
+    let old: HashMap<String, VariantRow> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let memo = Memo::default();
+    let dirs = vec!["include".to_string()];
+    let mut search = vec![py_path(&format!("{root}/include"))];
+    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { py_path(&format!("{root}/{d}")) }));
+    let mut work: Vec<(&Tu, Vec<String>, String)> = vec![];
+    for (a, extra) in mine {
+        let mut flags = plan::compile_flags(p, &a.target, &a.unit)?;
+        flags.extend(extra);
+        let fh = sha256_parts(&[canonical(&json!(flags))]);
+        work.push((a, flags, fh));
+    }
+    let mut rows: HashMap<String, VariantRow> = HashMap::new();
+    let mut stale = vec![];
+    for (k, (a, _, fh)) in work.iter().enumerate() {
+        let key = sha256_parts(&[a.src_hash.clone(), fh.clone(), memo.listing_hash(&search)]);
+        let files = include_set(&db, &key).map_err(|e| e.to_string())?;
+        let fresh = match (&files, old.get(&a.unit)) {
+            (Some(files), Some(r)) => !force && r.src_hash == a.src_hash && &r.flags_hash == fh && r.include_hash == memo.set(files) && r.amalg == a.file
+                && (!r.ok || Path::new(&obj_path(&root, &r.obj_hash)).exists()),
+            _ => false,
+        };
+        if fresh {
+            rows.insert(a.unit.clone(), old[&a.unit].clone());
+        } else {
+            stale.push(k);
+        }
+    }
+    if !stale.is_empty() {
+        rep.log.push(format!("build: compiling {} of {} units of variant {} (target {})", stale.len(), work.len(), v.name, p.target_name));
+        let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let results = run_threads(n, &stale, |&k| {
+            let (a, flags, _) = &work[k];
+            let tmp = format!("build\\obj\\tmp\\{}@{}\\{}.obj", a.target, v.name, a.unit);
+            let tmp_abs = py_path(&format!("{root}/{tmp}"));
+            let _ = std::fs::create_dir_all(Path::new(&tmp_abs).parent().unwrap());
+            let _ = std::fs::remove_file(&tmp_abs);
+            let files = tools.includes(&win(&a.file), flags, &dirs, &root).ok().filter(|(_, e)| e.is_empty()).map(|(f, _)| f);
+            let res = tools.compile(&win(&a.file), &tmp, flags, &dirs, &root).map(|mut r| {
+                r.diags = located(&root, a, std::mem::take(&mut r.diags));
+                r
+            });
+            let mut obj_hash = String::new();
+            if let Ok(r) = &res {
+                if r.ok {
+                    if let Ok(data) = std::fs::read(&tmp_abs) {
+                        obj_hash = fsmemo::hex(&Sha256::digest(&data));
+                        let dest = obj_path(&root, &obj_hash);
+                        if Path::new(&dest).exists() {
+                            let _ = std::fs::remove_file(&tmp_abs);
+                        } else {
+                            let _ = std::fs::rename(&tmp_abs, &dest);
+                        }
+                    }
+                }
+            }
+            (res, files, obj_hash)
+        });
+        for (k, (res, files, obj_hash)) in stale.iter().zip(results) {
+            let (a, _, fh) = &work[*k];
+            let res = res?;
+            let key = sha256_parts(&[a.src_hash.clone(), fh.clone(), memo.listing_hash(&search)]);
+            if let Some(files) = &files {
+                put_include_set(&db, &key, files).map_err(|e| e.to_string())?;
+            }
+            let include_hash = files.as_ref().map(|f| memo.set(f)).unwrap_or_else(|| "unknown".into());
+            rows.insert(a.unit.clone(), VariantRow { amalg: a.file.clone(), src_hash: a.src_hash.clone(), flags_hash: fh.clone(), include_hash,
+                                                     obj_hash: obj_hash.clone(), ok: res.ok, log: res.log.clone() });
+            rep.compiled.push(a.unit.clone());
+            let errs: Vec<&Diag> = res.diags.iter().filter(|d| d.severity == "error").collect();
+            rep.log.push(format!("  {} {}  errors={}{}", if res.ok { "ok  " } else { "FAIL" }, a.unit, errs.len(),
+                                 if obj_hash.is_empty() { String::new() } else { format!("  obj={}", &obj_hash[..12]) }));
+            for d in errs.iter().take(10) {
+                rep.log.push(format!("       {}", d.text()));
+            }
+        }
+    }
+    let mut failed: Vec<String> = rows.iter().filter(|(_, r)| !r.ok).map(|(u, _)| u.clone()).collect();
+    failed.sort();
+    rep.failed = failed;
+    if !stale.is_empty() || rows.len() != old.len() {
+        std::fs::create_dir_all(Path::new(&path).parent().unwrap()).map_err(|e| e.to_string())?;
+        let sorted: std::collections::BTreeMap<&String, &VariantRow> = rows.iter().collect();
+        std::fs::write(&path, serde_json::to_string_pretty(&sorted).unwrap_or_default()).map_err(|e| format!("{path}: {e}"))?;
+    }
+    let objs = rows.iter().filter(|(_, r)| r.ok).map(|(u, r)| (u.clone(), obj_path(&root, &r.obj_hash))).collect();
+    rep.ms = t0.elapsed().as_millis() as i64;
+    Ok((rep, objs))
+}
+
 // ------------------------------------------------------------------------------------------------ a rename's objects
 
 /// A unit a rename touches (its file or a file of its include set), compiled and current before the write: its tu

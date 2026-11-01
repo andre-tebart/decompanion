@@ -342,6 +342,13 @@ pub fn order_libraries(libs: Vec<String>, first: &BTreeMap<String, Vec<(String, 
 
 /// The full link of the current target (build/link.py module docstring).
 pub fn full_link(p: &Project) -> Result<LinkReport, String> {
+    full_link_with(p, None)
+}
+
+/// The full link, of a build variant (run.rs) when `variant` names one: (name, unit -> object path of the units the
+/// variant compiled); the other units link the main build's objects, the output goes to
+/// build/link/<target>/<variant>/.
+pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, String>)>) -> Result<LinkReport, String> {
     let t0 = std::time::Instant::now();
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
@@ -350,7 +357,10 @@ pub fn full_link(p: &Project) -> Result<LinkReport, String> {
     let img = Python::attach(|_| crate::image(&target.path)).map_err(|e| e.to_string())?;
     let x = Ctx { p, root: root.clone(), db: db.clone(), img: img.clone(), tools: Tools::of(p) };
     let mut rep = LinkReport { target: p.target_name.clone(), unresolved: CLASSES.iter().map(|c| (c.to_string(), vec![])).collect(), ..Default::default() };
-    let out_dir = py_path(&format!("{root}/build/link/{}", p.target_name));
+    let out_dir = match variant {
+        Some((v, _)) => py_path(&format!("{root}/build/link/{}/{v}", p.target_name)),
+        None => py_path(&format!("{root}/build/link/{}", p.target_name)),
+    };
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let tus = crate::compile::tu_rows(&db).map_err(|e| e.to_string())?;
     let mut builds = x.facts("build")?;
@@ -363,7 +373,9 @@ pub fn full_link(p: &Project) -> Result<LinkReport, String> {
     let mut objs: Vec<(String, String)> = vec![];
     for f in builds.iter().filter(|f| ok(f)) {
         let u = f.s("tu").unwrap_or("");
-        if let Some(t) = tus.get(u) {
+        if let Some(path) = variant.and_then(|(_, m)| m.get(u)) {
+            objs.push((u.to_string(), path.clone()));
+        } else if let Some(t) = tus.get(u) {
             let path = crate::compile::obj_path(&root, &t.obj_hash);
             if Path::new(&path).exists() {
                 objs.push((u.to_string(), path));

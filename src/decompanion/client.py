@@ -196,12 +196,35 @@ def start_detached(root: str) -> int:
     return 0
 
 
+def run_via_daemon(root: str, argv: list[str]) -> int:
+    """`dcp run`: the daemon builds and stages and hands back the launch spec (launch.HANDOFF); the program starts
+    here, in the user's process (the daemon's console has no window)."""
+    from . import launch
+    handoff = os.path.join(root, "build", "run", f"handoff-{os.getpid()}.txt")
+    os.makedirs(os.path.dirname(handoff), exist_ok=True)
+    if os.path.exists(handoff):
+        os.remove(handoff)
+    os.environ[launch.HANDOFF] = handoff
+    try:
+        rc = via_daemon(root, argv)
+    finally:
+        del os.environ[launch.HANDOFF]
+    if not os.path.exists(handoff):
+        return rc
+    with open(handoff, encoding="utf-8") as fh:
+        spec = fh.read().strip()
+    os.remove(handoff)
+    return launch.launch(spec) if rc == 0 and spec else rc
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["serve"]:
         return serve(argv[1:])
     root = None if command(argv) == "init" else project_root(argv)
     if root is not None:
+        if command(argv) == "run":
+            return run_via_daemon(root, argv)
         return via_daemon(root, argv)
     from .cli import main as cli_main
     return cli_main(argv)
