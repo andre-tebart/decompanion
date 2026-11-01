@@ -208,7 +208,7 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             Ok(failed as i32)
         }
         Cmd::Init { dir, target_path, name, target_name } => {
-            let (lines, error) = crate::init::init_project(&dir, &target_path, name, target_name, "");
+            let (lines, error) = crate::init::init_project(&dir, &target_path, name, target_name);
             if let Some(e) = error {
                 io.warn(&e);
                 return Ok(1);
@@ -266,7 +266,7 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         Cmd::Session { sub } => session(io, sel, sub),
         Cmd::Skills { sub: SkillsCmd::Install { force } } => {
             let p = glue::config(sel, None)?;
-            let written = crate::init::skills_install("", &p.root.to_string_lossy(), force)?;
+            let written = crate::init::skills_install(&p.root.to_string_lossy(), force)?;
             io.say(&rec(&[("skills", Tok::I(written.len() as i64)), ("into", s(".claude/skills"))]));
             for w in &written {
                 io.say(&format!("  wrote {w}"));
@@ -585,7 +585,6 @@ fn unit(io: &mut Io, sel: &Sel, sub: UnitCmd) -> Result<i32> {
                 Ok(())
             };
             let (l, e, c) = crate::units::unit_join(&p, &a, &b, &why, &mut build)?;
-            drop(build);
             Ok(draft_report(cell.into_inner(), "unit join", l, e, c))
         }
         UnitCmd::Rename { old, new, why, by } => {
@@ -593,7 +592,6 @@ fn unit(io: &mut Io, sel: &Sel, sub: UnitCmd) -> Result<i32> {
             let cell = std::cell::RefCell::new(&mut *io);
             let mut rebuild = || glue::rebuilt(&mut cell.borrow_mut(), sel, None);
             let (l, e, c) = crate::units::unit_rename(&p, &old, &new, by, &why, &mut rebuild)?;
-            drop(rebuild);
             Ok(draft_report(cell.into_inner(), "unit rename", l, e, c))
         }
     }
@@ -624,7 +622,6 @@ fn rename(io: &mut Io, sel: &Sel, words: Vec<String>, from_file: Option<String>,
     let cell = std::cell::RefCell::new(&mut *io);
     let mut rebuild = || glue::rebuilt(&mut cell.borrow_mut(), sel, Some(&p));
     let (out, errs, status) = crate::rename::rename_command(&p, pairs, &mut rebuild)?;
-    drop(rebuild);
     let io = cell.into_inner();
     if !out.is_empty() {
         io.say(&out.join("\n"));
@@ -736,8 +733,6 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
         }
     }
 }
-
-use std::io::Write as _;
 
 // ------------------------------------------------------------------------------------------------ run / worktrees
 

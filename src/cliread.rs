@@ -1,4 +1,4 @@
-//! The reading commands (cli_read.py is their face): disasm, dump, refs, layout literals, layout fptrs, layout
+//! The reading commands: disasm, dump, refs, layout literals, layout fptrs, layout
 //! starts. One record per line, key=value tokens, addresses 0x%08x, counts before lists; every line is a fact of the
 //! store, a byte of the image, or a line of the sources. Each command returns the lines it prints (and an error
 //! for stderr when it has nothing to show).
@@ -752,7 +752,7 @@ fn skeleton(r: &Reader, a: i64) -> Result<Out> {
     Ok((out, None))
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
+// ------------------------------------------------------------------------------------------------ entry points
 
 /// One reading command: (the lines it prints, the error it prints instead when there is nothing to show).
 /// `cmd`: disasm | disasm-ours | dump | refs | literals | fptrs | starts; `args`: its arguments by name.
@@ -782,10 +782,6 @@ pub fn resolve_key(p: &Project, key: &str) -> Result<Option<i64>> {
 /// The body comment of a draft skeleton at a (the disassembly of the walk's extent).
 pub fn skeleton_lines(p: &Project, capstone: &str, a: i64) -> Result<Vec<String>> {
     Ok(skeleton(&Reader::open(p, capstone)?, a)?.0)
-}
-
-pub fn read_resolve(p: &crate::project::Project, key: &str) -> Result<Option<i64>> {
-    Reader::open(p, "")?.resolve(key).map_err(Error::value)
 }
 
 #[cfg(test)]

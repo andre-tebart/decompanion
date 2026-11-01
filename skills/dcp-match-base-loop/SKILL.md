@@ -29,23 +29,24 @@ Locations
      → step 4.
    - **Stopped early without a bug** (e.g. it handed an item to a helper agent and returned before wrapping, or
      left the tree uncommitted) → resume it with SendMessage: finish the remaining function(s) itself, run
-     `uv run dcp session wrap` (must say `gate: ok`), update the units' lead comments, commit the wrap, report
+     `dcp session wrap` (must say `gate: ok`), update the units' lead comments, commit the wrap, report
      back. Then wait again.
 
 3. **Fix the bug in decompanion** with a new background agent (`general-purpose`). Brief it fully, it knows
    nothing else:
    - It works in the decompanion repo (read its `AGENTS.md` first).
    - The bug verbatim from the worker: command, error text, what was left half-done, any repro hints.
-   - Goals: root cause, a fix, tests where practical, run the test suite, commit in decompanion.
+   - Goals: root cause, a fix, tests where practical, run the test suite (`cargo test`), commit in decompanion,
+     then `dcp self install` (it builds the fix and replaces the installed dcp; the project's daemon restarts with
+     the new build at its next command).
    - **Do not modify the project's working tree** (the worker owns it, it may be dirty from the failure);
      read-only inspection is fine.
-   - Report back: root cause, fix, commit hash, test results, whether the daemon must be restarted
-     (`uv run dcp serve --stop`, then `uv run dcp serve` from the project root), and how the worker should
-     recover its tree.
+   - Report back: root cause, fix, commit hash, test results, whether `dcp self install` succeeded, and how the
+     worker should recover its tree.
 
    When it reports, file the bug (see Filing; mark it **FIXED** with the commit), then **resume the original
    worker** with SendMessage: the fix summary, the recovery steps (restore touched files while keeping any
-   earlier uncommitted work, restart the daemon, redo the failed command), and "finish the session; if you hit
+   earlier uncommitted work, redo the failed command: the daemon restarts with the new dcp by itself), and "finish the session; if you hit
    another critical dcp bug, stop and report again". Back to step 2.
 
 4. **Ask for feedback** by resuming the worker with SendMessage:

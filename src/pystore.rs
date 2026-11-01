@@ -77,6 +77,7 @@ pub fn st_facts(path: &str, kind: Option<&str>, lo: Option<i64>, hi: Option<i64>
 }
 
 /// The fact of a row id (None when there is none): (kind, fact).
+#[cfg(test)]
 pub fn st_fact(path: &str, fid: i64) -> Result<Option<(String, SFact)>> {
     with_db(path, |db| {
         db.query_row("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f \n                      JOIN run r ON r.id=f.run_id WHERE f.id=?", [fid], row_fact).optional()
@@ -230,6 +231,7 @@ pub fn st_drop_blobs(path: &str, kind: &str) -> Result<()> {
 }
 
 /// Every blob of one kind, main store first, the overlay's own replacing it: {hash: data}.
+#[cfg(test)]
 pub fn st_blobs(path: &str, main: &str, kind: &str) -> Result<HashMap<String, Vec<u8>>> {
     let rows: Vec<(String, Vec<u8>)> = with_db(path, |db| {
         let mut out = vec![];
@@ -369,6 +371,7 @@ pub(crate) fn ensure_bytemap(db: &mut Connection, path: &str) -> rusqlite::Resul
     Ok(h)
 }
 
+#[cfg(test)]
 pub fn st_ensure_bytemap(path: &str) -> Result<String> {
     with_db(path, |db| ensure_bytemap(db, path))
 }

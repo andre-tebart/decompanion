@@ -1,4 +1,4 @@
-//! A lint run (source/lint.py's lint and stale are its face; the checks M5..M7 are lint.rs's): every unit of the
+//! A lint run: every unit of the
 //! current target and the all-declarations unit through the front end, as VC6 sees them.
 //!
 //! Cache: per unit in the store's blob table, keyed by the unit's text, the clang arguments and the unit's include
@@ -240,7 +240,7 @@ fn run_threads<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
     out.into_inner().unwrap().into_iter().map(|r| r.unwrap()).collect()
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
+// ------------------------------------------------------------------------------------------------ entry points
 
 /// Whether the project's libclang is there.
 pub fn lint_available(p: &crate::project::Project) -> bool {

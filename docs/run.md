@@ -82,7 +82,7 @@ dump = "full"                     # the minidump of a crash: full | state | norm
 5. Run each `after` step, then print `run=NAME exit=CODE ms=N`.
 
 Steps 1–2 run in the daemon (the core's `run.rs`). Steps 3–5 run in the process you typed `dcp` in
-(`launch.py`), because the daemon has no window to start a program in.
+(`launch.rs`, in the client), because the daemon has no window to start a program in.
 
 Every step gets these environment variables:
 

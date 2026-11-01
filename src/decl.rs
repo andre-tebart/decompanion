@@ -1,5 +1,5 @@
-//! Declarations: decl/*.dcl, the typed state a human writes about addresses that have no source yet (ledger/decl.py
-//! is its Python face and documents the grammar), and the loader rules L.decl / L.decl.start.
+//! Declarations: decl/*.dcl, the typed state a human writes about addresses that have no source yet (the grammar is the
+//! parser's, below), and the loader rules L.decl / L.decl.start.
 //!
 //! native_inputs of the rules: {"targets": [names, the default first], "target": the current one}.
 
@@ -395,7 +395,7 @@ pub fn lib_units<'a>(decls: &'a [Decl], target: &str, default: &str) -> BTreeMap
     out
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
+// ------------------------------------------------------------------------------------------------ entry points
 
 
 /// decl.insert: d's canonical line into the sorted file at path, after the last declaration whose sort key is

@@ -1,4 +1,4 @@
-//! The declaration checker's reading of the sources (source/lint.py is its Python face and documents M5..M7):
+//! The declaration checker's reading of the sources:
 //! a file's file-scope declarations as the all-declarations unit repeats them, its macro lines, the names it
 //! defines and uses (the header order), its system includes; the all-declarations unit built from the scan's
 //! pieces; the M5 lines of a run of clang over it. Offsets are byte offsets; the `at` of a declaration goes to

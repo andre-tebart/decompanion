@@ -1,5 +1,4 @@
-//! One file's part of the source scan (ledger/srcscan.py is its Python face, which documents the layout of the
-//! sources and the address comments). The front end's model of the file (source/cparse.py: model) gives the
+//! One file's part of the source scan. The front end's model of the file (clang.rs: the model) gives the
 //! function definitions, the data declarators, the macro definitions, the casts, and the comments and literals
 //! (clang_tokenize); this module reads the address comments and the macros' bodies. Offsets are byte offsets of
 //! the file's text; the model's (line, column in characters) positions are mapped to them.
@@ -397,9 +396,12 @@ pub(crate) struct FilePart {
     pub described: Vec<u64>,
     pub functions: Vec<FnRow>,
     pub data: Vec<DataRow>,
+    #[allow(dead_code)] // the per-file rows; the rules read the tree's (layout.rs Scan)
     pub ptrcasts: Vec<(String, i64, String, u64)>,
+    #[allow(dead_code)]
     pub views: Vec<ViewRow>,
     pub rawobj: Vec<String>,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub errors: Vec<ErrRow>,
     pub placeholders: Vec<(String, i64, String, u64)>,
     pub piece: ScanPiece,

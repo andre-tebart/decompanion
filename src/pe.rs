@@ -45,6 +45,7 @@ pub struct Image {
     pub entry: u32, // VA of the entry point, 0 when none
     pub machine: u16,
     pub timestamp: u32,
+    #[allow(dead_code)] // the file header's characteristics (is_dll is read from them)
     pub file_chars: u16,
     pub is_dll: bool,
     pub subsystem: u16,

@@ -1,0 +1,3 @@
+# The core builds with the GNU toolchain on Windows (the vendored capstone.dll and libclang are loaded at run time).
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"

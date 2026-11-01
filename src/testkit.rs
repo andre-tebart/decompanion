@@ -150,7 +150,7 @@ pub fn build_pe(path: &Path, variant: u32, rich: Option<&[(u32, u32, u32)]>) -> 
     let size_image = RELOC + 0x1000;
     // "<HBBIIIIIIIIIHHHHHHIIIIHHIIIIII"
     let mut o = opt;
-    let mut h = |v: u16, o: &mut usize, out: &mut Vec<u8>| { put16(out, *o, v); *o += 2; };
+    let h = |v: u16, o: &mut usize, out: &mut Vec<u8>| { put16(out, *o, v); *o += 2; };
     let b = |v: u8, o: &mut usize, out: &mut Vec<u8>| { out[*o] = v; *o += 1; };
     let i = |v: u32, o: &mut usize, out: &mut Vec<u8>| { put32(out, *o, v); *o += 4; };
     h(0x10b, &mut o, &mut out);

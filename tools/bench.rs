@@ -63,7 +63,7 @@ fn parse() -> Args {
     a.dcp = me.with_file_name(if cfg!(windows) { "dcp.exe" } else { "dcp" });
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
-    let mut val = |i: &mut usize| -> String {
+    let val = |i: &mut usize| -> String {
         *i += 1;
         argv.get(*i).cloned().unwrap_or_else(|| usage(&format!("{} needs a value", argv[*i - 1])))
     };

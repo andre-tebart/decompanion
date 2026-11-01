@@ -1,6 +1,5 @@
-//! capstone, the very library the Python package `capstone` loaded (its lib/capstone.dll), through its C API:
-//! x86-32, Intel syntax. `disasm` is Cs.disasm_lite (texts, no operand details), `disasm_detail` Cs.disasm with
-//! details on (operands, groups): every instruction from the start of the bytes to the end or the first that does
+//! capstone 5.0.9 (vendor/capstone/capstone.dll, loaded at run time: `library`) through its C API: x86-32, Intel
+//! syntax. `disasm` is the instructions' texts (no operand details), `disasm_detail` with details on (operands, groups): every instruction from the start of the bytes to the end or the first that does
 //! not decode.
 
 use std::cell::RefCell;

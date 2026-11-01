@@ -1,5 +1,5 @@
 //! The grades as the commands read them (the `grade` facts of G.grade): the queues, the shards, the baseline
-//! (ledger/grades.py is its face, and keeps the source edits of the level ladder: set_level, auto_clear).
+//!.
 //!
 //! Queues (units are the separated game units of L.unit.extent, a unit's functions the grade facts of its
 //! functions):

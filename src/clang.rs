@@ -1,4 +1,4 @@
-//! The C front end over libclang (source/cparse.py is its Python face): the library loaded at run time from the
+//! The C front end over libclang: the library loaded at run time from the
 //! LLVM installation (its C API, clang-c/Index.h, stable across versions), a translation unit held as a `Unit`,
 //! and what the scan and the lint read of one: the model (the top-level declarations, macros, casts and dead
 //! ranges per project file), the diagnostics, the references of names to declarations not at file scope, the

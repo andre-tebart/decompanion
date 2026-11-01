@@ -1,6 +1,6 @@
 //! The target project: decompanion.toml and what hangs off it that is plain data: the targets, the toolchain and
 //! library-archive declarations with their reasons, the obligations an input waits on, and the content hashes of
-//! the named external inputs (config.py is its face; the plugins' objects stay there).
+//! the named external inputs.
 //!
 //! decompanion.toml
 //!   [[target]]     name, path, sha256, image, isa; compiler, linker, cflags, archives; reason.<key> (or the older
@@ -24,6 +24,7 @@ const TOOLCHAIN_KEYS: [&str; 3] = ["compiler", "linker", "cflags"];
 const TARGET_KEYS: [&str; 10] = ["name", "path", "sha256", "image", "isa", "archives", "compiler", "linker", "cflags", "reason"];
 const REASON_KEYS: [&str; 6] = ["compiler", "linker", "cflags", "archives", "root", "plugin"];
 pub const IMAGE_FORMATS: [&str; 1] = ["pe32"];
+#[cfg(test)]
 pub const ISAS: [&str; 1] = ["x86"];
 pub const TOOLCHAINS: [&str; 1] = ["vc6"];
 
@@ -508,6 +509,7 @@ impl Project {
     }
 
     /// The current target's image, checked: a known format, the file exists, its sha256 is the declared one.
+    #[cfg(test)]
     pub fn image_checked(&self) -> Result<std::rc::Rc<crate::pe::Image>> {
         let t = self.target(None).map_err(cfg_err)?;
         if let Some(f) = t.image.as_ref().filter(|f| !IMAGE_FORMATS.contains(&f.as_str())) {
@@ -525,6 +527,7 @@ impl Project {
     }
 
     /// The current target's instruction set: its `isa` key, else what the image's machine type implies.
+    #[cfg(test)]
     pub fn isa(&self) -> Result<String> {
         let t = self.target(None).map_err(cfg_err)?;
         let key = match &t.isa {
@@ -543,10 +546,6 @@ impl Project {
         crate::analyzers::Analyzer::of(self).map(|a| a.key).map_err(cfg_err)
     }
 
-    /// The reason a table of the configuration gives for one of its keys ('' when none).
-    pub fn reason(&self, table: &str, key: &str) -> String {
-        reason_of(self.table(table), key)
-    }
 }
 
 #[cfg(test)]
@@ -617,11 +616,6 @@ reason = "S.rich"
     }
 }
 
-/// The targets (name, path) a configuration's text declares, paths as written relative to root.
-pub fn config_targets(root: &str, text: &str) -> Result<Vec<(String, String)>> {
-    targets_of(root, text).map_err(cfg_err)
-}
-
 /// The targets (name, path) a configuration's text declares.
 pub fn targets_of(root: &str, text: &str) -> Result<Vec<(String, String)>, String> {
     let cfg: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{CONFIG_NAME}: {}", e.message()))?;
@@ -630,12 +624,3 @@ pub fn targets_of(root: &str, text: &str) -> Result<Vec<(String, String)>, Strin
     Ok(p.parse_targets()?.into_iter().map(|t| (t.name, t.path)).collect())
 }
 
-/// The default name of a target binary (its stem reduced to [a-z0-9_-]).
-pub fn config_target_name_of(path: &str) -> String {
-    target_name_of(path)
-}
-
-/// Whether a target name is an identifier ([A-Za-z][A-Za-z0-9_-]*).
-pub fn config_is_target_name(name: &str) -> bool {
-    is_identifier(name)
-}

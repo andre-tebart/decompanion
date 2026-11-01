@@ -1,4 +1,4 @@
-//! The compile (build/compile.py ensure is its face): every stale translation unit of a target through the
+//! The compile (`dcp build`): every stale translation unit of a target through the
 //! toolchain, one compiler process per unit on threads, the objects content-addressed under build/obj/<sha256>.obj,
 //! the outcome in the store's `tu` table.
 //!
@@ -696,7 +696,7 @@ pub fn rename_after(p: &Project, before: Vec<Before>, mapping: &std::collections
     Ok(reused)
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
+// ------------------------------------------------------------------------------------------------ entry points
 
 /// compile.ensure: (target, units, compiled, failed, removed, preprocessed, ms, unavailable, log lines).
 #[allow(clippy::type_complexity)]

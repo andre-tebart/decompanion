@@ -63,5 +63,3 @@ pub fn install(io: &mut Io) -> i32 {
     io.say(&format!("self install: {} (build {})", here.display(), crate::client::BUILD));
     0
 }
-
-use std::io::Write as _;

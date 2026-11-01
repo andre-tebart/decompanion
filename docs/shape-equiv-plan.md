@@ -105,5 +105,5 @@ aligned sites, are listed under `assumed`, never make a divergence concrete.
 - gildegold: batch `dcp diffclass` over `dcp next --deep -n 500` before/after each phase and tally verdicts;
   negative control = prover over every byte and shape function, any Divergence is a prover bug (gate for phase 3);
   ai_SaveNetworkGame and ch_AnimDone must come out concrete divergences.
-- Performance: `tools/bench.py` — warm `dcp build` stays <1 s, read commands <10 ms; G.grade cold cost measured
+- Performance: `dcp-bench` (tools/bench.rs) — warm `dcp build` stays <1 s, read commands <10 ms; G.grade cold cost measured
   (today ~0.17 s).

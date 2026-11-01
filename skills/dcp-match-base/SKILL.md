@@ -5,20 +5,17 @@ description: Run one match-base session of a decompanion project - take function
 
 # Match-base session: 8 functions, the main checkout
 
-Goal: every item of `uv run dcp next` to **shape + readable**: the code's instruction diff against the original
+Goal: every item of `dcp next` to **shape + readable**: the code's instruction diff against the original
 has only register / stack-slot / scheduling differences left (or it is byte-identical), and a reader can follow
 the C without the disassembly. You get there by reading the original and fixing what the C *means*. Byte
 identity is welcome when it comes, but allocation, scheduling and generated variant rounds are deep work (the
 deep queue, `dcp next --deep`), not this session's.
 
 Hard rules
-- Every tool is `uv run dcp ...` from the project root (`--target NAME` for a target other than the first).
-  First check `uv run dcp serve --status`; when no daemon runs, start one with `uv run dcp serve` (it
-  detaches and returns) and leave it running: every `uv run dcp` of the project runs in it, and without it
-  every command fails ("no daemon runs ... start it with `dcp serve`"). A worktree needs its own (`dcp serve`
-  there).
-  If `uv run` fails with "failed to remove file ...dcp.exe" (access denied), an old daemon holds the exe: run
-  `uv run --no-sync dcp serve --stop`, then retry.
+- Every tool is `dcp ...` from the project root (`--target NAME` for a target other than the first).
+  Every `dcp` of the project runs in the project's daemon, which the first command starts (and a new dcp
+  build restarts: `dcp: the daemon restarts ...` once, then the command runs). `dcp serve --status` shows it,
+  `dcp serve --stop` stops it (before deleting build/). A worktree has a daemon of its own.
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
   state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp accept` write it).
@@ -31,11 +28,11 @@ Hard rules
   appended to: no dates, no history (git is the history). Nothing else; no notes files, no session log.
 - A unit is one file, `src/<unit>.c`, in the original's TU order: its head region (includes, types, prototypes,
   the dcp declaration block: everything above the first function), then the functions with the data between
-  them. `uv run dcp fn NAME|0xADDR` prints one function with its file and lines (`at=src/<unit>.c:FIRST-LAST`);
+  them. `dcp fn NAME|0xADDR` prints one function with its file and lines (`at=src/<unit>.c:FIRST-LAST`);
   edit it in place.
 - Explicit or computed: a name, a type or a struct layout needs evidence (a string, a caller, the use); a
   reasoned guess says so in the comment.
-- No grade may fall: `dcp check` fails on M1 (a function whose grade is below the baseline). `uv run dcp build`
+- No grade may fall: `dcp check` fails on M1 (a function whose grade is below the baseline). `dcp build`
   exits 0 before every commit.
 - Never write an address of the original into code (`(void (*)(void))0x5de470`, `*(int *)(0x6f9f60 + i)`): the
   relinked program does not hold the original's objects there. Reference the symbol by name (check A1 fails
@@ -44,26 +41,26 @@ Hard rules
 
 ## 1. Start
 
-1. `uv run dcp session start --kind match-base`. It is the gate (no open toolchain or libs obligation, a clean
+1. `dcp session start --kind match-base`. It is the gate (no open toolchain or libs obligation, a clean
    working tree, every unit compiles, no error conflict, the link ok). On `gate: FAIL` fix what it lists (or
    revert), commit, start again; an `obligation=toolchain.*` / `obligation=libs.archives` line is a human
    decision: stop and hand it to the user. A match-base session is counted in functions (section 4), not
    minutes.
-2. `uv run dcp next` - the base queue, first item first. Read the lead comment of its unit's `src/<unit>.c` (its
+2. `dcp next` - the base queue, first item first. Read the lead comment of its unit's `src/<unit>.c` (its
    `Open:` lines).
 
 ## 2. Work loop: one function at a time, always the first item
 
-`uv run dcp next` -> read the function against the original -> fix the meaning -> `uv run dcp build` ->
-`uv run dcp grade NAME` -> commit -> next. Never skip an item: one you cannot raise is escalated (section 3).
+`dcp next` -> read the function against the original -> fix the meaning -> `dcp build` ->
+`dcp grade NAME` -> commit -> next. Never skip an item: one you cannot raise is escalated (section 3).
 
 The item line: `next=0xADDR name=... unit=... section=draft|read code=... readability=... gates=B3,Q2,...
 dist='N ins / M bytes, size ours vs original'`. `section=draft`: the code is below shape; `section=read`: the
 code is shape or byte, only readability is missing. `gates=` names the failing rules.
 
 ### 2.1 Reading: the tools
-- `uv run dcp grade NAME` - the failing rules with their evidence (B1..B3 code, Q1..Q7 readability) and `dist`.
-- `uv run dcp asmdiff NAME` - our instructions against the original's, aligned; `--regs eax=ecx,esi=edi` renames
+- `dcp grade NAME` - the failing rules with their evidence (B1..B3 code, Q1..Q7 readability) and `dist`.
+- `dcp asmdiff NAME` - our instructions against the original's, aligned; `--regs eax=ecx,esi=edi` renames
   registers on our side. Run it first on every big `code` hunk: a pure register rotation reads as `code`.
   `--symbols` prints the call targets, data and string literals by name instead of `X`; `!` marks an equal
   instruction that names another symbol or literal than the original's (a wrong callee, datum or string); `=`
@@ -73,24 +70,24 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
   loop's end pointer lies past the array's end, inside the next object.
   Frames of other sizes are aligned as diffclass aligns them (`frame=0x3bc/0x3b8`): a line that differs only
   by the shift is equal (`~`), so only the real differences show; `--plain` diffs the texts as they are.
-- `uv run dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`, `fpu`,
+- `dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`, `fpu`,
   `frame` (all explained: shape) and `code` (the rest: a meaning difference until shown otherwise). `frame`:
   the two frames differ in size (`frame: ours 0xcc, the original's 0xc8`) and these lines differ only by the
   shifted stack offsets; the `code` hunks left beside them are the real cause (often a variable in a register
   on one side, in a slot on the other). A switch's jump and index tables are data, not code: `tables=equal`
   (or `differ` with the entries that point elsewhere: a case body or the case order differs). grade, asmdiff
   and diffclass read the same extent, so `hunks=0` with equal tables is shape.
-- `uv run dcp disasm 0xADDR` - the original code; `uv run dcp dump 0xADDR [LEN]` - its constants and strings.
-- `uv run dcp refs NAME|0xADDR` - every use and declaration: the callers say what a parameter means.
-- `uv run dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
-- `uv run dcp why 0xADDR|NAME` - everything the ledger knows about an address or a function / data name (names, data, tables).
-- `uv run dcp lint` - clang over the units: prototypes (Q7), cross-unit conflicts (M5), calls without one (M7).
+- `dcp disasm 0xADDR` - the original code; `dcp dump 0xADDR [LEN]` - its constants and strings.
+- `dcp refs NAME|0xADDR` - every use and declaration: the callers say what a parameter means.
+- `dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
+- `dcp why 0xADDR|NAME` - everything the ledger knows about an address or a function / data name (names, data, tables).
+- `dcp lint` - clang over the units: prototypes (Q7), cross-unit conflicts (M5), calls without one (M7).
   An M5 line is one symbol: its definition (file:line, unit, spelling) and every declaration that disagrees
   or agrees with it; fix every disagreeing one to the definition's spelling (or the definition, when the
   declarations are right). `does not compile in the all-declarations unit` is a header whose declarations
   are not compared at all until it compiles (a missing include, a macro of another header in its way).
   `dcp grade` and `dcp next` lint the changed units themselves, so their Q7 is current.
-- `uv run dcp headers conflicts UNIT HEADER..` - before including a header into a unit's head: what it collides with
+- `dcp headers conflicts UNIT HEADER..` - before including a header into a unit's head: what it collides with
   (supersedes / duplicate / clash / header / call with the original's pushes / vc6, what only VC6 rejects /
   prototyped, per call `safe` or re-grade) and the functions to re-grade; a call / other finding on a line marked
   `@original` / `@vc6` shows `exempt=<marker>` and blocks nothing (a redeclaration with another type never: VC6
@@ -106,7 +103,7 @@ missing or extra statement, a wrong type (signed / unsigned compare, `char` vs `
 wrong offset), a call with the wrong arguments, a loop of another form. Stop when only `fill` / `order` / `regs`
 / `slots` / `sib` / `fpu` / `frame` hunks remain: that is shape (B2). Reconstructing missing statements is always base
 work, however long.
-- Note `dist` before an edit; after `uv run dcp build`, `uv run dcp grade NAME`: when the distance grew and the
+- Note `dist` before an edit; after `dcp build`, `dcp grade NAME`: when the distance grew and the
   edit corrected no meaning, revert it (Edit back, or `git checkout -- <file>`). A meaning fix that costs
   distance is kept: say why in the commit message.
 - The original walks pointers, not indices; a `cmp reg, <address>` loop end is an array of structs walked to
@@ -120,9 +117,9 @@ work, however long.
 
 ### 2.3 Readability (`gates=Q...`)
 - Q1 / Q2 placeholder names (`ai_Unk4a13e0`, `param_1`, `iVar2`, `DAT_...`): name what you understood.
-  Functions and data: `uv run dcp rename OLD NEW --why "the evidence"` (project-wide, whole words, names.log;
+  Functions and data: `dcp rename OLD NEW --why "the evidence"` (project-wide, whole words, names.log;
   `dcp refs` first; OLD may be `0xADDR` / `exe:0xADDR` for the ledger's name). Several names at once:
-  `uv run dcp rename OLD1 NEW1 OLD2 NEW2 ... --why "..."` or `--from FILE` (one `OLD NEW [why]` per line): one
+  `dcp rename OLD1 NEW1 OLD2 NEW2 ... --why "..."` or `--from FILE` (one `OLD NEW [why]` per line): one
   rebuild for all of them, and nothing is written unless every pair passes; collect the names of a function
   and rename them in one call. names.log keeps the why as dcp received it; Git Bash passes `\\` in an argument
   as `\` (and `\"` inside double quotes as `"`): a why with backslashes (`Menu\CHOOSEPLAYER`) goes in single
@@ -150,7 +147,7 @@ work, however long.
   lists what is in the way): include the header, delete the local declarations it supersedes, correct the
   calls and accesses that only compiled against them. Commit
   that on its own, before the function: `<unit>: head includes <x>.h (typing)`; it does not count toward the 8,
-  and `uv run dcp check` must show no M1 (an accepted fall, 2.6, is held at its accepted grade). A byte-matched
+  and `dcp check` must show no M1 (an accepted fall, 2.6, is held at its accepted grade). A byte-matched
   function is evidence of what the original declared: when a correction changes its bytes, the correction is
   wrong, not the match, unless the match is no evidence at all (2.6). Find which side is: fix the
   header when its signature or type is the guess, or keep the original's spelling with `@original why` (the
@@ -172,15 +169,15 @@ One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte 
 
 ### 2.5 Other units, headers, data
 - Another unit may change when the meaning needs it and the change is right for it too; a header edit
-  recompiles only its includers, and no function anywhere may get worse (`uv run dcp check`: no M1) except by
+  recompiles only its includers, and no function anywhere may get worse (`dcp check`: no M1) except by
   an accepted fall (2.6).
 - Never rename struct fields or types other units' matched code uses without checking them (`dcp refs`).
-- Data errors (D1, D4, D5, D7, D8) are not base work, except the ones your own change causes; `uv run dcp data map UNIT`
+- Data errors (D1, D4, D5, D7, D8) are not base work, except the ones your own change causes; `dcp data map UNIT`
   shows a unit's data when a function needs it. D7 (a view past its container's end) and D8 (the original's code
   uses more bytes as one object than the declaration holds: a field access, a loop bound, a block copy, a reader
   call) are run-time corruption the gate cannot see otherwise: declare the object at the size D8 names, with the
   names inside it as views or fields of its type. A reader or copier of the game (`vfs_fread(buf, size, n, f)`)
-  tells S.extent its size through `uv run dcp decl add "0xADDR writes ptr=a0 size=a1*a2 -- why"`.
+  tells S.extent its size through `dcp decl add "0xADDR writes ptr=a0 size=a1*a2 -- why"`.
 - Gap data: the `full_data_<addr>` / `full_rdata_<addr>` blocks (defined in the gap block at the end of `src/main.c`,
   `extern GAPDATA` elsewhere) are bytes no symbol covers yet: name, type, extent and owner are all unknown, and
   their place in main says nothing about ownership. When the function you raise shows what one is, settle all
@@ -194,7 +191,7 @@ One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte 
     functions (`dcp layout literals`, `dcp refs`). Move the definition into that unit's file among its data in
     address order (`dcp data map UNIT` shows where), with its address comment, and its one declaration into `include/<unit>.h`; drop every
     `extern GAPDATA` of it and use the typed name at each site.
-  - `uv run dcp check`: no D1 (overlap), no D4 (address order), no D8 (smaller than the original's object), no M1
+  - `dcp check`: no D1 (overlap), no D4 (address order), no D8 (smaller than the original's object), no M1
     (no function got worse); a matched user
     still matching confirms the address (`M.data.site`). A move that breaks one of these was the wrong owner or
     the wrong size: undo it, do not answer it with alignment or padding tricks.
@@ -213,7 +210,7 @@ typedef, a prototype nothing calls), so it never said anything about what the or
 wrong change is not acceptable (a signature, a type or a spelling the original's bytes contradict): fix the
 change, or keep the original's spelling (2.3). When you are not sure which it is, find out (`dcp asmdiff`,
 `dcp diffclass`, try the change without its unrelated parts) before deciding.
-Each accepted fall goes through `uv run dcp accept NAME --to shape|draft --why "<the change, why it is closer,
+Each accepted fall goes through `dcp accept NAME --to shape|draft --why "<the change, why it is closer,
 why the match was no evidence>"` (main checkout; `--readability draft` when readability fell too): it lowers
 that one function's entry in `ledger/grades.tsv` and records the reason and commit next to it; `dcp check`
 then holds the function at the accepted grade. Commit `ledger/grades.tsv` with the change. `dcp promote` (and
@@ -222,7 +219,7 @@ the wrap) raise entries only and refuse a fall no accept covers.
 ## 3. Escalation to the deep queue
 When only allocation or scheduling is left (`regs`, `slots`, `order` hunks the classes do not explain away, or
 the code is shape and only byte identity is missing), or a generated variant round would be needed:
-`uv run dcp escalate NAME "why"`, build, commit `<unit>: <name> -> deep (match-base)`. The reason lists what was
+`dcp escalate NAME "why"`, build, commit `<unit>: <name> -> deep (match-base)`. The reason lists what was
 read and tried and the exact remaining hunk (`asmdiff` lines). `dcp escalate` refuses a reason that only names
 missing statements, and one that admits a part not read against the original yet (not reconciled / checked /
 compared / verified, hard to judge): reconstruction and reading the whole function are base work. It also
@@ -231,7 +228,7 @@ refuses while our instruction count differs from the original's by more than max
 function on gildegold differs by more than 7), a larger difference is missing or wrong statements. When
 allocation really causes it (extra saved registers, spills you have read in the asmdiff), say how:
 `--size-explained "why"` (kept in the reason). A function you raise to shape + readable that still carries a
-stale `@deep` / `@stuck` tag: `uv run dcp escalate NAME --clear`, build again.
+stale `@deep` / `@stuck` tag: `dcp escalate NAME --clear`, build again.
 
 ## 4. When to stop
 A session is **8 functions** raised to shape + readable (or byte + readable) or escalated, then the wrap-up.
@@ -242,8 +239,8 @@ of a session; that is expected base work, not a reason to escalate it.
 
 ## 5. Wrap up
 1. Keep the function in progress if it builds and nothing got worse (but by an accepted fall, 2.6), else
-   revert; `uv run dcp build` exits 0.
-2. `uv run dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
+   revert; `dcp build` exits 0.
+2. `dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
    computed report (errors, byte and readable counts before -> after, `grades changed` per function, renames,
    the next item). It must say `gate: ok`.
 3. Rewrite the lead comment of every unit you touched to its current state (a few lines): what the unit is,

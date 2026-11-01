@@ -1,5 +1,5 @@
-//! `dcp toolchain probe`: which compiler flags the matched functions prove (build/probe.py is its face; the result
-//! feeds M.flags.proven, mrules.rs analyse reads it).
+//! `dcp toolchain probe`: which compiler flags the matched functions prove.
+//! The result feeds M.flags.proven (mrules.rs analyse reads it).
 //!
 //! Anchors: every byte-matched function of the target (code grade byte), compiled as its unit; and, when the
 //! toolchain root holds CRT sources (VC6: VC98/CRT/SRC), every source whose object is a library member placed in the

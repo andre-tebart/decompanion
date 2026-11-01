@@ -399,7 +399,7 @@ pub fn variant_build(p: &Project, v: &Variant, force: bool) -> Result<(crate::co
     Ok((rep, link))
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
+// ------------------------------------------------------------------------------------------------ entry points
 
 fn err(e: impl std::fmt::Display) -> Error {
     Error::runtime(e.to_string())

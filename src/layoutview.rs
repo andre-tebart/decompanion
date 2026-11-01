@@ -1,5 +1,5 @@
 //! What `dcp layout next|units|unit propose` print, computed from the current facts of one target's store
-//! (ledger/layoutview.py is its face).
+//!.
 //!
 //! Nothing here decides anything new: the units are L.unit.extent's facts, the evidence L.analyze's, the checks are
 //! layout.rs's pure functions (run again on the units as a proposal would make them).

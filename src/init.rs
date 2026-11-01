@@ -1,6 +1,6 @@
 //! `dcp init DIR TARGET`: create a target project around one binary; `dcp target add`; `dcp skills install`.
 //!
-//! The project is a git repository of its own that depends on decompanion. It holds the typed state (sources,
+//! The project is a git repository of its own; the `dcp` on PATH works on it. It holds the typed state (sources,
 //! decl/, decompanion.toml, names.log, claims.log, ledger/grades.tsv) and nothing derived (build/ is ignored). The
 //! original binary is referenced by path and pinned by sha256; it is never copied into the repository. The image
 //! format is the registered one that reads the binary, the instruction set the one its machine type implies
@@ -54,19 +54,7 @@ ledger/grades.tsv merge=ours
 
 const GITIGNORE: &str = "/build/
 .dcp/
-__pycache__/
-.venv/
 ";
-
-const PYPROJECT: &str = r#"[project]
-name = "{name}"
-version = "0.0.0"
-requires-python = ">=3.15"
-dependencies = ["decompanion"]
-
-[tool.uv.sources]
-decompanion = { path = "{dcp_path}", editable = true }
-"#;
 
 /// A TOML basic string.
 fn toml_str(s: &str) -> String {
@@ -144,7 +132,7 @@ fn io(e: std::io::Error) -> String {
     e.to_string()
 }
 
-fn init(dir: &str, target: &str, name: Option<String>, target_name: Option<String>, dcp_root: &str) -> Result<Vec<String>, String> {
+fn init(dir: &str, target: &str, name: Option<String>, target_name: Option<String>) -> Result<Vec<String>, String> {
     let dir = resolve(Path::new(dir));
     let target = resolve(Path::new(target));
     if !target.exists() {
@@ -162,21 +150,19 @@ fn init(dir: &str, target: &str, name: Option<String>, target_name: Option<Strin
     let dir = resolve(&dir);
     let analyzer = analyzer_lines();
     let target_file = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let files: [(&str, String); 12] = [
+    let files: [(&str, String); 10] = [
         (CONFIG_NAME, CONFIG.replace("{name}", &name).replace("{analyzer}", &analyzer.join("\n"))
             .replace("{target_block}", &(target_block(&tname, &target, &sha, fmt, isa).join("\n") + "\n"))),
         (".gitattributes", GITATTRIBUTES.into()),
         (".gitignore", GITIGNORE.into()),
         (".editorconfig", "root = true\n\n[*]\ncharset = utf-8\nend_of_line = lf\ninsert_final_newline = true\n".into()),
-        (".python-version", "3.15\n".into()),
-        ("pyproject.toml", PYPROJECT.replace("{name}", &name).replace("{dcp_path}", &posix(dcp_root))),
         ("decl/text.dcl", "# declarations about the code sections; one fact per line, sorted by address (`dcp decl add` inserts)\n\
                            # [TARGET:]ADDR[..END] KIND [WORD ...] [key=value ...] -- reason\n".into()),
         ("decl/data.dcl", "# declarations about the data sections; one fact per line, sorted by address (`dcp decl add` inserts)\n".into()),
         ("names.log", String::new()),
         ("claims.log", String::new()),
         ("ledger/grades.tsv", String::new()),
-        ("README.md", format!("# {name}\n\nA decompanion target project for `{target_file}`. Run `uv run dcp setup`, then follow `uv run dcp status`.\n")),
+        ("README.md", format!("# {name}\n\nA decompanion target project for `{target_file}`. Run `dcp setup`, then follow `dcp status`.\n")),
     ];
     for (rel, text) in &files {
         let p = dir.join(rel);
@@ -200,13 +186,13 @@ fn init(dir: &str, target: &str, name: Option<String>, target_name: Option<Strin
         let names: std::collections::BTreeSet<&str> = skills.iter().filter_map(|x| x.split('/').nth(2)).collect();
         out.push(format!("  skills: {} in .claude/skills/ (dcp skills install updates them)", names.into_iter().collect::<Vec<_>>().join(", ")));
     }
-    out.push("next: cd there, uv sync, uv run dcp setup (it prints the open obligations; uv run dcp status repeats them)".into());
+    out.push("next: cd there, dcp setup (it prints the open obligations; dcp status repeats them)".into());
     Ok(out)
 }
 
 /// Create the project around one binary (module docs); the lines to print, or the message to exit with.
-pub fn init_project(dir: &str, target: &str, name: Option<String>, target_name: Option<String>, dcp_root: &str) -> (Vec<String>, Option<String>) {
-    match init(dir, target, name, target_name, dcp_root) {
+pub fn init_project(dir: &str, target: &str, name: Option<String>, target_name: Option<String>) -> (Vec<String>, Option<String>) {
+    match init(dir, target, name, target_name) {
         Ok(lines) => (lines, None),
         Err(e) => (vec![], Some(e)),
     }
@@ -266,7 +252,7 @@ pub fn target_add(root: &str, name: &str, path: &str) -> (Vec<String>, Option<St
 }
 
 /// `dcp skills install`: the paths written.
-pub fn skills_install(_dcp_root: &str, root: &str, force: bool) -> Result<Vec<String>> {
+pub fn skills_install(root: &str, force: bool) -> Result<Vec<String>> {
     install_skills(Path::new(root), force).map_err(|e| Error::os(e.to_string()))
 }
 

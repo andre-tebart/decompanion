@@ -412,17 +412,20 @@ pub fn analyzer_step(p: &crate::project::Project, force: bool) -> Result<(Vec<St
     Ok((out, errs, true, st("status") == "exported"))
 }
 
+#[cfg(test)]
 fn install_json(key: &str, i: &Install) -> Value {
     json!({"key": key, "ok": i.ok(), "where": i.at, "reason": i.reason, "note": i.note, "root": i.root, "java_home": i.java_home})
 }
 
 /// The default analyzer without configuration and what it finds (`dcp init`'s [analyzer] keys).
+#[cfg(test)]
 pub fn analyzer_default() -> Value {
     let az = Analyzer::default_unconfigured();
     install_json(&az.key, &az.available())
 }
 
 /// The analyzer plugins (the default first).
+#[cfg(test)]
 pub fn analyzer_keys() -> Vec<&'static str> {
     KEYS.to_vec()
 }

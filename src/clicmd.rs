@@ -1,4 +1,4 @@
-//! The read side of cli.py's commands (the Python face refreshes the rules first, then prints these lines): the
+//! The read side of cli.py's commands (the CLI refreshes the rules first, then prints these lines): the
 //! setup report, why, facts, conflicts, rules, map, the build summary, fn, target list, decl add, layout next /
 //! units / unit propose. One record per line, key=value tokens, addresses 0x%08x, intervals lo..hi (hi
 //! exclusive), sorted by address, counts before lists; --json gives the same records as JSON lines.

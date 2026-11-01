@@ -21,7 +21,7 @@
 //! are the gate of `dcp session start` and `dcp check`; the analyzer is due before the first draft is wanted; layout
 //! and match are the work itself.
 //!
-//! The commands here return their output lines; the Python face prints them and reruns the rules between a
+//! The commands here return their output lines; the CLI prints them and reruns the rules between a
 //! declaration and its verdict (the engine's refresh).
 
 use crate::error::{Error, Result};

@@ -78,11 +78,6 @@ pub fn new_epoch() {
     st.epoch += 1;
 }
 
-/// Whether the file exists, by its stamp of this epoch.
-pub fn exists(path: &str) -> bool {
-    stamp_of(&mut state(), path).is_ok()
-}
-
 /// fnmatch.fnmatchcase of `*`, `?` and literal characters.
 pub(crate) fn fnmatch(name: &[u8], pat: &[u8]) -> bool {
     let (mut n, mut p) = (0, 0);
@@ -296,10 +291,6 @@ pub fn forget_all() {
     st.seen.clear();
     st.disk.clear();
     st.dirty = st.disk_path.is_some();
-}
-
-pub fn epoch() -> u64 {
-    state().epoch
 }
 
 #[cfg(test)]

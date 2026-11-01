@@ -1,4 +1,4 @@
-//! The translation units of a target (build/tu.py and compile.plan are its face): one source file per unit,
+//! The translation units of a target (the compile's plan): one source file per unit,
 //! `src/<unit>.c`, compiled as it stands.
 //!
 //! A unit is a translation unit of a target when it holds a function with an address of that target or an unlinked
@@ -10,7 +10,7 @@
 //! compiler reports a diagnostic at the name and line the directives give; `locate` maps it back to the file's
 //! physical line.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::frontend;
 use crate::fsmemo;
 use crate::project::{py_path, Project};
@@ -174,17 +174,20 @@ pub fn locate(text: &str, rel: &str, name: &str, line: i64) -> Vec<i64> {
         .map(|(_, first, _, phys)| phys + line - first).collect()
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
+// ------------------------------------------------------------------------------------------------ entry points
 
+#[cfg(test)]
 type TuRow = (String, String, String, Vec<(Option<i64>, String)>, Option<String>, String);
 
+#[cfg(test)]
 fn rows(units: &[Tu]) -> Vec<TuRow> {
     units.iter().map(|a| (a.target.clone(), a.unit.clone(), a.file.clone(), a.functions.clone(), a.file_name.clone(), a.src_hash.clone())).collect()
 }
 
 /// The translation units of one target of a scan (tu.units).
+#[cfg(test)]
 pub fn plan_scan_units(root: &str, scan: &frontend::Scan, target: &str, default: &str, names: Option<HashMap<String, String>>) -> Result<Vec<TuRow>> {
-    Ok(rows(&units(&py_path(root), scan, target, default, &names.unwrap_or_default()).map_err(Error::runtime)?))
+    Ok(rows(&units(&py_path(root), scan, target, default, &names.unwrap_or_default()).map_err(crate::error::Error::runtime)?))
 }
 
 #[cfg(test)]

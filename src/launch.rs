@@ -249,5 +249,3 @@ fn plain(exe: &str, args: &[String], dir: &str, env: &BTreeMap<String, String>, 
         std::thread::sleep(Duration::from_millis(20));
     }
 }
-
-use std::io::Write as _;

@@ -284,4 +284,4 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
     Ok(Ok(Reading { row, la, lb, tables, hunks, verdict, named, values }))
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
+// ------------------------------------------------------------------------------------------------ entry points

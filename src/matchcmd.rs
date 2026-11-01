@@ -1,4 +1,4 @@
-//! The match-phase commands' output (the Python face builds and refreshes first, then prints these lines): grade,
+//! The match-phase commands' output (the CLI builds and refreshes first, then prints these lines): grade,
 //! next, asmdiff, diffclass, promote, accept, link, toolchain probe, lint. One record per line, key=value tokens,
 //! addresses 0x%08x, counts before lists.
 

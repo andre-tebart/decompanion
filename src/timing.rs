@@ -42,11 +42,6 @@ pub fn phase<T>(name: &str, f: impl FnOnce() -> T) -> T {
     r
 }
 
-/// The milliseconds since the command started.
-pub fn total_ms() -> f64 {
-    STATE.with(|s| s.borrow().0.elapsed().as_secs_f64() * 1000.0)
-}
-
 /// The timing line (None when DCP_TIMING is not set); the per-rule entries only at level 2.
 pub fn report() -> Option<String> {
     let lv = level();

@@ -1,4 +1,4 @@
-//! The source scan's orchestration (ledger/srcscan.py is its face): every project file as each target's compile
+//! The source scan's orchestration: every project file as each target's compile
 //! sees it, read by the front end (libclang, clang.rs) and scanned per file (srcscan.rs scan_file).
 //!
 //! - The front end: the project's libclang (`[lint] libclang = "<path>"`, else the libclang.dll beside `clang` on
@@ -12,7 +12,7 @@
 //! - scan: every file's piece, kept while its text and its models are the same (an edit scans only the files it
 //!   changed), joined; the L16 guards over the whole tree; memoised per tree hash.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::clang::{self, FileModel, ModelOut, Unit};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
@@ -32,10 +32,6 @@ const MODEL_VERSION: &str = "22"; // bump when the scan's translation units chan
 const CPARSE_VERSION: &str = "4";
 const LIVE: usize = 4;
 
-fn err(e: impl std::fmt::Display) -> Error {
-    Error::runtime(e.to_string())
-}
-
 /// clang on PATH.
 fn which_clang() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -53,6 +49,7 @@ pub fn library(cfg: Option<&toml::Table>) -> Option<String> {
 }
 
 /// The default libclang (no configuration), None when there is none.
+#[cfg(test)]
 pub fn clang_library() -> Option<String> {
     library(None)
 }
@@ -343,8 +340,10 @@ pub fn project_files(root: &str) -> Vec<(String, String)> {
 pub struct Scan {
     pub(crate) parts: Vec<Rc<FilePart>>,
     pub own_errors: Vec<srcscan::ErrRow>,
+    #[allow(dead_code)] // the number of files scanned
     pub files: usize,
     pub models: HashMap<String, Arc<FileModel>>,
+    #[allow(dead_code)] // each target's models (the default target's are `models`)
     pub target_models: Vec<(Option<String>, HashMap<String, Arc<FileModel>>)>,
 }
 

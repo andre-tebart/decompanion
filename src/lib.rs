@@ -1,7 +1,9 @@
-//! dcp_core: the native core of decompanion (docs/architecture.md lists its modules).
+//! dcp: a per-byte ledger of a binary under decompilation, with the rules that fill it and the tools around it. The
+//! binary `dcp` (main.rs) is the command line (cli/), which runs a project's commands in its daemon (client.rs,
+//! daemon.rs); the modules below are the core: the store, the rules and their engine, the seams (pe, coff, toolchain /
+//! vc6, cs / x86, analyzers), the C front end (clang, frontend, srcscan) and the commands' bodies.
 //!
-//! This file holds the module list, the Python module's registry of functions, the store's connections and its
-//! write path (`write_run`: a finished rule run with its facts and conflicts, its out_hash, made current).
+//! This file holds the module list, the store's connections and its write path (`write_run`: a finished rule run with its facts and conflicts, its out_hash, made current).
 
 /// The hash of the core's sources (build.rs): part of every rule run's key, and the build id.
 pub(crate) const CORE_HASH: &str = env!("DCP_CORE_HASH");
@@ -529,11 +531,6 @@ pub(crate) fn object(path: &str) -> Result<ObjIndex> {
 /// Keep only the objects of `paths` in memory (the current build's objects).
 pub(crate) fn live_objects(paths: &std::collections::HashSet<String>) {
     OBJS.with(|m| m.borrow_mut().retain(|k, _| paths.contains(k)));
-}
-
-/// The build id: the hash of the core's sources this module was built from (build.rs).
-fn build_id() -> &'static str {
-    CORE_HASH
 }
 
 

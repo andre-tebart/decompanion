@@ -1,7 +1,6 @@
-//! The full link of a target (build/link.py is its face; its module docstring states what goes in and how the
-//! unresolved externals are classified): every object of the target through the toolchain's linker.
+//! The full link of a target (`dcp link`; `classify` sorts the unresolved externals): every object of the target through the toolchain's linker.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::{self, canon, SFact};
@@ -561,13 +560,14 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
 }
 
 /// link.classify: the classes of these unresolved externals.
+#[cfg(test)]
 pub fn link_classify(p: &crate::project::Project, names: Vec<String>) -> Result<Vec<(String, Vec<String>)>> {
     let db = p.store_path();
     crate::pystore::st_open(&db, &p.main_uri())?;
-    let target = p.target(None).map_err(Error::runtime)?;
+    let target = p.target(None).map_err(crate::error::Error::runtime)?;
     let img = crate::image(&target.path)?;
     let x = Ctx { p, root: p.root.to_string_lossy().into_owned(), db, img, tools: Tools::of(p) };
-    Ok(x.classify(&names).map_err(Error::runtime)?.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    Ok(x.classify(&names).map_err(crate::error::Error::runtime)?.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
 #[cfg(test)]
