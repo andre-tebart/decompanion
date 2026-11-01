@@ -19,7 +19,7 @@ use crate::fsmemo;
 use crate::project::{py_path, toml_json, Project, CONFIG_NAME};
 use pyo3::prelude::*;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 const VARIANT_KEYS: [&str; 5] = ["name", "targets", "cflags", "unit", "reason"];
@@ -27,7 +27,8 @@ const VARIANT_UNIT_KEYS: [&str; 3] = ["glob", "cflags", "reason"];
 const SETUP_KEYS: [&str; 7] = ["name", "dir", "exe", "stage", "step", "after", "reason"];
 const STAGE_KEYS: [&str; 4] = ["from", "link", "copy", "reason"];
 const STEP_KEYS: [&str; 2] = ["run", "reason"];
-const RUN_KEYS: [&str; 8] = ["name", "target", "variant", "setup", "args", "env", "seconds", "reason"];
+const RUN_KEYS: [&str; 10] = ["name", "target", "variant", "setup", "args", "env", "seconds", "debug", "dump", "reason"];
+pub const DUMPS: [&str; 4] = ["full", "state", "normal", "none"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VariantUnit {
@@ -85,6 +86,8 @@ pub struct RunProfile {
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
     pub seconds: f64,
+    pub debug: bool,
+    pub dump: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -241,7 +244,16 @@ pub fn parse(cfg: &toml::Table, targets: &[String]) -> Result<RunCfg, String> {
             Some(toml::Value::Float(f)) if *f >= 0.0 => *f,
             Some(_) => return Err(format!("{CONFIG_NAME}: {what}: seconds is not a number >= 0")),
         };
-        out.runs.push(RunProfile { name, target, variant, setup, args: strs(t, "args", &what)?, env, seconds });
+        let debug = match t.get("debug") {
+            None => false,
+            Some(toml::Value::Boolean(b)) => *b,
+            Some(_) => return Err(format!("{CONFIG_NAME}: {what}: debug is not true or false")),
+        };
+        let dump = str_of("dump").unwrap_or_else(|| "full".into());
+        if !DUMPS.contains(&dump.as_str()) {
+            return Err(format!("{CONFIG_NAME}: {what}: dump {} is none of {}", crate::decl::py_repr(&dump), DUMPS.join(", ")));
+        }
+        out.runs.push(RunProfile { name, target, variant, setup, args: strs(t, "args", &what)?, env, seconds, debug, dump });
     }
     dup(&out.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), "variant")?;
     dup(&out.setups.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), "setup")?;
@@ -438,9 +450,10 @@ pub fn variant_build_command(project: PyRef<'_, crate::project::PyProject>, vari
 /// `dcp run NAME` in the core: build the profile's variant (or link the main build), stage its setup's directory and
 /// write the launch spec build/run/<name>.json. (lines, error, spec path). The main build is the caller's.
 #[pyfunction]
-#[pyo3(signature = (project, name, no_build=false, seconds=None, extra=vec![]))]
-pub fn run_prepare(project: PyRef<'_, crate::project::PyProject>, name: &str, no_build: bool, seconds: Option<f64>, extra: Vec<String>)
-    -> PyResult<(Vec<String>, Option<String>, Option<String>)> {
+#[pyo3(signature = (project, name, no_build=false, seconds=None, extra=vec![], debug=None, dump=None, capstone=String::new()))]
+#[allow(clippy::too_many_arguments)]
+pub fn run_prepare(project: PyRef<'_, crate::project::PyProject>, name: &str, no_build: bool, seconds: Option<f64>, extra: Vec<String>,
+                   debug: Option<bool>, dump: Option<String>, capstone: String) -> PyResult<(Vec<String>, Option<String>, Option<String>)> {
     let p = &project.p;
     let t0 = std::time::Instant::now();
     let c = p.run_cfg().map_err(err)?;
@@ -507,18 +520,67 @@ pub fn run_prepare(project: PyRef<'_, crate::project::PyProject>, name: &str, no
     ].into_iter().collect();
     let mut args = r.args.clone();
     args.extend(extra);
+    let debug = debug.unwrap_or(r.debug);
+    let dump = dump.unwrap_or_else(|| r.dump.clone());
+    if !DUMPS.contains(&dump.as_str()) {
+        return Ok((lines, Some(format!("--dump {dump}: none of {}", DUMPS.join(", "))), None));
+    }
+    let symbols = py_path(&format!("{root}/build/run/{name}.symbols.tsv"));
+    if debug {
+        std::fs::create_dir_all(py_path(&format!("{root}/build/run"))).map_err(|e| err(e.to_string()))?;
+        if let Err(e) = run_symbols(p, &hook_env["DCP_MAP"], &symbols, r.variant.as_deref()) {
+            lines.push(format!("  note the symbol table is not written ({e}): crash reports name module offsets only"));
+        }
+    }
     let spec = json!({
         "run": r.name, "root": root, "dir": s(&dir), "exe": s(&exe), "args": args,
         "env": Value::Object(r.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect()),
         "seconds": seconds.unwrap_or(r.seconds), "steps": setup.steps, "after": setup.after, "hook_env": hook_env,
+        "debug": debug, "dump": dump, "symbols": symbols, "capstone": capstone, "crash_root": py_path(&format!("{root}/build/crash")),
     });
     let spec_path = py_path(&format!("{root}/build/run/{name}.json"));
     std::fs::create_dir_all(Path::new(&spec_path).parent().unwrap()).map_err(|e| err(e.to_string()))?;
     std::fs::write(&spec_path, serde_json::to_string_pretty(&spec).unwrap_or_default()).map_err(|e| err(format!("{spec_path}: {e}")))?;
     lines.push(record(&[("run", Tok::S(r.name.clone())), ("dir", Tok::S(crate::vc6::rel_to(&root, &s(&dir)))), ("exe", Tok::S(exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),
                         ("exe_copied", Tok::B(st.exe_copied)), ("linked", Tok::I(st.linked as i64)), ("copied", Tok::I(st.copied as i64)), ("kept", Tok::I(st.kept as i64)),
-                        ("steps", Tok::I(setup.steps.len() as i64)), ("ms", Tok::I(t0.elapsed().as_millis() as i64))]));
+                        ("steps", Tok::I(setup.steps.len() as i64)), ("debug", Tok::B(debug)), ("ms", Tok::I(t0.elapsed().as_millis() as i64))]));
     Ok((lines, None, Some(spec_path)))
+}
+
+/// The symbol table of a debugged run (debugger.rs): the link map's symbols with their unit (by the object's content
+/// hash: the main build's tu rows, the variant's rows), definition line and original address (the source scan).
+/// Written again only when the map or the sources changed.
+fn run_symbols(p: &Project, map: &str, out: &str, variant: Option<&str>) -> Result<(), String> {
+    let src = p.input_hash("src").map_err(|e| e.to_string())?.unwrap_or_default();
+    let key = format!("{} {src}", fsmemo::sha256(map).map_err(|e| format!("{map}: {e}"))?);
+    if crate::debugger::symbols_key(out) == key {
+        return Ok(());
+    }
+    let bytes = std::fs::read(map).map_err(|e| format!("{map}: {e}"))?;
+    let text: String = bytes.iter().map(|&b| b as char).collect(); // latin-1
+    let mut by_obj: HashMap<String, String> = HashMap::new();
+    for (u, row) in crate::compile::tu_rows(&p.store_path()).map_err(|e| e.to_string())? {
+        by_obj.insert(format!("{}.obj", row.obj_hash), u);
+    }
+    if let Some(v) = variant {
+        let rows: Value = std::fs::read_to_string(crate::compile::variant_rows_path(p, v)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+        for (u, row) in rows.as_object().into_iter().flatten() {
+            if let Some(h) = row["obj_hash"].as_str() {
+                by_obj.insert(format!("{h}.obj"), u.clone());
+            }
+        }
+    }
+    let root = p.root.to_string_lossy().into_owned();
+    let scan = crate::frontend::scan(&root, Some(&src))?;
+    let default = p.targets[0].name.clone();
+    let mut source: HashMap<(String, String), (i64, Option<u32>)> = HashMap::new();
+    for f in scan.functions() {
+        let Some(unit) = f.0 .0.strip_prefix("src/").and_then(|r| r.strip_suffix(".c")) else { continue };
+        let orig = f.0 .4.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == p.target_name).map(|x| x.1 as u32);
+        source.entry((unit.to_string(), f.0 .3.clone())).or_insert((f.0 .1, orig));
+    }
+    let syms = crate::debugger::symbols(&text, |o| by_obj.get(o).cloned(), |u, n| source.get(&(u.to_string(), n.to_string())).copied());
+    crate::debugger::write_symbols(out, &key, &syms)
 }
 
 #[cfg(test)]

@@ -63,12 +63,14 @@ setup = "game"
 args = ["DIRECTWINDOW"]
 env = { REA_START = "new" }
 seconds = 0                       # terminate after this many seconds (0: never)
+debug = false                     # run under the debugger (see Crashes)
+dump = "full"                     # the minidump of a crash: full | state | normal | none
 ```
 
 ## `dcp run`
 
     dcp run                 the profiles (as --list)
-    dcp run NAME [--no-build] [--seconds N] [--prepare-only] [-- ARGS...]
+    dcp run NAME [--no-build] [--seconds N] [--prepare-only] [--debug | --no-debug] [--dump MODE] [-- ARGS...]
 
 1. Build: the main build of the profile's target, then the variant's (or the main link).
    `--no-build` takes the last linked program.
@@ -93,3 +95,41 @@ Every step gets these environment variables:
 | `DCP_ORIGINAL` | the original binary (`[[target]] path`) |
 | `DCP_MAP` | the linked program's `.map` |
 | `DCP_EXIT` | `after` steps only: the program's exit code |
+| `DCP_CRASH` | `after` steps only: the crash folder (empty without a crash) |
+
+## Crashes
+
+`dcp run NAME --debug` (or `debug = true` in the profile) starts the program under a minimal Win32 debugger
+(the core's `debugger.rs`), in the process you typed `dcp` in. The program gets `_NO_DEBUG_HEAP=1`: a process
+started under a debugger otherwise gets the NT debug heap, which changes heap behaviour and can hide the bug.
+
+- Exceptions the program handles itself (first chance) go back to it and leave no report.
+- A crash is a second-chance exception, or an NTSTATUS exit after a fatal first-chance one. It writes
+  `build/crash/<run>-<YYYYmmdd-HHMMSS>/` and points `build/crash/LATEST.txt` at it. The folder holds:
+  - `crash.txt`: the report.
+  - `crash.dmp`: a minidump, unless `--dump none`. `full` (all memory) is the default; `state` holds the data
+    segments and private read/write pages; `normal` holds the stacks only. Open it in WinDbg (`.effmach x86`) or
+    Visual Studio.
+  - `launch.json`: the spec of the run.
+- The closing line gains `crash=build/crash/...` and `dcp run` exits 1.
+
+`crash.txt` holds:
+- **The exception** and **the fault**. An address of the exe is named with its function, unit, definition line and
+  the original's address:
+
+      fault: 0x0040100a  deref+0xa   unit=crash  src/crash.c:2  original=0x00401234+0xa
+
+  So `dcp fn deref` / `dcp asmdiff deref` are the next step.
+- For an access violation, the access and the address.
+- The faulting instruction, with its memory operand worked out from the registers:
+  `mov eax, dword ptr [ecx + eax*4]   [ecx + eax*4] = 0x00000040  (eax=0x00000010, ecx=0x00000000)`.
+- The registers.
+- **The call chain**: the stack words that follow a call instruction, innermost first. `/O2` omits the frame
+  pointer, so this is the backtrace that works; the EBP chain follows it, marked unreliable.
+- A stack scan and the modules.
+
+The names come from `build/run/<NAME>.symbols.tsv`. The daemon writes it at prepare time (when the map or the
+sources changed) from:
+- the link map's publics and statics;
+- the unit of each object, by its content hash (the main build's rows, the variant's rows);
+- the definition line and original address of each function (the source scan).

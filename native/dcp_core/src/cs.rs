@@ -23,8 +23,8 @@ type Free = unsafe extern "C" fn(*mut CsInsn, usize);
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
-    fn LoadLibraryW(name: *const u16) -> *mut c_void;
-    fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+    pub(crate) fn LoadLibraryW(name: *const u16) -> *mut c_void;
+    pub(crate) fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
 }
 
 const CS_ARCH_X86: c_int = 3;

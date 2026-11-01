@@ -22,7 +22,8 @@ def cmd_run(args):
     else:
         p, e, rep = build_target(args, target, quiet=True)
     extra = list(args.extra or [])
-    lines, error, spec = _core.run_prepare(p.core, args.name, bool(args.no_build), args.seconds, extra)
+    from .rules.engine import capstone_dll
+    lines, error, spec = _core.run_prepare(p.core, args.name, bool(args.no_build), args.seconds, extra, args.debug, args.dump, capstone_dll())
     report("run", lines, error)
     if error or spec is None:
         return 1
@@ -39,6 +40,11 @@ def register(sub, cmd):
     s.add_argument("--no-build", action="store_true", help="stage and start the last linked program")
     s.add_argument("--seconds", type=float, help="terminate the program after this many seconds (default: the profile's)")
     s.add_argument("--prepare-only", action="store_true", help="build and stage, write the launch spec, start nothing")
+    s.add_argument("--debug", dest="debug", action="store_const", const=True, default=None,
+                   help="run under the debugger: a crash writes build/crash/<run>-<stamp>/ (crash.txt, crash.dmp)")
+    s.add_argument("--no-debug", dest="debug", action="store_const", const=False, help="a plain run, whatever the profile says")
+    s.add_argument("--dump", choices=("full", "state", "normal", "none"),
+                   help="the minidump of a crash (default: the profile's dump, else full)")
     # not argparse.REMAINDER: it would swallow an option given after the name (`run play --prepare-only` started the
     # program with --prepare-only as its argument); extra program arguments follow `--`
     s.add_argument("extra", nargs="*", help="extra program arguments, after --")
