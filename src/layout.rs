@@ -811,7 +811,7 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
     }
     // the debt (§8.6): every declared regression is listed, never a gate failure, while the target holds no more
-    // than the gate's max_debt of them
+    // than the gate's max_debt of them (when [gate] max_debt sets one)
     let debts: Vec<crate::queues::Debt> = crate::queues::debts(&text).into_iter().filter(|d| d.target == target).collect();
     for d in &debts {
         let at = if img.base as i64 <= d.addr && d.addr < img.end() as i64 { d.addr } else { img.base as i64 };
@@ -820,7 +820,7 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                                                            d.now, d.witness, d.why), "");
     }
     let max = ctx.inputs.max_debt;
-    if debts.len() as i64 > max {
+    if max >= 0 && debts.len() as i64 > max {
         out.finding("error", "M1.debt", img.base as i64, img.base as i64 + 1,
                     format!("{} debt items, more than the gate's max_debt {max} ([gate] max_debt): win some back first (dcp debt list)", debts.len()), "");
     }

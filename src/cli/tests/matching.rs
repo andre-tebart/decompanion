@@ -292,7 +292,7 @@ fn promote_raises_only_and_accept() {
     let out = dcp(&t, &["findings"]).1; // no fall: one debt item
     assert!(!out.contains("  M1  ") && out.contains("warn  debt  M1.debt") && out.contains("waits for the net header"), "{out}");
     let out = dcp(&t, &["debt", "list"]).1;
-    assert!(out.starts_with("debt=1  max_debt=20") && out.contains("name=get") && out.contains("waits_for='the net header'"), "{out}");
+    assert!(out.starts_with("debt=1  max_debt=none") && out.contains("name=get") && out.contains("waits_for='the net header'"), "{out}");
     let (code, out) = dcp(&t, &["promote"]); // no fall against the lowered entry; the note stays
     assert!(code == 0 && out.contains("accepted=1") && tsv().lines().nth(1).unwrap() == line, "{out}");
     unit(&t, "net", &[good]);

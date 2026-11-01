@@ -220,7 +220,7 @@ match was no evidence>" --waits-for "<what has to settle first: a prototype, a h
 checkout; `--readability draft` when readability fell too): it lowers that one function's entry in
 `ledger/grades.tsv` and records the grade before, the last witness commit, the reason and what it waits for;
 `dcp check` then holds the function at the declared grade and lists it (`M1.debt`), and fails past `[gate]
-max_debt` (20) items. `dcp debt list` shows them all: walk them once the structure settles (many share one
+max_debt` items when it sets one. `dcp debt list` shows them all: walk them once the structure settles (many share one
 cause). Commit `ledger/grades.tsv` with the change. `dcp promote` (and the wrap) raise entries only and refuse a
 fall no debt item covers.
 

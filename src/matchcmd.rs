@@ -469,7 +469,7 @@ pub fn debt_add_command(project: Option<&Project>, name: &str, to: Option<String
 pub fn debt_list_command(p: &Project) -> Vec<String> {
     let root = p.root.to_string_lossy().into_owned();
     let items = queues::debts(&read_baseline(&root));
-    let mut out = vec![record(&[("debt", Tok::I(items.len() as i64)), ("max_debt", Tok::I(p.max_debt()))])];
+    let mut out = vec![record(&[("debt", Tok::I(items.len() as i64)), ("max_debt", if p.max_debt() < 0 { s("none") } else { Tok::I(p.max_debt()) })])];
     for d in &items {
         out.push(format!("  {}", record(&[("target", s(d.target.clone())), ("fn", s(fmt_addr(d.addr))), ("name", s(d.name.clone())), ("was", s(d.was.clone())),
                                           ("now", s(d.now.clone())), ("witness", s(d.witness.clone())), ("why", s(d.why.clone())),
