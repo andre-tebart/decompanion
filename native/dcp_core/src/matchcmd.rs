@@ -228,8 +228,10 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
             3
         }
     };
-    let n: usize = ops.iter().map(|o| if o.0 != Tag::Equal { o.2 - o.1 + o.4 - o.3 } else { (o.1..o.2).filter(|&i| kind(i, o.3 + i - o.1) == 3).count() * 2 })
-        .sum();
+    let n = match frame {
+        Some(f) => crate::diffclass::frame_distance(a, b, f),
+        None => crate::diffclass::distance(a, b),
+    };
     let mut out = vec![];
     for (tag, i1, i2, j1, j2) in ops {
         if tag == Tag::Equal {
