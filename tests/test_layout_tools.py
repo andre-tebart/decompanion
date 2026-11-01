@@ -515,6 +515,44 @@ def test_rename_several_pairs(tiny, capsys):
     assert events[2].startswith("0x10001020 func a_10001020 -> a_Sum") and events[2].endswith("why:" + why_file), events
 
 
+def test_rename_writes_all_or_nothing(tiny, capsys):
+    """names.log is appended, never rewritten: a rename succeeds while another process maps the log (Windows refuses
+    to truncate a mapped file: os error 1224, `git diff` maps the files it reads). A write that fails puts every file
+    back: the sources, decl/ and names.log read as before, and the error says so (gildegold 2026-11-01)."""
+    import mmap
+    import os
+    import stat
+    write(tiny, "include/a.h", "int a_10001000(void);  /* 0x10001000 */\nextern int a_Unk10002000;  /* 0x10002000 */\n")
+    unit(tiny, "a", '#include "a.h"\n', "/* 0x10001000, a_10001000 */\nint a_10001000(void)\n{\n    return a_Unk10002000;\n}\n")
+    unit(tiny, "d", "int a_Unk10002000 = 0x1234;  /* 0x10002000 */\n")
+    log = tiny / "names.log"
+    if not log.exists() or not log.read_bytes():
+        log.write_text("2026-01-01T00:00:00 - unit x -> y by:main why:seed\n", newline="\n")
+
+    def snapshot():
+        return {f: f.read_bytes() for f in tiny.rglob("*") if f.suffix in (".c", ".h", ".dcl", ".log")}
+
+    # a source that cannot be written: nothing renamed, every file as before
+    before = snapshot()
+    d = tiny / "src/d.c"
+    os.chmod(d, stat.S_IREAD)
+    try:
+        code, out = dcp(tiny, "rename", "a_10001000", "a_Main", "a_Unk10002000", "a_Counter", "--why", "x")
+    finally:
+        os.chmod(d, stat.S_IREAD | stat.S_IWRITE)
+    err = capsys.readouterr().err
+    assert code == 1 and "d.c: " in err and "every file put back as it was, nothing renamed" in err, err
+    assert snapshot() == before
+    # the log mapped by another reader: the rename goes through, one event per pair appended
+    lines = len(log.read_text().splitlines())
+    with open(log, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ):
+        code, out = dcp(tiny, "rename", "a_10001000", "a_Main", "a_Unk10002000", "a_Counter", "--why", "x")
+    assert code == 0, out
+    events = log.read_text().splitlines()
+    assert len(events) == lines + 2 and "a_10001000 -> a_Main" in events[-2] and "a_Unk10002000 -> a_Counter" in events[-1], events
+    assert "return a_Counter;" in (tiny / "src/a.c").read_text()
+
+
 def test_disasm_inside_an_instruction(tiny):
     """An address inside an instruction of a function lists from the next instruction boundary (decoded from the
     function's start), with a note, not as undecodable bytes (match-base feedback 2026-10-30)."""

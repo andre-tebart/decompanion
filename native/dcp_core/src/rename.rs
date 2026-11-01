@@ -9,7 +9,9 @@
 //! NEW written by hand in part for OLD's address is completed; when the pairs of a call chain or repeat. A success
 //! prints per pair the rename record (files, replacements, decl lines) and one line per changed file, with its first
 //! changed lines (`LINE: text` as it reads now, 4 per file, `(+N more line(s))`). names.log
-//! records each event, with the address the ledger knows for OLD. The rename done by hand already (OLD nowhere,
+//! records each event, with the address the ledger knows for OLD, all of a call's events in one append. The write is
+//! all or nothing: a failed write of a source, a decl file or names.log puts every file back as it read before
+//! (an error, exit 1). The rename done by hand already (OLD nowhere,
 //! NEW the ledger's name of OLD's address) is only recorded. The views of OLD (OLD with an upper-case view suffix)
 //! keep their names: a note lists them.
 //!
@@ -434,22 +436,64 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
         return Ok((x.out, errs, 1));
     }
     let root = x.root.clone();
-    for pl in plans.iter().filter(|p| p.recorded) {
-        E::log_names(&root, &[(pl.a, pl.kind, pl.old.clone(), pl.new.clone())], &pl.why).map_err(err)?;
-        x.out.push(record(&[("recorded", s(pl.old.clone())), ("to", s(pl.new.clone())), ("kind", s(pl.kind)), ("at", oi(pl.a)), ("files", Tok::I(0))])
-                   + "  (renamed by hand already: names.log only)");
-    }
-    let mut edits: Vec<&mut Plan> = plans.iter_mut().filter(|p| !p.recorded).collect();
-    if edits.is_empty() {
+    let recorded: Vec<(Option<i64>, &'static str, String, String, String)> =
+        plans.iter().filter(|p| p.recorded).map(|p| (p.a, p.kind, p.old.clone(), p.new.clone(), p.why.clone())).collect();
+    // printed once the write went through
+    let said: Vec<String> = recorded.iter().map(|(a, kind, old, new, _)| {
+        record(&[("recorded", s(old.clone())), ("to", s(new.clone())), ("kind", s(*kind)), ("at", oi(*a)), ("files", Tok::I(0))])
+            + "  (renamed by hand already: names.log only)"
+    }).collect();
+    if plans.iter().all(|p| p.recorded) {
+        let ev: Vec<(Option<i64>, &str, String, String, &str)> = recorded.iter().map(|(a, k, o, n, w)| (*a, *k, o.clone(), n.clone(), w.as_str())).collect();
+        if let Err(e) = E::log_names_each(&root, &ev) {
+            errs.push(format!("dcp rename: names.log not written ({e}): nothing recorded"));
+            return Ok((x.out, errs, 1));
+        }
+        x.out.extend(said);
         return Ok((x.out, errs, 0));
     }
+    let mut edits: Vec<&mut Plan> = plans.iter_mut().filter(|p| !p.recorded).collect();
     // the units that read a file the rename writes, preprocessed before the write: one whose text changes only by
     // the names keeps its object with the symbols renamed instead of compiling again (compile.rs rename_after)
     let touched: Vec<String> = edits.iter().flat_map(|p| p.files.keys().cloned()).filter(|f| !f.starts_with("decl/")).collect();
     let pre = crate::compile::rename_before(p, &touched).map_err(err)?;
-    write_renames(&root, &mut edits).map_err(err)?;
+    // all or nothing: every file the rename writes is kept as it reads now; a failed write of a source, a decl file
+    // or names.log puts every one back
+    let mut kept: Vec<(String, Vec<u8>)> = vec![];
+    {
+        let mut seen = BTreeSet::new();
+        let paths = edits.iter().flat_map(|p| p.files.keys().filter(|f| !f.starts_with("decl/")).map(|f| py_path(&format!("{root}/{f}")))
+                                           .chain(p.decls.iter().cloned()).collect::<Vec<_>>());
+        for path in paths {
+            if seen.insert(path.clone()) {
+                let b = std::fs::read(&path).map_err(|e| err(format!("{path}: {e}")))?;
+                kept.push((path, b));
+            }
+        }
+    }
+    let log = py_path(&format!("{root}/names.log"));
+    if let Ok(b) = std::fs::read(&log) {
+        kept.push((log, b));
+    }
+    let events: Vec<(Option<i64>, &'static str, String, String, String)> = recorded.iter().cloned()
+        .chain(edits.iter().map(|p| (p.a, p.kind, p.old.clone(), p.new.clone(), p.why.clone()))).collect();
+    let written = write_renames(&root, &mut edits).and_then(|_| {
+        let ev: Vec<(Option<i64>, &str, String, String, &str)> = events.iter().map(|(a, k, o, n, w)| (*a, *k, o.clone(), n.clone(), w.as_str())).collect();
+        E::log_names_each(&root, &ev)
+    });
+    if let Err(e) = written {
+        let stuck: Vec<String> = kept.iter().filter(|(path, b)| std::fs::read(path).ok().as_ref() != Some(b))
+            .filter_map(|(path, b)| E::write_bytes(path, b).err()).collect();
+        if stuck.is_empty() {
+            errs.push(format!("dcp rename: a write failed ({e}): every file put back as it was, nothing renamed"));
+        } else {
+            errs.push(format!("dcp rename: a write failed ({e}), and putting back failed for {} file(s): {} (git checkout them)", stuck.len(),
+                              stuck.join("; ")));
+        }
+        return Ok((x.out, errs, 1));
+    }
+    x.out.extend(said);
     for pl in &edits {
-        E::log_names(&root, &[(pl.a, pl.kind, pl.old.clone(), pl.new.clone())], &pl.why).map_err(err)?;
         x.out.push(record(&[("renamed", s(pl.old.clone())), ("to", s(pl.new.clone())), ("kind", s(pl.kind)), ("at", oi(pl.a)),
                             ("files", Tok::I(pl.files.len() as i64)), ("replacements", Tok::I(pl.files.values().sum::<usize>() as i64)),
                             ("decl", Tok::I(pl.decl_lines as i64))]));

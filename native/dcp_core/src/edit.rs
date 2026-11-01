@@ -77,12 +77,64 @@ pub fn read(path: &str) -> String {
 
 /// Write a text (UTF-8, LF), the directories made; the file memo forgets its stamps.
 pub fn write(path: &str, text: &str) -> Result<(), String> {
+    write_bytes(path, text.as_bytes())
+}
+
+/// Windows refuses to truncate a file while another process holds a section of it mapped (ERROR_USER_MAPPED_FILE,
+/// 1224: Git for Windows maps the working-tree files `git diff` reads, an editor or indexer may too); a sharing
+/// violation (32, 33) is as passing. Such a refusal is waited out a while.
+fn transient(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(1224 | 32 | 33))
+}
+
+/// Retry `f` while it fails transiently, up to about 3 s.
+fn patiently<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut wait = 10;
+    let mut spent = 0;
+    loop {
+        match f() {
+            Err(e) if transient(&e) && spent < 3000 => {
+                std::thread::sleep(std::time::Duration::from_millis(wait));
+                spent += wait;
+                wait = (wait * 2).min(400);
+            }
+            r => return r,
+        }
+    }
+}
+
+/// The bytes written in place, the directories made: the file is opened without truncation (a mapped section of it
+/// held by another process refuses only a shrink), shrunk first when the new bytes are shorter (a refused shrink
+/// leaves the file as it was), then written and cut to length. The file memo forgets its stamps.
+pub fn write_bytes(path: &str, data: &[u8]) -> Result<(), String> {
+    use std::io::{Seek, Write};
     if let Some(d) = Path::new(path).parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
-    std::fs::write(path, text).map_err(|e| format!("{path}: {e}"))?;
+    let r = patiently(|| {
+        let mut f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+        let len = data.len() as u64;
+        if f.metadata()?.len() > len {
+            f.set_len(len)?;
+        }
+        f.seek(std::io::SeekFrom::Start(0))?;
+        f.write_all(data)?;
+        f.set_len(len)
+    });
     crate::fsmemo::new_epoch();
-    Ok(())
+    r.map_err(|e| format!("{path}: {e}"))
+}
+
+/// Append bytes to a file (made when missing); appending never truncates, so a mapped section held by another
+/// process does not refuse it. The file memo forgets its stamps.
+pub fn append(path: &str, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let r = patiently(|| {
+        let mut f = std::fs::OpenOptions::new().append(true).create(true).open(path)?;
+        f.write_all(text.as_bytes())
+    });
+    crate::fsmemo::new_epoch();
+    r.map_err(|e| format!("{path}: {e}"))
 }
 
 /// (file, line) of every whole-word occurrence of name in src/ and include/ (comments included).
@@ -217,22 +269,29 @@ pub fn checkout_name(root: &str) -> String {
 
 /// Append one names.log line per (addr, kind, old, new).
 pub fn log_names(root: &str, events: &[(Option<i64>, &str, String, String)], why: &str) -> Result<(), String> {
+    let events: Vec<(Option<i64>, &str, String, String, &str)> = events.iter().map(|(a, k, o, n)| (*a, *k, o.clone(), n.clone(), why)).collect();
+    log_names_each(root, &events)
+}
+
+/// Append one names.log line per (addr, kind, old, new, why), all in one append: the log is never rewritten (a write
+/// that truncated it would be refused while another process maps it).
+pub fn log_names_each(root: &str, events: &[(Option<i64>, &str, String, String, &str)]) -> Result<(), String> {
     if events.is_empty() {
         return Ok(());
     }
     let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     let by = checkout_name(root);
-    let why = why.split(crate::srcscan::py_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
-    let lines: String = events.iter().map(|(a, k, o, n)| {
+    let mut lines: String = events.iter().map(|(a, k, o, n, why)| {
+        let why = why.split(crate::srcscan::py_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
         let a = a.map(|a| format!("{a:#010x}")).unwrap_or_else(|| "-".into());
         format!("{ts} {a} {k} {o} -> {n} by:{by} why:{why}\n")
     }).collect();
     let path = py_path(&format!("{root}/names.log"));
-    let mut old = if Path::new(&path).exists() { std::fs::read_to_string(&path).unwrap_or_default() } else { String::new() };
-    if !old.is_empty() && !old.ends_with('\n') {
-        old.push('\n');
+    let last = std::fs::read(&path).ok().and_then(|b| b.last().copied());
+    if last.is_some_and(|c| c != b'\n') {
+        lines.insert(0, '\n');
     }
-    write(&path, &(old + &lines))
+    append(&path, &lines)
 }
 
 fn git(root: &str, args: &[&str]) -> std::process::Output {
@@ -478,6 +537,19 @@ mod tests {
         assert_eq!(n, 4);
         assert!(new.contains("#include \"net.h\"") && new.contains("\"net\"") && new.contains("int socket_net(void);"));
         assert!(new.contains("/* socket_net: f calls socket_net */"));
+    }
+
+    #[test]
+    fn write_in_place_and_append() {
+        let dir = std::env::temp_dir().join(format!("dcp-write-{}", std::process::id()));
+        let p = dir.join("f.txt").to_string_lossy().into_owned();
+        write(&p, "a longer first text\n").unwrap();
+        write(&p, "short\n").unwrap(); // shrunk: no tail of the old text stays
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "short\n");
+        write(&p, "grown past the old length\n").unwrap();
+        append(&p, "more\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "grown past the old length\nmore\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
