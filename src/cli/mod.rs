@@ -7,7 +7,7 @@
 //! back to the client.
 
 pub mod args;
-mod commands;
+pub(crate) mod commands;
 mod glue;
 #[cfg(test)]
 mod tests;

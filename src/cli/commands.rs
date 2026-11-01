@@ -640,7 +640,7 @@ fn rename(io: &mut Io, sel: &Sel, words: Vec<String>, from_file: Option<String>,
 const MINUTES: i64 = 30;
 
 /// The line after `gate: ok`: what bounds the session of this kind.
-fn guidance(kind: Option<&str>) -> String {
+pub(crate) fn guidance(kind: Option<&str>) -> String {
     let clock = format!("the session clock runs ({MINUTES} minutes): `dcp session status`, and the first line of `dcp layout next`; wrap up once it says over=yes");
     let functions = "a match-base session is counted in functions (the skill's count), not minutes: `dcp next` for the first item";
     match kind {
