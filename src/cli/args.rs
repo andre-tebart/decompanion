@@ -56,24 +56,34 @@ pub enum Cmd {
         #[arg(long)]
         refs: bool,
     },
-    /// facts intersecting a range
-    Facts {
+    /// the claims intersecting a range: each with its question, value, support and producer
+    Claims {
         range: String,
+        /// the claims answering one question: section, owner, start, unit, ref, toolchain
+        #[arg(long, value_parser = parse_question)]
+        question: Option<crate::store::Question>,
+        /// one stored kind (also the kinds that are no claims: name (φ), grade, build, evidence)
         #[arg(long)]
         kind: Option<String>,
+        /// the claims of this support or above: declared, derived, observed, reproduced
+        #[arg(long, value_parser = parse_support)]
+        support: Option<crate::store::Support>,
         #[arg(long)]
         json: bool,
     },
-    /// the byte map rows of a range
-    Map { range: Option<String> },
-    /// contradictions between facts
-    Conflicts {
+    /// the answers of a range: per run of bytes the owner at its highest support, its unit and section
+    Answers { range: Option<String> },
+    /// the findings: contradictions, ill-formed H or φ, gaps, stale results, debt
+    Findings {
+        /// contradiction, ill-formed, gap, stale, debt
+        #[arg(long, value_parser = parse_category)]
+        category: Option<crate::registry::Category>,
         #[arg(long)]
         severity: Option<Severity>,
         #[arg(long)]
         json: bool,
     },
-    /// the gate: build, no bug or error conflict, the link resolves (every target unless --target)
+    /// the gate: build, no bug or error finding, the link resolves (every target unless --target)
     Check {
         /// warnings fail too
         #[arg(long)]
@@ -363,6 +373,21 @@ pub enum Cmd {
         #[command(subcommand)]
         sub: SelfSub,
     },
+}
+
+fn parse_question(s: &str) -> Result<crate::store::Question, String> {
+    crate::store::Question::parse(s).ok_or_else(|| {
+        format!("no question {s:?} (one of {})", crate::store::Question::ALL.map(|q| q.name()).join(", "))
+    })
+}
+
+fn parse_support(s: &str) -> Result<crate::store::Support, String> {
+    crate::store::Support::parse(s).ok_or_else(|| format!("no support {s:?} (one of {})", crate::store::Support::ALL.map(|q| q.name()).join(", ")))
+}
+
+fn parse_category(s: &str) -> Result<crate::registry::Category, String> {
+    crate::registry::Category::parse(s)
+        .ok_or_else(|| format!("no category {s:?} (one of {})", crate::registry::Category::ALL.map(|q| q.name()).join(", ")))
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]

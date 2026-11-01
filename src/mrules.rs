@@ -44,9 +44,9 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             out.claim(at, at + 1, "build", json!({"tu": a.unit, "ok": false, "stale": true, "errors": ["not compiled"], "warnings": 0,
                                                  "functions": a.functions.len()}), OBSERVED);
             if tools.available() {
-                out.finding("error", "M.compile", at, at + 1, format!("unit {} is not compiled (dcp build)", a.unit), "");
+                out.finding("error", "M.compile.stale", at, at + 1, format!("unit {} is not compiled (dcp build)", a.unit), "");
             } else {
-                out.finding("warn", "M.compile", at, at + 1, format!("unit {} is not compiled: the toolchain is not available (root {})", a.unit,
+                out.finding("warn", "M.compile.stale", at, at + 1, format!("unit {} is not compiled: the toolchain is not available (root {})", a.unit,
                                                                       tools.root.as_deref().unwrap_or("None")), "");
             }
             continue;
@@ -71,7 +71,7 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             out.finding("error", "M.compile", at, at + 1, format!("unit {} does not compile: {why}", a.unit), "");
             continue;
         } else if stale {
-            out.finding("warn", "M.compile", at, at + 1, format!("unit {} changed since its compile (dcp build)", a.unit), "");
+            out.finding("warn", "M.compile.stale", at, at + 1, format!("unit {} changed since its compile (dcp build)", a.unit), "");
         }
         let Ok(data) = std::fs::read(obj_path(&root, &row.obj_hash)) else { continue };
         let Ok(obj) = crate::coff::Obj::parse(&data) else { continue };

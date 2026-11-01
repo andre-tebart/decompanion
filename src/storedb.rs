@@ -6,12 +6,10 @@
 //! Claims come back as the core's Claim values (store.rs holds the facts of the current runs).
 
 use crate::error::{Error, Result};
-use crate::store::{self, py_float, Claim, SCHEMA, SCHEMA_VERSION};
+use crate::store::{self, Claim, SCHEMA, SCHEMA_VERSION};
 use crate::{hash_parts, with_db};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Attach the main checkout's store (a read-only file: URI) when this connection has not yet.
@@ -27,11 +25,6 @@ pub(crate) fn ensure_main(db: &Connection, main: &str) -> rusqlite::Result<bool>
 }
 
 // ------------------------------------------------------------------------------------------------ facts
-
-thread_local! {
-    // (store, run id, run time) -> the run holds facts of a kind the byte map is made of
-    static MAPS: RefCell<HashMap<(String, i64, u64), bool>> = RefCell::new(HashMap::new());
-}
 
 fn row_fact(r: &rusqlite::Row) -> rusqlite::Result<(String, Claim)> {
     let text: String = r.get(5)?;
@@ -84,8 +77,8 @@ pub fn st_fact(path: &str, fid: i64) -> Result<Option<(String, Claim)>> {
     })
 }
 
-/// Store.conflicts: (severity, check, lo, hi, message, a, b) of current runs (of the given rules), by address.
-pub fn st_conflicts(path: &str, severity: Option<String>, rules: Option<Vec<String>>) -> Result<Vec<(String, String, i64, i64, String, String, String)>> {
+/// The findings: (severity, check, lo, hi, message, a, b) of current runs (of the given rules), by address.
+pub fn st_findings(path: &str, severity: Option<String>, rules: Option<Vec<String>>) -> Result<Vec<(String, String, i64, i64, String, String, String)>> {
     let mut q = String::from("SELECT c.severity, c.check_id, c.lo, c.hi, c.message, c.a, c.b FROM finding c JOIN run r ON r.id=c.run_id \
                               WHERE r.current=1");
     let mut args: Vec<String> = vec![];
@@ -239,7 +232,7 @@ pub fn st_drop_blobs(path: &str, kind: &str) -> Result<()> {
 
 /// Every blob of one kind, main store first, the overlay's own replacing it: {hash: data}.
 #[cfg(test)]
-pub fn st_blobs(path: &str, main: &str, kind: &str) -> Result<HashMap<String, Vec<u8>>> {
+pub fn st_blobs(path: &str, main: &str, kind: &str) -> Result<std::collections::HashMap<String, Vec<u8>>> {
     let rows: Vec<(String, Vec<u8>)> = with_db(path, |db| {
         let mut out = vec![];
         let mut sources = vec![];
@@ -277,136 +270,6 @@ pub(crate) fn tu_hash(path: &str) -> Result<String> {
         rows.collect()
     })?;
     Ok(hash_parts(rows.into_iter()))
-}
-
-// ------------------------------------------------------------------------------------------------ the byte map
-
-type MapRow = (i64, i64, String, store::Support, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
-
-/// The fact of one group that owns each cut, cuts visited in address order: among the facts covering the address
-/// the highest support, then the highest lo, then the highest hi (equal keys: the later fact).
-struct Sweep {
-    items: Vec<Rc<Claim>>,
-    i: usize,
-    active: Vec<Rc<Claim>>,
-}
-
-impl Sweep {
-    fn new(mut items: Vec<Rc<Claim>>) -> Sweep {
-        items.sort_by_key(|f| (f.lo, f.hi));
-        Sweep { items, i: 0, active: vec![] }
-    }
-
-    fn at(&mut self, a: i64) -> Option<Rc<Claim>> {
-        while self.i < self.items.len() && self.items[self.i].lo <= a {
-            self.active.push(self.items[self.i].clone());
-            self.i += 1;
-        }
-        self.active.retain(|f| f.hi > a);
-        let mut best: Option<&Rc<Claim>> = None;
-        for f in &self.active {
-            if best.is_none_or(|b| (f.support, f.lo, f.hi) >= (b.support, b.lo, b.hi)) {
-                best = Some(f);
-            }
-        }
-        best.cloned()
-    }
-}
-
-/// Rebuild the byte map when the symbol / region / section / unit / source facts changed. Returns the hash: of the
-/// current runs (id and time) that hold such facts; the map rows name fact ids, so a run recorded again changes it
-/// although its output is the same.
-pub(crate) fn ensure_bytemap(db: &mut Connection, path: &str) -> rusqlite::Result<String> {
-    let runs: Vec<(String, i64, f64)> = {
-        let mut st = db.prepare_cached("SELECT rule, id, at FROM run WHERE current=1 ORDER BY rule")?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-        rows.collect::<Result<_, _>>()?
-    };
-    let mut parts = vec!["bytemap.v2".to_string()];
-    for (rule, rid, at) in &runs {
-        let key = (path.to_string(), *rid, at.to_bits());
-        let has = match MAPS.with(|m| m.borrow().get(&key).copied()) {
-            Some(h) => h,
-            None => {
-                let h = db.query_row("SELECT 1 FROM claim WHERE run_id=? AND kind IN ('section','region','symbol','unit','source') LIMIT 1",
-                                     [rid], |_| Ok(())).optional()?.is_some();
-                MAPS.with(|m| m.borrow_mut().insert(key, h));
-                h
-            }
-        };
-        if has {
-            let mut s = format!("{rule}={rid}@");
-            py_float(&mut s, *at);
-            parts.push(s);
-        }
-    }
-    let h = hash_parts(parts.into_iter());
-    let cur: Option<String> = db.query_row("SELECT value FROM meta WHERE key='answers'", [], |r| r.get(0)).optional()?;
-    if cur.as_deref() == Some(h.as_str()) {
-        return Ok(h);
-    }
-    let get = |k: &str| store::claims_of(db, path, k, None, |_| true);
-    let mut symbols = get("symbol")?;
-    symbols.extend(get("region")?);
-    let (sections, units, sources) = (get("section")?, get("unit")?, get("source")?);
-    let mut cuts: Vec<i64> = [&symbols, &sections, &units, &sources].iter().flat_map(|g| g.iter().flat_map(|f| [f.lo, f.hi])).collect();
-    cuts.sort_unstable();
-    cuts.dedup();
-    let (mut isym, mut isec, mut iunit, mut isrc) = (Sweep::new(symbols), Sweep::new(sections), Sweep::new(units), Sweep::new(sources));
-    let mut rows: Vec<MapRow> = vec![];
-    for w in cuts.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let (s, sec, u, src) = (isym.at(a), isec.at(a), iunit.at(a), isrc.at(a));
-        let Some(s) = s else { continue };
-        // a symbol names its skind, a region (no skind) what it is
-        let cls = match (s.value.get("skind"), s.value.get("what")) {
-            (Some(k), _) => k.as_str().unwrap_or("").to_string(),
-            (None, w) => format!("region.{}", w.and_then(|w| w.as_str()).unwrap_or("")),
-        };
-        rows.push((a, b, cls, s.support, Some(s.id), u.map(|f| f.id), src.map(|f| f.id), sec.map(|f| f.id)));
-    }
-    let tx = db.transaction()?;
-    tx.execute("DELETE FROM answer", [])?;
-    {
-        let mut st = tx.prepare("INSERT INTO answer (lo, hi, owner, support, symbol, unit, source, section) VALUES (?,?,?,?,?,?,?,?)")?;
-        for r in &rows {
-            st.execute(params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7])?;
-        }
-    }
-    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('answers', ?)", [&h])?;
-    tx.commit()?;
-    Ok(h)
-}
-
-#[cfg(test)]
-pub fn st_ensure_bytemap(path: &str) -> Result<String> {
-    with_db(path, |db| ensure_bytemap(db, path))
-}
-
-fn map_row(r: &rusqlite::Row) -> rusqlite::Result<MapRow> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?))
-}
-
-/// The byte map row holding addr (the map built first when its facts changed).
-pub fn st_bytemap_at(path: &str, addr: i64) -> Result<Option<MapRow>> {
-    with_db(path, |db| {
-        ensure_bytemap(db, path)?;
-        db.query_row("SELECT lo, hi, owner, support, symbol, unit, source, section FROM answer WHERE lo<=? ORDER BY lo DESC LIMIT 1", [addr], map_row)
-            .optional()
-    })
-}
-
-/// The byte map rows intersecting [lo, hi) (the map built first when its facts changed).
-pub fn st_bytemap_rows(path: &str, lo: Option<i64>, hi: Option<i64>) -> Result<Vec<MapRow>> {
-    with_db(path, |db| bytemap_rows(db, path, lo, hi))
-}
-
-pub(crate) fn bytemap_rows(db: &mut Connection, path: &str, lo: Option<i64>, hi: Option<i64>) -> rusqlite::Result<Vec<MapRow>> {
-    ensure_bytemap(db, path)?;
-    let (lo, hi) = (lo.unwrap_or(i64::MIN), hi.unwrap_or(i64::MAX));
-    let mut st = db.prepare_cached("SELECT lo, hi, owner, support, symbol, unit, source, section FROM answer WHERE hi>? AND lo<? ORDER BY lo")?;
-    let rows = st.query_map([lo, hi], map_row)?;
-    rows.collect()
 }
 
 #[cfg(test)]

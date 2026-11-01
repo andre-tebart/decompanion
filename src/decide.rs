@@ -174,7 +174,7 @@ impl<'a> Ctx<'a> {
     }
 
     fn c_toolchain_errors(&self) -> Result<Vec<String>> {
-        Ok(crate::storedb::st_conflicts(&self.db, None, None)?.into_iter().filter(|c| c.1 == "C.toolchain").map(|c| c.4).collect())
+        Ok(crate::storedb::st_findings(&self.db, None, None)?.into_iter().filter(|c| c.1 == "C.toolchain").map(|c| c.4).collect())
     }
 }
 

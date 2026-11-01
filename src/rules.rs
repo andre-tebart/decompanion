@@ -575,7 +575,7 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     stale.sort();
     if !stale.is_empty() {
         let names: Vec<&str> = stale.iter().map(|s| s.as_str()).collect();
-        out.finding("warn", "M.lint", base, base + 1,
+        out.finding("warn", "M.lint.stale", base, base + 1,
                      format!("the last lint did not parse today's text of: {} (dcp lint)", names.join(", ")), "");
     }
     Ok(())

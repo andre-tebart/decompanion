@@ -86,7 +86,7 @@ fn state(p: &Project) -> Result<Value> {
     for r in rows.iter() {
         *grades.entry(format!("{}+{}", str_of(r, "code"), str_of(r, "readability"))).or_default() += 1;
     }
-    let errors = crate::storedb::st_conflicts(&db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
+    let errors = crate::storedb::st_findings(&db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
     Ok(json!({"functions": rows.len(), "byte": rows.iter().filter(|r| str_of(r, "code") == "byte").count(),
               "readable": rows.iter().filter(|r| str_of(r, "readability") == "readable").count(), "units": units.len(),
               "separated": units.iter().filter(|f| f.s("status") == Some("separated")).count(), "errors": errors, "grades": grades}))

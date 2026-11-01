@@ -80,17 +80,17 @@ fn setup_server_pe_facts_and_total_map() {
     assert_eq!(dcp(&d, &["setup", "--no-analyzer"]).0, 0);
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri()).unwrap();
-    crate::storedb::st_ensure_bytemap(&db).unwrap();
-    let rows = crate::storedb::st_bytemap_rows(&db, None, None).unwrap();
+    crate::answers::ensure_at(&db).unwrap();
+    let rows = crate::answers::rows(&db, None, None).unwrap();
     // total and non-overlapping over the mapped image
-    assert!(rows[0].0 == img.base as i64 && rows[rows.len() - 1].1 == img.end() as i64);
+    assert!(rows[0].lo == img.base as i64 && rows[rows.len() - 1].hi == img.end() as i64);
     for w in rows.windows(2) {
-        assert_eq!(w[0].1, w[1].0, "gap or overlap at {:#x}", w[0].1);
+        assert_eq!(w[0].hi, w[1].lo, "gap or overlap at {:#x}", w[0].hi);
     }
     let names: std::collections::HashMap<String, i64> = facts(&d, "name", None).iter().map(|f| (f.value["name"].as_str().unwrap().to_string(), f.lo)).collect();
     assert!(names["Init"] == 0x10008cc0 && names["Exit"] == 0x10008cf0 && names["_DllMain@12"] == 0x10008cb0 && names["DllMain"] == 0x10008cb0);
     assert!(names.contains_key("_malloc") && names["__DllMainCRTStartup@12"] == img.entry as i64);
-    let bad: Vec<Conflict> = conflicts(&d, None).into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
+    let bad: Vec<FindingRow> = findings(&d, None).into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
     assert!(bad.is_empty(), "{:?}", &bad[..bad.len().min(5)]);
     let tc = facts(&d, "toolchain", None)[0].value.clone();
     let comp = |tool: &str, build: i64| tc["compilers"].as_array().unwrap().iter().find(|c| c["tool"] == tool && c["build"] == build).unwrap().clone();
@@ -178,12 +178,12 @@ fn match_server() {
         let line = out.lines().find(|l| l.contains(&format!("name={name} "))).unwrap();
         assert!(line.contains("code=byte") && line.contains("readability=readable"), "{out}");
     }
-    let (_, out) = dcp(&d, &["facts", "0x10008cb0..0x10008d20", "--kind", "symbol"]);
+    let (_, out) = dcp(&d, &["claims", "0x10008cb0..0x10008d20", "--kind", "symbol"]);
     assert!(out.contains("relocs=2/2") && out.contains("relocs=4/4") && out.contains("relocs=0/0"), "{out}");
     let (_, out) = dcp(&d, &["next"]);
     assert!(out.contains("next=0x10008d20") && out.contains("name=ServerThread") && out.contains("section=draft"), "{out}");
     // the data site
-    let (_, out) = dcp(&d, &["facts", "0x10031270..0x10031274", "--kind", "symbol"]);
+    let (_, out) = dcp(&d, &["claims", "0x10031270..0x10031274", "--kind", "symbol"]);
     assert!(out.contains("extent=site") && out.contains("name=g_stopServer") && out.contains("proven"), "{out}");
     // the link and check
     let (code, out) = dcp(&d, &["link"]);
@@ -311,5 +311,5 @@ fn setup_exe() {
     assert_eq!(code, 0, "{out}");
     let w = walked(&g);
     assert!(w[&0x4eba80].support == DECLARED && w[&0x4eb480].hi <= 0x4eba80 && w[&0x4eb480].support == DERIVED);
-    assert!(conflicts_of(&g, Some("exe"), "L.decl").is_empty());
+    assert!(findings_of(&g, Some("exe"), "L.decl").is_empty());
 }

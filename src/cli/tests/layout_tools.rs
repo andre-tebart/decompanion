@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 const VC6: &str = "C:/Tools/MSVC600-SP5PP";
 
-fn errors(root: &Path) -> Vec<Conflict> {
-    conflicts(root, None).into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect()
+fn errors(root: &Path) -> Vec<FindingRow> {
+    findings(root, None).into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect()
 }
 
 /// Drafts from a Ghidra export (a stand-in installation writes the batch_decompile file in dcp setup) with these
@@ -133,7 +133,7 @@ fn unit_new_draft_rename() {
     assert!(text.find("/* 0x10001020").unwrap() < text.find("/* 0x10001030").unwrap());
     assert_eq!(dcp(&t, &["draft", "0x10001030"]).0, 1); // drafted already
     assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
-    assert!(!conflicts(&t, None).iter().any(|c| ["L5", "L.src", "L1", "L7"].contains(&c.1.as_str())));
+    assert!(!findings(&t, None).iter().any(|c| ["L5", "L.src", "L1", "L7"].contains(&c.1.as_str())));
     // rename: whole words, names.log, collision refused, the check count unchanged
     let (code, out) = dcp(&t, &["rename", "net_10001020", "GetCounter", "--why", "returns the counter"]);
     assert_eq!(code, 0, "{out}");
@@ -193,7 +193,7 @@ fn l9_and_analyzer_report() {
     let t = tiny();
     assert_eq!(dcp(&t, &["setup"]).0, 0);
     analyze(&t, &[(0x10001000, "FUN_10001000", F1, &[(0x10001000, 0x10001040)]), (0x10001058, "FUN_10001058", F2, &[(0x10001058, 0x1000105b)])]);
-    let l9 = conflicts_of(&t, None, "L9");
+    let l9 = findings_of(&t, None, "L9");
     assert!(l9.len() == 1 && l9[0].0 == "warn" && l9[0].4.contains("0x10001020") && l9[0].4.contains("0x10001030"), "{l9:?}");
     let (code, out) = dcp(&t, &["report"]);
     assert!(code == 0 && out.contains("analyzer=ghidra  drafts=2  export=up-to-date"), "{out}");
@@ -228,9 +228,9 @@ fn bytes_dead_owned_by_the_unit() {
     let p = project(&root, None);
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri()).unwrap();
-    crate::storedb::st_ensure_bytemap(&db).unwrap();
-    let (_, _, cls, _, _, unit, src, _) = crate::storedb::st_bytemap_at(&db, 0x10001059).unwrap().unwrap();
-    assert_eq!(cls, "dead");
+    crate::answers::ensure_at(&db).unwrap();
+    let crate::answers::Answer { owner, unit, source: src, .. } = crate::answers::at(&db, 0x10001059).unwrap().unwrap();
+    assert_eq!(owner, "dead");
     let u = crate::storedb::st_fact(&db, unit.unwrap()).unwrap().unwrap().1;
     assert_eq!(u.value["tu"], "tail");
     let s = crate::storedb::st_fact(&db, src.unwrap()).unwrap().unwrap().1;
@@ -247,7 +247,7 @@ fn declared_start_is_walked() {
     assert_eq!(code, 0, "{out}");
     let w = facts(&root, "symbol", None).into_iter().find(|f| &*f.rule == "S.codewalk" && f.lo == 0x10001058).unwrap();
     assert!(w.support == DECLARED && w.hi == 0x1000105b); // xor eax,eax; ret
-    assert!(conflicts_of(&root, None, "L10").is_empty());
+    assert!(findings_of(&root, None, "L10").is_empty());
     assert_eq!(dcp(&root, &["check"]).0, 0);
 }
 
@@ -264,7 +264,7 @@ fn source_only_start_owns_its_code() {
     let funcs: Vec<(i64, i64)> = own.iter().filter(|f| f.value["skind"] == "func").map(|f| (f.lo, f.hi)).collect();
     assert_eq!(funcs, [(0x10001058, 0x1000105b)]); // xor eax,eax; ret
     assert!(own.iter().all(|f| f.support == DECLARED));
-    assert!(conflicts_of(&root, None, "L10").is_empty());
+    assert!(findings_of(&root, None, "L10").is_empty());
     assert_eq!(dcp(&root, &["check"]).0, 0);
 }
 
@@ -286,7 +286,7 @@ fn unlinked_helper_builds_without_a_grade() {
     let rows = crate::queues::function_grades(&project(&t, None).store_path()).unwrap();
     let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
     assert!(names == ["get"] && rows[0]["code"] == "byte", "{names:?}");
-    assert!(!conflicts(&t, None).iter().any(|c| c.1 == "M.gen" || c.1 == "M.compile"));
+    assert!(!findings(&t, None).iter().any(|c| c.1 == "M.gen" || c.1 == "M.compile"));
     let (_, out) = dcp(&t, &["layout", "units", "-v"]);
     assert!(out.contains("unlinked=twice  file=src/net.c"), "{out}");
     let (code, out) = dcp(&t, &["disasm", "--ours", "get"]);

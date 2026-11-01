@@ -7,8 +7,8 @@ use super::*;
 const VC6: &str = "C:/Tools/MSVC600-SP5PP";
 const DX6: &str = "C:/Tools/DXSDK61/lib";
 
-fn errors(root: &Path, check: &str) -> Vec<Conflict> {
-    conflicts(root, None).into_iter().filter(|c| c.1 == check && c.0 == "error").collect()
+fn errors(root: &Path, check: &str) -> Vec<FindingRow> {
+    findings(root, None).into_iter().filter(|c| c.1 == check && c.0 == "error").collect()
 }
 
 fn has_clang() -> bool {
@@ -256,14 +256,14 @@ fn headers_conflicts_vc6() {
 
 /// The byte map after a rerun with the same output names current facts only (tests/test_speed.py).
 #[test]
-fn bytemap_names_current_facts_after_same_output_rerun() {
+fn answers_name_current_claims_after_same_output_rerun() {
     let t = tiny();
     assert_eq!(dcp(&t, &["setup", "--no-analyzer"]).0, 0);
     assert_eq!(dcp(&t, &["setup", "--no-analyzer", "--force"]).0, 0); // every rule again, the same output
     let p = project(&t, None);
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri()).unwrap();
-    crate::storedb::st_ensure_bytemap(&db).unwrap();
-    let ids: std::collections::BTreeSet<i64> = crate::storedb::st_bytemap_rows(&db, None, None).unwrap().iter().filter_map(|r| r.4).collect();
+    crate::answers::ensure_at(&db).unwrap();
+    let ids: std::collections::BTreeSet<i64> = crate::answers::rows(&db, None, None).unwrap().iter().filter_map(|r| r.symbol).collect();
     assert!(!ids.is_empty() && ids.iter().all(|&i| crate::storedb::st_fact(&db, i).unwrap().is_some()));
 }

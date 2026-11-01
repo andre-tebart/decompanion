@@ -70,7 +70,7 @@ pub fn refresh(io: &mut Io, p: &Project, verbose: bool, force: bool) -> Result<V
         }
         if verbose && r.ran {
             if r.waiting.is_empty() {
-                io.warn(&format!("ran {}: {} facts, {} conflicts, {} ms", r.rule, r.facts, r.conflicts, r.ms));
+                io.warn(&format!("ran {}: {} claims, {} findings, {} ms", r.rule, r.facts, r.conflicts, r.ms));
             } else {
                 io.warn(&format!("waiting {}: {}", r.rule, r.waiting.join(", ")));
             }

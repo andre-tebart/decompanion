@@ -289,7 +289,7 @@ fn promote_raises_only_and_accept() {
     assert!(code == 0 && out.contains("accepted=0x10001020  name=get") && out.contains("was=byte+readable  now=draft+readable"), "{out}");
     let line = tsv().lines().nth(1).unwrap().to_string();
     assert!(line.starts_with("tiny\t0x10001020\tget\tnet\tdraft\treadable\t\tbyte+readable -> draft+readable at ") && line.ends_with(": a declaration-set tie-break"), "{line}");
-    assert!(!dcp(&t, &["conflicts"]).1.contains("M1"));
+    assert!(!dcp(&t, &["findings"]).1.contains("M1"));
     let (code, out) = dcp(&t, &["promote"]); // no fall against the lowered entry; the note stays
     assert!(code == 0 && out.contains("accepted=1") && tsv().lines().nth(1).unwrap() == line, "{out}");
     unit(&t, "net", &[good]);
@@ -433,12 +433,12 @@ fn q4_view_forms() {
     let head = "char counter[8] = {0};  /* 0x10002000 */\n#define COUNT_HI (*(int *)(counter + 4))  /* 0x10002004 */\n";
     unit(&t, "net", &[head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT_HI;\n}\n"]);
     assert!(!dcp(&t, &["grade", "get"]).1.contains("Q4"));
-    let out = dcp(&t, &["conflicts"]).1;
+    let out = dcp(&t, &["findings"]).1;
     assert!(!out.contains("L15") && !out.contains("D7"), "{out}");
     let head = "int counter = 0;  /* 0x10002000 */\n#define COUNT_HI (*(int *)((char *)&counter + 4))  /* 0x10002004 */\n";
     unit(&t, "net", &[head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT_HI;\n}\n"]);
     dcp(&t, &["build"]);
-    let out = dcp(&t, &["conflicts"]).1;
+    let out = dcp(&t, &["findings"]).1;
     assert!(out.contains("D7") && out.contains("view COUNT_HI at 0x10002004 is counter +0x4, outside counter (4 bytes)"), "{out}");
 }
 
@@ -455,7 +455,7 @@ fn auto_clear_and_data_order() {
     let (_, out) = dcp(&t, &["build"]);
     assert!(out.contains("auto-clear src/net.c: get is byte + readable, @deep removed"), "{out}");
     assert!(read(&t, "src/net.c").contains("\n/* 0x10001020, reads the counter */\nint get(void)\n"));
-    let (_, out) = dcp(&t, &["conflicts"]);
+    let (_, out) = dcp(&t, &["findings"]);
     assert!(out.contains("D4") && out.contains("counter (0x10002000) is defined after pad (0x10002004)"), "{out}");
     let syms: std::collections::HashMap<i64, String> = facts(&t, "symbol", None).iter().filter(|f| f.rule.starts_with("M.data"))
         .map(|f| (f.lo, f.value["extent"].as_str().unwrap_or("").to_string())).collect();

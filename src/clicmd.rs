@@ -126,12 +126,12 @@ pub fn fact_line(kind: &str, f: &Claim) -> String {
     out
 }
 
-/// A conflict row (severity, check, lo, hi, message, a, b).
-type Finding = (String, String, i64, i64, String, String, String);
+/// A finding row (severity, check, lo, hi, message, a, b).
+type FindingRow = (String, String, i64, i64, String, String, String);
 
-/// Conflict.line.
-pub fn conflict_line(c: &Finding) -> String {
-    let mut out = format!("{}  {}  {}  {}", c.0, c.1, fmt_range(c.2, c.3), c.4);
+/// One finding: severity, category, check, range, message, the producers of its two sides.
+pub fn finding_line(c: &FindingRow) -> String {
+    let mut out = format!("{}  {}  {}  {}  {}", c.0, crate::registry::category(&c.1), c.1, fmt_range(c.2, c.3), c.4);
     if !c.5.is_empty() {
         out += &format!("  a={}", c.5);
     }
@@ -141,16 +141,32 @@ pub fn conflict_line(c: &Finding) -> String {
     out
 }
 
-fn conflicts(db: &str, severity: Option<String>) -> Result<Vec<Finding>> {
-    crate::storedb::st_conflicts(db, severity, None)
+fn findings(db: &str, severity: Option<String>) -> Result<Vec<FindingRow>> {
+    crate::storedb::st_findings(db, severity, None)
 }
 
-fn severity_counts(c: &[Finding]) -> String {
+fn severity_counts(c: &[FindingRow]) -> String {
     let mut n: BTreeMap<&str, usize> = BTreeMap::new();
     for x in c {
         *n.entry(x.0.as_str()).or_default() += 1;
     }
     n.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("  ")
+}
+
+/// The findings per category, in the categories' order, categories without one left out.
+fn category_counts(c: &[FindingRow]) -> String {
+    let mut n: BTreeMap<crate::registry::Category, usize> = BTreeMap::new();
+    for x in c {
+        *n.entry(crate::registry::category(&x.1)).or_default() += 1;
+    }
+    n.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("  ")
+}
+
+/// Findings in the categories' order, by address within one.
+fn by_category<'a>(c: impl Iterator<Item = &'a FindingRow>) -> Vec<&'a FindingRow> {
+    let mut v: Vec<&FindingRow> = c.collect();
+    v.sort_by_key(|x| crate::registry::category(&x.1)); // stable: address order within a category
+    v
 }
 
 /// Facts of current runs, of one kind or all, intersecting [lo, hi): (kind, fact), sorted by (lo, hi, kind, value).
@@ -355,12 +371,12 @@ fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -
         }
         let place = match v.container(*a) {
             Some(f) => format!("inside {:#x}", f.lo),
-            None => crate::storedb::st_bytemap_at(db, *a)?.map(|r| r.2).unwrap_or_else(|| "-".into()),
+            None => crate::answers::at(db, *a)?.map(|r| r.owner).unwrap_or_else(|| "-".into()),
         };
         a_only.push((*a, en, place));
     }
     let mut o_only: Vec<(i64, &String)> = ours.iter().filter(|(a, _)| glo <= **a && **a < ghi && !ents.contains_key(a)).map(|(a, h)| (*a, h)).collect();
-    let l9: Vec<Finding> = conflicts(db, None)?.into_iter().filter(|c| c.1 == "L9").collect();
+    let l9: Vec<FindingRow> = findings(db, None)?.into_iter().filter(|c| c.1 == "L9").collect();
     let game: Vec<i64> = v.funcs.iter().map(|f| f.lo).filter(|a| glo <= *a && *a < ghi).collect();
     let state = crate::analyzers::state(p)?;
     let key = crate::analyzers::Analyzer::of(p).map_err(crate::project::cfg_err)?.key;
@@ -389,7 +405,7 @@ fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -
     for (a, how) in o_only.iter().take(n) {
         out.push(format!("  {}", record(&[("ours_only", Tok::I(*a)), ("how", s((*how).clone()))])));
     }
-    out.extend(l9.iter().take(n).map(|c| format!("  {}", conflict_line(c))));
+    out.extend(l9.iter().take(n).map(|c| format!("  {}", finding_line(c))));
     if !verbose && most > 20 {
         out.push("  (-v lists all)".into());
     }
@@ -423,10 +439,10 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
     let r = |x: String| crate::decl::py_repr(&x);
     out.push(format!("toolchain: compiler={} linker={} cflags={} root={}{rich}", r(ds("compiler")), r(ds("linker")), r(ds("cflags")), r(ds("root"))));
     // bytes per section per owner and support, sections in map order
-    let rows = with_db(&db, |c| crate::storedb::bytemap_rows(c, &db, None, None))?;
+    let rows = with_db(&db, |c| crate::answers::rows_db(c, &db, None, None))?;
     let secs: HashMap<i64, String> = all(&db, "section")?.iter().map(|f| (f.id, f.s("name").unwrap_or("").to_string())).collect();
     let mut by_sec: Vec<(String, Vec<(String, i64)>, [i64; 5])> = vec![];
-    for (lo, hi, cls, lvl, _, _, _, sec) in rows {
+    for crate::answers::Answer { lo, hi, owner: cls, support: lvl, section: sec, .. } in rows {
         let name = sec.and_then(|x| secs.get(&x).cloned()).unwrap_or_else(|| "(headers)".into());
         let i = match by_sec.iter().position(|x| x.0 == name) {
             Some(i) => i,
@@ -496,7 +512,7 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
         out.push(record(&[("waiting", Tok::I(waiting.len() as i64)), ("rules", s(ids.join(","))),
                           ("on", s(on.iter().map(|x| x.as_str()).collect::<Vec<_>>().join(",")))]) + "  (their facts are missing until declared)");
     }
-    let conf = conflicts(&db, None)?;
+    let conf = findings(&db, None)?;
     out.push(format!("conflicts: {}", if conf.is_empty() { "0".into() } else { severity_counts(&conf) }));
     Ok(out)
 }
@@ -546,11 +562,11 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
                 }
             },
         };
-        let Some(row) = crate::storedb::st_bytemap_at(&db, a)? else {
+        let Some(row) = crate::answers::at(&db, a)? else {
             out.push(format!("addr={}  target={t}  not in the image", fmt_addr(a)));
             continue;
         };
-        let (lo, hi, cls, lvl, sym, ..) = row;
+        let crate::answers::Answer { lo, hi, owner: cls, support: lvl, symbol: sym, .. } = row;
         let off = match img.section_of(a as u32) {
             Some(sec) => format!("  section={}  off=+{:#x}", sec.name, a - sec.va as i64),
             None => "  (headers)".into(),
@@ -605,44 +621,73 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
 }
 
 /// `dcp facts RANGE [--kind K] [--json]`.
-pub fn facts_command(p: &crate::project::Project, range: &str, kind: Option<String>, json: bool) -> Result<Vec<String>> {
+/// `dcp claims RANGE [--question Q] [--kind K] [--support S] [--json]`: the stored kinds of a range, a claim's with
+/// the question it answers (φ entries, experiments, builds and intermediate results say what they are instead).
+pub fn claims_command(p: &crate::project::Project, range: &str, question: Option<crate::store::Question>, kind: Option<String>,
+                      support: Option<Support>, json: bool) -> Result<Vec<String>> {
     let db = opened(p)?;
     let (lo, hi) = parse_range(range).map_err(value_err)?;
-    let facts = facts_in(&db, kind.as_deref().filter(|k| !k.is_empty()), lo, hi)?;
+    let claims: Vec<(String, Claim)> = facts_in(&db, kind.as_deref().filter(|k| !k.is_empty()), lo, hi)?.into_iter()
+        .filter(|(k, _)| question.is_none_or(|q| q.kinds().contains(&k.as_str())))
+        .filter(|(_, f)| support.is_none_or(|s| f.support >= s)).collect();
     if json {
-        return Ok(facts.iter().map(|(k, f)| {
-            let v = serde_json::json!({"lo": f.lo, "hi": f.hi, "kind": k, "value": f.value, "support": level(f.support), "by": f.by, "reason": f.reason});
+        return Ok(claims.iter().map(|(k, f)| {
+            let v = serde_json::json!({"lo": f.lo, "hi": f.hi, "kind": k, "role": role_name(k), "value": f.value, "support": level(f.support),
+                                       "by": f.by, "reason": f.reason});
             let mut o = String::new();
             crate::store::canon(&mut o, &v);
             o
         }).collect());
     }
-    let mut out = vec![format!("target={}  facts={}  range={}{}", p.target_name, facts.len(), fmt_range(lo, hi),
-                               kind.filter(|k| !k.is_empty()).map(|k| format!("  kind={k}")).unwrap_or_default())];
-    out.extend(facts.iter().map(|(k, f)| fact_line(k, f)));
+    let mut filters = String::new();
+    if let Some(q) = question {
+        filters += &format!("  question={}", q.name());
+    }
+    if let Some(k) = kind.filter(|k| !k.is_empty()) {
+        filters += &format!("  kind={k}");
+    }
+    if let Some(s) = support {
+        filters += &format!("  support>={s}");
+    }
+    let mut out = vec![format!("target={}  claims={}  range={}{filters}", p.target_name, claims.len(), fmt_range(lo, hi))];
+    out.extend(claims.iter().map(|(k, f)| fact_line(k, f)));
     Ok(out)
 }
 
-/// `dcp conflicts [--severity S] [--json]`.
-pub fn conflicts_command(p: &crate::project::Project, severity: Option<String>, json: bool) -> Result<Vec<String>> {
+/// What a stored kind is: the question a claim of it answers, else phi / experiment / build / aux.
+pub fn role_name(kind: &str) -> &'static str {
+    match crate::store::role(kind) {
+        crate::store::Role::Claim(q) => q.name(),
+        crate::store::Role::Phi => "phi",
+        crate::store::Role::Experiment => "experiment",
+        crate::store::Role::Build => "build",
+        crate::store::Role::Aux => "aux",
+    }
+}
+
+/// `dcp findings [--category C] [--severity S] [--json]`: grouped by category, by address within one.
+pub fn findings_command(p: &crate::project::Project, category: Option<crate::registry::Category>, severity: Option<String>, json: bool) -> Result<Vec<String>> {
     let db = opened(p)?;
-    let conf = conflicts(&db, severity)?;
+    let all = findings(&db, severity)?;
+    let conf: Vec<FindingRow> = by_category(all.iter().filter(|c| category.is_none_or(|k| crate::registry::category(&c.1) == k))).into_iter().cloned().collect();
     if json {
         return Ok(conf.iter().map(|c| {
-            let v = serde_json::json!({"severity": c.0, "check": c.1, "lo": c.2, "hi": c.3, "message": c.4, "a": c.5, "b": c.6});
+            let v = serde_json::json!({"severity": c.0, "category": crate::registry::category(&c.1).name(), "check": c.1, "lo": c.2, "hi": c.3,
+                                       "message": c.4, "a": c.5, "b": c.6});
             let mut o = String::new();
             crate::store::canon(&mut o, &v);
             o
         }).collect());
     }
-    let mut out = vec![format!("target={}  conflicts={}{}", p.target_name, conf.len(),
-                               if conf.is_empty() { String::new() } else { format!("  {}", severity_counts(&conf)) })];
-    out.extend(conf.iter().map(conflict_line));
+    let mut out = vec![format!("target={}  findings={}{}", p.target_name, conf.len(),
+                               if conf.is_empty() { String::new() } else { format!("  {}  ({})", category_counts(&conf), severity_counts(&conf)) })];
+    out.extend(conf.iter().map(finding_line));
     Ok(out)
 }
 
-/// `dcp map [RANGE]`: the byte map rows of a range (default: the image).
-pub fn map_command(p: &crate::project::Project, range: Option<String>) -> Result<Vec<String>> {
+/// `dcp answers [RANGE]`: the answers of a range (default: the image), one line per run of bytes: the owner at its
+/// support, the owner's name, the unit.
+pub fn answers_command(p: &crate::project::Project, range: Option<String>) -> Result<Vec<String>> {
     let db = opened(p)?;
     let (lo, hi) = match range.filter(|r| !r.is_empty()) {
         Some(r) => parse_range(&r).map_err(value_err)?,
@@ -651,9 +696,9 @@ pub fn map_command(p: &crate::project::Project, range: Option<String>) -> Result
             (img.base as i64, img.end() as i64)
         }
     };
-    let rows = crate::storedb::st_bytemap_rows(&db, Some(lo), Some(hi))?;
-    let mut out = vec![format!("target={}  rows={}  range={}", p.target_name, rows.len(), fmt_range(lo, hi))];
-    for (rlo, rhi, cls, lvl, sym, unit, _, _) in rows {
+    let rows = crate::answers::rows(&db, Some(lo), Some(hi))?;
+    let mut out = vec![format!("target={}  answers={}  range={}", p.target_name, rows.len(), fmt_range(lo, hi))];
+    for crate::answers::Answer { lo: rlo, hi: rhi, owner: cls, support: lvl, symbol: sym, unit, .. } in rows {
         let f = sym.map(|id| fact_by_id(&db, id)).transpose()?.flatten();
         let name = f.as_ref().and_then(|(_, f)| f.value.get("name")).map(py_str).unwrap_or_default();
         let ut = match unit.map(|id| fact_by_id(&db, id)).transpose()?.flatten() {
@@ -691,7 +736,7 @@ pub fn rules_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<S
     for (r, cur, ms, n, waits) in &rows {
         let state = if !waits.is_empty() { "waiting" } else if *cur { "current" } else { "missing" };
         let needs = crate::engine::resolve_needs(r)?.join(",");
-        out.push(format!("{:<18} v{:<3} {:<9} {state:<8} {ms:>6} ms {n:>6} facts  needs={}  inputs={}{}", r.id, r.version, level(r.max_support),
+        out.push(format!("{:<18} v{:<3} {:<9} {state:<8} {ms:>6} ms {n:>6} claims  needs={}  inputs={}{}", r.id, r.version, level(r.max_support),
                          if needs.is_empty() { "-".into() } else { needs }, if r.inputs.is_empty() { "-".into() } else { r.inputs.join(",") },
                          if r.loader { "  loader" } else { "" }));
         if !waits.is_empty() {
@@ -747,20 +792,21 @@ pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64),
     Ok((out, !bad.is_empty()))
 }
 
-/// `dcp check`'s conflict part of one target: the counts line, the bug / error lines (and with `strict` the
-/// warnings); (lines, reasons so far).
-pub fn check_conflicts(p: &crate::project::Project, strict: bool) -> Result<(Vec<String>, Vec<String>)> {
+/// `dcp check`'s findings of one target: the counts line (per category, then per severity), the bug / error lines
+/// grouped by category (and with `strict` the warnings); (lines, reasons so far).
+pub fn check_findings(p: &crate::project::Project, strict: bool) -> Result<(Vec<String>, Vec<String>)> {
     let db = opened(p)?;
-    let conf = conflicts(&db, None)?;
-    let bad: Vec<&Finding> = conf.iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
-    let mut out = vec![format!("check target={}: {}", p.target_name, if conf.is_empty() { "no conflicts".into() } else { severity_counts(&conf) })];
-    out.extend(bad.iter().map(|c| conflict_line(c)));
+    let conf = findings(&db, None)?;
+    let bad: Vec<&FindingRow> = by_category(conf.iter().filter(|c| c.0 == "bug" || c.0 == "error"));
+    let mut out = vec![format!("check target={}: {}", p.target_name,
+                               if conf.is_empty() { "no findings".into() } else { format!("{}  ({})", category_counts(&conf), severity_counts(&conf)) })];
+    out.extend(bad.iter().map(|c| finding_line(c)));
     let mut reasons = vec![];
     if !bad.is_empty() {
         reasons.push(format!("errors={}", bad.len()));
     }
     if strict {
-        out.extend(conf.iter().filter(|c| c.0 == "warn").map(conflict_line));
+        out.extend(by_category(conf.iter().filter(|c| c.0 == "warn")).into_iter().map(finding_line));
         if !conf.is_empty() && bad.is_empty() {
             reasons.push(format!("strict={}", conf.len()));
         }
@@ -776,7 +822,7 @@ pub fn gate_target(p: &crate::project::Project, units: i64, quiet: bool) -> Resu
     let obls = crate::decide::gate_records(p)?;
     let builds = all(&db, "build")?;
     let bad: Vec<String> = builds.iter().filter(|f| !f.value.get("ok").and_then(|x| x.as_bool()).unwrap_or(false)).map(|f| py_str(&f.value["tu"])).collect();
-    let errors: Vec<Finding> = conflicts(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
+    let errors: Vec<FindingRow> = findings(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
     let link = if !builds.is_empty() && p.toolchain_available() { Some(crate::matchcmd::link_lines(p)?) } else { None };
     let good = obls.is_empty() && bad.is_empty() && errors.is_empty() && link.as_ref().is_none_or(|l| l.1);
     let mut out = vec![];
@@ -787,7 +833,7 @@ pub fn gate_target(p: &crate::project::Project, units: i64, quiet: bool) -> Resu
                                           ("undrafted", link.as_ref().map(|l| Tok::I(l.3 as i64)).unwrap_or(Tok::No)),
                                           ("obligations", if obls.is_empty() { Tok::No } else { Tok::I(obls.len() as i64) }), ("gate", s(if good { "ok" } else { "FAIL" }))])));
         out.extend(obls.iter().map(|o| format!("    {o}")));
-        out.extend(errors.iter().take(10).map(|c| format!("    {}", conflict_line(c))));
+        out.extend(errors.iter().take(10).map(|c| format!("    {}", finding_line(c))));
         out.extend(link.iter().flat_map(|l| l.4.iter().cloned()));
     }
     Ok((out, good, link.as_ref().map(|l| l.1), link.as_ref().map(|l| l.3)))
@@ -901,9 +947,9 @@ pub fn decl_add(p: &crate::project::Project, line: &str) -> Result<(Vec<String>,
 /// The conflicts a producer takes part in (after `dcp decl add` refreshed the target); exit 1 on a bug or error.
 pub fn decl_conflicts(p: &crate::project::Project, by: &str) -> Result<(Vec<String>, i32)> {
     let db = opened(p)?;
-    let mine: Vec<Finding> = conflicts(&db, None)?.into_iter().filter(|c| c.5 == by || c.6 == by).collect();
+    let mine: Vec<FindingRow> = findings(&db, None)?.into_iter().filter(|c| c.5 == by || c.6 == by).collect();
     let bad = mine.iter().any(|c| c.0 == "bug" || c.0 == "error");
-    Ok((mine.iter().map(conflict_line).collect(), if bad { 1 } else { 0 }))
+    Ok((mine.iter().map(finding_line).collect(), if bad { 1 } else { 0 }))
 }
 
 // ------------------------------------------------------------------------------------------------ layout
@@ -1000,7 +1046,7 @@ pub fn layout_units(p: &crate::project::Project, verbose: bool, json: bool) -> R
     let (und, conf, sc) = if verbose {
         let root = p.root.to_string_lossy().into_owned();
         let src = p.input_hash("src").map_err(err)?.unwrap_or_default();
-        (v.undrafted_items(), conflicts(&db, None)?, Some(crate::frontend::scan(&root, Some(&src)).map_err(err)?))
+        (v.undrafted_items(), findings(&db, None)?, Some(crate::frontend::scan(&root, Some(&src)).map_err(err)?))
     } else {
         (vec![], vec![], None)
     };
@@ -1021,7 +1067,7 @@ pub fn layout_units(p: &crate::project::Project, verbose: bool, json: bool) -> R
             out.push(format!("  ... {} more undrafted (L2): dcp layout next --start {:#010x} -n N", mine.len() - 8, mine[8]));
         }
         out.extend(conf.iter().filter(|c| matches!(c.1.as_str(), "L10" | "C.walk" | "M.bytes.declared") && lo <= c.2 && c.2 < hi)
-            .map(|c| format!("  {}", conflict_line(c))));
+            .map(|c| format!("  {}", finding_line(c))));
         let unit = match get(r, "unit") {
             J::V(Value::String(x)) | J::S(x) => x,
             _ => String::new(),
@@ -1102,12 +1148,12 @@ pub fn propose_verdict(p: &crate::project::Project, name: &str) -> Result<(Vec<S
     let text = crate::fsmemo::read_text(&py_path(&p.root.join("decl").join("text.dcl").to_string_lossy())).map_err(err)?;
     let bys: HashSet<String> = text.lines().enumerate().filter(|(_, l)| format!("{l} ").contains(&format!("tu={name} ")))
         .map(|(i, _)| format!("decl:decl/text.dcl:{}", i + 1)).collect();
-    let bad: Vec<Finding> = conflicts(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
-    let mine: Vec<&Finding> = bad.iter().filter(|c| bys.contains(&c.5) || bys.contains(&c.6)).collect();
+    let bad: Vec<FindingRow> = findings(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
+    let mine: Vec<&FindingRow> = bad.iter().filter(|c| bys.contains(&c.5) || bys.contains(&c.6)).collect();
     let mut out = vec![record(&[("proposal", s(if mine.is_empty() { "ok" } else { "FAIL" })), ("proposal_errors", Tok::I(mine.len() as i64)),
                                 ("other_errors", Tok::I((bad.len() - mine.len()) as i64))])
         + if bad.len() > mine.len() { "  (the other errors are not the proposal's: dcp check lists them)" } else { "" }];
-    out.extend(mine.iter().map(|c| conflict_line(c)));
+    out.extend(mine.iter().map(|c| finding_line(c)));
     Ok((out, if mine.is_empty() { 0 } else { 1 }))
 }
 

@@ -9,6 +9,7 @@
 pub(crate) const CORE_HASH: &str = env!("DCP_CORE_HASH");
 
 mod analyzers;
+mod answers;
 mod asmcmd;
 mod clang;
 mod cli;

@@ -30,20 +30,20 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::clicmd::why_command(&p, addr, refs)?;
             Ok(io.report("why", &l, e.as_deref(), c))
         }
-        Cmd::Facts { range, kind, json } => {
+        Cmd::Claims { range, question, kind, support, json } => {
             let p = refreshed(io, sel, None)?;
-            let l = crate::clicmd::facts_command(&p, &range, kind, json)?;
-            Ok(io.report("facts", &l, None, 0))
+            let l = crate::clicmd::claims_command(&p, &range, question, kind, support, json)?;
+            Ok(io.report("claims", &l, None, 0))
         }
-        Cmd::Map { range } => {
+        Cmd::Answers { range } => {
             let p = refreshed(io, sel, None)?;
-            let l = crate::clicmd::map_command(&p, range)?;
-            Ok(io.report("map", &l, None, 0))
+            let l = crate::clicmd::answers_command(&p, range)?;
+            Ok(io.report("answers", &l, None, 0))
         }
-        Cmd::Conflicts { severity, json } => {
+        Cmd::Findings { category, severity, json } => {
             let p = refreshed(io, sel, None)?;
-            let l = crate::clicmd::conflicts_command(&p, severity.map(|s| s.as_str().to_string()), json)?;
-            Ok(io.report("conflicts", &l, None, 0))
+            let l = crate::clicmd::findings_command(&p, category, severity.map(|s| s.as_str().to_string()), json)?;
+            Ok(io.report("findings", &l, None, 0))
         }
         Cmd::Check { strict, against } => check(io, sel, strict, against),
         Cmd::Serve { stop, status, foreground } => Ok(crate::client::serve(io, sel.root.as_deref(), stop, status, foreground)),
@@ -341,7 +341,7 @@ fn check(io: &mut Io, sel: &Sel, strict: bool, against: Option<String>) -> Resul
             crate::matchcmd::lint_command(&p)?;
             refresh(io, &p, false, false)?;
         }
-        let (lines, mut reasons) = crate::clicmd::check_conflicts(&p, strict)?;
+        let (lines, mut reasons) = crate::clicmd::check_findings(&p, strict)?;
         io.report("check", &lines, None, 0);
         if built && p.toolchain_available() {
             let (lines, ok, why, _, _) = crate::matchcmd::link_command(&p)?;

@@ -40,9 +40,9 @@ fn toolchain_declaration_per_target() {
     target_table(&t, "tiny", "compiler = \"cl 13.00.9178\"\nreason = \"wrong on purpose\"");
     let (code, _) = dcp(&t, &["check"]);
     assert_eq!(code, 1);
-    let bad = conflicts_of(&t, Some("tiny"), "C.toolchain");
+    let bad = findings_of(&t, Some("tiny"), "C.toolchain");
     assert!(bad.len() == 1 && bad[0].4.contains("names build 9178") && bad[0].4.contains("cl 12.00.9044 (Utc12_2_C x3)"), "{bad:?}");
-    assert!(conflicts_of(&t, Some("other"), "C.toolchain").is_empty());
+    assert!(findings_of(&t, Some("other"), "C.toolchain").is_empty());
     let (_, out) = dcp(&t, &["toolchain"]);
     for w in ["target=tiny", "target=other", "C.toolchain: 1 error(s)", "C.toolchain: ok", "cl 13.00.9178 (Utc13_C C x1)",
               "key=linker  value='link 6.00.8447'  level=declared  source=toolchain",
@@ -62,13 +62,13 @@ fn toolchain_missing_reason_and_compiler() {
     let (code, out) = dcp(&t, &["check"]);
     assert_eq!(code, 1);
     // tiny: no compiler at all -> C.toolchain waits, the obligation fails the gate; the linker has no reason
-    assert!(conflicts_of(&t, Some("tiny"), "C.toolchain").is_empty());
+    assert!(findings_of(&t, Some("tiny"), "C.toolchain").is_empty());
     assert!(out.contains("obligation=toolchain.compiler  target=tiny  missing=\"the compiler build that made the user's objects (missing)\""), "{out}");
     assert!(out.contains("obligation=toolchain.linker  target=tiny  missing='the linker build (declared without a reason)'"), "{out}");
     let (_, rules) = dcp(&t, &["rules"]);
     assert!(rules.contains("C.toolchain        v2   reproduced waiting") && rules.contains("waiting: toolchain.compiler  (dcp status)"), "{rules}");
     // other: its own compiler with a reason; the inherited linker and cflags have none -> C.toolchain errors
-    let msgs: Vec<String> = conflicts_of(&t, Some("other"), "C.toolchain").into_iter().map(|c| c.4).collect();
+    let msgs: Vec<String> = findings_of(&t, Some("other"), "C.toolchain").into_iter().map(|c| c.4).collect();
     assert_eq!(msgs, ["target other: the cflags declaration has no reason", "target other: the linker declaration has no reason"]);
 }
 
@@ -133,8 +133,8 @@ fn src_errors_reported_once() {
     unit(&t, "net", &["void g(void)\n{\n}\n", "/* nope:0x10001030, unknown target */\nvoid h(void)\n{\n}\n"]);
     let (code, _) = dcp(&t, &["check"]);
     assert_eq!(code, 1);
-    assert!(conflicts_of(&t, Some("tiny"), "L.src").len() == 2 && conflicts_of(&t, Some("other"), "L.src").is_empty());
-    assert!(conflicts_of(&t, Some("tiny"), "L16").is_empty()); // an unknown prefix is the one error
+    assert!(findings_of(&t, Some("tiny"), "L.src").len() == 2 && findings_of(&t, Some("other"), "L.src").is_empty());
+    assert!(findings_of(&t, Some("tiny"), "L16").is_empty()); // an unknown prefix is the one error
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn placeholders_per_target() {
                       "#ifdef DCP_TARGET_other\n/* other:0x10001020, other's only */\nint g(void)\n{\n    return FUN_10001044();\n}\n#endif\n"]);
     let (code, _) = dcp(&t, &["check"]);
     assert_eq!(code, 1);
-    let l5 = |target: &str| conflicts_of(&t, Some(target), "L5").into_iter().map(|c| c.4).collect::<Vec<_>>();
+    let l5 = |target: &str| findings_of(&t, Some(target), "L5").into_iter().map(|c| c.4).collect::<Vec<_>>();
     assert!(l5("other").iter().any(|m| m.contains("FUN_10001044"))); // a function of other: checked in other
     assert!(!l5("tiny").iter().any(|m| m.contains("FUN_10001044"))); // not a line of tiny
     assert!(l5("tiny").iter().any(|m| m.contains("FUN_20001000") && m.contains("tiny, other")));
@@ -169,7 +169,7 @@ fn decl_prefixes_and_add() {
     // an error of an other: line is other's conflict only
     write(&t, "decl/text.dcl", "# code\nother:0x10001000 frob -- unknown kind\n");
     let (code, _) = dcp(&t, &["check"]);
-    assert!(code == 1 && !conflicts_of(&t, Some("other"), "L.decl").is_empty() && conflicts_of(&t, Some("tiny"), "L.decl").is_empty());
+    assert!(code == 1 && !findings_of(&t, Some("other"), "L.decl").is_empty() && findings_of(&t, Some("tiny"), "L.decl").is_empty());
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn analyzer_per_target() {
 fn queries_name_the_target() {
     let t = tiny2();
     assert_eq!(dcp(&t, &["setup", "--all-targets"]).0, 0);
-    for cmd in [&["facts", "0x10001000..0x10001010"][..], &["conflicts"], &["map", "0x10001000..0x10001040"], &["rules"]] {
+    for cmd in [&["claims", "0x10001000..0x10001010"][..], &["findings"], &["answers", "0x10001000..0x10001040"], &["rules"]] {
         let mut a = vec!["--target", "other"];
         a.extend(cmd);
         let (code, out) = dcp(&t, &a);

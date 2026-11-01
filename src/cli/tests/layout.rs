@@ -18,7 +18,7 @@ fn evidence() {
     assert_eq!(lit(0x10002038), Some(0x10001050));
     let fill = ev.iter().find(|f| f.value["ekind"] == "fill" && f.lo == 0x10001020).map(|f| f.value["pre"].as_str().unwrap().to_string());
     assert_eq!(fill.as_deref(), Some("nop"));
-    assert!(conflicts(&t, None).iter().all(|c| c.0 == "warn"));
+    assert!(findings(&t, None).iter().all(|c| c.0 == "warn"));
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn l4_l6_l1_l5_l7() {
     unit(&t, "x", &["/* 0x10001031, inside f3 */\nvoid f(void)\n{\n    FUN_10001044();\n}\n"]);
     let (code, out) = dcp(&t, &["check"]);
     assert_eq!(code, 1, "{out}");
-    let all = conflicts(&t, None);
+    let all = findings(&t, None);
     for c in ["L4", "L6", "L1", "L5", "L7"] {
         assert!(all.iter().any(|x| x.1 == c), "{c}: {out}");
     }
@@ -78,7 +78,7 @@ fn decl_errors_fail_check() {
     write(&t, "decl/text.dcl", "0x10001020 start -- b\n0x10001000 start -- a\n0x10001000 frob -- x\n0x10002000 start -- data address in text.dcl\n");
     let (code, _) = dcp(&t, &["check"]);
     assert_eq!(code, 1);
-    let msgs: Vec<String> = conflicts_of(&t, None, "L.decl").into_iter().map(|c| c.4).collect();
+    let msgs: Vec<String> = findings_of(&t, None, "L.decl").into_iter().map(|c| c.4).collect();
     assert!(msgs.iter().any(|m| m.contains("out of order")) && msgs.iter().any(|m| m.contains("unknown kind")) && msgs.iter().any(|m| m.contains("text.dcl holds code")), "{msgs:?}");
 }
 

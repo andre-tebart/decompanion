@@ -129,7 +129,7 @@ pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataD
         }
     }
     let mut by_addr: HashMap<i64, Vec<(String, String, String, String)>> = HashMap::new();
-    for (sev, check, lo, _, msg, a, _) in crate::storedb::st_conflicts(&db, None, None)? {
+    for (sev, check, lo, _, msg, a, _) in crate::storedb::st_findings(&db, None, None)? {
         if CHECKS.contains(&check.as_str()) || check == "M.data.content" {
             by_addr.entry(lo).or_default().push((sev, check, msg, a));
         }

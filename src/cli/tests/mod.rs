@@ -104,18 +104,18 @@ pub fn facts(root: &Path, kind: &str, target: Option<&str>) -> Vec<Rc<Claim>> {
     storedb::st_facts(&db, Some(kind), None, None, None).unwrap().into_iter().map(|(_, f)| f).collect()
 }
 
-/// A conflict: (severity, check, lo, hi, message, a, b).
-pub type Conflict = (String, String, i64, i64, String, String, String);
+/// A finding: (severity, check, lo, hi, message, a, b).
+pub type FindingRow = (String, String, i64, i64, String, String, String);
 
-pub fn conflicts(root: &Path, target: Option<&str>) -> Vec<Conflict> {
+pub fn findings(root: &Path, target: Option<&str>) -> Vec<FindingRow> {
     let p = project(root, target);
     let db = p.store_path();
     storedb::st_open(&db, &p.main_uri()).unwrap();
-    storedb::st_conflicts(&db, None, None).unwrap()
+    storedb::st_findings(&db, None, None).unwrap()
 }
 
-pub fn conflicts_of(root: &Path, target: Option<&str>, check: &str) -> Vec<Conflict> {
-    conflicts(root, target).into_iter().filter(|c| c.1 == check).collect()
+pub fn findings_of(root: &Path, target: Option<&str>, check: &str) -> Vec<FindingRow> {
+    findings(root, target).into_iter().filter(|c| c.1 == check).collect()
 }
 
 /// The rules of a target refreshed as a command refreshes them: whether any ran.

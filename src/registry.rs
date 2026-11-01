@@ -4,6 +4,149 @@
 
 use crate::store::{Support, DECLARED, DERIVED, OBSERVED, OPEN, REPRODUCED};
 
+/// What a finding is in the model (docs/mental-model.md §5). Each check id has one category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Category {
+    /// two claims answer one question about one byte differently; the one with less support is revised (H or φ),
+    /// two at the top rank are a bug in a rule
+    Contradiction,
+    /// H is no valid program (a unit does not compile, a declaration line is malformed or has no reason) or φ is
+    /// no valid mapping (two definitions at one address, a function of an object without its address comment)
+    IllFormed,
+    /// open where the model expects an answer: bytes nothing explains, a part of H that is missing (an import
+    /// library, a library member)
+    Gap,
+    /// a result older than H (a stale compile or lint): the next build or lint makes it current
+    Stale,
+    /// a regression of an experiment (a baseline fall): allowed only as declared debt with its witness
+    Debt,
+}
+
+impl Category {
+    pub const ALL: [Category; 5] = [Category::Contradiction, Category::IllFormed, Category::Gap, Category::Stale, Category::Debt];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Category::Contradiction => "contradiction",
+            Category::IllFormed => "ill-formed",
+            Category::Gap => "gap",
+            Category::Stale => "stale",
+            Category::Debt => "debt",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Category> {
+        Category::ALL.iter().copied().find(|c| c.name() == s)
+    }
+}
+
+impl std::fmt::Display for Category {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Every check id the rules report, with its category. A check id not listed is a contradiction (and a test fails
+/// for it: tests below list the ids the code emits).
+pub static CHECKS: &[(&str, Category)] = &[
+    // two answers to one question
+    ("C.overlap", Category::Contradiction),      // owner: two objects own one byte
+    ("C.ref.target", Category::Contradiction),   // start: a call lands inside a function
+    ("C.walk", Category::Contradiction),         // owner: the walk runs into another function's bytes
+    ("C.toolchain", Category::Contradiction),    // toolchain: the declaration against the Rich header
+    ("S7", Category::Contradiction),             // section: the entry or an export outside code
+    ("S.crt.refs", Category::Contradiction),     // ref: one symbol resolves to two addresses
+    ("S.crt.data", Category::Contradiction),     // owner: a member's data placed at two bases
+    ("L1", Category::Contradiction),             // start: a sourced function inside another function
+    ("L3", Category::Contradiction),             // unit: literal order against the units
+    ("L4", Category::Contradiction),             // unit / start: a boundary inside a function or fill
+    ("L5", Category::Contradiction),             // start: a name spelling an address where no function starts
+    ("L6", Category::Contradiction),             // owner / start: a declaration against the walk
+    ("L7", Category::Contradiction),             // unit: the unit extents disagree
+    ("L8", Category::Contradiction),             // unit: two leaked source files in one unit
+    ("L9", Category::Contradiction),             // start: the analyzer's function holds one of our starts
+    ("L13", Category::Contradiction),            // owner: a data declaration at code
+    ("L14", Category::Contradiction),            // unit: a function outside its unit's extent
+    ("A1", Category::Contradiction),             // ref: a hard-coded address where the original refers
+    ("M.ref.missing", Category::Contradiction),  // ref: our constant where the original refers
+    ("M7", Category::Contradiction),             // the consistency convention: a call without its declaration
+    ("M8", Category::Contradiction),             // ref: our reference against the original's target
+    ("M9", Category::Contradiction),             // ref: a string literal's bytes
+    ("M10", Category::Contradiction),            // ref: a floating constant's bits
+    ("M.flags", Category::Contradiction),        // toolchain: a probed flag the declaration lacks
+    ("M.data.content", Category::Contradiction), // owner: a datum's bytes found elsewhere
+    ("M.bytes.declared", Category::Contradiction), // unit: dead / foreign bytes across a unit boundary
+    ("D1", Category::Contradiction),             // owner: a definition reaches into another object
+    ("D4", Category::Contradiction),             // unit order: definition order against address order
+    ("D5", Category::Contradiction),             // owner: a tentative definition at an initialised address
+    ("D6", Category::Contradiction),             // ref: a pointer-table entry's target
+    ("D8", Category::Contradiction),             // owner: the object the original proves against the definitions
+    // H is no program, φ no mapping
+    ("L.decl", Category::IllFormed),
+    ("L.src", Category::IllFormed),
+    ("L15", Category::IllFormed),
+    ("L16", Category::IllFormed),
+    ("N2", Category::IllFormed),
+    ("C.name.alias", Category::IllFormed),       // φ many-to-one without a reason the toolchain gives
+    ("M.gen", Category::IllFormed),
+    ("M.compile", Category::IllFormed),
+    ("M2", Category::IllFormed),
+    ("M5", Category::IllFormed),
+    ("M6", Category::IllFormed),
+    ("D7", Category::IllFormed),
+    // open where an answer is due
+    ("L2", Category::Gap),
+    ("L10", Category::Gap),
+    ("S2", Category::Gap),
+    ("S4", Category::Gap),
+    ("S5", Category::Gap),
+    ("S.crt.ambiguous", Category::Gap),
+    ("S.crt.duplicate", Category::Gap),
+    // older than H
+    ("M.compile.stale", Category::Stale),
+    ("M.lint.stale", Category::Stale),
+    // regressions
+    ("M1", Category::Debt),
+    ("M1.debt", Category::Debt),
+];
+
+/// The category of a finding's check id.
+pub fn category(check: &str) -> Category {
+    CHECKS.iter().find(|c| c.0 == check).map(|c| c.1).unwrap_or(Category::Contradiction)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every check id the core reports has its category, once: the ids of the sources' `finding(` calls with a
+    /// literal id, and the ones computed (layout's issues, the scan's errors, constant_mismatches, the placement).
+    #[test]
+    fn every_check_has_a_category() {
+        let mut ids: Vec<String> = vec![];
+        for f in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
+            let p = f.unwrap().path();
+            if p.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&p).unwrap();
+                let re = regex::Regex::new(r#"finding2?\([^,()]+, "([A-Za-z0-9_.]+)""#).unwrap();
+                ids.extend(re.captures_iter(&text).map(|c| c[1].to_string()));
+            }
+        }
+        let computed = ["L3", "L4", "L7", "L8", "L14", "L.src", "L15", "L16", "N2", "M5", "M6", "M9", "M10", "S.crt.ambiguous",
+                        "S.crt.duplicate", "C.overlap", "C.ref.target"];
+        ids.extend(computed.iter().map(|s| s.to_string()));
+        ids.sort();
+        ids.dedup();
+        let missing: Vec<&String> = ids.iter().filter(|id| !CHECKS.iter().any(|c| c.0 == id.as_str())).collect();
+        assert!(missing.is_empty(), "check ids without a category: {missing:?}");
+        let mut listed: Vec<&str> = CHECKS.iter().map(|c| c.0).collect();
+        listed.sort();
+        let n = listed.len();
+        listed.dedup();
+        assert_eq!(n, listed.len(), "a check id listed twice");
+    }
+}
+
 /// One rule of the registry.
 pub struct RuleDef {
     pub id: &'static str,

@@ -394,7 +394,7 @@ fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
 }
 
 fn errors_of(db: &str) -> Result<Vec<(String, String, i64, String)>> {
-    Ok(crate::storedb::st_conflicts(db, None, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").map(|c| (c.0, c.1, c.2, c.4)).collect())
+    Ok(crate::storedb::st_findings(db, None, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").map(|c| (c.0, c.1, c.2, c.4)).collect())
 }
 
 /// `dcp rename` (rename_command): `rebuild()` compiles and refreshes after the write.
