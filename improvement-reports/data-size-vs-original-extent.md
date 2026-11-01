@@ -29,3 +29,22 @@
 - **Cost of not having it:** two run-time crashes, each found only by reading a minidump and the link map;
   the second hid behind a third bug (ai-updatestart, see `address-vs-value-hunk-class.md`).
   Related: `runtime-data-guards-debug-variant.md`.
+- **Also seen:**
+  - Same session, tutorial start (gildegold 6ba189b): `char ai_Unk60c7c0[748]` (0x60c7c0) is a table of ten
+    0x5c-byte records (920 bytes) that `ai_Unk4cd9d0` (0x4cd9d0) scans with a constant bound, falling back to the
+    last record (id 0). The rest, 0x60caa9..0x60cb58, was `unknown.data` that no source declares. `dcp data map cm`
+    already reported `size=745 room=920`. The gate never warned, and handler 0x3d crashed on the missing fallback
+    record. A short declaration whose room is fully proven, with an undeclared gap behind it, deserves at least a
+    warning, and the loop bound `p < base + 10 * 0x5c` is direct extent evidence.
+  - Same session (gildegold 1d4b4f6): `int ai_Unk75e130` (0x75e130) is the first field of a 14-byte clock copy that
+    `cm.c` / `sv.c` write whole (`*(G17T14 *)&ai_Unk75e130 = ...`, `gm_AddTime(&ai_Unk75e130, ...)`). Its other
+    fields were separate globals in another unit (`ls.c`). The writes overwrote `sv_SelectedObject`. The original's
+    refs show a 14-byte access at 0x75e130 that covers three other declared names: the "candidate views" case above.
+  - Same session, a variant (gildegold 7181939): source that depends on two globals being adjacent.
+    `INIT_CHARACTERS_END` was `&gm_PlayerRecords`, the original's one-past-the-end address of `ai_Chars`
+    (0x770b80 + 0x300 * 0x21c = 0x7d5f80), where `gm_PlayerRecords` starts. In our link it lies ~1.1 MB later, so
+    `init_LocalData` walked a megabyte of unrelated data as characters and overflowed `ai_KindBChars`. Proposal: when
+    a source expression uses symbol B's address as a loop or range bound against symbol A (`p < &B` with p walking
+    A), and the original's A + size(A) == B, check that the link keeps B right after A, or flag the
+    expression and suggest `A + size`. The `one-past-end-address-named-after-next-symbol.md` bug report is the
+    naming side of the same problem.

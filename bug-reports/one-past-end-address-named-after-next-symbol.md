@@ -6,3 +6,8 @@
 - **Expected:** for an address at or just past the end of an array, show e.g. `d2_Views+0x81c4 (end of d2_Views)`, or both candidate names.
 - **Repro:** before gildegold commit a67e661, `uv run dcp asmdiff d2_OpenForm --symbols`, line 0x47437a.
 - **Impact:** about 10 minutes, plus a wrong fix in an earlier session.
+- **Also seen:** play debugging session 2026-11-01 (gildegold 7181939). `INIT_CHARACTERS_END` in `f3init.c` was
+  `&gm_PlayerRecords`, the next symbol's name for 0x7d5f80, one past `ai_Chars`. In our link `gm_PlayerRecords` is
+  ~1.1 MB away, so `init_LocalData` scanned unrelated memory and crashed the tutorial start (same in
+  `unk_575860.c`'s range check). Severity here: critical at run time; see
+  `../improvement-reports/data-size-vs-original-extent.md`.
