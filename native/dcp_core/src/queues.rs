@@ -502,8 +502,9 @@ mod tests {
 /// replacing a @deep or @stuck tag already there; no level removes either tag. What was done.
 pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str>, line: i64) -> Result<String, String> {
     use std::sync::LazyLock;
-    static DEEP: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"[ \t]*@deep\b[^@*\n]*").unwrap());
-    static STUCK: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"[ \t]*@stuck\b[^@*\n]*").unwrap());
+    // the tag and its reason run to the end of the comment (written last, below): a reason may hold `*`, `/`, `(...)`
+    // and line breaks
+    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:\A|\s)\s*@(deep|stuck)\b").unwrap());
     let path = crate::project::py_path(&format!("{root}/{rel}"));
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?.replace("\r\n", "\n");
     let src = crate::readability::Source::new(&text);
@@ -514,8 +515,10 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
         return Err(format!("{rel}:{line}: no function's address comment there"));
     };
     let raw: String = tx[*cs..*ce].iter().collect();
-    let old = if DEEP.is_match(body) { Some("@deep") } else if STUCK.is_match(body) { Some("@stuck") } else { None };
-    let stripped = STUCK.replace_all(&DEEP.replace_all(body, ""), "").trim_end_matches(crate::srcscan::py_space).to_string();
+    let tag = TAG.captures(body);
+    let old = tag.as_ref().map(|c| if &c[1] == "deep" { "@deep" } else { "@stuck" });
+    let cut = tag.as_ref().and_then(|c| c.get(0)).map(|m| m.start()).unwrap_or(body.len());
+    let stripped = body[..cut].trim_end_matches(crate::srcscan::py_space).to_string();
     let (new_body, action) = match level {
         None => match old {
             None => return Ok("no @deep or @stuck tag".into()),
@@ -659,6 +662,19 @@ mod level_tests {
         }
         assert_eq!(set_level(&root, "src/u.c", None, None, 3).unwrap(), "@stuck removed");
         assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n");
+        // a reason with `*`, `/`, `(...)` and a line break, on a comment of several lines: escalate, replace, clear
+        // gives the comment back exactly (a match-base report: clear stopped at the first `*` and left the rest)
+        let orig = "/* 0x10001000, steps the shot:\n   fall = step * g. Returns 1 while it flies. */\nvoid f(void)\n{\n}\n";
+        crate::edit::write(&format!("{root}/src/u.c"), orig).unwrap();
+        let why = "body reconstructed (354 ins): fall = step * g and perMass = step / mass;\n   the [esp+0x18] / ebx choice is left";
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep added");
+        let tagged = crate::edit::read(&format!("{root}/src/u.c"));
+        assert!(tagged.contains(&format!("while it flies. @deep {why} */\nvoid f")), "{tagged}");
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("x * y (z)"), 1).unwrap(), "@deep reason replaced");
+        assert!(crate::edit::read(&format!("{root}/src/u.c")).contains("while it flies. @deep x * y (z) */\nvoid f"));
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep reason replaced");
+        assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed");
+        assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), orig);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
