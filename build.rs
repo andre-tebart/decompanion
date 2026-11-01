@@ -60,6 +60,27 @@ fn main() {
     let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
     println!("cargo:rustc-env=DCP_CORE_HASH={}", &hex[..12]);
     skills(&crate_dir);
+    // the build id the client and the daemon compare: the core's hash and everything else the binary embeds
+    let mut b = Sha256::new();
+    b.update(hex.as_bytes());
+    let mut more = vec![crate_dir.join("build.rs")];
+    for d in ["skills", "data"] {
+        if crate_dir.join(d).is_dir() {
+            files(&crate_dir.join(d), &mut more);
+        }
+    }
+    more.sort();
+    for f in &more {
+        if let Ok(x) = std::fs::read(f) {
+            b.update(rel(f).as_bytes());
+            b.update(b"\0");
+            b.update(&x);
+        }
+    }
+    let id: String = b.finalize().iter().map(|x| format!("{x:02x}")).collect();
+    println!("cargo:rustc-env=DCP_BUILD_ID={}", &id[..12]);
+    println!("cargo:rerun-if-changed=data");
+    println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=Cargo.lock");

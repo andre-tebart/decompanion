@@ -9,7 +9,14 @@ pub(crate) const CORE_HASH: &str = env!("DCP_CORE_HASH");
 mod analyzers;
 mod asmcmd;
 mod clang;
+mod cli;
+mod client;
 mod clicmd;
+mod daemon;
+mod ipc;
+mod launch;
+mod selfinstall;
+mod timing;
 mod cliread;
 mod coff;
 mod decl;
@@ -594,7 +601,7 @@ mod tests_runs {
     }
 }
 
-/// The dcp command line (the CLI arrives in the next commits).
+/// The dcp command line (client.rs: in the project's daemon, or in this process).
 pub fn main() -> i32 {
-    0
+    client::main()
 }
