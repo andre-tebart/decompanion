@@ -7,6 +7,7 @@
 //!                  reason = "..." for every key of the table). The first target is the default one.
 //!   [toolchain]    plugin, root, and compiler / linker / cflags as defaults a target without its own inherits.
 //!   [libs]         archives, reason: the default of every target without its own archives.
+//!   [[variant]], [[setup]], [[run]]  build variants and running a build (run.rs).
 //! The single-table form `[target]` of milestone 1 is still read (one target named after the file's stem).
 
 use crate::fsmemo;
@@ -165,6 +166,9 @@ impl Project {
         if !TOOLCHAINS.contains(&key.as_str()) {
             return Err(format!("unknown toolchain plugin {} (known: {}); name one with [toolchain] plugin = ...", crate::decl::py_repr(&key),
                                TOOLCHAINS.join(", ")));
+        }
+        if ["variant", "setup", "run"].iter().any(|k| p.cfg.contains_key(*k)) {
+            p.run_cfg()?; // a contradiction in the run tables is an error of every command, as one in the targets is
         }
         Ok(p)
     }

@@ -470,9 +470,8 @@ pub fn link_command(project: PyRef<'_, PyProject>) -> PyResult<(Vec<String>, boo
     link_lines(&project.p)
 }
 
-#[allow(clippy::type_complexity)]
-pub(crate) fn link_lines(p: &crate::project::Project) -> PyResult<(Vec<String>, bool, Option<String>, usize, Vec<String>)> {
-    let r = crate::link::full_link(p).map_err(err)?;
+/// A link report's lines (the record, the unresolved externals by class, notes, errors) and whether it linked.
+pub(crate) fn link_report_lines(r: &crate::link::LinkReport) -> (Vec<String>, bool) {
     let n: usize = r.unresolved.iter().map(|(_, v)| v.len()).sum();
     let mut head = record(&[("link", s(r.target.clone())), ("ok", Tok::B(r.ok)), ("objects", Tok::I(r.objects as i64)), ("includes", Tok::I(r.includes as i64)),
                             ("unresolved", Tok::I(n as i64)), ("errors", Tok::I(r.errors.len() as i64)), ("out", os(Some(r.out.clone()).filter(|o| !o.is_empty()))),
@@ -491,6 +490,14 @@ pub(crate) fn link_lines(p: &crate::project::Project) -> PyResult<(Vec<String>, 
     }
     out.extend(r.notes.iter().map(|x| format!("  note {x}")));
     out.extend(r.errors.iter().take(20).map(|x| format!("  error {x}")));
+    (out, r.ok)
+}
+
+#[allow(clippy::type_complexity)]
+pub(crate) fn link_lines(p: &crate::project::Project) -> PyResult<(Vec<String>, bool, Option<String>, usize, Vec<String>)> {
+    let r = crate::link::full_link(p).map_err(err)?;
+    let (out, _) = link_report_lines(&r);
+    let class = |k: &str| r.unresolved.iter().find(|(c, _)| c == k).map(|(_, v)| v.as_slice()).unwrap_or(&[]);
     let reason = (!r.ok).then(|| {
         let classes: Vec<String> = r.unresolved.iter().filter(|(k, v)| !v.is_empty() && k != "undrafted").map(|(k, v)| format!("{k}={}", v.len())).collect();
         format!("link:{}{}", classes.join(","), if r.errors.is_empty() { String::new() } else { format!(",errors={}", r.errors.len()) })

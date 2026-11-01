@@ -47,6 +47,7 @@ mod readability;
 mod registry;
 mod rename;
 mod rules;
+mod run;
 mod session;
 mod setup;
 mod srcscan;
@@ -592,6 +593,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyzers::analyzer_keys, m)?)?;
     m.add_function(wrap_pyfunction!(lintrun::lint_available, m)?)?;
     m.add_function(wrap_pyfunction!(compile::compile_ensure, m)?)?;
+    m.add_function(wrap_pyfunction!(run::run_list, m)?)?;
+    m.add_function(wrap_pyfunction!(run::run_target, m)?)?;
+    m.add_function(wrap_pyfunction!(run::run_prepare, m)?)?;
+    m.add_function(wrap_pyfunction!(run::variant_build_command, m)?)?;
     m.add_function(wrap_pyfunction!(plan::plan_scan_units, m)?)?;
     m.add_class::<frontend::ScanObj>()?;
     m.add_function(wrap_pyfunction!(frontend::front_scan, m)?)?;

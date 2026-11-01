@@ -219,6 +219,10 @@ def cmd_build(args):
         report("build", ["  " + line for line in cleared])
         if cleared:
             p, e, rep = build_target(args, name, quiet=True)
+        if getattr(args, "variant", None):
+            lines, ok = _core.variant_build_command(p.core, args.variant, bool(getattr(args, "force", False)))
+            report("build", lines)
+            failed = failed or not ok
     return 1 if failed else 0
 
 
@@ -469,6 +473,7 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--all-targets", action="store_true", help="every target in config order")
     s.add_argument("--force", action="store_true", help="compile every unit")
     s.add_argument("--units", action="store_true", help="list every unit's build row, not only the failed ones")
+    s.add_argument("--variant", metavar="NAME", help="then compile and link this [[variant]] (build/link/<target>/<variant>/)")
     un = sub.add_parser("unit", help="units").add_subparsers(dest="sub", required=True)
     s = cmd(sub, "fn", cmd_fn, "print one function of the sources (its address comment to the end of its definition)")
     s.add_argument("key", help="a function name or an address")
@@ -477,6 +482,8 @@ def parser() -> argparse.ArgumentParser:
 
     from . import cli_layout as CL
     CL.register(sub, cmd)
+    from . import cli_run as CRUN
+    CRUN.register(sub, cmd)
 
     w = sub.add_parser("wt", help="worktrees with an overlay store").add_subparsers(dest="sub", required=True)
     s = cmd(w, "new", cmd_wt_new, "create ../<project>-wt/NAME on branch wt/NAME")
