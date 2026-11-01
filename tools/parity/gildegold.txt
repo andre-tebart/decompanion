@@ -7,14 +7,14 @@ status --json
 report
 rules
 rules -v
-conflicts --severity error
-conflicts --severity bug --json
+findings --severity error
+findings --severity bug --json
 why 0x0053a520
 why main_GameLoop --refs
 why 0x00401410 bmp_Load
-facts 0x0053a520..0x0053a530
-facts 0x00401410..0x00401500 --kind symbol --json
-map 0x00401000..0x00401410
+claims 0x0053a520..0x0053a530
+claims 0x00401410..0x00401500 --kind symbol --json
+answers 0x00401000..0x00401410
 fn main_GameLoop
 fn 0x00401410
 grade main_GameLoop
@@ -77,7 +77,7 @@ fn 0xdeadbeef
 asmdiff no_such_function
 why
 next --deep --names --base -n 1
-accept pool_Next --to shape --why "   "
+debt add pool_Next --to shape --why "   "
 setup --all-targets --target exe
 # --- writes
 escalate pool_Next "parity test: the allocation of the frame differs"
@@ -87,7 +87,7 @@ escalate pool_Next --clear
 stuck pool_Next "parity test: stuck on the loop"
 stuck pool_Next --clear
 decl add "0x005f7d60 file path=D:\develop\units\net\nett.c tu=net -- parity test declaration"
-conflicts --severity warn
+findings --severity warn
 rename bmp_GetInfo bmp_GetInfoX --why "parity test rename"
 fn bmp_GetInfoX
 build

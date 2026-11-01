@@ -16,7 +16,7 @@ Hard rules
   `dcp serve --stop` stops it (before deleting build/). A worktree has a daemon of its own.
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
-  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp accept` write it).
+  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp debt add` write it).
 - The sources are the state: the address comment directly above every function's definition
   (`/* 0x10001234, what it does */`), the declarations in `decl/*.dcl` (unit boundaries, dead bytes, starts,
   names; always with a reason after ` -- `), renames in `names.log` (written by the dcp commands), the unit's
@@ -34,7 +34,7 @@ Hard rules
 ## 1. Start
 
 1. `dcp session start --kind layout`. It is the gate (no open toolchain or libs obligation, clean working tree, every
-   unit compiles, no error conflict, the link ok) and prints the overview: units, the first open function
+   unit compiles, no error finding, the link ok) and prints the overview: units, the first open function
    (`next=`), the toolchain level, the analyzer (`analyzer=ghidra  drafts=678`), then the status tail (`---
    dcp status`: the phase and the open obligations in order, one `obligation=` line each with what is missing,
    the evidence and the command that resolves it). On `gate: FAIL` fix what it lists (or revert), commit, and

@@ -163,7 +163,7 @@ pub fn next_command(p: &crate::project::Project, which: &str, shard: Option<Stri
     for r in items.iter().take(n) {
         let g = gates(r).join(",");
         out.push(record(&[("next", Tok::I(int(r, "addr"))), ("name", vt(r.get("name"))), ("unit", vt(r.get("queue_unit"))), ("section", vt(r.get("section"))),
-                          ("code", vt(r.get("code"))), ("readability", vt(r.get("readability"))), ("gates", os(Some(g).filter(|g| !g.is_empty()))),
+                          ("experiment", vt(r.get("code"))), ("readability", vt(r.get("readability"))), ("gates", os(Some(g).filter(|g| !g.is_empty()))),
                           ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
     }
     if items.is_empty() {

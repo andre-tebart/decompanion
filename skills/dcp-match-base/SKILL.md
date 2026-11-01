@@ -18,7 +18,7 @@ Hard rules
   `dcp serve --stop` stops it (before deleting build/). A worktree has a daemon of its own.
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
-  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp accept` write it).
+  state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp debt add` write it).
   Shell heredocs, `sed` and quoted script strings eat backslashes: change string literals (`"\n"`, `"\xNN"`)
   and `#define` continuations with an editing tool, then check the bytes with `dcp dump` / `dcp asmdiff`.
 - The sources are the state: the address comment directly above every function's definition
@@ -42,7 +42,7 @@ Hard rules
 ## 1. Start
 
 1. `dcp session start --kind match-base`. It is the gate (no open toolchain or libs obligation, a clean
-   working tree, every unit compiles, no error conflict, the link ok). On `gate: FAIL` fix what it lists (or
+   working tree, every unit compiles, no error finding, the link ok). On `gate: FAIL` fix what it lists (or
    revert), commit, start again; an `obligation=toolchain.*` / `obligation=libs.archives` line is a human
    decision: stop and hand it to the user. A match-base session is counted in functions (section 4), not
    minutes.
@@ -54,12 +54,13 @@ Hard rules
 `dcp next` -> read the function against the original -> fix the meaning -> `dcp build` ->
 `dcp grade NAME` -> commit -> next. Never skip an item: one you cannot raise is escalated (section 3).
 
-The item line: `next=0xADDR name=... unit=... section=draft|read code=... readability=... gates=B3,Q2,...
-dist='N ins / M bytes, size ours vs original'`. `section=draft`: the code is below shape; `section=read`: the
-code is shape or byte, only readability is missing. `gates=` names the failing rules.
+The item line: `next=0xADDR name=... unit=... section=draft|read experiment=... readability=... gates=B3,Q2,...
+dist='N ins / M bytes, size ours vs original'`. `section=draft`: the experiment is below shape; `section=read`: the
+experiment is shape or byte, only readability is missing. `gates=` names the failing rules.
 
 ### 2.1 Reading: the tools
-- `dcp grade NAME` - the failing rules with their evidence (B1..B3 code, Q1..Q7 readability) and `dist`.
+- `dcp grade NAME` - the failing rules with their evidence (B1..B3: the experiment, byte / shape / draft; Q1..Q6, Q8:
+  readability, kept apart), `dist`, and the calls without a prototype (`M7 consistency:`, the experiment's side).
 - `dcp asmdiff NAME` - our instructions against the original's, aligned; `--regs eax=ecx,esi=edi` renames
   registers on our side. Run it first on every big `code` hunk: a pure register rotation reads as `code`.
   `--symbols` prints the call targets, data and string literals by name instead of `X`; `!` marks an equal
@@ -80,13 +81,16 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
 - `dcp disasm 0xADDR` - the original code; `dcp dump 0xADDR [LEN]` - its constants and strings.
 - `dcp refs NAME|0xADDR` - every use and declaration: the callers say what a parameter means.
 - `dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
-- `dcp why 0xADDR|NAME` - everything the ledger knows about an address or a function / data name (names, data, tables).
-- `dcp lint` - clang over the units: prototypes (Q7), cross-unit conflicts (M5), calls without one (M7).
+- `dcp why 0xADDR|NAME` - everything the ledger knows about an address or a function / data name, by question (section,
+  owner, start, unit, ref, toolchain): the answer first, the claims stacked under it; then φ there (the objects of H
+  at the address: `dcp phi NAME|0xADDR` for one, `dcp phi --many` for the addresses with several), the findings.
+- `dcp lint` - clang over the units: cross-unit conflicts (M5), calls without a prototype (M7: the consistency
+  convention, a contradiction; `dcp grade NAME` lists them on the function's experiment).
   An M5 line is one symbol: its definition (file:line, unit, spelling) and every declaration that disagrees
   or agrees with it; fix every disagreeing one to the definition's spelling (or the definition, when the
   declarations are right). `does not compile in the all-declarations unit` is a header whose declarations
   are not compared at all until it compiles (a missing include, a macro of another header in its way).
-  `dcp grade` and `dcp next` lint the changed units themselves, so their Q7 is current.
+  `dcp grade` and `dcp next` lint the changed units themselves, so their M7 calls are current.
 - `dcp headers conflicts UNIT HEADER..` - before including a header into a unit's head: what it collides with
   (supersedes / duplicate / clash / header / call with the original's pushes / vc6, what only VC6 rejects /
   prototyped, per call `safe` or re-grade) and the functions to re-grade; a call / other finding on a line marked
@@ -139,7 +143,8 @@ work, however long.
   function's own documentation counts: the address comment above its definition, or its declaration's comment in
   its owner header `include/<unit>.h`. A copy's comment in another unit's head or header does not, nor a text that
   only names a file (`/* 0x4025c0, ch.h */`, `as in dd_vesa.h`, `defined elsewhere`).
-- Q7: every call has a prototype (`dcp lint` evaluates it): the callee's prototype lives in its defining unit's
+- M7, consistency: every call has a prototype (`dcp lint` evaluates it; the original was consistent C, so a
+  call without one is a contradiction, not a style point): the callee's prototype lives in its defining unit's
   header `include/<unit>.h`; include that header, never write a second prototype (`dcp refs NAME` shows them).
   When that include does not compile because the unit's head redeclares the header's symbols (its own
   prototype, a partial struct view of a type the header defines, a named object declared `extern GAPDATA`:
@@ -147,7 +152,7 @@ work, however long.
   lists what is in the way): include the header, delete the local declarations it supersedes, correct the
   calls and accesses that only compiled against them. Commit
   that on its own, before the function: `<unit>: head includes <x>.h (typing)`; it does not count toward the 8,
-  and `dcp check` must show no M1 (an accepted fall, 2.6, is held at its accepted grade). A byte-matched
+  and `dcp check` must show no M1 (a debt item, 2.6, is held at its declared grade and listed as `M1.debt`). A byte-matched
   function is evidence of what the original declared: when a correction changes its bytes, the correction is
   wrong, not the match, unless the match is no evidence at all (2.6). Find which side is: fix the
   header when its signature or type is the guess, or keep the original's spelling with `@original why` (the
@@ -157,7 +162,7 @@ work, however long.
   /* @original main passes shorts */`), used at those calls. A fall is no way around a conflict (2.6 says when
   one is right), and neither is a copied prototype or a local struct view. A conflict you cannot settle in the
   session: leave it, add `Open: head: include/<x>.h, <symbol> unsettled (<why>)` to the
-  unit's lead comment, and leave Q7 open for the calls it blocks.
+  unit's lead comment, and leave M7 open for the calls it blocks.
 - `extern GAPDATA name[]` (`__declspec(align(1)) unsigned char`) is for the unnamed gap blocks only
   (`full_data_<addr>`; it keeps the full rebuild's data packed). An object you name gets its real type and one
   declaration, in its unit's header (section 2.5, gap data).
@@ -210,11 +215,14 @@ typedef, a prototype nothing calls), so it never said anything about what the or
 wrong change is not acceptable (a signature, a type or a spelling the original's bytes contradict): fix the
 change, or keep the original's spelling (2.3). When you are not sure which it is, find out (`dcp asmdiff`,
 `dcp diffclass`, try the change without its unrelated parts) before deciding.
-Each accepted fall goes through `dcp accept NAME --to shape|draft --why "<the change, why it is closer,
-why the match was no evidence>"` (main checkout; `--readability draft` when readability fell too): it lowers
-that one function's entry in `ledger/grades.tsv` and records the reason and commit next to it; `dcp check`
-then holds the function at the accepted grade. Commit `ledger/grades.tsv` with the change. `dcp promote` (and
-the wrap) raise entries only and refuse a fall no accept covers.
+Each accepted fall is debt: `dcp debt add NAME --to shape|draft --why "<the change, why it is closer, why the
+match was no evidence>" --waits-for "<what has to settle first: a prototype, a header, a unit's layout>"` (main
+checkout; `--readability draft` when readability fell too): it lowers that one function's entry in
+`ledger/grades.tsv` and records the grade before, the last witness commit, the reason and what it waits for;
+`dcp check` then holds the function at the declared grade and lists it (`M1.debt`), and fails past `[gate]
+max_debt` (20) items. `dcp debt list` shows them all: walk them once the structure settles (many share one
+cause). Commit `ledger/grades.tsv` with the change. `dcp promote` (and the wrap) raise entries only and refuse a
+fall no debt item covers.
 
 ## 3. Escalation to the deep queue
 When only allocation or scheduling is left (`regs`, `slots`, `order` hunks the classes do not explain away, or
