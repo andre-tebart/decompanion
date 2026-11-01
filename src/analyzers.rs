@@ -35,7 +35,7 @@ pub const DEFAULT: &str = "ghidra";
 const KIND: &str = "drafts";
 const EXPORT: &str = "drafts.export";
 const STARTS: &str = "drafts.starts";
-const SCRIPT: (&str, &str) = ("DcpExport.java", include_str!("../../../src/decompanion/data/ghidra/DcpExport.java"));
+const SCRIPT: (&str, &str) = ("DcpExport.java", include_str!("../data/ghidra/DcpExport.java"));
 
 fn err(e: impl std::fmt::Display) -> Error {
     Error::runtime(e.to_string())

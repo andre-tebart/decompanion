@@ -16,7 +16,7 @@ static FUN_WHOLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:thunk_)?FU
 static LABEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(_?DAT|PTR|s|u|BYTE|WORD|DWORD|QWORD|FLOAT|DOUBLE|UNK)_\w*?([0-9a-fA-F]{8})\b").unwrap());
 
 /// The header of Ghidra's type names and macros the drafts use (written to include/ by `dcp draft`).
-pub const GHIDRA_HEADER: (&str, &str) = ("dcp_ghidra.h", include_str!("../../../src/decompanion/data/dcp_ghidra.h"));
+pub const GHIDRA_HEADER: (&str, &str) = ("dcp_ghidra.h", include_str!("../data/dcp_ghidra.h"));
 
 pub struct Dialect {
     ghidra: bool,

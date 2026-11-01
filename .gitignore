@@ -1,9 +1,3 @@
 /build/
-__pycache__/
-.venv/
-*.egg-info/
-.pytest_cache/
+/target/
 .dcp/
-src/decompanion/data/native/*.dll
-src/decompanion/data/native/*.tmp
-/native/dcp_core/target/
