@@ -20,17 +20,99 @@ pub struct Reading {
     pub verdict: Verdict,
     /// the texts of la and lb with names for X (reading's `names`): our relocations' symbols, the ledger's labels
     pub named: Option<(Vec<String>, Vec<String>)>,
+    /// with `named`, per line the values behind its X fields in text order: ours what each resolves to, the
+    /// original's the number (Reading::same_values)
+    pub values: Option<(Vec<Vec<Val>>, Vec<Vec<i64>>)>,
+}
+
+/// What one of our X fields refers to, for comparing it with the original's number: the addresses its symbol
+/// has in the ledger (with the addend), the bytes of our literal (a string or a floating constant: the original
+/// holds the same bytes at its address), or nothing known.
+#[derive(Clone, Debug)]
+pub enum Val {
+    Addrs(Vec<i64>),
+    Lit(Vec<u8>),
+    Unknown,
+}
+
+impl Reading {
+    /// Whether line i of ours and line j of the original's refer to the same things by their X fields although
+    /// they name them differently (`asmdiff --symbols` `=`: an alias, a placeholder and its name, `sym+off` and the
+    /// bare address, a literal and the original's datum holding the same bytes). A match-base report: such lines
+    /// were marked `!`, a wrong datum, and every one cost a `dcp why`.
+    pub fn same_values(&self, img: &crate::pe::Image, i: usize, j: usize) -> bool {
+        let Some((va, vb)) = &self.values else { return false };
+        let (Some(xs), Some(ys)) = (va.get(i), vb.get(j)) else { return false };
+        !xs.is_empty() && xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, &y)| match x {
+            Val::Addrs(a) => a.contains(&y),
+            Val::Lit(b) => !b.is_empty() && img.in_image(y as u32) && *img.bytes(y as u32, b.len()) == **b,
+            Val::Unknown => false,
+        })
+    }
+}
+
+/// Whether the instruction at `ins` compares a register with an immediate image address (`cmp ecx, X`).
+fn bound(lines: &[Line], ins: u32) -> bool {
+    lines.iter().find(|l| l.addr == ins).is_some_and(|l| l.text.starts_with("cmp ") && l.text.ends_with(", X") && !l.text.contains('['))
+}
+
+/// What our relocated field refers to (Val), independent of where the original's field lies.
+fn reloc_val(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crate::coff::Reloc, names: &crate::names::Names) -> Val {
+    let Some(sym) = obj.symbol_at(r.symbol_index) else { return Val::Unknown };
+    let addend = obj.addend(code.secnum, r) as i32 as i64;
+    let data = if sym.secnum > 0 { obj.sections.get(sym.secnum as usize).and_then(|s| s.data.as_ref()) } else { None };
+    match sym.constant() {
+        Some("string") => {
+            let Some(d) = data else { return Val::Unknown };
+            let lit = d.get(sym.value as usize..).unwrap_or(&[]);
+            let lit = &lit[..lit.iter().position(|&c| c == 0).map(|z| z + 1).unwrap_or(lit.len())];
+            match lit.get(addend.max(0) as usize..) {
+                Some(rest) if addend >= 0 => Val::Lit(rest.to_vec()),
+                _ => Val::Unknown,
+            }
+        }
+        Some("float") => {
+            // __real@3f800000 (4 bytes) / __real@3ff0000000000000 (8): the constant's bytes, little-endian
+            let hex = sym.name.rsplit('@').next().unwrap_or("");
+            let Ok(v) = u64::from_str_radix(hex, 16) else { return Val::Unknown };
+            let n = hex.len() / 2;
+            if !(n == 4 || n == 8) || addend != 0 {
+                return Val::Unknown;
+            }
+            Val::Lit(v.to_le_bytes()[..n].to_vec())
+        }
+        _ => {
+            let cname = crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name));
+            let mut at: Vec<i64> = names.by_name.iter().find(|(n, _)| *n == cname).map(|(_, a)| a.clone()).unwrap_or_default();
+            if let Some(v) = crate::srcscan::placeholder_whole(&cname) {
+                at.push(v as i64);
+            }
+            if at.is_empty() {
+                Val::Unknown
+            } else {
+                Val::Addrs(at.into_iter().map(|a| a + addend).collect())
+            }
+        }
+    }
 }
 
 /// How an address of the original reads by name (`asmdiff --symbols`): a number inside the function's slot `own`
 /// (a jump of its own) as the number, else the ledger's label (dcp disasm's), else the printable C string the
-/// image holds there, else the number.
-fn label(names: &crate::names::Names, img: &crate::pe::Image, own: (i64, i64), v: i64) -> String {
+/// image holds there, else the number. `bound`: the number is the immediate a compare tests against (a loop's end
+/// pointer), the function's image addresses with it: the label adds the reading from an object below that the
+/// function refers to (Names::end_label).
+fn label(names: &crate::names::Names, img: &crate::pe::Image, own: (i64, i64), v: i64, bound: Option<&[i64]>) -> String {
     if own.0 <= v && v < own.1 {
         return format!("{v:#x}");
     }
     if let Ok(Some(l)) = names.label_of(v) {
+        if let Some(e) = bound.and_then(|u| names.end_label(v, u)) {
+            return format!("{l} (or {e})");
+        }
         return l;
+    }
+    if let Some(e) = bound.and_then(|u| names.end_label(v, u)) {
+        return format!("{v:#x} (or {e})");
     }
     let s = img.cstr_n(v as u32, 256);
     if s.len() >= 2 && s.len() < 256 && s.iter().all(|&c| (0x20..0x7f).contains(&c) || c == b'\t' || c == b'\n') {
@@ -50,7 +132,7 @@ fn reloc_name(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crat
     let addend = obj.addend(code.secnum, r);
     let site = a.wrapping_add(off);
     let to = r.resolve(site, &img.bytes(site, r.kind_width().1 as usize), addend).filter(|&t| img.in_image(t));
-    let theirs = |t: u32| label(names, img, own, t.wrapping_add(addend) as i64);
+    let theirs = |t: u32| label(names, img, own, t.wrapping_add(addend) as i64, None);
     let data = if sym.secnum > 0 { obj.sections.get(sym.secnum as usize).and_then(|s| s.data.as_ref()) } else { None };
     let base = match (sym.constant(), data) {
         (Some("string"), Some(d)) => {
@@ -151,31 +233,56 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
     let lb = crate::x86::strip_fill(crate::x86::listing(env.dll, &data, a as u32, None, env.range, env.fills).map_err(e)?);
     let tables = diffclass::compare_tables(&env, &obj, &code, a as u32, &la, &lb, &o.tables);
     let (hunks, verdict) = diffclass::analyse(&la, &lb, tables.as_ref());
-    let named = match names {
-        None => None,
+    let (named, values) = match names {
+        None => (None, None),
         Some(names) => {
             // the same listings (strip_fill drops trailing lines only): ours by the relocations inside each
             // instruction in offset order, the original's by the ledger; a number inside the function's slot (a
             // jump of its own) stays a number on both sides
             let own = (a, a + slot);
+            // the original's image addresses outside its own slot (a compare bound's other reading: Names::end_label)
+            let used: Vec<i64> = {
+                let seen: std::cell::RefCell<Vec<i64>> = Default::default();
+                crate::x86::listing_named(env.dll, &data, a as u32, None, env.range, env.fills, &|_, _, v| {
+                    if !(own.0 <= v && v < own.1) {
+                        seen.borrow_mut().push(v);
+                    }
+                    None
+                }).map_err(e)?;
+                seen.into_inner()
+            };
+            // the values behind the X fields, by instruction address, in text order (Reading::same_values)
+            let vals_a: std::cell::RefCell<std::collections::HashMap<u32, Vec<Val>>> = Default::default();
+            let vals_b: std::cell::RefCell<std::collections::HashMap<u32, Vec<i64>>> = Default::default();
             let ours = |ins: u32, k: Option<usize>, v: i64| -> Option<String> {
                 let o = ins - a as u32;
                 let size = la.iter().find(|l| l.addr == ins).map(|l| l.size).unwrap_or(0);
                 match k {
-                    Some(k) => code.relocs.iter().filter(|(off, _)| o <= *off && *off < o + size).nth(k)
-                        .map(|(off, r)| reloc_name(&obj, &code, r, a as u32, *off, &img, names, own)),
-                    None => Some(label(names, &img, own, v)),
+                    Some(k) => {
+                        let hit = code.relocs.iter().filter(|(off, _)| o <= *off && *off < o + size).nth(k);
+                        vals_a.borrow_mut().entry(ins).or_default().push(hit.map(|(_, r)| reloc_val(&obj, &code, r, names)).unwrap_or(Val::Unknown));
+                        hit.map(|(off, r)| reloc_name(&obj, &code, r, a as u32, *off, &img, names, own))
+                    }
+                    None => {
+                        vals_a.borrow_mut().entry(ins).or_default().push(if own.0 <= v && v < own.1 { Val::Unknown } else { Val::Addrs(vec![v]) });
+                        Some(label(names, &img, own, v, bound(&la, ins).then_some(used.as_slice())))
+                    }
                 }
             };
-            let theirs = |_: u32, _: Option<usize>, v: i64| -> Option<String> {
-                Some(label(names, &img, own, v))
+            let theirs = |ins: u32, _: Option<usize>, v: i64| -> Option<String> {
+                vals_b.borrow_mut().entry(ins).or_default().push(v);
+                Some(label(names, &img, own, v, bound(&lb, ins).then_some(used.as_slice())))
             };
             let na = crate::x86::listing_named(env.dll, cd, a as u32, Some(cm), env.range, env.fills, &ours).map_err(e)?;
             let nb = crate::x86::listing_named(env.dll, &data, a as u32, None, env.range, env.fills, &theirs).map_err(e)?;
-            Some((na.into_iter().take(la.len()).map(|l| l.text).collect(), nb.into_iter().take(lb.len()).map(|l| l.text).collect()))
+            let (va, vb) = (vals_a.into_inner(), vals_b.into_inner());
+            let values = (la.iter().map(|l| va.get(&l.addr).cloned().unwrap_or_default()).collect(),
+                          lb.iter().map(|l| vb.get(&l.addr).cloned().unwrap_or_default()).collect());
+            (Some((na.into_iter().take(la.len()).map(|l| l.text).collect(), nb.into_iter().take(lb.len()).map(|l| l.text).collect())),
+             Some(values))
         }
     };
-    Ok(Ok(Reading { row, la, lb, tables, hunks, verdict, named }))
+    Ok(Ok(Reading { row, la, lb, tables, hunks, verdict, named, values }))
 }
 
 // ------------------------------------------------------------------------------------------------ Python's face

@@ -229,6 +229,26 @@ pub fn c_ref_target(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     Ok(())
 }
 
+/// C.name.alias: several source names declared for one data address (a definition's or an extern's address
+/// comment; a view is another object and no alias). One object has one name: a match-base report, the other names
+/// read as wrong data in `asmdiff --symbols` and blocked a rename (which name was meant).
+pub fn c_name_alias(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let mut by_addr: std::collections::BTreeMap<i64, std::collections::BTreeMap<String, Vec<String>>> = std::collections::BTreeMap::new();
+    for f in facts(ctx, db, "name")?.iter() {
+        if f.s("origin") != Some("source") || !f.reason.as_deref().is_some_and(|r| r.starts_with("data address comment")) {
+            continue;
+        }
+        let at = f.by.strip_prefix("src:").unwrap_or(&f.by).to_string();
+        by_addr.entry(f.lo).or_default().entry(f.s("name").unwrap_or("").to_string()).or_default().push(at);
+    }
+    for (a, names) in by_addr.iter().filter(|(_, n)| n.len() > 1) {
+        let list: Vec<String> = names.iter().map(|(n, at)| format!("{n} ({})", at.join(", "))).collect();
+        out.conflict("warn", "C.name.alias", *a, a + 1,
+                     format!("{} source names declare {a:#x}: {}; one object has one name (dcp rename the others to it)", names.len(), list.join(", ")), "");
+    }
+    Ok(())
+}
+
 /// S5.crt.gaps: unknown code between the first and the last placed library function.
 pub fn s5_crt_gaps(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let crt: Vec<Rc<SFact>> = facts(ctx, db, "symbol")?.into_iter()
@@ -459,5 +479,27 @@ mod tests {
                    [("warn", "no import library for KERNEL32.dll in the toolchain")]);
         let (_, c) = k.run("S4.import.libs", &[], r#"{"toolchain": "vc6", "root": null, "libs": ["C:/x/KERNEL32.LIB"]}"#);
         assert!(c.is_empty());
+    }
+
+    /// Two source names of one data address are one object under two names (a warning); a view and two function
+    /// names are not this rule's.
+    #[test]
+    fn name_alias() {
+        let k = Kit::new(&build(None));
+        let mut out = crate::store::Out::new("L.src", "1");
+        for (a, n, why, by) in [(0x1000, "ai_Unk1000", "data address comment (def)", "src:src/a.c:3"),
+                                (0x1000, "d3_Origin", "data address comment (extern)", "src:include/d3.h:9"),
+                                (0x2000, "x", "data address comment (def)", "src:src/a.c:4"), (0x2000, "xB", "view of x +0x0", "src:include/v.h:1"),
+                                (0x3000, "f", "address comment", "src:src/a.c:9"), (0x3000, "g", "address comment", "src:src/b.c:9")] {
+            out.fact(a, a + 1, "name", json!({"name": n, "origin": "source"}), crate::store::DECLARED);
+            let r = out.rows.last_mut().unwrap();
+            (r.reason, r.by) = (Some(why.to_string()), by.to_string());
+        }
+        let (rows, confl) = out.sorted();
+        crate::with_db(&k.db, |db| crate::write_run(db, &k.db, "L.src", "1", "test", "put:L.src", &rows, &confl, 0, true)).unwrap();
+        let (_, c) = k.run("C.name.alias", &["L.src"], "");
+        let c: Vec<(String, i64, String)> = c.into_iter().map(|c| (c.severity, c.lo, c.message)).collect();
+        assert_eq!(c, [("warn".to_string(), 0x1000, "2 source names declare 0x1000: ai_Unk1000 (src/a.c:3), d3_Origin (include/d3.h:9); one object \
+                                                     has one name (dcp rename the others to it)".to_string())]);
     }
 }

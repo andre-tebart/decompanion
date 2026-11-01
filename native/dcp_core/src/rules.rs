@@ -991,6 +991,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
         "S4.import.libs" => crate::setup::s4_import_libs(ctx, db, &mut out),
         "C.overlap" => crate::setup::c_overlap(ctx, db, &mut out),
         "C.ref.target" => crate::setup::c_ref_target(ctx, db, &mut out),
+        "C.name.alias" => crate::setup::c_name_alias(ctx, db, &mut out),
         "S5.crt.gaps" => crate::setup::s5_crt_gaps(ctx, db, &mut out),
         "S.entry.user" => crate::setup::s_entry_user(ctx, db, &mut out),
         "S.strings" => crate::setup::s_strings(ctx, db, &mut out),

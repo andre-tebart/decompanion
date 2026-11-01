@@ -66,7 +66,11 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
 - `uv run dcp asmdiff NAME` - our instructions against the original's, aligned; `--regs eax=ecx,esi=edi` renames
   registers on our side. Run it first on every big `code` hunk: a pure register rotation reads as `code`.
   `--symbols` prints the call targets, data and string literals by name instead of `X`; `!` marks an equal
-  instruction that names another symbol or literal than the original's (a wrong callee, datum or string).
+  instruction that names another symbol or literal than the original's (a wrong callee, datum or string); `=`
+  one that names the same address or literal by another name (an alias, `sym+off` for a bare address: no
+  error; two source names of one datum are a `C.name.alias` warning of `dcp check --strict`). A compare against
+  an address (`cmp ecx, 0xfb91e4 (or d2_Views+0x81c4)`) also names the array below it the function uses: a
+  loop's end pointer lies past the array's end, inside the next object.
   Frames of other sizes are aligned as diffclass aligns them (`frame=0x3bc/0x3b8`): a line that differs only
   by the shift is equal (`~`), so only the real differences show; `--plain` diffs the texts as they are.
 - `uv run dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`, `fpu`,
