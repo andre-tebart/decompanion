@@ -46,6 +46,7 @@
 //! slot of its grade row): the falls (exit 1) and the rises, the declaration set's effect itself; nothing is written.
 //! Positions are in characters, as Python's str offsets were.
 
+use crate::error::{Error, Result};
 use crate::clang::{CDiag, FileModel};
 use crate::cliread::{fmt_addr, record, Tok};
 use crate::frontend::{self, Front, Scan};
@@ -53,7 +54,6 @@ use crate::project::{py_path, Project};
 use crate::readability::Source;
 use crate::srcscan::{py_strip, Src};
 use crate::store;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -86,8 +86,8 @@ re!(FLOATING, r"\b(float|double)\b");
 re!(DOUBLE, r"\bdouble\b");
 re!(ADD_ESP, r"^add esp, (0x[0-9a-f]+|\d+)");
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 fn s(x: impl Into<String>) -> Tok {
@@ -679,7 +679,7 @@ struct Analysis {
     added: usize,
 }
 
-fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i64>) -> PyResult<Result<Analysis, String>> {
+fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i64>) -> Result<Result<Analysis, String>> {
     let t = match trial(x, unit, headers, &BTreeMap::new(), at) {
         Ok(t) => t,
         Err(e) if e.starts_with("LookupError: ") => return Ok(Err(e["LookupError: ".len()..].to_string())),
@@ -976,7 +976,7 @@ fn call_class(text: Option<&str>, line: i64, callee: &str, decl: Option<&crate::
 
 /// Per call of `callee` inside the original's function `func`: its site, the pushes since the previous call (or
 /// the start) and the `add esp, N` right after it.
-fn call_evidence(x: &Ctx, capstone: &str, names: &crate::names::Names, func: Option<i64>, callee: Option<&str>) -> PyResult<Vec<String>> {
+fn call_evidence(x: &Ctx, capstone: &str, names: &crate::names::Names, func: Option<i64>, callee: Option<&str>) -> Result<Vec<String>> {
     let (Some(func), Some(callee)) = (func, callee) else { return Ok(vec![]) };
     let Some(to) = names.by_name.iter().find(|n| n.0 == callee).and_then(|n| n.1.iter().min().copied()) else {
         return Ok(vec![format!("{callee}: no address known")]);
@@ -1029,7 +1029,7 @@ fn resolve_header(root: &str, h: &str) -> Option<String> {
 /// instruction diff over the extent and slot its grade row read. (address, name, code grade now, in the trial), or
 /// the compiler's first error.
 #[allow(clippy::type_complexity)]
-fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str) -> PyResult<Result<Vec<(i64, String, String, String)>, String>> {
+fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str) -> Result<Result<Vec<(i64, String, String, String)>, String>> {
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
     let tools = crate::vc6::Tools::of(p);
@@ -1102,7 +1102,7 @@ fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str)
 #[pyfunction]
 #[pyo3(signature = (project, capstone, unit, headers, write, at, try_grades=false))]
 pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone: &str, unit: &str, headers: Vec<String>, write: bool, at: Option<i64>,
-                         try_grades: bool) -> PyResult<(Vec<String>, i32)> {
+                         try_grades: bool) -> Result<(Vec<String>, i32)> {
     let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];

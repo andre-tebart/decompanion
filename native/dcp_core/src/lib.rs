@@ -23,6 +23,7 @@ mod diffclass;
 mod edit;
 mod difflib;
 mod engine;
+mod error;
 mod fsmemo;
 mod frontend;
 mod headers;
@@ -89,7 +90,7 @@ cargo test: over its budget of {ms} ms (DCP_TEST_BUDGET_MS): the run fails");
     static START: extern "C" fn() = start;
 }
 
-use pyo3::exceptions::PyRuntimeError;
+use crate::error::{Error, Result};
 use pyo3::prelude::*;
 use rusqlite::{params, Connection};
 use std::rc::Rc;
@@ -207,19 +208,19 @@ thread_local! {
     static CONNS: RefCell<HashMap<String, Connection>> = RefCell::new(HashMap::new());
 }
 
-pub(crate) fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>) -> PyResult<T> {
+pub(crate) fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite::Result<T>) -> Result<T> {
     CONNS.with(|c| {
         let mut map = c.borrow_mut();
         if !map.contains_key(path) {
-            let db = Connection::open(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+            let db = Connection::open(path).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
             db.busy_timeout(std::time::Duration::from_secs(10))
                 .and_then(|_| db.pragma_update(None, "journal_mode", "WAL"))
                 .and_then(|_| db.pragma_update(None, "synchronous", "NORMAL"))
-                .map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+                .map_err(|e| Error::runtime(format!("{path}: {e}")))?;
             map.insert(path.to_string(), db);
         }
         let db = map.get_mut(path).unwrap();
-        f(db).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))
+        f(db).map_err(|e| Error::runtime(format!("{path}: {e}")))
     })
 }
 
@@ -249,7 +250,7 @@ pub(crate) fn forget_conn(path: &str) {
 }
 
 /// The store's native connection for code that reports Python errors itself (a native rule).
-pub(crate) fn with_conn<T>(path: &str, f: impl FnOnce(&mut Connection) -> PyResult<T>) -> PyResult<T> {
+pub(crate) fn with_conn<T>(path: &str, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
     with_db(path, |_| Ok(()))?;
     CONNS.with(|c| f(c.borrow_mut().get_mut(path).unwrap()))
 }
@@ -471,12 +472,12 @@ thread_local! {
 }
 
 /// The image at path, parsed once.
-pub(crate) fn image(path: &str) -> PyResult<std::rc::Rc<pe::Image>> {
+pub(crate) fn image(path: &str) -> Result<std::rc::Rc<pe::Image>> {
     if let Some(i) = IMAGES.with(|m| m.borrow().get(path).cloned()) {
         return Ok(i);
     }
-    let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
-    let img = std::rc::Rc::new(pe::Image::parse(data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?);
+    let data = std::fs::read(path).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
+    let img = std::rc::Rc::new(pe::Image::parse(data).map_err(|e| Error::runtime(format!("{path}: {e}")))?);
     IMAGES.with(|m| m.borrow_mut().insert(path.to_string(), img.clone()));
     Ok(img)
 }
@@ -491,24 +492,24 @@ thread_local! {
 
 /// The object at path (build/obj/<content hash>.obj) with its function index, parsed once; None when the file
 /// is missing (C.read_object).
-pub(crate) fn object_if(path: &str) -> PyResult<Option<ObjIndex>> {
+pub(crate) fn object_if(path: &str) -> Result<Option<ObjIndex>> {
     if let Some(o) = OBJS.with(|m| m.borrow().get(path).cloned()) {
         return Ok(Some(o));
     }
     match std::fs::read(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(PyRuntimeError::new_err(format!("{path}: {e}"))),
+        Err(e) => Err(Error::runtime(format!("{path}: {e}"))),
         Ok(_) => object(path).map(Some),
     }
 }
 
 /// The object at path (build/obj/<content hash>.obj) with its function index, parsed once.
-pub(crate) fn object(path: &str) -> PyResult<ObjIndex> {
+pub(crate) fn object(path: &str) -> Result<ObjIndex> {
     if let Some(o) = OBJS.with(|m| m.borrow().get(path).cloned()) {
         return Ok(o);
     }
-    let data = std::fs::read(path).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
-    let obj = coff::Obj::parse(&data).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+    let data = std::fs::read(path).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
+    let obj = coff::Obj::parse(&data).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
     let idx = obj.function_index();
     let o: ObjIndex = std::rc::Rc::new((obj, idx));
     OBJS.with(|m| m.borrow_mut().insert(path.to_string(), o.clone()));

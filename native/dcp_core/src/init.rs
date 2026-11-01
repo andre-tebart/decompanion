@@ -11,6 +11,7 @@
 //! (skills/ of the decompanion repository) are installed into .claude/skills/ (`dcp skills install` updates them in
 //! an existing project).
 
+use crate::error::{Error, Result};
 use crate::project::{is_identifier, target_name_of, CONFIG_NAME, IMAGE_FORMATS};
 use pyo3::prelude::*;
 use std::path::{Path, PathBuf};
@@ -289,8 +290,8 @@ pub fn target_add(root: &str, name: &str, path: &str) -> (Vec<String>, Option<St
 
 /// `dcp skills install`: the paths written.
 #[pyfunction]
-pub fn skills_install(dcp_root: &str, root: &str, force: bool) -> PyResult<Vec<String>> {
-    install_skills(&Path::new(dcp_root).join("skills"), Path::new(root), force).map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
+pub fn skills_install(dcp_root: &str, root: &str, force: bool) -> Result<Vec<String>> {
+    install_skills(&Path::new(dcp_root).join("skills"), Path::new(root), force).map_err(|e| Error::os(e.to_string()))
 }
 
 #[cfg(test)]

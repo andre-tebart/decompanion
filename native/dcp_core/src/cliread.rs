@@ -3,11 +3,11 @@
 //! store, a byte of the image, or a line of the sources. Each command returns the lines it prints (and an error
 //! for stderr when it has nothing to show).
 
+use crate::error::{Error, Result};
 use crate::layoutview::View;
 use crate::names::Names;
 use crate::project::{py_path, Project};
 use crate::store::{self, SFact};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -148,23 +148,23 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn open(p: &'a Project, capstone: &str) -> PyResult<Reader<'a>> {
+    fn open(p: &'a Project, capstone: &str) -> Result<Reader<'a>> {
         let db = p.store_path();
         let main = p.main_uri();
         crate::pystore::st_open(&db, &main)?;
-        let path = p.target(None).map_err(PyRuntimeError::new_err)?.path.clone();
+        let path = p.target(None).map_err(Error::runtime)?.path.clone();
         let img = crate::image(&path)?;
         let names = Names::build(&db, &main, &path)?;
         let fills = crate::toolchain::of(&p.toolchain_key()).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default();
         Ok(Reader { p, db, img, names, capstone: capstone.into(), fills })
     }
 
-    fn facts(&self, kind: &str) -> PyResult<Vec<Rc<SFact>>> {
+    fn facts(&self, kind: &str) -> Result<Vec<Rc<SFact>>> {
         crate::with_db(&self.db, |c| store::facts_of(c, &self.db, kind, None, |_| true))
     }
 
     /// The facts of a kind intersecting [lo, hi), in the store's order.
-    fn facts_in(&self, kind: &str, lo: i64, hi: i64) -> PyResult<Vec<Rc<SFact>>> {
+    fn facts_in(&self, kind: &str, lo: i64, hi: i64) -> Result<Vec<Rc<SFact>>> {
         crate::with_db(&self.db, |c| store::facts_of(c, &self.db, kind, None, |f| f.hi > lo && f.lo < hi))
     }
 
@@ -180,17 +180,17 @@ impl<'a> Reader<'a> {
         Ok(crate::srcscan::placeholder_whole(k).map(|v| v as i64))
     }
 
-    fn all_starts(&self) -> PyResult<Vec<i64>> {
+    fn all_starts(&self) -> Result<Vec<i64>> {
         crate::asmcmd::all_starts(&self.db, &self.img)
     }
 
     /// The walked or placed function / thunk symbol covering a (not the match phase's).
-    fn walk_func(&self, a: i64) -> PyResult<Option<Rc<SFact>>> {
+    fn walk_func(&self, a: i64) -> Result<Option<Rc<SFact>>> {
         Ok(self.facts_in("symbol", a, a + 1)?.into_iter()
             .find(|f| matches!(f.s("skind"), Some("func" | "thunk")) && !f.rule.starts_with("M.") && f.level > store::OPEN))
     }
 
-    fn disasm(&self, code: &[u8], va: i64) -> PyResult<Vec<(u32, u32, String, bool)>> {
+    fn disasm(&self, code: &[u8], va: i64) -> Result<Vec<(u32, u32, String, bool)>> {
         crate::x86::x86_disasm(&self.capstone, code, va as u32, self.fills.clone())
     }
 
@@ -198,7 +198,7 @@ impl<'a> Reader<'a> {
         self.names.name_of(a).map(|s| s.to_string())
     }
 
-    fn annotate(&self, text: &str) -> PyResult<String> {
+    fn annotate(&self, text: &str) -> Result<String> {
         self.names.annotate(text)
     }
 }
@@ -209,17 +209,17 @@ type Out = (Vec<String>, Option<String>);
 
 // ------------------------------------------------------------------------------------------------ disasm
 
-fn disasm(r: &Reader, addr: Option<&str>, len: Option<&str>) -> PyResult<Out> {
+fn disasm(r: &Reader, addr: Option<&str>, len: Option<&str>) -> Result<Out> {
     let mut out = vec![];
     let Some(addr) = addr else { return Ok((out, Some("ADDR (or --ours NAME) is required".into()))) };
     let target = &r.p.target_name;
-    let a = r.resolve(addr).map_err(PyRuntimeError::new_err)?;
+    let a = r.resolve(addr).map_err(Error::runtime)?;
     let Some(mut a) = a.filter(|&a| r.img.section_of(a as u32).is_some()) else {
         return Ok((out, Some(format!("{addr}: no such address or name in target {target}"))));
     };
     let func = r.walk_func(a)?;
     let mut hi = if let Some(l) = len {
-        if let Some(e) = l.strip_prefix("..") { parse_addr(e) } else { parse_addr(l).map(|n| a + n) }.map_err(PyRuntimeError::new_err)?
+        if let Some(e) = l.strip_prefix("..") { parse_addr(e) } else { parse_addr(l).map(|n| a + n) }.map_err(Error::runtime)?
     } else if let Some(f) = &func {
         f.hi
     } else {
@@ -265,7 +265,7 @@ fn disasm(r: &Reader, addr: Option<&str>, len: Option<&str>) -> PyResult<Out> {
     Ok((out, None))
 }
 
-fn disasm_ours(r: &Reader, key: &str) -> PyResult<Out> {
+fn disasm_ours(r: &Reader, key: &str) -> Result<Out> {
     let Some(row) = crate::asmcmd::find_function(&r.db, key)? else {
         return Ok((vec![], Some(format!("--ours {key}: no compiled function of that name or address (dcp build)"))));
     };
@@ -301,13 +301,13 @@ fn printable(b: u8) -> char {
     if (0x20..=0x7e).contains(&b) || b >= 0xa0 { b as char } else { '.' }
 }
 
-fn dump(r: &Reader, addr: &str, len: Option<&str>, strings: bool, dwords: bool, floats: bool) -> PyResult<Out> {
+fn dump(r: &Reader, addr: &str, len: Option<&str>, strings: bool, dwords: bool, floats: bool) -> Result<Out> {
     let target = r.p.target_name.clone();
-    let a = r.resolve(addr).map_err(PyRuntimeError::new_err)?;
+    let a = r.resolve(addr).map_err(Error::runtime)?;
     let Some(a) = a.filter(|&a| r.img.in_image(a as u32)) else {
         return Ok((vec![], Some(format!("{addr}: no such address or name in target {target}"))));
     };
-    let n = match len { Some(l) => parse_addr(l).map_err(PyRuntimeError::new_err)?, None => 0x40 };
+    let n = match len { Some(l) => parse_addr(l).map_err(Error::runtime)?, None => 0x40 };
     let sec = r.img.section_of(a as u32);
     let mut hi = a + n;
     let mut note = None;
@@ -399,11 +399,11 @@ fn source_files(root: &str) -> Vec<String> {
     out
 }
 
-fn refs(r: &Reader, what: &str) -> PyResult<Out> {
+fn refs(r: &Reader, what: &str) -> Result<Out> {
     let mut out = vec![];
     let target = r.p.target_name.clone();
     let root = r.p.root.to_string_lossy().into_owned();
-    let a = r.resolve(what).map_err(PyRuntimeError::new_err)?;
+    let a = r.resolve(what).map_err(Error::runtime)?;
     let mut idents: BTreeSet<String> = BTreeSet::new();
     match a {
         None => {
@@ -504,7 +504,7 @@ struct Target {
 
 /// {target address: its record} of every data address a code site refers to: through base relocations when the image
 /// has them, else through the walk's memory operands and immediates; a string counts once; import slots skipped.
-fn literal_targets(r: &Reader, v: &View) -> PyResult<BTreeMap<i64, Target>> {
+fn literal_targets(r: &Reader, v: &View) -> Result<BTreeMap<i64, Target>> {
     let img = &r.img;
     let code: Vec<(i64, i64)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va as i64, s.end() as i64)).collect();
     let use_reloc = !img.relocations().is_empty();
@@ -555,12 +555,12 @@ fn literal_targets(r: &Reader, v: &View) -> PyResult<BTreeMap<i64, Target>> {
     Ok(out)
 }
 
-fn layout_literals(r: &Reader, v: &View, what: Option<&str>) -> PyResult<Out> {
+fn layout_literals(r: &Reader, v: &View, what: Option<&str>) -> Result<Out> {
     let (glo, ghi, _) = v.game;
     let mut unit = None;
     let (lo, hi) = match what {
         None => (glo, ghi),
-        Some(w) if w.to_lowercase().starts_with("0x") => parse_range(w).map_err(PyRuntimeError::new_err)?,
+        Some(w) if w.to_lowercase().starts_with("0x") => parse_range(w).map_err(Error::runtime)?,
         Some(w) => match v.units.iter().find(|u| u.tu == w) {
             Some(u) => {
                 unit = Some(u.tu.clone());
@@ -656,13 +656,13 @@ fn layout_literals(r: &Reader, v: &View, what: Option<&str>) -> PyResult<Out> {
 
 // ------------------------------------------------------------------------------------------------ layout fptrs, starts
 
-fn layout_fptrs(r: &Reader, v: &View, what: Option<&str>) -> PyResult<Out> {
+fn layout_fptrs(r: &Reader, v: &View, what: Option<&str>) -> Result<Out> {
     let starts: BTreeSet<i64> = r.all_starts()?.into_iter().collect();
     let (mut by_site, mut by_target) = (None, None);
     match what {
         None => {}
         Some(w) if w.to_lowercase().starts_with("0x") => {
-            let (lo, hi) = parse_range(w).map_err(PyRuntimeError::new_err)?;
+            let (lo, hi) = parse_range(w).map_err(Error::runtime)?;
             if r.img.section_of(lo as u32).is_some_and(|s| s.holds_code()) { by_target = Some((lo, hi)) } else { by_site = Some((lo, hi)) }
         }
         Some(w) => match v.units.iter().find(|u| u.tu == w) {
@@ -699,9 +699,9 @@ fn layout_fptrs(r: &Reader, v: &View, what: Option<&str>) -> PyResult<Out> {
     Ok((out, None))
 }
 
-fn layout_starts(r: &Reader, v: &View, range: Option<&str>) -> PyResult<Out> {
+fn layout_starts(r: &Reader, v: &View, range: Option<&str>) -> Result<Out> {
     let (glo, ghi, _) = v.game;
-    let (lo, hi) = match range { Some(x) => parse_range(x).map_err(PyRuntimeError::new_err)?, None => (glo, ghi) };
+    let (lo, hi) = match range { Some(x) => parse_range(x).map_err(Error::runtime)?, None => (glo, ghi) };
     let mut starts: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
     for (a, fs) in &v.starts {
         for f in fs {
@@ -740,7 +740,7 @@ fn layout_starts(r: &Reader, v: &View, range: Option<&str>) -> PyResult<Out> {
 }
 
 /// The body comment of a draft skeleton: the disassembly of the walk's extent at a (at most 0x400 bytes).
-fn skeleton(r: &Reader, a: i64) -> PyResult<Out> {
+fn skeleton(r: &Reader, a: i64) -> Result<Out> {
     let func = r.walk_func(a)?;
     let hi = func.as_ref().map(|f| f.hi).unwrap_or(a + 0x40).min(a + 0x400);
     let mut out = vec![format!("    /* disassembly ({} bytes):", hi - a)];
@@ -759,7 +759,7 @@ fn skeleton(r: &Reader, a: i64) -> PyResult<Out> {
 /// `cmd`: disasm | disasm-ours | dump | refs | literals | fptrs | starts; `args`: its arguments by name.
 #[pyfunction]
 #[pyo3(signature = (project, capstone, cmd, args))]
-pub fn read_command(project: PyRef<'_, crate::project::PyProject>, capstone: &str, cmd: &str, args: HashMap<String, Option<String>>) -> PyResult<Out> {
+pub fn read_command(project: PyRef<'_, crate::project::PyProject>, capstone: &str, cmd: &str, args: HashMap<String, Option<String>>) -> Result<Out> {
     let r = Reader::open(&project.p, capstone)?;
     let arg = |k: &str| args.get(k).cloned().flatten();
     let flag = |k: &str| arg(k).is_some_and(|v| v == "1");
@@ -772,24 +772,24 @@ pub fn read_command(project: PyRef<'_, crate::project::PyProject>, capstone: &st
         "literals" => layout_literals(&r, &view()?, arg("what").as_deref()),
         "fptrs" => layout_fptrs(&r, &view()?, arg("what").as_deref()),
         "starts" => layout_starts(&r, &view()?, arg("range").as_deref()),
-        "skeleton" => skeleton(&r, parse_addr(&arg("addr").unwrap_or_default()).map_err(PyRuntimeError::new_err)?),
-        _ => Err(PyRuntimeError::new_err(format!("no reading command {cmd}"))),
+        "skeleton" => skeleton(&r, parse_addr(&arg("addr").unwrap_or_default()).map_err(Error::runtime)?),
+        _ => Err(Error::runtime(format!("no reading command {cmd}"))),
     }
 }
 
 /// An address from `0xADDR`, a name the ledger knows, or a placeholder spelling one; None when it is none of them.
-pub fn resolve_key(p: &Project, key: &str) -> PyResult<Option<i64>> {
-    Reader::open(p, "")?.resolve(key).map_err(pyo3::exceptions::PyValueError::new_err)
+pub fn resolve_key(p: &Project, key: &str) -> Result<Option<i64>> {
+    Reader::open(p, "")?.resolve(key).map_err(Error::value)
 }
 
 /// The body comment of a draft skeleton at a (the disassembly of the walk's extent).
-pub fn skeleton_lines(p: &Project, capstone: &str, a: i64) -> PyResult<Vec<String>> {
+pub fn skeleton_lines(p: &Project, capstone: &str, a: i64) -> Result<Vec<String>> {
     Ok(skeleton(&Reader::open(p, capstone)?, a)?.0)
 }
 
 #[pyfunction]
-pub fn read_resolve(project: PyRef<'_, crate::project::PyProject>, key: &str) -> PyResult<Option<i64>> {
-    Reader::open(&project.p, "")?.resolve(key).map_err(pyo3::exceptions::PyValueError::new_err)
+pub fn read_resolve(project: PyRef<'_, crate::project::PyProject>, key: &str) -> Result<Option<i64>> {
+    Reader::open(&project.p, "")?.resolve(key).map_err(Error::value)
 }
 
 #[cfg(test)]

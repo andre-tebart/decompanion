@@ -4,8 +4,8 @@
 //! (clang_tokenize); this module reads the address comments and the macros' bodies. Offsets are byte offsets of
 //! the file's text; the model's (line, column in characters) positions are mapped to them.
 
+use crate::error::{Error, Result};
 use crate::layout::{ScanRef, ScanView};
-use pyo3::exceptions::PyRuntimeError;
 use crate::clang::FileModel;
 use pyo3::prelude::*;
 
@@ -361,20 +361,20 @@ fn hold(p: Piece) -> ScanPiece {
     ScanPiece { id, digest, _piece: piece }
 }
 
-fn pieces(ids: &[u64]) -> PyResult<Vec<Arc<Piece>>> {
+fn pieces(ids: &[u64]) -> Result<Vec<Arc<Piece>>> {
     let h = HELD.lock().unwrap_or_else(|e| e.into_inner());
     ids.iter()
-        .map(|id| h.get(id).and_then(|w| w.upgrade()).ok_or_else(|| PyRuntimeError::new_err(format!("scan piece {id} is no longer held"))))
+        .map(|id| h.get(id).and_then(|w| w.upgrade()).ok_or_else(|| Error::runtime(format!("scan piece {id} is no longer held"))))
         .collect()
 }
 
 /// rel -> the piece of the file, of the pieces named.
-pub(crate) fn pieces_by_rel(ids: &[u64]) -> PyResult<HashMap<String, Arc<Piece>>> {
+pub(crate) fn pieces_by_rel(ids: &[u64]) -> Result<HashMap<String, Arc<Piece>>> {
     Ok(pieces(ids)?.into_iter().map(|p| (p.rel.clone(), p)).collect())
 }
 
 /// The scan a ScanRef names: its pieces joined, its own errors after theirs.
-pub(crate) fn view(r: &ScanRef) -> PyResult<ScanView> {
+pub(crate) fn view(r: &ScanRef) -> Result<ScanView> {
     let mut v = ScanView::default();
     for p in pieces(&r.pieces)? {
         v.extend(&p.view);
@@ -384,7 +384,7 @@ pub(crate) fn view(r: &ScanRef) -> PyResult<ScanView> {
 }
 
 /// file -> its Defs, of the files a ScanRef names.
-pub(crate) fn defs(r: &ScanRef) -> PyResult<HashMap<String, Defs>> {
+pub(crate) fn defs(r: &ScanRef) -> Result<HashMap<String, Defs>> {
     Ok(pieces(&r.pieces)?.iter().map(|p| (p.rel.clone(), p.defs.clone())).collect())
 }
 
@@ -410,7 +410,7 @@ pub(crate) struct FilePart {
 }
 
 /// scan_file of a model: views as (target or None, its model of the file); none: the model is the only view.
-pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(Option<String>, &FileModel)]) -> PyResult<FilePart> {
+pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(Option<String>, &FileModel)]) -> Result<FilePart> {
     let sf = Src::new(text, &model.comments, &model.strings);
     let defines: Vec<(String, bool, i64, usize, usize)> =
         model.defines.iter().map(|(n, fl, l, c, el, ec)| { let s = sf.offset(*l, *c); (n.clone(), *fl, *l, s, sf.offset(*el, *ec)) }).collect();
@@ -602,7 +602,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
             errors: errors.iter().map(|e| (e.2.clone(), e.0.clone(), e.1, e.3.clone())).collect(),
         },
     };
-    let lint = views.iter().map(|(t, m)| Ok((t.clone(), crate::lint::file_lint(rel, &sf, m)?))).collect::<PyResult<Vec<_>>>()?;
+    let lint = views.iter().map(|(t, m)| Ok((t.clone(), crate::lint::file_lint(rel, &sf, m)?))).collect::<Result<Vec<_>>>()?;
     let piece = hold(Piece { view, rel: rel.to_string(), defs: defs_of, lint, sysinc: crate::lint::system_includes(text) });
     Ok(FilePart { rel: rel.to_string(), macros, described, functions, data, ptrcasts, views: vrows, rawobj, errors, placeholders, piece })
 }

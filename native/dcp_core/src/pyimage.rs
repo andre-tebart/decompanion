@@ -1,8 +1,8 @@
 //! The original binary as Python reads it (config.Project.image, the tests): the core's PE32 reader (pe.rs) over one
 //! file's bytes.
 
+use crate::error::{Error, Result};
 use crate::pe::Image;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use sha2::{Digest, Sha256};
@@ -170,8 +170,8 @@ impl PeImage {
 
 /// The PE32 image of a file; ValueError for a file that is none.
 #[pyfunction]
-pub fn pe_open(path: &str) -> PyResult<PeImage> {
-    let data = std::fs::read(path).map_err(|e| PyValueError::new_err(format!("{path}: {e}")))?;
-    let img = Image::parse(data).map_err(PyValueError::new_err)?;
+pub fn pe_open(path: &str) -> Result<PeImage> {
+    let data = std::fs::read(path).map_err(|e| Error::value(format!("{path}: {e}")))?;
+    let img = Image::parse(data).map_err(Error::value)?;
     Ok(PeImage { img: Arc::new(img), sha: OnceLock::new() })
 }

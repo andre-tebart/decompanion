@@ -17,6 +17,7 @@
 //!            SUB_, DAT_, PTR_ and a hex number)
 //! A thunk or slot imported by ordinal takes the analyzer's name for it when there is one.
 
+use crate::error::Result;
 use crate::store::{self, SFact};
 use crate::with_db;
 use pyo3::prelude::*;
@@ -83,7 +84,7 @@ pub struct Names {
 }
 
 impl Names {
-    pub fn build(db_path: &str, main: &str, image: &str) -> PyResult<Names> {
+    pub fn build(db_path: &str, main: &str, image: &str) -> Result<Names> {
         let (names, symbols, drafts) = with_db(db_path, |db| {
             let names = store::facts_of(db, db_path, "name", None, |_| true)?;
             let symbols = store::facts_of(db, db_path, "symbol", None, |f| !f.rule.starts_with("M."))?;
@@ -199,7 +200,7 @@ impl Names {
 
     /// How `dcp disasm` / `dcp dump` spell an address: its name, else `name+off` inside a named symbol (not an
     /// unknown run), else a string's text, else None.
-    pub fn label_of(&self, a: i64) -> PyResult<Option<String>> {
+    pub fn label_of(&self, a: i64) -> Result<Option<String>> {
         if let Some(n) = self.name_of(a) {
             return Ok(Some(n.to_string()));
         }
@@ -227,7 +228,7 @@ impl Names {
     /// The names of a store (`main`: the main checkout's store URI under a worktree, else ''), the image for
     /// strings.
     #[new]
-    fn new(db_path: &str, main: &str, image: &str) -> PyResult<Names> {
+    fn new(db_path: &str, main: &str, image: &str) -> Result<Names> {
         Names::build(db_path, main, image)
     }
 
@@ -244,12 +245,12 @@ impl Names {
         self.symbol_at(a).map(|f| crate::pystore::object(py, "symbol", f)).transpose()
     }
 
-    fn label(&self, a: i64) -> PyResult<Option<String>> {
+    fn label(&self, a: i64) -> Result<Option<String>> {
         self.label_of(a)
     }
 
     /// The instruction text with ` <label>` after every number the ledger names (label).
-    pub(crate) fn annotate(&self, text: &str) -> PyResult<String> {
+    pub(crate) fn annotate(&self, text: &str) -> Result<String> {
         use std::sync::LazyLock;
         static HEX: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"0x([0-9a-f]+)").unwrap());
         let (mut out, mut pos) = (String::new(), 0);

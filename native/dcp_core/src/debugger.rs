@@ -9,6 +9,7 @@
 //! map's publics and statics joined with the unit (by the object's content hash), the definition's line and the
 //! original's address of every function, so the client process never opens the project.
 
+use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -788,10 +789,10 @@ pub fn debug_run(_d: &Debuggee, _interrupted: &mut dyn FnMut() -> bool) -> Resul
 #[pyo3(signature = (run, exe, cmdline, dir, env, seconds, symbols, capstone, crash_root, dump, spec))]
 #[allow(clippy::too_many_arguments)]
 pub fn debug_launch(py: pyo3::Python<'_>, run: &str, exe: &str, cmdline: &str, dir: &str, env: Vec<(String, String)>, seconds: f64, symbols: &str,
-                    capstone: &str, crash_root: &str, dump: &str, spec: &str) -> pyo3::PyResult<(Option<u32>, String, Option<String>)> {
+                    capstone: &str, crash_root: &str, dump: &str, spec: &str) -> Result<(Option<u32>, String, Option<String>)> {
     let d = Debuggee { run, exe, cmdline, dir, env: &env, seconds, symbols, capstone, crash_root, dump, spec };
     let mut interrupted = || py.check_signals().is_err();
-    let e = debug_run(&d, &mut interrupted).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let e = debug_run(&d, &mut interrupted).map_err(Error::runtime)?;
     Ok((e.exit_code, e.stopped, e.crash))
 }
 

@@ -1,16 +1,15 @@
 //! The setup rules (rules/setup.py documents each criterion; checks.py the numbered setup checks): what the
 //! image gives away before a line of source exists.
 
+use crate::error::{Error, Result};
 use crate::image;
 use crate::rules::Ctx;
 use crate::store::{self, Out, PROVEN};
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
 use rusqlite::Connection;
 use serde_json::json;
 
-fn err(e: rusqlite::Error) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: rusqlite::Error) -> Error {
+    Error::runtime(e.to_string())
 }
 
 fn region(out: &mut Out, what: &str, lo: u32, hi: u32) {
@@ -18,7 +17,7 @@ fn region(out: &mut Out, what: &str, lo: u32, hi: u32) {
 }
 
 /// S.headers: the format's headers, one region each (pe.header, pe.rich).
-pub fn s_headers(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_headers(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     for (what, lo, hi) in img.header_regions() {
         region(out, &what, lo, hi);
@@ -27,7 +26,7 @@ pub fn s_headers(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.sections: a section fact per table entry; pad past VirtualSize, unmapped between sections.
-pub fn s_sections(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_sections(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let mut secs: Vec<&crate::pe::Section> = img.sections.iter().collect();
     secs.sort_by_key(|s| s.va);
@@ -51,7 +50,7 @@ pub fn s_sections(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.datadirs: the directories that are byte ranges of their own inside a section.
-pub fn s_datadirs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_datadirs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     for (what, lo, hi) in img.directory_regions() {
         region(out, &what, lo, hi);
@@ -60,7 +59,7 @@ pub fn s_datadirs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.imports: the import machinery as regions, an iat symbol and a name per address-table slot.
-pub fn s_imports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_imports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     for (what, lo, hi) in img.import_regions() {
         if hi > lo {
@@ -76,7 +75,7 @@ pub fn s_imports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.exports: the export machinery as regions, a start and a name per exported address (no forwarders).
-pub fn s_exports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_exports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     for (what, lo, hi) in img.export_regions() {
         if hi > lo {
@@ -95,7 +94,7 @@ pub fn s_exports(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.entry: AddressOfEntryPoint is a function start.
-pub fn s_entry(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_entry(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     if img.entry != 0 {
         out.fact(img.entry as i64, img.entry as i64 + 1, "start", json!({"skind": "func", "how": "entry"}), PROVEN);
@@ -104,7 +103,7 @@ pub fn s_entry(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.relocs: a reloc reference per absolute relocation site, to the address its field holds.
-pub fn s_relocs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_relocs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     for site in img.relocations() {
         out.fact(site as i64, site as i64 + 4, "ref", json!({"rkind": "reloc", "to": img.read_ptr(site)}), PROVEN);
@@ -113,7 +112,7 @@ pub fn s_relocs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S7.entry.section: the entry point and every export lie in a code section.
-pub fn s7_entry_section(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s7_entry_section(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let secs: Vec<(i64, i64)> = store::facts(db, &ctx.db, "section", &ctx.needed, |_| true).map_err(err)?.iter().map(|f| (f.lo, f.hi)).collect();
     for s in store::facts(db, &ctx.db, "start", &ctx.needed, |_| true).map_err(err)?.iter() {
@@ -127,10 +126,10 @@ pub fn s7_entry_section(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<(
 
 /// S4.import.libs: every imported DLL's import library is among the toolchain's archives or the target's
 /// (native_inputs: the toolchain's key and root, the target's archives).
-pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = &ctx.inputs;
-    let tc = crate::toolchain::of(&x.toolchain).ok_or_else(|| PyRuntimeError::new_err("S4: no such toolchain"))?;
+    let tc = crate::toolchain::of(&x.toolchain).ok_or_else(|| Error::runtime("S4: no such toolchain"))?;
     let name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let mut have: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(root) = x.root.as_deref() {
@@ -151,12 +150,12 @@ pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()
 use crate::store::{SFact, DERIVED, OPEN};
 use std::rc::Rc;
 
-pub(crate) fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> PyResult<Vec<Rc<SFact>>> {
+pub(crate) fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> Result<Vec<Rc<SFact>>> {
     store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err)
 }
 
 /// Store.facts(kind, lo, hi): the facts of a kind that intersect [lo, hi), in the store's order.
-fn facts_in(ctx: &Ctx, db: &Connection, kind: &str, lo: i64, hi: i64) -> PyResult<Vec<Rc<SFact>>> {
+fn facts_in(ctx: &Ctx, db: &Connection, kind: &str, lo: i64, hi: i64) -> Result<Vec<Rc<SFact>>> {
     store::facts(db, &ctx.db, kind, &ctx.needed, |f| f.hi > lo && f.lo < hi).map_err(err)
 }
 
@@ -176,12 +175,12 @@ pub(crate) fn py_str(v: Option<&serde_json::Value>) -> String {
 }
 
 /// The toolchain native_inputs name ({"toolchain": key}).
-pub(crate) fn toolchain_of(ctx: &Ctx) -> PyResult<Box<dyn crate::toolchain::Toolchain>> {
-    crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| PyRuntimeError::new_err(format!("{}: no toolchain in its inputs", ctx.rule)))
+pub(crate) fn toolchain_of(ctx: &Ctx) -> Result<Box<dyn crate::toolchain::Toolchain>> {
+    crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| Error::runtime(format!("{}: no toolchain in its inputs", ctx.rule)))
 }
 
 /// C.overlap: two symbol or region facts that overlap contradict each other.
-pub fn c_overlap(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn c_overlap(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let mut items: Vec<(&'static str, Rc<SFact>)> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.level > OPEN).map(|f| ("symbol", f)).collect();
     items.extend(facts(ctx, db, "region")?.into_iter().map(|f| ("region", f)));
     items.sort_by_key(|(_, f)| (f.lo, f.hi));
@@ -205,7 +204,7 @@ pub fn c_overlap(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// C.ref.target: a direct call whose target lies strictly inside a function contradicts it.
-pub fn c_ref_target(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn c_ref_target(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let mut funcs: Vec<Rc<SFact>> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).collect();
     funcs.sort_by_key(|f| (f.lo, f.hi));
     let mut starts: std::collections::HashSet<i64> = facts(ctx, db, "start")?.iter().map(|f| f.lo).collect();
@@ -232,7 +231,7 @@ pub fn c_ref_target(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 /// C.name.alias: several source names declared for one data address (a definition's or an extern's address
 /// comment; a view is another object and no alias). One object has one name: a match-base report, the other names
 /// read as wrong data in `asmdiff --symbols` and blocked a rename (which name was meant).
-pub fn c_name_alias(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn c_name_alias(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let mut by_addr: std::collections::BTreeMap<i64, std::collections::BTreeMap<String, Vec<String>>> = std::collections::BTreeMap::new();
     for f in facts(ctx, db, "name")?.iter() {
         if f.s("origin") != Some("source") || !f.reason.as_deref().is_some_and(|r| r.starts_with("data address comment")) {
@@ -250,7 +249,7 @@ pub fn c_name_alias(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S5.crt.gaps: unknown code between the first and the last placed library function.
-pub fn s5_crt_gaps(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s5_crt_gaps(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let crt: Vec<Rc<SFact>> = facts(ctx, db, "symbol")?.into_iter()
         .filter(|f| f.s("unit").is_some_and(|u| u.starts_with("lib:")) && f.s("skind") == Some("func")).collect();
     if crt.is_empty() {
@@ -268,7 +267,7 @@ pub fn s5_crt_gaps(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.entry.user: the user entry the CRT start-up calls, as its C name.
-pub fn s_entry_user(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_entry_user(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let tc = toolchain_of(ctx)?;
     let user: std::collections::HashMap<&str, &str> = tc.user_entry_names().into_iter().collect();
     for f in facts(ctx, db, "name")? {
@@ -282,7 +281,7 @@ pub fn s_entry_user(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.strings: a relocation target in a data section that holds at least 4 printable characters and a NUL.
-pub fn s_strings(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_strings(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let targets: std::collections::BTreeSet<i64> = facts(ctx, db, "ref")?.iter()
         .filter(|f| f.s("rkind") == Some("reloc")).filter_map(|f| f.value.get("to").and_then(|v| v.as_i64())).collect();
@@ -318,7 +317,7 @@ pub fn s_strings(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.fill: an unclaimed run of a code section made only of the fill forms, up to a claim or VirtualSize.
-pub fn s_fill(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_fill(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let forms = crate::compare::fill_order(&ctx.fill_forms);
     for s in img.sections.iter().filter(|s| s.holds_code()) {
@@ -358,7 +357,7 @@ pub fn s_fill(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.unknown: every mapped byte no symbol and no region claims.
-pub fn s_unknown(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_unknown(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     for s in &img.sections {
         let (va, end) = (s.va as i64, s.end() as i64);

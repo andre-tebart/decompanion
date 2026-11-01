@@ -19,11 +19,11 @@
 //! Per base address the union of its evidence is one `evidence` fact {ekind: extent} over the proven range
 //! (derived: it rests on the walk); D.data's D8 holds them against the declarations.
 
+use crate::error::{Error, Result};
 use crate::cs::{OP_IMM, OP_MEM, OP_REG};
 use crate::rules::Ctx;
 use crate::store::{Out, DERIVED};
 use crate::x86::{Decoder, WIns, CALL, CJUMP, IJUMP, JUMP, RET};
-use pyo3::prelude::*;
 use rusqlite::Connection;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -836,7 +836,7 @@ fn apply(fx: &mut Fx, p: V, t: &Term, args: &[V], site: u32) {
 }
 
 /// S.extent (module docs).
-pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = crate::image(&ctx.image)?;
     let code: Vec<(i64, i64)> = crate::layout::code_ranges(&img);
     if code.is_empty() {
@@ -914,7 +914,7 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     });
     let mut lists: Vec<Vec<WIns>> = Vec::with_capacity(funcs.len());
     for d in decoded {
-        lists.extend(d.map_err(pyo3::exceptions::PyRuntimeError::new_err)?);
+        lists.extend(d.map_err(Error::runtime)?);
     }
     let callees: Vec<Vec<u32>> = lists.iter()
         .map(|l| l.iter().filter(|i| i.flow == CALL).filter_map(|i| i.target.map(|t| t as u32)).collect()).collect();

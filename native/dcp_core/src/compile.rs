@@ -11,6 +11,7 @@
 //! diagnostics and its input hashes (it is not compiled again until an input changes). Nothing here reads a
 //! modification time.
 
+use crate::error::{Error, Result};
 use crate::fsmemo;
 use crate::plan::{self, Tu};
 use crate::project::{py_path, sha256_parts, Project};
@@ -36,7 +37,7 @@ pub struct TuKeys {
     pub ok: bool,
 }
 
-pub fn tu_keys(db: &str) -> PyResult<HashMap<String, TuKeys>> {
+pub fn tu_keys(db: &str) -> Result<HashMap<String, TuKeys>> {
     with_db(db, |c| {
         let mut st = c.prepare("SELECT unit, amalg, src_hash, flags_hash, include_hash, obj_hash, ok FROM tu")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, TuKeys {
@@ -57,7 +58,7 @@ pub struct TuRow {
     pub diags: Vec<(String, i64, String, String, String)>,
 }
 
-pub fn tu_rows(db: &str) -> PyResult<HashMap<String, TuRow>> {
+pub fn tu_rows(db: &str) -> Result<HashMap<String, TuRow>> {
     with_db(db, |c| tu_rows_of(c))
 }
 
@@ -85,12 +86,12 @@ fn canonical(v: &Value) -> String {
     s
 }
 
-fn include_set(db: &str, key: &str) -> PyResult<Option<Vec<String>>> {
+fn include_set(db: &str, key: &str) -> Result<Option<Vec<String>>> {
     let t: Option<String> = with_db(db, |c| c.query_row("SELECT files FROM include_set WHERE key=?", [key], |r| r.get(0)).optional())?;
     Ok(t.map(|t| serde_json::from_str(&t).unwrap_or_default()))
 }
 
-fn put_include_set(db: &str, key: &str, files: &[String]) -> PyResult<()> {
+fn put_include_set(db: &str, key: &str, files: &[String]) -> Result<()> {
     let s = canonical(&json!(files));
     with_db(db, |c| c.execute("INSERT OR REPLACE INTO include_set (key, files) VALUES (?, ?)", [key, &s]).map(|_| ()))
 }
@@ -703,8 +704,8 @@ pub fn rename_after(p: &Project, before: Vec<Before>, mapping: &std::collections
 #[pyo3(signature = (project, force=false, jobs=None))]
 #[allow(clippy::type_complexity)]
 pub fn compile_ensure(project: PyRef<'_, crate::project::PyProject>, force: bool, jobs: Option<usize>)
-    -> PyResult<(String, usize, Vec<String>, Vec<String>, Vec<String>, usize, i64, bool, Vec<String>)> {
-    let r = ensure(&project.p, force, jobs).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    -> Result<(String, usize, Vec<String>, Vec<String>, Vec<String>, usize, i64, bool, Vec<String>)> {
+    let r = ensure(&project.p, force, jobs).map_err(Error::runtime)?;
     Ok((r.target, r.units, r.compiled, r.failed, r.removed, r.preprocessed, r.ms, r.unavailable, r.log))
 }
 

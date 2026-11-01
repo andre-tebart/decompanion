@@ -1,12 +1,11 @@
 //! `dcp asmdiff` and `dcp diffclass`: one graded function's reading as G.grade takes it (diffclass.rs: our
 //! listing against the original's, the switch tables, the hunks and the verdict), for the commands to print.
 
+use crate::error::{Error, Result};
 use crate::diffclass::{self, Env, Hunk, Tables, Verdict};
 use crate::project::Project;
 use crate::store;
 use crate::x86::Line;
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
 
@@ -168,7 +167,7 @@ fn py_int0(s: &str) -> Option<i64> {
 }
 
 /// The function grade row named `key` (a function name or an address).
-pub fn find_function(db: &str, key: &str) -> PyResult<Option<Value>> {
+pub fn find_function(db: &str, key: &str) -> Result<Option<Value>> {
     let a = if key.to_lowercase().starts_with("0x") { py_int0(key) } else { None };
     Ok(crate::queues::function_grades(db)?.iter().cloned()
         .find(|r| r.get("name").and_then(|v| v.as_str()) == Some(key) || (a.is_some() && r["addr"].as_i64() == a))
@@ -177,7 +176,7 @@ pub fn find_function(db: &str, key: &str) -> PyResult<Option<Value>> {
 
 /// Every known function start (start facts, function and thunk symbols above open) and the end of every code
 /// section: what bounds a function's slot.
-pub fn all_starts(db: &str, img: &crate::pe::Image) -> PyResult<Vec<i64>> {
+pub fn all_starts(db: &str, img: &crate::pe::Image) -> Result<Vec<i64>> {
     let mut s: BTreeSet<i64> = crate::with_db(db, |c| store::facts_of(c, db, "start", None, |_| true))?.iter().map(|f| f.lo).collect();
     s.extend(crate::with_db(db, |c| store::facts_of(c, db, "symbol", None, |f| matches!(f.s("skind"), Some("func" | "thunk")) && f.level > store::OPEN))?
         .iter().map(|f| f.lo));
@@ -187,7 +186,7 @@ pub fn all_starts(db: &str, img: &crate::pe::Image) -> PyResult<Vec<i64>> {
 
 /// The reading of a graded function (its object's code against the original), or why there is none; with `names`,
 /// the texts with names for X too.
-pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::names::Names>) -> Result<Result<Reading, String>, PyErr> {
+pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::names::Names>) -> Result<Result<Reading, String>, Error> {
     let db = p.store_path();
     let unit = row["unit"].as_str().unwrap_or("").to_string();
     let name = row["name"].as_str().unwrap_or("").to_string();
@@ -200,13 +199,13 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
         return Ok(Err(format!("the object of unit {unit} defines no {name}")));
     };
     let code = obj.function_code(k);
-    let img = crate::image(&p.target(None).map_err(PyRuntimeError::new_err)?.path)?;
-    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| PyRuntimeError::new_err("no toolchain"))?;
+    let img = crate::image(&p.target(None).map_err(Error::runtime)?.path)?;
+    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| Error::runtime("no toolchain"))?;
     let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
     let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
     let forms = crate::compare::fill_order(&fill_forms);
     let env = Env { dll: capstone, img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
-    let e = |s: String| PyRuntimeError::new_err(s);
+    let e = |s: String| Error::runtime(s);
     let d = &row["dist"];
     let (extent, slot) = match (d.get("extent").and_then(|v| v.as_i64()), d.get("slot").and_then(|v| v.as_i64())) {
         (Some(x), Some(s)) => (x, s),

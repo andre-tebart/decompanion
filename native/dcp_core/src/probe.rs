@@ -10,10 +10,10 @@
 //! is compiled once per combination (one process each, on threads; objects kept by the unit's text and flags), each
 //! anchor compared with the masked compare of M.match. The result is the store meta `probe`.
 
+use crate::error::{Error, Result};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::{self, canon};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -66,7 +66,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
     crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let tools = crate::vc6::Tools::of(p);
     let target = p.target(None)?;
-    let img = Python::attach(|_| crate::image(&target.path)).map_err(|e| e.to_string())?;
+    let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let all_combos = combos();
     let rows: Vec<serde_json::Map<String, Value>> = crate::queues::function_grades(&db).map_err(|e| e.to_string())?
         .iter().cloned().filter(|r| r["code"] == "byte").collect();
@@ -261,6 +261,6 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
 /// probe.probe: (the result with ms, compiles, cached; the log line).
 #[pyfunction]
 pub fn probe_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>) -> PyResult<(Bound<'py, PyAny>, String)> {
-    let (v, log) = probe(&project.p).map_err(PyRuntimeError::new_err)?;
+    let (v, log) = probe(&project.p).map_err(Error::runtime)?;
     Ok((crate::pystore::json_py(py, &v)?, log))
 }

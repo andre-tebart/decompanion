@@ -29,13 +29,13 @@
 //! groups that pass on their own are tried together, then added one at a time while the unit stays whole.
 //! Positions are in characters, as Python's str offsets were.
 
+use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::clang::{Decl, FileModel};
 use crate::project::{py_path, Project};
 use crate::readability::Source;
 use crate::srcscan::{py_space, py_strip};
 use crate::store::{self, SFact};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -55,8 +55,8 @@ const LEVEL: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 static IDENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z_]\w*").unwrap());
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 fn s(x: impl Into<String>) -> Tok {
@@ -101,7 +101,7 @@ fn vstr(f: &SFact, k: &str) -> String {
 }
 
 /// Every data declaration of the current target with an address, joined with its facts (module docs).
-pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> PyResult<Vec<DataDef>> {
+pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataDef>> {
     let db = p.store_path();
     let default = p.targets[0].name.clone();
     let mut out = vec![];
@@ -668,12 +668,12 @@ fn apply(files: &mut Files, edits: &[&Edit]) -> BTreeMap<String, Vec<char>> {
 }
 
 /// address -> unit of every function graded byte.
-fn byte_functions(db: &str) -> PyResult<HashMap<i64, String>> {
+fn byte_functions(db: &str) -> Result<HashMap<i64, String>> {
     let fs = crate::with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("function") && f.s("code") == Some("byte")))?;
     Ok(fs.iter().map(|f| (f.lo, f.s("unit").unwrap_or("").to_string())).collect())
 }
 
-fn failed_units(db: &str) -> PyResult<BTreeSet<String>> {
+fn failed_units(db: &str) -> Result<BTreeSet<String>> {
     let fs = crate::with_db(db, |c| store::facts_of(c, db, "build", None, |f| f.value.get("ok").and_then(|v| v.as_bool()) == Some(false)))?;
     Ok(fs.iter().map(|f| f.s("tu").unwrap_or("").to_string()).collect())
 }
@@ -705,7 +705,7 @@ struct Compiled {
 }
 
 impl<'a> Trial<'a> {
-    fn new(p: &'a Project) -> PyResult<Trial<'a>> {
+    fn new(p: &'a Project) -> Result<Trial<'a>> {
         let db = p.store_path();
         let root = p.root.to_string_lossy().into_owned();
         let img = crate::image(&p.target(None).map_err(err)?.path)?;
@@ -739,7 +739,7 @@ impl<'a> Trial<'a> {
 
     /// For each (unit, its files' new texts): (whether the unit compiles and keeps every byte match, why not).
     /// The compiles run on threads, the compares here.
-    fn verdicts(&self, files: &mut Files, jobs: &[(&str, BTreeMap<String, Vec<char>>)]) -> PyResult<Vec<(bool, String)>> {
+    fn verdicts(&self, files: &mut Files, jobs: &[(&str, BTreeMap<String, Vec<char>>)]) -> Result<Vec<(bool, String)>> {
         let mut texts = vec![];
         for (unit, new) in jobs {
             let a = &self.units[*unit];
@@ -811,7 +811,7 @@ impl<'a> Trial<'a> {
     }
 
     /// Per unit: (the accepted edits, why each rejected group fell).
-    fn judge(&self, files: &mut Files, units: &[(String, Vec<&'a Edit>)]) -> PyResult<Vec<(Vec<&'a Edit>, Vec<String>)>> {
+    fn judge(&self, files: &mut Files, units: &[(String, Vec<&'a Edit>)]) -> Result<Vec<(Vec<&'a Edit>, Vec<String>)>> {
         let all: Vec<(&str, BTreeMap<String, Vec<char>>)> = units.iter().map(|(u, es)| (u.as_str(), apply(files, es))).collect();
         let first = self.verdicts(files, &all)?;
         let mut out: Vec<Option<(Vec<&Edit>, Vec<String>)>> = vec![None; units.len()];
@@ -877,7 +877,7 @@ impl<'a> Trial<'a> {
 
 // ------------------------------------------------------------------------------------------------ the commands
 
-fn scan_of(p: &Project) -> PyResult<Rc<crate::frontend::Scan>> {
+fn scan_of(p: &Project) -> Result<Rc<crate::frontend::Scan>> {
     let tree = p.input_hash("src").map_err(err)?;
     crate::frontend::scan(&p.root.to_string_lossy(), tree.as_deref()).map_err(err)
 }
@@ -885,7 +885,7 @@ fn scan_of(p: &Project) -> PyResult<Rc<crate::frontend::Scan>> {
 /// `dcp data map [UNIT]`: (the lines, the exit status).
 #[pyfunction]
 #[pyo3(signature = (project, unit, externs))]
-pub fn data_map(project: PyRef<'_, crate::project::PyProject>, unit: Option<String>, externs: bool) -> PyResult<(Vec<String>, i32)> {
+pub fn data_map(project: PyRef<'_, crate::project::PyProject>, unit: Option<String>, externs: bool) -> Result<(Vec<String>, i32)> {
     let p = &project.p;
     crate::pystore::st_open(&p.store_path(), &p.main_uri())?;
     let model = data_model(p, &*scan_of(p)?)?;
@@ -948,7 +948,7 @@ pub fn data_map(project: PyRef<'_, crate::project::PyProject>, unit: Option<Stri
 #[pyo3(signature = (project, checks, unit, write, limit, verbose, sync, emit))]
 #[allow(clippy::too_many_arguments)]
 pub fn data_fix(project: PyRef<'_, crate::project::PyProject>, checks: Option<String>, unit: Option<String>, write: bool, limit: usize, verbose: bool,
-                sync: Bound<'_, PyAny>, emit: Bound<'_, PyAny>) -> PyResult<i32> {
+                sync: Bound<'_, PyAny>, emit: Bound<'_, PyAny>) -> Result<i32> {
     let say = |line: String| emit.call1((line,)).map(|_| ());
     let checks: Vec<String> = match &checks {
         Some(c) if !c.is_empty() => c.split(',').map(|x| x.trim().to_uppercase()).collect(),

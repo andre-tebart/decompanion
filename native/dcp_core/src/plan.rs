@@ -10,6 +10,7 @@
 //! compiler reports a diagnostic at the name and line the directives give; `locate` maps it back to the file's
 //! physical line.
 
+use crate::error::{Error, Result};
 use crate::frontend;
 use crate::fsmemo;
 use crate::project::{py_path, Project};
@@ -185,8 +186,8 @@ fn rows(units: &[Tu]) -> Vec<TuRow> {
 /// The translation units of one target of a scan (tu.units).
 #[pyfunction]
 #[pyo3(signature = (root, scan, target, default, names=None))]
-pub fn plan_scan_units(root: &str, scan: PyRef<'_, frontend::ScanObj>, target: &str, default: &str, names: Option<HashMap<String, String>>) -> PyResult<Vec<TuRow>> {
-    Ok(rows(&units(&py_path(root), &scan.s, target, default, &names.unwrap_or_default()).map_err(pyo3::exceptions::PyRuntimeError::new_err)?))
+pub fn plan_scan_units(root: &str, scan: PyRef<'_, frontend::ScanObj>, target: &str, default: &str, names: Option<HashMap<String, String>>) -> Result<Vec<TuRow>> {
+    Ok(rows(&units(&py_path(root), &scan.s, target, default, &names.unwrap_or_default()).map_err(Error::runtime)?))
 }
 
 #[cfg(test)]

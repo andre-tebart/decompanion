@@ -12,11 +12,11 @@
 //! - scan: every file's piece, kept while its text and its models are the same (an edit scans only the files it
 //!   changed), joined; the L16 guards over the whole tree; memoised per tree hash.
 
+use crate::error::{Error, Result};
 use crate::clang::{self, FileModel, ModelOut, Unit};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::srcscan::{self, FilePart};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use std::cell::RefCell;
@@ -34,8 +34,8 @@ const MODEL_VERSION: &str = "22"; // bump when the scan's translation units chan
 const CPARSE_VERSION: &str = "4";
 const LIVE: usize = 4;
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 /// clang on PATH.
@@ -320,7 +320,7 @@ pub fn models(front: &Front, files: &[(String, String)], defines: &[String]) -> 
 }
 
 fn clang_version() -> Result<String, String> {
-    clang::clang_version().map_err(|e| Python::attach(|_| e.to_string()))
+    clang::clang_version().map_err(|e| e.to_string())
 }
 
 /// (path relative to root, full path) of src/**/*.c, src/**/*.h and include/**/*.h, in the scan's order.
@@ -442,7 +442,7 @@ pub fn scan(root: &str, tree_hash: Option<&str>) -> Result<Rc<Scan>, String> {
             None => {
                 let text = fsmemo::read_text(p).map_err(|e| format!("{p}: {e}"))?;
                 let vs: Vec<(Option<String>, &FileModel)> = views.iter().map(|(t, m)| (t.clone(), &**m)).collect();
-                Rc::new(srcscan::scan_file_rs(rel, &text, &m, &vs).map_err(|e| Python::attach(|_| e.to_string()))?)
+                Rc::new(srcscan::scan_file_rs(rel, &text, &m, &vs).map_err(|e| e.to_string())?)
             }
         };
         used.insert(key, (held, part.clone()));
@@ -539,7 +539,7 @@ pub struct ScanObj {
     pub s: Rc<Scan>,
 }
 
-fn rows<'py, T: pyo3::IntoPyObject<'py> + Clone>(py: Python<'py>, xs: impl Iterator<Item = T>) -> PyResult<Bound<'py, PyList>> {
+fn rows<'py, T: pyo3::IntoPyObject<'py> + Clone>(py: Python<'py>, xs: impl Iterator<Item = T>) -> pyo3::PyResult<Bound<'py, PyList>> {
     PyList::new(py, xs)
 }
 

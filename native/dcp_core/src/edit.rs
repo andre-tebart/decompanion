@@ -11,6 +11,7 @@
 //! type or a name without one); kind one of func, data, ident, unit; checkout `main` or the worktree's name.
 //! Positions (a skip's (line, column)) are in characters, from 1.
 
+use crate::error::Result;
 use crate::project::py_path;
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};

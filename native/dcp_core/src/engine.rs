@@ -12,6 +12,7 @@
 //!   ceiling, declared producers (decl: / src:) only from a loader.
 //!
 
+use crate::error::{Error, Result};
 use crate::project::{sha256_parts, Project};
 use crate::registry::{RuleDef, RULES};
 use crate::rules::{dispatch, Ctx, Inputs};
@@ -25,16 +26,16 @@ use std::rc::Rc;
 
 pyo3::create_exception!(_core, RuleError, PyRuntimeError);
 
-fn rule_err(msg: String) -> PyErr {
-    RuleError::new_err(msg)
+fn rule_err(msg: String) -> Error {
+    Error::rule(msg)
 }
 
-pub fn rule(id: &str) -> PyResult<&'static RuleDef> {
+pub fn rule(id: &str) -> Result<&'static RuleDef> {
     RULES.iter().find(|r| r.id == id).ok_or_else(|| rule_err(format!("unknown rule {id}")))
 }
 
 /// The rules a rule needs: `kind:<k>` expands to every other rule that outputs k (registry order), once each.
-pub fn resolve_needs(r: &RuleDef) -> PyResult<Vec<&'static str>> {
+pub fn resolve_needs(r: &RuleDef) -> Result<Vec<&'static str>> {
     let mut out: Vec<&'static str> = vec![];
     for n in r.needs {
         if let Some(k) = n.strip_prefix("kind:") {
@@ -49,12 +50,12 @@ pub fn resolve_needs(r: &RuleDef) -> PyResult<Vec<&'static str>> {
 }
 
 /// Rules in dependency order (Kahn, the ready ones sorted by id), restricted to `ids` and everything they need.
-pub fn order(ids: Option<&[String]>) -> PyResult<Vec<&'static RuleDef>> {
+pub fn order(ids: Option<&[String]>) -> Result<Vec<&'static RuleDef>> {
     let mut wanted: HashSet<&'static str> = HashSet::new();
     match ids {
         None => wanted.extend(RULES.iter().map(|r| r.id)),
         Some(ids) => {
-            let mut stack: Vec<&'static str> = ids.iter().map(|i| rule(i).map(|r| r.id)).collect::<PyResult<_>>()?;
+            let mut stack: Vec<&'static str> = ids.iter().map(|i| rule(i).map(|r| r.id)).collect::<Result<_>>()?;
             while let Some(i) = stack.pop() {
                 if wanted.insert(i) {
                     stack.extend(resolve_needs(rule(i)?)?);
@@ -90,7 +91,7 @@ pub fn native_code_hash(r: &RuleDef, core_hash: &str) -> String {
 
 /// Its output against its declaration: declared outputs only, no level above the ceiling, decl: / src: producers
 /// only from a loader (and then with a reason).
-fn check_output(r: &RuleDef, rows: &[Row]) -> PyResult<()> {
+fn check_output(r: &RuleDef, rows: &[Row]) -> Result<()> {
     for f in rows {
         if !r.outputs.contains(&f.kind.as_str()) {
             return Err(rule_err(format!("{} emits {} but lists outputs {:?}", r.id, f.kind, r.outputs)));
@@ -111,7 +112,7 @@ fn check_output(r: &RuleDef, rows: &[Row]) -> PyResult<()> {
 }
 
 /// A native rule computed and recorded: (facts, conflicts, out_hash, ms computing, ms recording).
-pub fn run_native(r: &RuleDef, ctx: &Ctx) -> PyResult<(usize, usize, String, f64, f64)> {
+pub fn run_native(r: &RuleDef, ctx: &Ctx) -> Result<(usize, usize, String, f64, f64)> {
     let t0 = std::time::Instant::now();
     let out = dispatch(ctx)?;
     let ms = t0.elapsed().as_millis() as i64;
@@ -156,15 +157,15 @@ impl<'a> Engine<'a> {
         Engine { project, db: project.store_path(), main: project.main_uri(), core_hash: core_hash.into(), capstone: capstone.into(), base: None, scans: vec![] }
     }
 
-    pub fn code_hash(&self, r: &RuleDef) -> PyResult<String> {
+    pub fn code_hash(&self, r: &RuleDef) -> Result<String> {
         Ok(native_code_hash(r, &self.core_hash))
     }
 
-    pub fn input_hash_of(&self, name: &str) -> PyResult<String> {
-        Ok(self.project.input_hash(name).map_err(crate::project::ConfigError::new_err)?.unwrap_or_default())
+    pub fn input_hash_of(&self, name: &str) -> Result<String> {
+        Ok(self.project.input_hash(name).map_err(Error::config)?.unwrap_or_default())
     }
 
-    fn run_key(&self, r: &RuleDef, code: &str, needed: &[&str]) -> PyResult<String> {
+    fn run_key(&self, r: &RuleDef, code: &str, needed: &[&str]) -> Result<String> {
         let mut parts = vec![code.to_string(), r.version.to_string(), self.input_hash_of("image")?, self.input_hash_of("plugins")?];
         for n in needed {
             let cur = crate::pystore::st_current_run(&self.db, n)?;
@@ -178,12 +179,12 @@ impl<'a> Engine<'a> {
     }
 
     /// The inputs of the configuration every native rule reads (once per engine).
-    fn base_inputs(&mut self) -> PyResult<Rc<Inputs>> {
+    fn base_inputs(&mut self) -> Result<Rc<Inputs>> {
         if let Some(b) = &self.base {
             return Ok(b.clone());
         }
         let p = self.project;
-        let cfg = |e: String| crate::project::ConfigError::new_err(e);
+        let cfg = |e: String| Error::config(e);
         let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| rule_err(format!("no toolchain {}", p.toolchain_key())))?;
         let waits = !p.waiting("libs").map_err(cfg)?.is_empty();
         // the libraries: none while they wait, else the declared ones (an archive that does not exist is an error then)
@@ -207,7 +208,7 @@ impl<'a> Engine<'a> {
     }
 
     /// A rule's inputs: the configuration's, with what the front end computes for the rules of the sources.
-    fn inputs(&mut self, r: &RuleDef) -> PyResult<Rc<Inputs>> {
+    fn inputs(&mut self, r: &RuleDef) -> Result<Rc<Inputs>> {
         let base = self.base_inputs()?;
         let front = matches!(r.id, "L.src" | "L5.placeholder" | "A1.addr.cast" | "L13.data.code" | "G.grade" | "M.lint");
         if !front {
@@ -250,7 +251,7 @@ impl<'a> Engine<'a> {
         Ok(Rc::new(x))
     }
 
-    fn make_current_if(&self, r: &RuleDef, place: &str, run_id: i64) -> PyResult<()> {
+    fn make_current_if(&self, r: &RuleDef, place: &str, run_id: i64) -> Result<()> {
         let cur = crate::pystore::st_current_run(&self.db, r.id)?;
         if cur.is_none_or(|c| c.0 != run_id) || place != "main" {
             crate::pystore::st_make_current(&self.db, &self.main, r.id, place, run_id)?;
@@ -259,13 +260,13 @@ impl<'a> Engine<'a> {
     }
 
     /// Bring the rules (all, or `ids` and what they need) up to date.
-    pub fn run(&mut self, ids: Option<&[String]>, force: bool) -> PyResult<Vec<Result_>> {
+    pub fn run(&mut self, ids: Option<&[String]>, force: bool) -> Result<Vec<Result_>> {
         crate::pystore::st_open(&self.db, &self.main)?;
         let mut results = vec![];
         for r in order(ids)? {
             let needed = resolve_needs(r)?;
             let inputs: Vec<String> = r.inputs.iter().map(|s| s.to_string()).collect();
-            let waits = self.project.waiting_for(&inputs).map_err(crate::project::ConfigError::new_err)?;
+            let waits = self.project.waiting_for(&inputs).map_err(Error::config)?;
             let code = self.code_hash(r)?;
             if !waits.is_empty() {
                 let mut parts = vec![code.clone(), r.version.to_string(), "waiting".into()];
@@ -292,7 +293,7 @@ impl<'a> Engine<'a> {
             let ctx = Ctx {
                 rule: r.id.into(), version: r.version.into(), code_hash: code, input_hash: ih, db: self.db.clone(), main: self.main.clone(),
                 needed: needed.iter().map(|s| s.to_string()).collect(), root: self.project.root.to_string_lossy().into_owned(),
-                image: self.project.target(None).map_err(crate::project::ConfigError::new_err)?.path.clone(),
+                image: self.project.target(None).map_err(Error::config)?.path.clone(),
                 fill_forms: crate::toolchain::of(&inputs.toolchain).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default(),
                 capstone: self.capstone.clone(), record: true,
                 shortcuts: std::env::var_os("DCP_NO_SHORTCUTS").is_none_or(|v| v.is_empty()), inputs,
@@ -320,10 +321,10 @@ fn results_py<'py>(py: Python<'py>, res: Vec<Result_>) -> PyResult<Bound<'py, Py
 #[pyfunction]
 #[pyo3(signature = (project, core_hash, capstone, ids=None, force=false))]
 pub fn engine_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, core_hash: &str, capstone: &str,
-                       ids: Option<Vec<String>>, force: bool) -> PyResult<Bound<'py, PyList>> {
+                       ids: Option<Vec<String>>, force: bool) -> Result<Bound<'py, PyList>> {
     let mut e = Engine::new(&project.p, core_hash, capstone);
     let res = e.run(ids.as_deref(), force)?;
-    results_py(py, res)
+    Ok(results_py(py, res)?)
 }
 
 #[cfg(test)]

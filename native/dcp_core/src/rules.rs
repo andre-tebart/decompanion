@@ -1,11 +1,10 @@
 //! The rules. Each runs on the store directly: it reads the current facts of its needed runs, builds its facts and
 //! conflicts and records its run. A rule's criterion is its doc text in registry.rs (`dcp rules -v` prints it).
 
+use crate::error::{Error, Result};
 use crate::compare::{compare, Compared};
 use crate::store::{self, Out, SFact, DECLARED, DERIVED, OPEN};
 use crate::{image, with_conn};
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -104,8 +103,8 @@ impl Compared {
 }
 
 /// The compiled units of the store's tu table: unit -> (object hash, compiled ok) (the `objects` input).
-pub fn objects(db: &Connection) -> PyResult<HashMap<String, (String, bool)>> {
-    let err = |e: rusqlite::Error| PyRuntimeError::new_err(e.to_string());
+pub fn objects(db: &Connection) -> Result<HashMap<String, (String, bool)>> {
+    let err = |e: rusqlite::Error| Error::runtime(e.to_string());
     let mut st = db.prepare_cached("SELECT unit, obj_hash, ok FROM tu").map_err(err)?;
     let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0)))).map_err(err)?;
     rows.collect::<Result<_, _>>().map_err(err)
@@ -123,8 +122,8 @@ thread_local! {
 
 /// match.compiled_functions: every L.src function source of the current target whose unit compiled and whose
 /// object defines it, compared with the image (sorted by address); the others as (source, why).
-pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>, Vec<(Rc<SFact>, String)>)> {
-    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, Vec<(Rc<SFact>, String)>)> {
+    let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
     // the relocation sites only for an image that has base relocations (Python reads them, then drops them)
     let relocs = if img.relocations().is_empty() {
@@ -216,11 +215,11 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> PyResult<(Vec<Compiled>
 // ------------------------------------------------------------------------------------------------ the rules
 
 /// M.draft (R2): a sourced function that is no byte match owns the code walk's extent of its start.
-fn m_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+fn m_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let (funcs, _) = compiled_functions(ctx, db)?;
     let mut walk: HashMap<i64, Rc<SFact>> = HashMap::new();
     let keep = |f: &SFact| &*f.rule == "S.codewalk" && f.s("skind") == Some("func");
-    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed, keep).map_err(|e| PyRuntimeError::new_err(e.to_string()))? {
+    for f in store::facts(db, &ctx.db, "symbol", &ctx.needed, keep).map_err(|e| Error::runtime(e.to_string()))? {
         walk.insert(f.lo, f); // a later fact of the same start wins, as the dict comprehension does
     }
     for x in &funcs {
@@ -238,7 +237,7 @@ fn m_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 /// The end of the last instruction of a matched function's code that is no fill form (0 when every one is fill),
 /// as isa.listing gives it: the code decoded with each relocated field holding the image base (the base's bytes
 /// repeated over a masked run), each instruction's fill test on its own bytes.
-fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms: &[Vec<u8>]) -> PyResult<u32> {
+fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms: &[Vec<u8>]) -> Result<u32> {
     let dummy = base.to_le_bytes();
     let mut data = code.to_vec();
     let mut k = 0;
@@ -256,7 +255,7 @@ fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms:
             k += 1;
         }
     }
-    let lines = crate::cs::lengths(&ctx.capstone, &data, va).map_err(PyRuntimeError::new_err)?;
+    let lines = crate::cs::lengths(&ctx.capstone, &data, va).map_err(Error::runtime)?;
     let fill = |&(addr, size): &(u32, u32)| {
         let o = (addr - va) as usize;
         let b = &code[o..(o + size as usize).min(code.len())];
@@ -272,12 +271,12 @@ fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms:
 /// M.match (R1): a sourced function whose compiled function is a byte match owns its bytes: a `symbol` func to
 /// the end of its last instruction that is no fill (or its first jump / index table), a `source` (what: match)
 /// over the whole section.
-fn m_match(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+fn m_match(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let (funcs, _) = compiled_functions(ctx, db)?;
     let img = image(&ctx.image)?;
     let keep = |f: &SFact| matches!(f.s("skind"), Some("jumptable") | Some("idxtable"));
     let mut tables: Vec<(i64, Option<i64>)> = store::facts(db, &ctx.db, "symbol", &ctx.needed, keep)
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+        .map_err(|e| Error::runtime(e.to_string()))?
         .iter()
         .map(|f| (f.lo, f.value.get("fn").and_then(|v| v.as_i64())))
         .collect();
@@ -416,7 +415,7 @@ pub(crate) fn constant_mismatches(img: &crate::pe::Image, x: &Compiled, aligned:
 /// M8 / M9 / M10 (M8.reloc): each relocation of ours whose site lines up with the original's code, resolved against
 /// the image: a registered symbol the original's site does not refer to (M8), a literal or a floating constant
 /// whose bytes the original does not hold there (M9 / M10: constant_mismatches).
-fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let (funcs, _) = compiled_functions(ctx, db)?;
     let (by_name, by_addr) = name_registry(ctx, db)?;
@@ -428,7 +427,7 @@ fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
         let orig = img.bytes(va, x.code.data.len());
         let sites: Vec<(u32, u32)> = x.code.relocs.iter().map(|(off, r)| (*off, r.kind_width().1)).collect();
         let aligned = aligned_sites(&ctx.capstone, &x.code.data, &x.code.mask, &orig, va, x.c.matched(), &sites)
-            .map_err(PyRuntimeError::new_err)?;
+            .map_err(Error::runtime)?;
         for (site, width, rule, msg) in constant_mismatches(&img, x, &aligned) {
             out.conflict("error", rule, site as i64, (site + width) as i64, msg, &x.src.by);
         }
@@ -509,8 +508,8 @@ fn file_line(text: &str) -> Option<(&str, i64)> {
 }
 
 /// M5 / M6 / M7 and a stale lint (M.lint), from the last `dcp lint`.
-fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
-    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
+    let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let meta: Option<String> = db
         .query_row("SELECT value FROM meta WHERE key='lint'", [], |r| r.get(0))
         .map(Some)
@@ -587,8 +586,8 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 type Registry = (HashMap<String, std::collections::BTreeMap<i64, i64>>, HashMap<i64, std::collections::BTreeSet<String>>);
 
 /// match.name_registry: C name -> {address: the producer's best level}, address -> {C names}.
-fn name_registry(ctx: &Ctx, db: &Connection) -> PyResult<Registry> {
-    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+fn name_registry(ctx: &Ctx, db: &Connection) -> Result<Registry> {
+    let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let mut by_name: HashMap<String, std::collections::BTreeMap<i64, i64>> = HashMap::new();
     let mut by_addr: HashMap<i64, std::collections::BTreeSet<String>> = HashMap::new();
     for f in store::facts(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?.iter() {
@@ -628,8 +627,8 @@ impl DataObj {
     }
 }
 
-fn data_objects(ctx: &Ctx, db: &Connection) -> PyResult<Vec<DataObj>> {
-    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+fn data_objects(ctx: &Ctx, db: &Connection) -> Result<Vec<DataObj>> {
+    let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let mut index: HashMap<String, (crate::ObjIndex, HashMap<String, (usize, &'static str, u32)>)> = HashMap::new();
     for (unit, (h, ok)) in &objects(db)? {
         if !*ok || h.is_empty() {
@@ -694,7 +693,7 @@ fn data_extent(d: &DataObj) -> (i64, i64) {
 
 /// match_data.site_confirmed: address -> C name of every data address a byte-matched function's absolute
 /// relocation confirms (the first such relocation wins).
-fn site_confirmed(ctx: &Ctx, db: &Connection) -> PyResult<HashMap<u32, String>> {
+fn site_confirmed(ctx: &Ctx, db: &Connection) -> Result<HashMap<u32, String>> {
     let img = image(&ctx.image)?;
     let (funcs, _) = compiled_functions(ctx, db)?;
     let mut out = HashMap::new();
@@ -723,7 +722,7 @@ fn global(d: &DataObj, extent: &str, kind: &str) -> Value {
 }
 
 /// M.data.site: a data definition whose address a byte-matched function's relocation to the same symbol confirms.
-fn m_data_site(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+fn m_data_site(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let confirmed = site_confirmed(ctx, db)?;
     for d in data_objects(ctx, db)? {
         if confirmed.get(&(d.f.lo as u32)).map(|s| s.as_str()) == d.f.s("symbol") {
@@ -783,7 +782,7 @@ fn content_hits(img: &crate::pe::Image, data: &[u8], mask: &[u8]) -> Vec<u32> {
 
 /// M.data.content: a data definition M.data.site does not place whose bytes occur in the image's initialised
 /// data at the declared address and nowhere else.
-fn m_data_content(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+fn m_data_content(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let confirmed = site_confirmed(ctx, db)?;
     for d in data_objects(ctx, db)? {
@@ -817,8 +816,8 @@ fn m_data_content(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// M.data.draft: every other data definition with an address owns its declared extent.
-fn m_data_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
-    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+fn m_data_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
+    let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let placed: std::collections::HashSet<i64> =
         store::los(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?.into_iter().collect();
     for d in data_objects(ctx, db)? {
@@ -959,8 +958,8 @@ pub(crate) fn d8(decls: &[ExtentDecl], ev: &[ExtentEv], named: impl Fn(i64) -> O
 }
 
 /// D1 / D4 / D5 / D6 / D7 / D8 (D.data).
-fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
-    let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
+fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
+    let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
     let objs = data_objects(ctx, db)?;
     let mut starts: Vec<i64> = store::los(db, &ctx.db, "symbol", &ctx.needed, |f| {
@@ -1114,7 +1113,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// A native rule's output (its facts and conflicts, unsorted).
-pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
+pub(crate) fn dispatch(ctx: &Ctx) -> Result<Out> {
     let mut out = Out::new(&ctx.rule, &ctx.version);
     with_conn(&ctx.db, |db| match ctx.rule.as_str() {
         "M.draft" => m_draft(ctx, db, &mut out),
@@ -1176,7 +1175,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
         "L4.boundary" => crate::layout::l4_boundary(ctx, db, &mut out),
         "L10.unexplained" => crate::layout::l10_unexplained(ctx, db, &mut out),
         "L14.unit.outside" => crate::layout::l14_unit_outside(ctx, db, &mut out),
-        other => Err(PyRuntimeError::new_err(format!("no native rule {other}"))),
+        other => Err(Error::runtime(format!("no native rule {other}"))),
     })?;
     Ok(out)
 }

@@ -5,11 +5,11 @@
 //! `boundary start|end tu=<unit>` lines of decl/text.dcl (any target prefix). Placeholders of its functions are
 //! spelled `<unit>_<addr>` (draft.rs), so a join or a rename of the unit renames them too.
 
+use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::decl::{Decl, KeyVal};
 use crate::edit as E;
 use crate::project::py_path;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -18,8 +18,8 @@ use std::sync::LazyLock;
 static UNIT: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_.\-]*$").unwrap());
 static HEX_TAIL: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[0-9a-fA-F]{6,8}$").unwrap());
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 fn s(x: impl Into<String>) -> Tok {
@@ -47,8 +47,8 @@ fn head_text(unit: &str, lo: i64, hi: Option<i64>, by: Option<&str>, why: &str) 
 /// Write the skeleton files of a new unit (those that do not exist): `wrote <path>` lines.
 #[pyfunction]
 #[pyo3(signature = (root, unit, range, by, why))]
-pub fn unit_create(root: &str, unit: &str, range: &str, by: Option<String>, why: &str) -> PyResult<Vec<String>> {
-    let pa = |x: &str| crate::cliread::parse_addr(x).map_err(pyo3::exceptions::PyValueError::new_err);
+pub fn unit_create(root: &str, unit: &str, range: &str, by: Option<String>, why: &str) -> Result<Vec<String>> {
+    let pa = |x: &str| crate::cliread::parse_addr(x).map_err(Error::value);
     let (lo, hi) = match range.split_once("..") {
         Some((a, b)) => (pa(a)?, Some(pa(b)?)),
         None => (pa(range)?, None),
@@ -292,7 +292,7 @@ fn rename(root: &str, old: &str, new: &str, by: Option<&str>) -> Result<Rename, 
 
 // ------------------------------------------------------------------------------------------------ the commands
 
-fn view_units(p: &crate::project::Project) -> PyResult<Vec<String>> {
+fn view_units(p: &crate::project::Project) -> Result<Vec<String>> {
     let db = p.store_path();
     let main = p.main_uri();
     crate::pystore::st_open(&db, &main)?;
@@ -301,7 +301,7 @@ fn view_units(p: &crate::project::Project) -> PyResult<Vec<String>> {
 }
 
 /// ({function address: code grade}, the number of bug / error conflicts).
-fn byte_state(db: &str) -> PyResult<(BTreeMap<i64, Option<String>>, usize)> {
+fn byte_state(db: &str) -> Result<(BTreeMap<i64, Option<String>>, usize)> {
     let grades = crate::queues::function_grades(db)?.iter().cloned()
         .filter_map(|r| Some((r.get("addr")?.as_i64()?, r.get("code").and_then(|c| c.as_str()).map(|c| c.to_string())))).collect();
     let errors = crate::pystore::st_conflicts(db, None, None)?.iter().filter(|c| c.0 == "bug" || c.0 == "error").count();
@@ -314,7 +314,7 @@ fn placeholder_events(renamed: &BTreeMap<String, String>) -> Vec<(Option<i64>, &
 
 /// `dcp unit join A B --why`: (lines, the error for stderr, the exit status). `build()` builds and refreshes the target.
 #[pyfunction]
-pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str, why: &str, build: Bound<'_, PyAny>) -> PyResult<(Vec<String>, Option<String>, i32)> {
+pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str, why: &str, build: Bound<'_, PyAny>) -> Result<(Vec<String>, Option<String>, i32)> {
     let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let names = view_units(p)?;
@@ -362,7 +362,7 @@ pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str
 #[pyfunction]
 #[pyo3(signature = (project, old, new, by, why, rebuild))]
 pub fn unit_rename(project: PyRef<'_, crate::project::PyProject>, old: &str, new: &str, by: Option<String>, why: &str, rebuild: Bound<'_, PyAny>)
-    -> PyResult<(Vec<String>, Option<String>, i32)> {
+    -> Result<(Vec<String>, Option<String>, i32)> {
     let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let names = view_units(p)?;

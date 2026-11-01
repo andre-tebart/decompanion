@@ -138,7 +138,7 @@ pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
     let private = private_headers(&root);
     let headers: Vec<String> = include_headers(&root).into_iter().filter(|(n, _)| !private.contains_key(n)).map(|(n, _)| format!("include/{n}")).collect();
     let srcs: Vec<String> = unit_sources(&root).into_iter().map(|x| x.0).collect();
-    let ad = Python::attach(|_| crate::lint::lint_alldecls(scan.piece_ids(), Some(p.target_name.clone()), headers, srcs)).map_err(|e| e.to_string())?;
+    let ad = crate::lint::lint_alldecls(scan.piece_ids(), Some(p.target_name.clone()), headers, srcs).map_err(|e| e.to_string())?;
     let text = ad.text().to_string();
     let mut parts = vec!["alldecls".to_string(), VERSION.into()];
     parts.extend(clang.iter().cloned());

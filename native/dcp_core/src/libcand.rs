@@ -8,11 +8,11 @@
 //! contents' sha256), like a rule run; the summary of the last call is the store's meta `libs.candidates`. Nothing
 //! here declares anything: `dcp libs declare` does, with a reason.
 
+use crate::error::{Error, Result};
 use crate::crt::{place_members, Placed};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::canon;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
@@ -87,7 +87,7 @@ pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, V
     let db = p.store_path();
     crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let target = p.target(None)?;
-    let img = Python::attach(|_| crate::image(&target.path)).map_err(|e| e.to_string())?;
+    let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let img_sha = fsmemo::sha256(&target.path).map_err(|e| e.to_string())?;
     let code = crate::engine::native_code_hash(crate::engine::rule("S.crt.code").map_err(|e| e.to_string())?, core_hash);
     let sites: BTreeSet<i64> = img.relocations().into_iter().map(|x| x as i64).collect();
@@ -135,11 +135,11 @@ pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, V
 /// bytes), whether the target declares it, the archive pairs that conflict.
 #[pyfunction]
 #[pyo3(signature = (project, core_hash, force=false))]
-pub fn libs_candidates_lines(project: PyRef<'_, crate::project::PyProject>, core_hash: &str, force: bool) -> PyResult<(Vec<String>, Vec<String>)> {
+pub fn libs_candidates_lines(project: PyRef<'_, crate::project::PyProject>, core_hash: &str, force: bool) -> Result<(Vec<String>, Vec<String>)> {
     use crate::cliread::{record, Tok};
     let p = &project.p;
-    let (v, log) = candidates(p, core_hash, force).map_err(PyRuntimeError::new_err)?;
-    let declared: Vec<String> = p.archives_decl(None).map_err(PyRuntimeError::new_err)?.0.unwrap_or_default().iter()
+    let (v, log) = candidates(p, core_hash, force).map_err(Error::runtime)?;
+    let declared: Vec<String> = p.archives_decl(None).map_err(Error::runtime)?.0.unwrap_or_default().iter()
         .map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a).to_uppercase()).collect();
     let i = |x: &Value| Tok::I(x.as_i64().unwrap_or(0));
     let st = |x: &Value| Tok::S(x.as_str().unwrap_or("").to_string());

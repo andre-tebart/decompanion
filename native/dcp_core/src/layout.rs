@@ -1,15 +1,14 @@
 //! The native layout rules (rules/layout.py keeps their criteria as docstrings).
 
+use crate::error::{Error, Result};
 use crate::rules::Ctx;
 use crate::store::{self, Out, SFact, DECLARED, OPEN};
 use crate::image;
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
 
-fn err(e: rusqlite::Error) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: rusqlite::Error) -> Error {
+    Error::runtime(e.to_string())
 }
 
 // ------------------------------------------------------------------------------------------------ the game code
@@ -60,7 +59,7 @@ struct Draft {
 }
 
 /// ledger/drafts.entries: every draft blob, the main store's first (ctx.main: a worktree's overlay), sorted by start.
-fn drafts(ctx: &Ctx, db: &Connection) -> PyResult<Vec<Draft>> {
+fn drafts(ctx: &Ctx, db: &Connection) -> Result<Vec<Draft>> {
     let mut sources = vec![];
     if !ctx.main.is_empty() {
         let attached: bool = db.query_row("SELECT count(*) FROM pragma_database_list WHERE name='main_store'", [], |r| r.get::<_, i64>(0))
@@ -78,8 +77,8 @@ fn drafts(ctx: &Ctx, db: &Connection) -> PyResult<Vec<Draft>> {
         let mut q = st.query([]).map_err(err)?;
         while let Some(r) = q.next().map_err(err)? {
             let h: String = r.get(0).map_err(err)?;
-            let d: Draft = serde_json::from_slice(r.get_ref(1).map_err(err)?.as_blob().map_err(|e| PyRuntimeError::new_err(e.to_string()))?)
-                .map_err(|e| PyRuntimeError::new_err(format!("drafts: {e}")))?;
+            let d: Draft = serde_json::from_slice(r.get_ref(1).map_err(err)?.as_blob().map_err(|e| Error::runtime(e.to_string()))?)
+                .map_err(|e| Error::runtime(format!("drafts: {e}")))?;
             match at.get(&h) {
                 Some(&i) => by_hash[i] = d,
                 None => {
@@ -101,7 +100,7 @@ fn drafts(ctx: &Ctx, db: &Connection) -> PyResult<Vec<Draft>> {
 // ------------------------------------------------------------------------------------------------ L9
 
 /// L9.analyzer.span: an analyzer's function of the game code whose body holds one of our starts other than its entry.
-pub fn l9_analyzer_span(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l9_analyzer_span(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     // our_starts: {start: how} (a later fact of the same start wins), function / thunk symbols above open
     let mut ours: HashMap<i64, String> = HashMap::new();
@@ -170,7 +169,7 @@ fn py_bisect_right(a: &[i64], x: i64) -> usize {
 }
 
 /// L.src.extent: a sourced function no other function covers owns its code up to the next stop, less the fill.
-pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let align = ctx.inputs.function_alignment.max(1);
     let forms = crate::compare::fill_order(&ctx.fill_forms);
@@ -301,7 +300,7 @@ thread_local! {
     static SCAN: std::cell::RefCell<Option<((Vec<u64>, String), std::rc::Rc<ScanInputs>)>> = const { std::cell::RefCell::new(None) };
 }
 
-fn scan_inputs(ctx: &Ctx) -> PyResult<std::rc::Rc<ScanInputs>> {
+fn scan_inputs(ctx: &Ctx) -> Result<std::rc::Rc<ScanInputs>> {
     let i = &ctx.inputs;
     let key = (i.scan.pieces.clone(), i.target.clone());
     if let Some(x) = SCAN.with(|s| s.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, x)| x.clone())) {
@@ -370,7 +369,7 @@ fn section_at(img: &crate::pe::Image, v: Option<u64>) -> bool {
 // ------------------------------------------------------------------------------------------------ L5
 
 /// L5.placeholder: an identifier that spells an address names a function start (or an address of a target).
-pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = scan_inputs(ctx)?;
     let names = &x.targets;
@@ -400,7 +399,7 @@ pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()>
                 let im = match images.get(t.as_str()) {
                     Some(i) => i.clone(),
                     None => {
-                        let path = x.images.get(t).ok_or_else(|| PyRuntimeError::new_err(format!("L5: no image of target {t}")))?;
+                        let path = x.images.get(t).ok_or_else(|| Error::runtime(format!("L5: no image of target {t}")))?;
                         let i = image(path)?;
                         images.insert(t, i.clone());
                         i
@@ -475,7 +474,7 @@ fn sorted_syms(facts: Vec<std::rc::Rc<SFact>>) -> Vec<Sym> {
     v
 }
 
-fn names_by_lo(db: &Connection, ctx: &Ctx, keep: impl Fn(&SFact) -> bool) -> PyResult<HashMap<i64, Vec<std::rc::Rc<SFact>>>> {
+fn names_by_lo(db: &Connection, ctx: &Ctx, keep: impl Fn(&SFact) -> bool) -> Result<HashMap<i64, Vec<std::rc::Rc<SFact>>>> {
     let mut names: HashMap<i64, Vec<std::rc::Rc<SFact>>> = HashMap::new();
     for f in store::facts(db, &ctx.db, "name", &ctx.needed, keep).map_err(err)? {
         names.entry(f.lo).or_default().push(f);
@@ -484,7 +483,7 @@ fn names_by_lo(db: &Connection, ctx: &Ctx, keep: impl Fn(&SFact) -> bool) -> PyR
 }
 
 /// A1.addr.cast: an integer literal cast to a pointer whose value lies in the current target's image.
-pub fn a1_addr_cast(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn a1_addr_cast(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = scan_inputs(ctx)?;
     if x.scan.ptrcasts.is_empty() {
@@ -517,7 +516,7 @@ pub fn a1_addr_cast(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 const TABLE_KINDS: [&str; 3] = ["jumptable", "idxtable", "fptr"];
 
 /// L13.data.code: a data declaration of the sources at a known function start or inside a known function.
-pub fn l13_data_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l13_data_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let x = scan_inputs(ctx)?;
     let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
     let funcs = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > DECLARED).cloned().collect());
@@ -695,7 +694,7 @@ pub fn compute_units(game: (i64, i64, i64), bounds: &[Bound], srcs: &[SrcFn], fu
 const LEVEL_NAMES: [&str; 4] = ["open", "declared", "derived", "proven"];
 
 /// L.unit.extent: the units of the game code as `unit` facts, the L7 issues of their computation.
-pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
     let lib_decls = crate::decl::lib_units(&decls, &target, targets.first().map(|s| s.as_str()).unwrap_or(""));
@@ -762,7 +761,7 @@ pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> 
 // ------------------------------------------------------------------------------------------------ M1
 
 /// M1.baseline: every function of the current target in ledger/grades.tsv keeps its grades.
-pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let target = ctx.inputs.target.as_str();
     let rank = |c: &str| ctx.inputs.code_rank.get(c).copied();
@@ -848,7 +847,7 @@ pub(crate) fn unit_at(units: &[Unit], a: i64) -> Option<usize> {
 }
 
 /// L1.src.start: the address of a sourced function is the start of a function (or unknown code).
-pub fn l1_src_start(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l1_src_start(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let syms = sorted_syms(store::facts(db, &ctx.db, "symbol", &ctx.needed, |f| f.level > OPEN).map_err(err)?);
     for s in store::facts(db, &ctx.db, "source", &ctx.needed, |f| f.s("what") == Some("func")).map_err(err)? {
         let a = s.lo;
@@ -920,7 +919,7 @@ pub(crate) fn bounds_of(facts: &[std::rc::Rc<SFact>]) -> Vec<Bound> {
 }
 
 /// L4.boundary: a declared boundary lies at a function start, never inside fill or strictly inside a function.
-pub fn l4_boundary(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l4_boundary(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
     let funcs: Vec<(i64, i64)> = sorted_syms(syms.iter().filter(|f| f.s("skind") == Some("func") && f.level > OPEN).cloned().collect())
@@ -942,7 +941,7 @@ pub fn l4_boundary(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// L10.unexplained: code inside a game unit's extent no source explains, though a source claims it.
-pub fn l10_unexplained(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l10_unexplained(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
     let syms = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
     let mut walk: HashMap<i64, std::rc::Rc<SFact>> = HashMap::new();
@@ -1026,7 +1025,7 @@ pub fn unit_status(start_level: i64, end_level: i64, open_bytes: i64, walk_confl
 }
 
 /// L14.unit.outside: a sourced function of a declared unit (or a library unit) outside its extent.
-pub fn l14_unit_outside(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l14_unit_outside(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
     let mut libs: Vec<LibUnit> = crate::decl::lib_units(&decls, &target, targets.first().map(|s| s.as_str()).unwrap_or(""))
@@ -1064,7 +1063,7 @@ pub(crate) struct ScanItems {
 }
 
 /// L.src: the address comments of the sources for the current target (facts source / name / start, the errors).
-pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = scan_inputs(ctx)?;
     let targets = &x.targets;
@@ -1313,7 +1312,7 @@ fn emit(out: &mut Out, issues: Vec<Issue>) {
 }
 
 /// L3.lit.order: the literals' first users never go back to an earlier unit within a data section.
-pub fn l3_lit_order(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l3_lit_order(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
     let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("lit")).map_err(err)?;
     emit(out, lit_issues(&units, &lits_of(&ev)));
@@ -1321,7 +1320,7 @@ pub fn l3_lit_order(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// L8.leak: the leaked .c / .cpp paths of one unit's functions name one file.
-pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
     let ev = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("leak")).map_err(err)?;
     emit(out, leak_issues(&units, &leaks_of(&ev)));
@@ -1329,7 +1328,7 @@ pub fn l8_leak(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// L6.declared: every declaration re-checked against the computed facts.
-pub fn l6_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l6_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let code = code_ranges(&img);
     let symbols = store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;
@@ -1410,7 +1409,7 @@ pub fn l6_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// M.bytes.declared (R5): declared dead or foreign bytes inside a game unit belong to it (a source fact).
-pub fn m_bytes_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn m_bytes_declared(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let units = game_units(&store::facts(db, &ctx.db, "unit", &ctx.needed, |_| true).map_err(err)?);
     for f in store::facts(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)? {
         let sk = f.s("skind").unwrap_or("");
@@ -1484,7 +1483,7 @@ mod tests_2b {
 
 /// L.analyzer: every draft of the analyzer whose entry lies in a code section (and the analyzer made on its own)
 /// is a declared function start.
-pub fn l_analyzer(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l_analyzer(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let code = code_ranges(&img);
     for e in drafts(ctx, db)? {
@@ -1507,10 +1506,10 @@ static LEAK: std::sync::LazyLock<fancy_regex::Regex> =
     std::sync::LazyLock::new(|| fancy_regex::Regex::new(r"(?i)(?<![%\w])((?:[a-z]:)?[\w.\\/ -]*?([\w-]{2,})\.(cpp|c|h))(?![\w.])").unwrap());
 
 /// L.analyze: boundary evidence (lit, leak, fill) once per image.
-pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     use crate::store::{DERIVED, PROVEN};
     let img = image(&ctx.image)?;
-    let tc = crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| PyRuntimeError::new_err("L.analyze: no toolchain"))?;
+    let tc = crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| Error::runtime("L.analyze: no toolchain"))?;
     let fs = |kind: &str| store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
     let secs: Vec<(i64, i64, String)> = fs("section")?.iter().map(|f| (f.lo, f.hi, f.s("name").unwrap_or("").to_string())).collect();
     let code = code_ranges(&img);
@@ -1553,7 +1552,7 @@ pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
                                                             "section": sec}), lvl);
         let text: String = img.cstr(s.lo as u32).iter().map(|&c| c as char).collect();
         for m in LEAK.captures_iter(&text) {
-            let m = m.map_err(|e| PyRuntimeError::new_err(format!("L.analyze: {e}")))?;
+            let m = m.map_err(|e| Error::runtime(format!("L.analyze: {e}")))?;
             let path = m.get(1).unwrap().as_str().trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c));
             let stem = m.get(2).unwrap().as_str().to_lowercase();
             let header = m.get(3).unwrap().as_str().eq_ignore_ascii_case("h");

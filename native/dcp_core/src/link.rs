@@ -1,11 +1,11 @@
 //! The full link of a target (build/link.py is its face; its module docstring states what goes in and how the
 //! unresolved externals are classified): every object of the target through the toolchain's linker.
 
+use crate::error::{Error, Result};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::{self, canon, SFact};
 use crate::vc6::{LinkJob, Tools};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use serde_json::{json, Value};
@@ -354,7 +354,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let db = p.store_path();
     crate::pystore::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let target = p.target(None)?.clone();
-    let img = Python::attach(|_| crate::image(&target.path)).map_err(|e| e.to_string())?;
+    let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let x = Ctx { p, root: root.clone(), db: db.clone(), img: img.clone(), tools: Tools::of(p) };
     let mut rep = LinkReport { target: p.target_name.clone(), unresolved: CLASSES.iter().map(|c| (c.to_string(), vec![])).collect(), ..Default::default() };
     let out_dir = match variant {
@@ -568,11 +568,11 @@ pub fn link_classify<'py>(py: Python<'py>, project: PyRef<'py, crate::project::P
     let p = &project.p;
     let db = p.store_path();
     crate::pystore::st_open(&db, &p.main_uri())?;
-    let target = p.target(None).map_err(PyRuntimeError::new_err)?;
+    let target = p.target(None).map_err(Error::runtime)?;
     let img = crate::image(&target.path)?;
     let x = Ctx { p, root: p.root.to_string_lossy().into_owned(), db, img, tools: Tools::of(p) };
     let d = PyDict::new(py);
-    for (k, v) in x.classify(&names).map_err(PyRuntimeError::new_err)? {
+    for (k, v) in x.classify(&names).map_err(Error::runtime)? {
         d.set_item(k, v)?;
     }
     Ok(d)

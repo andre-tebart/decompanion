@@ -7,9 +7,9 @@
 //! and a run recorded again in place keeps its unchanged rows (store.rs holds them), so the object of an unchanged
 //! row is the one made before.
 
+use crate::error::{Error, Result};
 use crate::store::{self, py_float, SFact, SCHEMA, SCHEMA_VERSION};
 use crate::{hash_parts, with_db};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -133,7 +133,7 @@ pub(crate) fn level_obj(py: Python<'_>, level: i64) -> PyResult<Py<PyAny>> {
         LEVELS.with(|l| *l.borrow_mut() = all);
     }
     LEVELS.with(|l| l.borrow().get(level as usize).map(|o| o.clone_ref(py)))
-        .ok_or_else(|| PyRuntimeError::new_err(format!("no level {level}")))
+        .ok_or_else(|| Error::runtime(format!("no level {level}")).into())
 }
 
 /// A JSON value as json.loads gives it.
@@ -284,7 +284,7 @@ pub fn st_fact(py: Python<'_>, path: &str, fid: i64) -> PyResult<Option<Py<Store
 /// Store.conflicts: (severity, check, lo, hi, message, a, b) of current runs (of the given rules), by address.
 #[pyfunction]
 #[pyo3(signature = (path, severity=None, rules=None))]
-pub fn st_conflicts(path: &str, severity: Option<String>, rules: Option<Vec<String>>) -> PyResult<Vec<(String, String, i64, i64, String, String, String)>> {
+pub fn st_conflicts(path: &str, severity: Option<String>, rules: Option<Vec<String>>) -> Result<Vec<(String, String, i64, i64, String, String, String)>> {
     let mut q = String::from("SELECT c.severity, c.check_id, c.lo, c.hi, c.message, c.a, c.b FROM conflict c JOIN run r ON r.id=c.run_id \
                               WHERE r.current=1");
     let mut args: Vec<String> = vec![];
@@ -311,9 +311,9 @@ pub fn st_conflicts(path: &str, severity: Option<String>, rules: Option<Vec<Stri
 /// Open (or create) the store at path: the tables when the schema version differs, an error for a store of
 /// another schema; the main checkout's store attached when `main` (a file: URI) is given.
 #[pyfunction]
-pub fn st_open(path: &str, main: &str) -> PyResult<()> {
+pub fn st_open(path: &str, main: &str) -> Result<()> {
     if let Some(d) = std::path::Path::new(path).parent() {
-        std::fs::create_dir_all(d).map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+        std::fs::create_dir_all(d).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
     }
     let v = with_db(path, |db| {
         let v: Option<String> = match db.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r.get(0)).optional() {
@@ -331,7 +331,7 @@ pub fn st_open(path: &str, main: &str) -> PyResult<()> {
         Ok(v)
     })?;
     match v {
-        Some(v) if v != SCHEMA_VERSION => Err(PyRuntimeError::new_err(format!("{path}: store schema {v}, this code wants {SCHEMA_VERSION}: delete build/"))),
+        Some(v) if v != SCHEMA_VERSION => Err(Error::runtime(format!("{path}: store schema {v}, this code wants {SCHEMA_VERSION}: delete build/"))),
         _ => Ok(()),
     }
 }
@@ -343,17 +343,17 @@ pub fn st_close(path: &str) {
 }
 
 #[pyfunction]
-pub fn st_meta(path: &str, key: &str) -> PyResult<Option<String>> {
+pub fn st_meta(path: &str, key: &str) -> Result<Option<String>> {
     with_db(path, |db| db.query_row("SELECT value FROM meta WHERE key=?", [key], |r| r.get(0)).optional())
 }
 
 #[pyfunction]
-pub fn st_set_meta(path: &str, key: &str, value: &str) -> PyResult<()> {
+pub fn st_set_meta(path: &str, key: &str, value: &str) -> Result<()> {
     with_db(path, |db| db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [key, value]).map(|_| ()))
 }
 
 #[pyfunction]
-pub fn st_main_meta(path: &str, main: &str, key: &str) -> PyResult<Option<String>> {
+pub fn st_main_meta(path: &str, main: &str, key: &str) -> Result<Option<String>> {
     with_db(path, |db| {
         if !ensure_main(db, main)? {
             return Ok(None);
@@ -364,7 +364,7 @@ pub fn st_main_meta(path: &str, main: &str, key: &str) -> PyResult<Option<String
 
 /// (id, input_hash, out_hash) of the rule's current run in this store.
 #[pyfunction]
-pub fn st_current_run(path: &str, rule: &str) -> PyResult<Option<(i64, String, String)>> {
+pub fn st_current_run(path: &str, rule: &str) -> Result<Option<(i64, String, String)>> {
     with_db(path, |db| {
         db.query_row("SELECT id, input_hash, out_hash FROM run WHERE rule=? AND current=1", [rule], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()
     })
@@ -372,7 +372,7 @@ pub fn st_current_run(path: &str, rule: &str) -> PyResult<Option<(i64, String, S
 
 /// A run of this rule with these inputs, in this store or the main store: (where, id, out_hash).
 #[pyfunction]
-pub fn st_find_run(path: &str, main: &str, rule: &str, input_hash: &str) -> PyResult<Option<(String, i64, String)>> {
+pub fn st_find_run(path: &str, main: &str, rule: &str, input_hash: &str) -> Result<Option<(String, i64, String)>> {
     with_db(path, |db| find_run(db, main, rule, input_hash))
 }
 
@@ -394,7 +394,7 @@ pub(crate) fn find_run(db: &Connection, main: &str, rule: &str, input_hash: &str
 
 /// Make the run current in this store, copying it from the main store if it lives there. Returns the local id.
 #[pyfunction]
-pub fn st_make_current(path: &str, main: &str, rule: &str, place: &str, run_id: i64) -> PyResult<i64> {
+pub fn st_make_current(path: &str, main: &str, rule: &str, place: &str, run_id: i64) -> Result<i64> {
     with_db(path, |db| make_current(db, main, rule, place, run_id))
 }
 
@@ -417,7 +417,7 @@ pub(crate) fn make_current(db: &Connection, main: &str, rule: &str, place: &str,
 
 /// (facts, ms) of a run.
 #[pyfunction]
-pub fn st_run_stats(path: &str, run_id: i64) -> PyResult<(i64, i64)> {
+pub fn st_run_stats(path: &str, run_id: i64) -> Result<(i64, i64)> {
     with_db(path, |db| {
         let n: i64 = db.query_row("SELECT COUNT(*) FROM fact WHERE run_id=?", [run_id], |r| r.get(0))?;
         let ms: i64 = db.query_row("SELECT ms FROM run WHERE id=?", [run_id], |r| r.get(0)).optional()?.unwrap_or(0);
@@ -430,13 +430,13 @@ pub fn st_run_stats(path: &str, run_id: i64) -> PyResult<(i64, i64)> {
 /// Store a blob: content-addressed blobs never change (INSERT OR IGNORE); one keyed by something else is
 /// replaced when `replace`.
 #[pyfunction]
-pub fn st_put_blob(path: &str, hash: &str, kind: &str, data: &[u8], replace: bool) -> PyResult<()> {
+pub fn st_put_blob(path: &str, hash: &str, kind: &str, data: &[u8], replace: bool) -> Result<()> {
     let verb = if replace { "INSERT OR REPLACE" } else { "INSERT OR IGNORE" };
     with_db(path, |db| db.execute(&format!("{verb} INTO blob (hash, kind, data) VALUES (?, ?, ?)"), params![hash, kind, data]).map(|_| ()))
 }
 
 #[pyfunction]
-pub fn st_drop_blobs(path: &str, kind: &str) -> PyResult<()> {
+pub fn st_drop_blobs(path: &str, kind: &str) -> Result<()> {
     with_db(path, |db| db.execute("DELETE FROM blob WHERE kind=?", [kind]).map(|_| ()))
 }
 
@@ -469,7 +469,7 @@ pub fn st_blobs<'py>(py: Python<'py>, path: &str, main: &str, kind: &str) -> PyR
 // ------------------------------------------------------------------------------------------------ translation units
 
 
-pub(crate) fn tu_hash(path: &str) -> PyResult<String> {
+pub(crate) fn tu_hash(path: &str) -> Result<String> {
     let rows: Vec<String> = with_db(path, |db| {
         let mut st = db.prepare("SELECT unit, src_hash, flags_hash, include_hash, obj_hash, ok, diags FROM tu ORDER BY unit")?;
         let rows = st.query_map([], |r| {
@@ -586,7 +586,7 @@ pub(crate) fn ensure_bytemap(db: &mut Connection, path: &str) -> rusqlite::Resul
 }
 
 #[pyfunction]
-pub fn st_ensure_bytemap(path: &str) -> PyResult<String> {
+pub fn st_ensure_bytemap(path: &str) -> Result<String> {
     with_db(path, |db| ensure_bytemap(db, path))
 }
 
@@ -596,7 +596,7 @@ fn map_row(r: &rusqlite::Row) -> rusqlite::Result<MapRow> {
 
 /// The byte map row holding addr (the map built first when its facts changed).
 #[pyfunction]
-pub fn st_bytemap_at(path: &str, addr: i64) -> PyResult<Option<MapRow>> {
+pub fn st_bytemap_at(path: &str, addr: i64) -> Result<Option<MapRow>> {
     with_db(path, |db| {
         ensure_bytemap(db, path)?;
         db.query_row("SELECT lo, hi, cls, level, symbol, unit, source, section FROM bytemap WHERE lo<=? ORDER BY lo DESC LIMIT 1", [addr], map_row)
@@ -607,7 +607,7 @@ pub fn st_bytemap_at(path: &str, addr: i64) -> PyResult<Option<MapRow>> {
 /// The byte map rows intersecting [lo, hi) (the map built first when its facts changed).
 #[pyfunction]
 #[pyo3(signature = (path, lo=None, hi=None))]
-pub fn st_bytemap_rows(path: &str, lo: Option<i64>, hi: Option<i64>) -> PyResult<Vec<MapRow>> {
+pub fn st_bytemap_rows(path: &str, lo: Option<i64>, hi: Option<i64>) -> Result<Vec<MapRow>> {
     with_db(path, |db| bytemap_rows(db, path, lo, hi))
 }
 

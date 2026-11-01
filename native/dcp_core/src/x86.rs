@@ -2,6 +2,7 @@
 //! hunk (explain, frame_delta, stack_mask, frame_explain, one_renaming), and the decoder the walk of an
 //! original's slot and S.codewalk read (X86Decoder, from capstone's operand details).
 
+use crate::error::{Error, Result};
 use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -596,9 +597,9 @@ pub const RET: u8 = 5;
 
 /// capstone's Intel text of every instruction of `code` at `va`, unchanged: (address, size, text, fill form?).
 #[pyo3::pyfunction]
-pub fn x86_disasm(dll: &str, code: &[u8], va: u32, fill_forms: Vec<Vec<u8>>) -> pyo3::PyResult<Vec<(u32, u32, String, bool)>> {
+pub fn x86_disasm(dll: &str, code: &[u8], va: u32, fill_forms: Vec<Vec<u8>>) -> Result<Vec<(u32, u32, String, bool)>> {
     let fills: HashSet<Vec<u8>> = fill_forms.into_iter().collect();
-    let ins = crate::cs::disasm(dll, code, va).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let ins = crate::cs::disasm(dll, code, va).map_err(Error::runtime)?;
     Ok(ins.into_iter().map(|i| {
         let o = (i.addr - va) as usize;
         let text = if i.op_str.is_empty() { i.mnemonic } else { format!("{} {}", i.mnemonic, i.op_str).trim().to_string() };

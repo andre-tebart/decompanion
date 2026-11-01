@@ -1,29 +1,28 @@
 //! M.compile and M.flags.proven (and probe.analyse, which M.flags.proven reads): the match rules of the build.
 
+use crate::error::{Error, Result};
 use crate::compile::{obj_path, tu_rows_of};
 use crate::plan;
 use crate::project::Project;
 use crate::rules::Ctx;
 use crate::store::{Out, DECLARED, PROVEN};
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-fn project_of(ctx: &Ctx) -> PyResult<Project> {
-    Project::open(std::path::Path::new(&ctx.root), Some(&ctx.inputs.target), "").map_err(PyRuntimeError::new_err)
+fn project_of(ctx: &Ctx) -> Result<Project> {
+    Project::open(std::path::Path::new(&ctx.root), Some(&ctx.inputs.target), "").map_err(Error::runtime)
 }
 
 /// M.compile: one `build` fact per translation unit of the current target (its compile's outcome), the gate errors
 /// of a failed, uncompiled or stale unit, an override without a reason, and M.gen (the object against the
 /// address comments).
-pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let p = project_of(ctx)?;
     let img = crate::image(&ctx.image)?;
     let (base, end) = (img.base as i64, img.end() as i64);
     let in_image = |a: i64| base <= a && a < end;
-    let err = |e: String| PyRuntimeError::new_err(e);
+    let err = |e: String| Error::runtime(e);
     for o in plan::unit_overrides(&p) {
         let reason = o.get("reason").map(|r| r.as_str().map(|s| s.to_string()).unwrap_or_else(|| crate::project::toml_json(r).to_string())).unwrap_or_default();
         if reason.trim().is_empty() {
@@ -36,7 +35,7 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
         }
     }
     let tools = crate::vc6::Tools::of(&p);
-    let rows = tu_rows_of(db).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let rows = tu_rows_of(db).map_err(|e| Error::runtime(e.to_string()))?;
     let root = p.root.to_string_lossy().into_owned();
     for a in plan::plan(&p).map_err(err)?.iter() {
         let at = a.first_addr().filter(|&x| in_image(x)).unwrap_or(base);
@@ -177,12 +176,12 @@ pub fn analyse(result: &Value) -> Value {
 /// M.flags.proven: from the last probe, one `toolchain` fact per flag group naming the best combination's flag and
 /// how many anchors and units distinguish it; proven from two units on, else declared; a proven flag the declared
 /// cflags lack is an error (M.flags).
-pub fn m_flags_proven(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn m_flags_proven(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let p = project_of(ctx)?;
     let _ = p;
     use rusqlite::OptionalExtension;
     let m: Option<String> = db.query_row("SELECT value FROM meta WHERE key='probe'", [], |r| r.get(0)).optional()
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        .map_err(|e| Error::runtime(e.to_string()))?;
     let Some(m) = m else { return Ok(()) };
     let res: Value = serde_json::from_str(&m).unwrap_or(Value::Null);
     if res.is_null() {

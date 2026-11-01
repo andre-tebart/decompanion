@@ -39,13 +39,13 @@
 //!                                             spelling of the analyzer's label, else its unknown data type
 //! When a function is drafted, the declarations of its name in the dcp blocks are removed.
 
+use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, Tok};
 use crate::edit as E;
 use crate::layoutview::View;
 use crate::names::Names;
 use crate::project::{py_path, Project};
 use crate::toolchain::Toolchain;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::Value;
@@ -62,8 +62,8 @@ static IDENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[A-Za-z_]\w*\b")
 static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").unwrap());
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|//[^\n]*|/\*.*?\*/"#).unwrap());
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 /// An analyzer's stored draft of one function.
@@ -245,7 +245,7 @@ struct Draft {
 }
 
 /// Write the function at a into its unit's file (module docs); Err(message) when there is nothing to draft.
-fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> PyResult<Result<Draft, String>> {
+fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
     let root = &x.root;
     let u = x.unit_at(a);
     if let (Some(want), Some(u)) = (unit, u) {
@@ -366,7 +366,7 @@ fn ensure_types_header(root: &str, head: &str, rel: &str, unit: &str, shipped: (
 
 /// The unit header of include/ that declares `name` (its own unit's first): a function or data declaration of the
 /// front end's model of the header.
-fn header_declaring(root: &str, name: &str, unit: &str) -> PyResult<Option<String>> {
+fn header_declaring(root: &str, name: &str, unit: &str) -> Result<Option<String>> {
     let skip = crate::dialect::types_headers();
     let mut hs: Vec<String> = std::fs::read_dir(py_path(&format!("{root}/include"))).into_iter().flatten().flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.to_lowercase().ends_with(".h")).collect();
@@ -389,9 +389,9 @@ fn header_declaring(root: &str, name: &str, unit: &str) -> PyResult<Option<Strin
 }
 
 /// The includes and declarations the names of a draft need (module docs), in the unit's head (its first `end` lines).
-fn declare_uses(x: &Ctx, head: &str, rel: &str, unit: &str, uses: &BTreeMap<String, (i64, bool, String)>, d: &mut Draft, end: usize) -> PyResult<()> {
+fn declare_uses(x: &Ctx, head: &str, rel: &str, unit: &str, uses: &BTreeMap<String, (i64, bool, String)>, d: &mut Draft, end: usize) -> Result<()> {
     let sized: Vec<Regex> = x.tc.sized_conventions().iter().map(|c| Regex::new(&format!(r"\b{}\b", regex::escape(c))).unwrap()).collect();
-    let include = |line: String, d: &mut Draft| -> PyResult<()> {
+    let include = |line: String, d: &mut Draft| -> Result<()> {
         if E::ensure_include(head, &line, Some(end)).map_err(err)? {
             d.declared.push(format!("{rel}: {line}"));
         }
@@ -437,7 +437,7 @@ fn declare_uses(x: &Ctx, head: &str, rel: &str, unit: &str, uses: &BTreeMap<Stri
     Ok(())
 }
 
-fn open<'a>(p: &'a Project, capstone: &str) -> PyResult<Ctx<'a>> {
+fn open<'a>(p: &'a Project, capstone: &str) -> Result<Ctx<'a>> {
     let db = p.store_path();
     let main = p.main_uri();
     crate::pystore::st_open(&db, &main)?;
@@ -456,7 +456,7 @@ fn open<'a>(p: &'a Project, capstone: &str) -> PyResult<Ctx<'a>> {
 #[pyo3(signature = (project, capstone, addr, next, show, unit, analyzer))]
 #[allow(clippy::too_many_arguments)]
 pub fn draft_command(project: PyRef<'_, crate::project::PyProject>, capstone: &str, addr: Option<String>, next: bool, show: bool, unit: Option<String>, analyzer: &str)
-    -> PyResult<(Vec<String>, Option<String>, i32)> {
+    -> Result<(Vec<String>, Option<String>, i32)> {
     let p = &project.p;
     let x = open(p, capstone)?;
     let resolve = |s: &str| crate::cliread::resolve_key(p, s);

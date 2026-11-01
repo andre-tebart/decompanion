@@ -19,6 +19,8 @@ rm -rf "$work" "$out"
 mkdir -p "$out"
 git clone -q "$repo" "$work" || exit 1
 cd "$work" || exit 1
+# the corpus is pinned: the project keeps moving while the port runs (PARITY_REV overrides)
+git checkout -q -B parity "${PARITY_REV:-2129854}" || exit 1
 export PARITY_ROOT_FWD; PARITY_ROOT_FWD=$(pwd -W)
 
 norm() {

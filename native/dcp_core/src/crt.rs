@@ -5,40 +5,39 @@
 //! native_inputs: {"toolchain": key, "libs": [archive paths], "archives": [archive paths], "decl": the target's
 //! toolchain declaration, "target": its name}.
 
+use crate::error::{Error, Result};
 use crate::coff::{self, Obj, ABSOLUTE, RELATIVE};
 use crate::image;
 use crate::rules::Ctx;
 use crate::store::{self, Out, SFact, DERIVED, PROVEN};
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
-fn err(e: rusqlite::Error) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: rusqlite::Error) -> Error {
+    Error::runtime(e.to_string())
 }
 
-fn inputs(ctx: &Ctx) -> PyResult<&crate::rules::Inputs> {
+fn inputs(ctx: &Ctx) -> Result<&crate::rules::Inputs> {
     Ok(&ctx.inputs)
 }
 
-fn toolchain(x: &crate::rules::Inputs) -> PyResult<Box<dyn crate::toolchain::Toolchain>> {
-    crate::toolchain::of(&x.toolchain).ok_or_else(|| PyRuntimeError::new_err("no such toolchain"))
+fn toolchain(x: &crate::rules::Inputs) -> Result<Box<dyn crate::toolchain::Toolchain>> {
+    crate::toolchain::of(&x.toolchain).ok_or_else(|| Error::runtime("no such toolchain"))
 }
 
-fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> PyResult<Vec<Rc<SFact>>> {
+fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> Result<Vec<Rc<SFact>>> {
     store::facts(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err)
 }
 
 /// (archive file name, its objects) of the archives an input lists.
-fn archives(x: &crate::rules::Inputs, key: &str) -> PyResult<Vec<(String, Vec<Obj>)>> {
+fn archives(x: &crate::rules::Inputs, key: &str) -> Result<Vec<(String, Vec<Obj>)>> {
     let mut out = vec![];
     for p in if key == "libs" { &x.libs } else { &x.archives } {
-        let b = std::fs::read(p).map_err(|e| PyRuntimeError::new_err(format!("{p}: {e}")))?;
+        let b = std::fs::read(p).map_err(|e| Error::runtime(format!("{p}: {e}")))?;
         let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        out.push((name, coff::archive_objects(&b).map_err(|e| PyRuntimeError::new_err(format!("{p}: {e}")))?));
+        out.push((name, coff::archive_objects(&b).map_err(|e| Error::runtime(format!("{p}: {e}")))?));
     }
     Ok(out)
 }
@@ -52,7 +51,7 @@ fn sec_first_name(o: &Obj, secnum: usize) -> Option<&str> {
 // ------------------------------------------------------------------------------------------------ S.rich
 
 /// S.rich: the Rich header decoded with the toolchain's product table, with the archives' objects per tool.
-pub fn s_rich(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_rich(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let entries = img.rich();
     if entries.is_empty() {
@@ -208,12 +207,12 @@ pub fn place_members(img: &crate::pe::Image, libs: &[(String, Vec<Obj>)], reloc_
     out
 }
 
-fn reloc_sites(ctx: &Ctx, db: &Connection) -> PyResult<BTreeSet<i64>> {
+fn reloc_sites(ctx: &Ctx, db: &Connection) -> Result<BTreeSet<i64>> {
     Ok(facts(ctx, db, "ref")?.iter().filter(|f| f.s("rkind") == Some("reloc")).map(|f| f.lo).collect())
 }
 
 /// S.crt.code: a library member's code section placed where its masked bytes equal the image's, once.
-pub fn s_crt_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_crt_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
     let libs = archives(x, "libs")?;
@@ -241,7 +240,7 @@ pub fn s_crt_code(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 // ------------------------------------------------------------------------------------------------ S.crt.refs, S.crt.data
 
 /// unit:name -> the placed func symbol (S.crt.code's), and the units placed.
-fn placed_funcs(ctx: &Ctx, db: &Connection) -> PyResult<(HashMap<String, Rc<SFact>>, HashSet<String>)> {
+fn placed_funcs(ctx: &Ctx, db: &Connection) -> Result<(HashMap<String, Rc<SFact>>, HashSet<String>)> {
     let mut placed = HashMap::new();
     for f in facts(ctx, db, "symbol")? {
         if f.s("skind") == Some("func") && f.s("unit").is_some_and(|u| u.starts_with("lib:")) {
@@ -264,7 +263,7 @@ fn placed_sections<'a>(o: &Obj, unit: &str, placed: &'a HashMap<String, Rc<SFact
 }
 
 /// S.crt.refs: the addresses a placed library section's relocations resolve name what they reference.
-pub fn s_crt_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_crt_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
     let (placed, units) = placed_funcs(ctx, db)?;
@@ -318,7 +317,7 @@ pub fn s_crt_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S.crt.data: a placed member's data section sits where its own absolute relocations into it point.
-pub fn s_crt_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_crt_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
     let (placed, _) = placed_funcs(ctx, db)?;
@@ -379,7 +378,7 @@ pub fn s_crt_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 // ------------------------------------------------------------------------------------------------ S.lib.data
 
 /// S.lib.data: a data-only member's initialised data placed where its bytes occur once.
-pub fn s_lib_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_lib_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
     let raws: Vec<(u32, &[u8])> = img.sections.iter().filter(|s| !s.holds_code() && !s.uninitialized()).map(|s| (s.va, img.section_data(s))).collect();
@@ -449,7 +448,7 @@ pub fn s_lib_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 
 /// S.thunk: an import stub whose slot is an iat slot, outside the placed library code, where the linker's
 /// layout makes it a library contribution.
-pub fn s_thunk(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s_thunk(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let tc = toolchain(inputs(ctx)?)?;
     let size = tc.import_stub_size() as i64;
@@ -522,7 +521,7 @@ fn truthy(v: &Value) -> bool {
 }
 
 /// C.toolchain: the target's toolchain declaration against the Rich header's candidates.
-pub fn c_toolchain(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn c_toolchain(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
     let tc = toolchain(x)?;
@@ -561,7 +560,7 @@ pub fn c_toolchain(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// S2.rich.members: the library objects the Rich header counts should be placed members.
-pub fn s2_rich_members(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn s2_rich_members(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
     let Some(rich) = facts(ctx, db, "toolchain")?.into_iter().next() else { return Ok(()) };

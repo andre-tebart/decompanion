@@ -3,11 +3,11 @@
 //! units / unit propose. One record per line, key=value tokens, addresses 0x%08x, intervals lo..hi (hi
 //! exclusive), sorted by address, counts before lists; --json gives the same records as JSON lines.
 
+use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, tok, Tok};
 use crate::project::{py_path, Project, PyProject};
 use crate::store::{self, SFact};
 use crate::with_db;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
@@ -20,8 +20,8 @@ const LEVELS: [&str; 4] = ["open", "declared", "derived", "proven"];
 /// (lines, error for stderr as `dcp CMD: error`, exit code).
 type Out = (Vec<String>, Option<String>, i32);
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 fn s(x: impl Into<String>) -> Tok {
@@ -71,8 +71,8 @@ fn parse_range(s: &str) -> Result<(i64, i64), String> {
     }
 }
 
-fn value_err(e: String) -> PyErr {
-    PyValueError::new_err(e)
+fn value_err(e: String) -> Error {
+    Error::value(e)
 }
 
 // ------------------------------------------------------------------------------------------------ values
@@ -143,7 +143,7 @@ pub fn conflict_line(c: &ConflictRow) -> String {
     out
 }
 
-fn conflicts(db: &str, severity: Option<String>) -> PyResult<Vec<ConflictRow>> {
+fn conflicts(db: &str, severity: Option<String>) -> Result<Vec<ConflictRow>> {
     crate::pystore::st_conflicts(db, severity, None)
 }
 
@@ -156,7 +156,7 @@ fn severity_counts(c: &[ConflictRow]) -> String {
 }
 
 /// Facts of current runs, of one kind or all, intersecting [lo, hi): (kind, fact), sorted by (lo, hi, kind, value).
-fn facts_in(db: &str, kind: Option<&str>, lo: i64, hi: i64) -> PyResult<Vec<(String, SFact)>> {
+fn facts_in(db: &str, kind: Option<&str>, lo: i64, hi: i64) -> Result<Vec<(String, SFact)>> {
     let mut q = String::from("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f \
                               JOIN run r ON r.id = f.run_id WHERE r.current=1 AND f.hi>? AND f.lo<?");
     let mut args: Vec<rusqlite::types::Value> = vec![lo.into(), hi.into()];
@@ -181,18 +181,18 @@ fn row_fact(r: &rusqlite::Row) -> rusqlite::Result<(String, SFact)> {
 }
 
 /// The fact of a row id.
-fn fact_by_id(db: &str, id: i64) -> PyResult<Option<(String, SFact)>> {
+fn fact_by_id(db: &str, id: i64) -> Result<Option<(String, SFact)>> {
     with_db(db, |c| {
         c.query_row("SELECT f.id, r.rule, f.lo, f.hi, f.kind, f.value, f.level, f.by, f.reason FROM fact f JOIN run r ON r.id = f.run_id \
                      WHERE f.id=?", [id], row_fact).optional()
     })
 }
 
-fn all(db: &str, kind: &str) -> PyResult<store::Facts> {
+fn all(db: &str, kind: &str) -> Result<store::Facts> {
     with_db(db, |c| store::facts_of(c, db, kind, None, |_| true))
 }
 
-fn opened(p: &Project) -> PyResult<String> {
+fn opened(p: &Project) -> Result<String> {
     let db = p.store_path();
     crate::pystore::st_open(&db, &p.main_uri())?;
     Ok(db)
@@ -205,7 +205,7 @@ fn image_of(p: &Project, name: Option<&str>) -> Result<Rc<crate::pe::Image>, Str
     if !Path::new(&t.path).exists() {
         return Err(format!("target {}: {} does not exist", t.name, t.path));
     }
-    let img = Python::attach(|_| crate::image(&t.path)).map_err(|e| e.to_string())?;
+    let img = crate::image(&t.path).map_err(|e| e.to_string())?;
     if !t.sha256.is_empty() {
         let sha = crate::fsmemo::sha256(&t.path).map_err(|e| e.to_string())?;
         if sha != t.sha256 {
@@ -215,7 +215,7 @@ fn image_of(p: &Project, name: Option<&str>) -> Result<Rc<crate::pe::Image>, Str
     Ok(img)
 }
 
-fn checked_image(p: &Project) -> PyResult<Rc<crate::pe::Image>> {
+fn checked_image(p: &Project) -> Result<Rc<crate::pe::Image>> {
     image_of(p, None).map_err(crate::project::cfg_err)
 }
 
@@ -326,7 +326,7 @@ fn get(r: &[(String, J)], k: &str) -> J {
 /// The analyzer lines of `dcp report`: how many functions have drafts, the export's state, the starts only the
 /// analyzer has (and where they lie), the game-code starts only we have, L9 (an analyzer's function spanning one of
 /// our starts).
-fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -> PyResult<()> {
+fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -> Result<()> {
     let v = crate::session::view_of(p)?;
     let mut ents: BTreeMap<i64, Value> = BTreeMap::new();
     for e in with_db(db, |c| crate::names::draft_values(c, &p.main_uri()))? {
@@ -400,7 +400,7 @@ fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -
 
 /// The setup report of the current target (`dcp setup`, `dcp report`).
 #[pyfunction]
-pub fn report_command(project: PyRef<'_, PyProject>, verbose: bool) -> PyResult<Vec<String>> {
+pub fn report_command(project: PyRef<'_, PyProject>, verbose: bool) -> Result<Vec<String>> {
     let p = &project.p;
     let db = opened(p)?;
     let img = checked_image(p)?;
@@ -532,7 +532,7 @@ fn value_line(img: &crate::pe::Image, a: i64, owner_hi: i64) -> Option<String> {
 /// `dcp why ADDR|NAME...`: everything known about an address: the byte map row, the value of a datum (value_line),
 /// every fact that covers it, references to and from it. Exit 1 when a name is unknown.
 #[pyfunction]
-pub fn why_command(project: PyRef<'_, PyProject>, keys: Vec<String>, refs: bool) -> PyResult<Out> {
+pub fn why_command(project: PyRef<'_, PyProject>, keys: Vec<String>, refs: bool) -> Result<Out> {
     let p = &project.p;
     let db = opened(p)?;
     let img = checked_image(p)?;
@@ -613,7 +613,7 @@ pub fn why_command(project: PyRef<'_, PyProject>, keys: Vec<String>, refs: bool)
 /// `dcp facts RANGE [--kind K] [--json]`.
 #[pyfunction]
 #[pyo3(signature = (project, range, kind, json))]
-pub fn facts_command(project: PyRef<'_, PyProject>, range: &str, kind: Option<String>, json: bool) -> PyResult<Vec<String>> {
+pub fn facts_command(project: PyRef<'_, PyProject>, range: &str, kind: Option<String>, json: bool) -> Result<Vec<String>> {
     let p = &project.p;
     let db = opened(p)?;
     let (lo, hi) = parse_range(range).map_err(value_err)?;
@@ -635,7 +635,7 @@ pub fn facts_command(project: PyRef<'_, PyProject>, range: &str, kind: Option<St
 /// `dcp conflicts [--severity S] [--json]`.
 #[pyfunction]
 #[pyo3(signature = (project, severity, json))]
-pub fn conflicts_command(project: PyRef<'_, PyProject>, severity: Option<String>, json: bool) -> PyResult<Vec<String>> {
+pub fn conflicts_command(project: PyRef<'_, PyProject>, severity: Option<String>, json: bool) -> Result<Vec<String>> {
     let p = &project.p;
     let db = opened(p)?;
     let conf = conflicts(&db, severity)?;
@@ -656,7 +656,7 @@ pub fn conflicts_command(project: PyRef<'_, PyProject>, severity: Option<String>
 /// `dcp map [RANGE]`: the byte map rows of a range (default: the image).
 #[pyfunction]
 #[pyo3(signature = (project, range))]
-pub fn map_command(project: PyRef<'_, PyProject>, range: Option<String>) -> PyResult<Vec<String>> {
+pub fn map_command(project: PyRef<'_, PyProject>, range: Option<String>) -> Result<Vec<String>> {
     let p = &project.p;
     let db = opened(p)?;
     let (lo, hi) = match range.filter(|r| !r.is_empty()) {
@@ -689,7 +689,7 @@ pub fn map_command(project: PyRef<'_, PyProject>, range: Option<String>) -> PyRe
 
 /// `dcp rules [-v]`: the rule graph in order with each rule's run state.
 #[pyfunction]
-pub fn rules_command(project: PyRef<'_, PyProject>, verbose: bool) -> PyResult<Vec<String>> {
+pub fn rules_command(project: PyRef<'_, PyProject>, verbose: bool) -> Result<Vec<String>> {
     let p = &project.p;
     let db = opened(p)?;
     let mut rows = vec![];
@@ -726,7 +726,7 @@ pub fn rules_command(project: PyRef<'_, PyProject>, verbose: bool) -> PyResult<V
 /// `dcp build`'s summary of one target after its compile: (units, compiled, removed, ms) of the compile; `units`
 /// lists every unit's build row, not only the failed ones. (lines, failed).
 #[pyfunction]
-pub fn build_summary(project: PyRef<'_, PyProject>, compile: (i64, i64, i64, i64), units: bool) -> PyResult<(Vec<String>, bool)> {
+pub fn build_summary(project: PyRef<'_, PyProject>, compile: (i64, i64, i64, i64), units: bool) -> Result<(Vec<String>, bool)> {
     let p = &project.p;
     let db = opened(p)?;
     let mut builds = all(&db, "build")?;
@@ -769,7 +769,7 @@ pub fn build_summary(project: PyRef<'_, PyProject>, compile: (i64, i64, i64, i64
 /// `dcp check`'s conflict part of one target: the counts line, the bug / error lines (and with `strict` the
 /// warnings); (lines, reasons so far).
 #[pyfunction]
-pub fn check_conflicts(project: PyRef<'_, PyProject>, strict: bool) -> PyResult<(Vec<String>, Vec<String>)> {
+pub fn check_conflicts(project: PyRef<'_, PyProject>, strict: bool) -> Result<(Vec<String>, Vec<String>)> {
     let p = &project.p;
     let db = opened(p)?;
     let conf = conflicts(&db, None)?;
@@ -793,7 +793,7 @@ pub fn check_conflicts(project: PyRef<'_, PyProject>, strict: bool) -> PyResult<
 /// obligation, no failed unit, no bug / error conflict, and (built, the toolchain installed) the full link resolves.
 /// (lines unless `quiet`, good, the link's ok (None: skipped), its undrafted externals).
 #[pyfunction]
-pub fn gate_target(project: PyRef<'_, PyProject>, units: i64, quiet: bool) -> PyResult<(Vec<String>, bool, Option<bool>, Option<usize>)> {
+pub fn gate_target(project: PyRef<'_, PyProject>, units: i64, quiet: bool) -> Result<(Vec<String>, bool, Option<bool>, Option<usize>)> {
     let p = &project.p;
     let db = opened(p)?;
     let obls = crate::decide::gate_records(p)?;
@@ -821,7 +821,7 @@ pub fn gate_target(project: PyRef<'_, PyProject>, units: i64, quiet: bool) -> Py
 /// `dcp fn KEY`: one function of the sources, a record with its file and lines (its address comment to the end of its
 /// definition), then that text. KEY is a function name or an address of the target.
 #[pyfunction]
-pub fn fn_command(project: PyRef<'_, PyProject>, key: &str) -> PyResult<Out> {
+pub fn fn_command(project: PyRef<'_, PyProject>, key: &str) -> Result<Out> {
     let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let src = p.input_hash("src").map_err(err)?.unwrap_or_default();
@@ -850,7 +850,7 @@ pub fn fn_command(project: PyRef<'_, PyProject>, key: &str) -> PyResult<Out> {
 
 /// `dcp target list [--json]`.
 #[pyfunction]
-pub fn target_list(project: PyRef<'_, PyProject>, json: bool) -> PyResult<Vec<String>> {
+pub fn target_list(project: PyRef<'_, PyProject>, json: bool) -> Result<Vec<String>> {
     let p = &project.p;
     let mut rows = vec![];
     for (i, t) in p.targets.iter().enumerate() {
@@ -890,7 +890,7 @@ pub fn target_list(project: PyRef<'_, PyProject>, json: bool) -> PyResult<Vec<St
 /// of the new line: the caller refreshes that target and reports its conflicts with `decl_conflicts`).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
-pub fn decl_add(project: PyRef<'_, PyProject>, line: &str) -> PyResult<(Vec<String>, Option<String>, i32, Option<(String, String)>)> {
+pub fn decl_add(project: PyRef<'_, PyProject>, line: &str) -> Result<(Vec<String>, Option<String>, i32, Option<(String, String)>)> {
     let p = &project.p;
     let fail = |m: String| Ok((vec![], Some(m), 1, None));
     let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
@@ -929,7 +929,7 @@ pub fn decl_add(project: PyRef<'_, PyProject>, line: &str) -> PyResult<(Vec<Stri
 
 /// The conflicts a producer takes part in (after `dcp decl add` refreshed the target); exit 1 on a bug or error.
 #[pyfunction]
-pub fn decl_conflicts(project: PyRef<'_, PyProject>, by: &str) -> PyResult<(Vec<String>, i32)> {
+pub fn decl_conflicts(project: PyRef<'_, PyProject>, by: &str) -> Result<(Vec<String>, i32)> {
     let db = opened(&project.p)?;
     let mine: Vec<ConflictRow> = conflicts(&db, None)?.into_iter().filter(|c| c.5 == by || c.6 == by).collect();
     let bad = mine.iter().any(|c| c.0 == "bug" || c.0 == "error");
@@ -939,7 +939,7 @@ pub fn decl_conflicts(project: PyRef<'_, PyProject>, by: &str) -> PyResult<(Vec<
 // ------------------------------------------------------------------------------------------------ layout
 
 /// The first `count` open items of the game code from `start` (layoutview.rs next_records), as ordered records.
-fn next_records(v: &crate::layoutview::View, count: usize, start: Option<i64>) -> PyResult<Vec<Vec<(String, J)>>> {
+fn next_records(v: &crate::layoutview::View, count: usize, start: Option<i64>) -> Result<Vec<Vec<(String, J)>>> {
     Ok(v.next_items(count, start)?.into_iter().map(|r| {
         let mut rec = o(vec![("addr", J::I(r.addr)), ("kind", J::S(r.kind.into())), ("size", J::I(r.size)), ("next_start", J::I(r.next_start)),
                              ("unit", r.unit.map(J::S).unwrap_or(J::Null)), ("unit_status", r.unit_status.map(J::S).unwrap_or(J::Null)),
@@ -971,7 +971,7 @@ fn lv(x: crate::layoutview::LVal) -> J {
 /// `dcp layout next [-n N] [--start ADDR] [--json]`.
 #[pyfunction]
 #[pyo3(signature = (project, n, start, json))]
-pub fn layout_next(project: PyRef<'_, PyProject>, n: usize, start: Option<String>, json: bool) -> PyResult<Vec<String>> {
+pub fn layout_next(project: PyRef<'_, PyProject>, n: usize, start: Option<String>, json: bool) -> Result<Vec<String>> {
     let p = &project.p;
     opened(p)?;
     let v = crate::session::view_of(p)?;
@@ -1010,7 +1010,7 @@ pub fn layout_next(project: PyRef<'_, PyProject>, n: usize, start: Option<String
 /// `dcp layout units [-v] [--json]`: the unit table.
 #[pyfunction]
 #[pyo3(signature = (project, verbose, json))]
-pub fn layout_units(project: PyRef<'_, PyProject>, verbose: bool, json: bool) -> PyResult<Vec<String>> {
+pub fn layout_units(project: PyRef<'_, PyProject>, verbose: bool, json: bool) -> Result<Vec<String>> {
     let p = &project.p;
     let db = opened(p)?;
     let v = crate::session::view_of(p)?;
@@ -1080,7 +1080,7 @@ pub fn layout_units(project: PyRef<'_, PyProject>, verbose: bool, json: bool) ->
 #[pyfunction]
 #[pyo3(signature = (project, range, name, why, by, dry_run))]
 pub fn propose_command(project: PyRef<'_, PyProject>, range: &str, name: &str, why: &str, by: Option<String>, dry_run: bool)
-    -> PyResult<(Vec<String>, Option<String>, i32, bool)> {
+    -> Result<(Vec<String>, Option<String>, i32, bool)> {
     let p = &project.p;
     opened(p)?;
     let (lo, hi) = if range.contains("..") {
@@ -1137,7 +1137,7 @@ pub fn propose_command(project: PyRef<'_, PyProject>, range: &str, name: &str, w
 
 /// The verdict on a written proposal after the refresh: its own errors apart from the others'; exit 1 on its own.
 #[pyfunction]
-pub fn propose_verdict(project: PyRef<'_, PyProject>, name: &str) -> PyResult<(Vec<String>, i32)> {
+pub fn propose_verdict(project: PyRef<'_, PyProject>, name: &str) -> Result<(Vec<String>, i32)> {
     let p = &project.p;
     let db = opened(p)?;
     let text = crate::fsmemo::read_text(&py_path(&p.root.join("decl").join("text.dcl").to_string_lossy())).map_err(err)?;

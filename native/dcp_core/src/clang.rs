@@ -4,7 +4,7 @@
 //! ranges per project file), the diagnostics, the references of names to declarations not at file scope, the
 //! calling conventions of the system headers' functions. Positions as cparse documents them.
 
-use pyo3::exceptions::PyRuntimeError;
+use crate::error::{Error, Result};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use regex::bytes::Regex as BRegex;
@@ -195,8 +195,8 @@ const KEEP_GOING: c_uint = 0x200;
 
 static LIB: OnceLock<(String, Api)> = OnceLock::new();
 
-fn api() -> PyResult<&'static Api> {
-    LIB.get().map(|l| &l.1).ok_or_else(|| PyRuntimeError::new_err("libclang is not loaded (cparse.load)"))
+fn api() -> Result<&'static Api> {
+    LIB.get().map(|l| &l.1).ok_or_else(|| Error::runtime("libclang is not loaded (cparse.load)"))
 }
 
 pub(crate) fn load(path: &str) -> Result<(), String> {
@@ -219,7 +219,7 @@ pub(crate) fn load(path: &str) -> Result<(), String> {
 
 /// The loaded libclang's version text.
 #[pyfunction]
-pub fn clang_version() -> PyResult<String> {
+pub fn clang_version() -> Result<String> {
     let a = api()?;
     Ok(take(a, unsafe { (a.clang_getClangVersion)() }))
 }
@@ -309,8 +309,8 @@ pub struct Unit {
     inner: Mutex<Tu>,
 }
 
-fn cstr(s: &str) -> PyResult<CString> {
-    CString::new(s).map_err(|_| PyRuntimeError::new_err(format!("a NUL in {s:?}")))
+fn cstr(s: &str) -> Result<CString> {
+    CString::new(s).map_err(|_| Error::runtime(format!("a NUL in {s:?}")))
 }
 
 /// Parse a file (its text handed over) with the arguments, in any thread (each parse has its own index).
@@ -348,17 +348,17 @@ impl Unit {
     }
 
     /// Every file the parse read besides the parsed one.
-    pub(crate) fn included(&self) -> PyResult<Vec<String>> {
+    pub(crate) fn included(&self) -> Result<Vec<String>> {
         Ok(includes(api()?, lock(self).tu))
     }
 
     /// The model of the unit (root: the project root; text: the parsed text).
-    pub(crate) fn model_out(&self, root: &str, text: &str) -> PyResult<ModelOut> {
+    pub(crate) fn model_out(&self, root: &str, text: &str) -> Result<ModelOut> {
         model_rs(api()?, &lock(self), root, text)
     }
 
     /// The diagnostics of the unit (cparse.diagnostics).
-    pub(crate) fn diags(&self, root: &str, text: &str, presumed: bool) -> PyResult<Vec<CDiag>> {
+    pub(crate) fn diags(&self, root: &str, text: &str, presumed: bool) -> Result<Vec<CDiag>> {
         diagnostics_rs(api()?, &lock(self), root, text, presumed)
     }
 }
@@ -391,13 +391,13 @@ impl Unit {
             unsafe { (a.clang_reparseTranslationUnit)(s.0, 1, &mut un, 0) }
         });
         if r != 0 {
-            return Err(PyRuntimeError::new_err(format!("libclang could not reparse {}", t.path_s)));
+            return Err(Error::runtime(format!("libclang could not reparse {}", t.path_s)).into());
         }
         Ok(())
     }
 
     /// The names of every file the parse read besides the parsed one (tu.get_includes: an include per line).
-    fn includes(&self) -> PyResult<Vec<String>> {
+    fn includes(&self) -> Result<Vec<String>> {
         let a = api()?;
         let t = lock(self);
         Ok(includes(a, t.tu))
@@ -418,7 +418,7 @@ impl Unit {
     }
 
     /// cparse.refs of the unit.
-    pub(crate) fn refs(&self, root: &str, text: &str, names: Vec<String>) -> PyResult<Vec<(String, Vec<(usize, usize)>)>> {
+    pub(crate) fn refs(&self, root: &str, text: &str, names: Vec<String>) -> Result<Vec<(String, Vec<(usize, usize)>)>> {
         let a = api()?;
         let t = lock(self);
         refs(a, &t, root, text, &names)
@@ -662,7 +662,7 @@ fn line_col(data: &[u8], nl: &[usize], off: usize) -> Lc {
     (line as i64, (chars_of(&data[bol..off]) + 1) as i64)
 }
 
-fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> PyResult<ModelOut> {
+fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> Result<ModelOut> {
     let tu = t.tu;
     let mut w = Where::new(root, &t.path_s, text);
     let mut out = Files { order: vec![], by: HashMap::new() };
@@ -808,7 +808,7 @@ fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> PyResult<ModelOut> {
     }
     let deps: Vec<String> = includes(a, tu).iter().map(|f| resolve(f)).collect::<BTreeSet<_>>().into_iter().collect();
     // a file's casts and dead ranges, mapped by the file's own lines
-    let file_parts = |w: &mut Where, out: &mut Files, fname: &str, data: &[u8], rel: Option<&str>| -> PyResult<()> {
+    let file_parts = |w: &mut Where, out: &mut Files, fname: &str, data: &[u8], rel: Option<&str>| -> Result<()> {
         let cf = cstr(fname)?;
         let f = unsafe { (a.clang_getFile)(tu, cf.as_ptr()) };
         let found = casts_of(a, tu, f, data);
@@ -1008,14 +1008,14 @@ fn diagnostics<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str, pr
     Ok(out)
 }
 
-fn diagnostics_rs(a: &Api, t: &Tu, root: &str, text: &str, presumed: bool) -> PyResult<Vec<CDiag>> {
+fn diagnostics_rs(a: &Api, t: &Tu, root: &str, text: &str, presumed: bool) -> Result<Vec<CDiag>> {
     let tu = t.tu;
     let rootr = resolve(root);
     let main = resolve(&t.path_s);
     let lmap = presumed.then(|| line_map(text, &t.path_s));
     let mut files: HashMap<String, (bool, String)> = HashMap::new();
     let mut out: Vec<CDiag> = vec![];
-    let mut one = |d: P, kind: &str| -> PyResult<bool> {
+    let mut one = |d: P, kind: &str| -> Result<bool> {
         let loc = unsafe { (a.clang_getDiagnosticLocation)(d) };
         let (f, line, _) = expand(a, loc);
         let Some(f) = f else { return Ok(false) }; // no location (the command line)
@@ -1060,12 +1060,12 @@ fn diagnostics_rs(a: &Api, t: &Tu, root: &str, text: &str, presumed: bool) -> Py
 
 // ------------------------------------------------------------------------------------------------ refs
 
-fn refs(a: &Api, t: &Tu, root: &str, text: &str, names: &[String]) -> PyResult<Vec<(String, Vec<(usize, usize)>)>> {
+fn refs(a: &Api, t: &Tu, root: &str, text: &str, names: &[String]) -> Result<Vec<(String, Vec<(usize, usize)>)>> {
     let tu = t.tu;
     let rootr = resolve(root);
     let main = resolve(&t.path_s);
     let pat = BRegex::new(&format!(r"(?-u)\b(?:{})\b", names.iter().map(|n| regex::escape(n)).collect::<Vec<_>>().join("|")))
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        .map_err(|e| Error::runtime(e.to_string()))?;
     let mut files: Vec<(String, String, Vec<u8>, Option<String>)> = vec![(t.path_s.clone(), main.clone(), text.as_bytes().to_vec(), rel_to(&main, &rootr))];
     for i in includes(a, tu) {
         let p = resolve(&i);
@@ -1123,7 +1123,7 @@ pub fn clang_function_headers(py: Python<'_>, args: Vec<String>, headers: Vec<St
     let name = "dcp_system_headers.c";
     let u = {
         let cpath = cstr(name)?;
-        let cargs: Vec<CString> = args.iter().map(|s| cstr(s)).collect::<PyResult<_>>()?;
+        let cargs: Vec<CString> = args.iter().map(|s| cstr(s)).collect::<Result<_>>()?;
         let argv: Vec<*const c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
         let mut un = CXUnsavedFile { name: cpath.as_ptr(), contents: text.as_ptr() as *const c_char, length: text.len() as c_ulong };
         let _ = py;
@@ -1132,7 +1132,7 @@ pub fn clang_function_headers(py: Python<'_>, args: Vec<String>, headers: Vec<St
             let tu = (a.clang_parseTranslationUnit)(idx, cpath.as_ptr(), argv.as_ptr(), argv.len() as c_int, &mut un, 1, KEEP_GOING);
             if tu.is_null() {
                 (a.clang_disposeIndex)(idx);
-                return Err(PyRuntimeError::new_err("libclang could not parse the system headers"));
+                return Err(Error::runtime("libclang could not parse the system headers").into());
             }
             Tu { index: idx, tu, path: cpath, path_s: name.to_string() }
         }

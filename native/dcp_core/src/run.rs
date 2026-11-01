@@ -14,6 +14,7 @@
 //! The core builds and stages and writes the launch spec build/run/<run>.json; the process the user typed `dcp`
 //! in runs the steps and the program (launch.py): the daemon has no window to start a game in.
 
+use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::fsmemo;
 use crate::project::{py_path, toml_json, Project, CONFIG_NAME};
@@ -401,13 +402,13 @@ pub fn variant_build(p: &Project, v: &Variant, force: bool) -> Result<(crate::co
 
 // ------------------------------------------------------------------------------------------------ Python's face
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 /// `dcp run --list`: one line per profile.
 #[pyfunction]
-pub fn run_list(project: PyRef<'_, crate::project::PyProject>) -> PyResult<Vec<String>> {
+pub fn run_list(project: PyRef<'_, crate::project::PyProject>) -> Result<Vec<String>> {
     let p = &project.p;
     let c = p.run_cfg().map_err(err)?;
     let mut out = vec![record(&[("runs", Tok::I(c.runs.len() as i64)), ("variants", Tok::I(c.variants.len() as i64)), ("setups", Tok::I(c.setups.len() as i64))])];
@@ -421,7 +422,7 @@ pub fn run_list(project: PyRef<'_, crate::project::PyProject>) -> PyResult<Vec<S
 
 /// The target a run profile builds (None: no such profile).
 #[pyfunction]
-pub fn run_target(project: PyRef<'_, crate::project::PyProject>, name: &str) -> PyResult<Option<String>> {
+pub fn run_target(project: PyRef<'_, crate::project::PyProject>, name: &str) -> Result<Option<String>> {
     let p = &project.p;
     let c = p.run_cfg().map_err(err)?;
     Ok(c.runs.iter().find(|r| r.name == name).map(|r| r.target.clone().unwrap_or_else(|| p.targets[0].name.clone())))
@@ -437,7 +438,7 @@ fn compile_lines(rep: &crate::compile::Report, variant: &str) -> Vec<String> {
 /// `dcp build --variant NAME` after the main build: (lines, ok).
 #[pyfunction]
 #[pyo3(signature = (project, variant, force=false))]
-pub fn variant_build_command(project: PyRef<'_, crate::project::PyProject>, variant: &str, force: bool) -> PyResult<(Vec<String>, bool)> {
+pub fn variant_build_command(project: PyRef<'_, crate::project::PyProject>, variant: &str, force: bool) -> Result<(Vec<String>, bool)> {
     let p = &project.p;
     let v = p.variant(variant).map_err(err)?;
     let (rep, link) = variant_build(p, &v, force).map_err(err)?;
@@ -453,7 +454,7 @@ pub fn variant_build_command(project: PyRef<'_, crate::project::PyProject>, vari
 #[pyo3(signature = (project, name, no_build=false, seconds=None, extra=vec![], debug=None, dump=None, capstone=String::new()))]
 #[allow(clippy::too_many_arguments)]
 pub fn run_prepare(project: PyRef<'_, crate::project::PyProject>, name: &str, no_build: bool, seconds: Option<f64>, extra: Vec<String>,
-                   debug: Option<bool>, dump: Option<String>, capstone: String) -> PyResult<(Vec<String>, Option<String>, Option<String>)> {
+                   debug: Option<bool>, dump: Option<String>, capstone: String) -> Result<(Vec<String>, Option<String>, Option<String>)> {
     let p = &project.p;
     let t0 = std::time::Instant::now();
     let c = p.run_cfg().map_err(err)?;

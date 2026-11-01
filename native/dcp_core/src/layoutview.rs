@@ -4,10 +4,10 @@
 //! Nothing here decides anything new: the units are L.unit.extent's facts, the evidence L.analyze's, the checks are
 //! layout.rs's pure functions (run again on the units as a proposal would make them).
 
+use crate::error::Result;
 use crate::layout::{self, Bound as Boundary, Issue, Leak, Lit, Unit};
 use crate::store::{self, SFact, OPEN};
 use crate::with_db;
-use pyo3::prelude::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -34,7 +34,7 @@ pub struct View {
 }
 
 impl View {
-    pub fn load(db: &str, main: &str, image: &str) -> PyResult<View> {
+    pub fn load(db: &str, main: &str, image: &str) -> Result<View> {
         let img = crate::image(image)?;
         let all = |k: &str| with_db(db, |c| store::facts_of(c, db, k, None, |_| true));
         let syms: Vec<Rc<SFact>> = all("symbol")?.into_iter().filter(|f| !f.rule.starts_with("M.")).collect();
@@ -244,7 +244,7 @@ pub struct Proposal {
 impl View {
     /// The first `count` open items of the game code from `start`: a function without a source, a declared start in
     /// unknown code, or unknown code no start explains, each with its evidence lines.
-    pub(crate) fn next_items(&self, count: usize, start: Option<i64>) -> PyResult<Vec<NextItem>> {
+    pub(crate) fn next_items(&self, count: usize, start: Option<i64>) -> Result<Vec<NextItem>> {
         let img = crate::image(&self.image)?;
         let items = self.items_of();
         let mut starts_sorted: Vec<i64> = items.iter().filter(|t| t.2 == "func" || t.2 == "start").map(|t| t.0).collect();

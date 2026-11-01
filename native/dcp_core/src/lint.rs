@@ -4,6 +4,7 @@
 //! pieces; the M5 lines of a run of clang over it. Offsets are byte offsets; the `at` of a declaration goes to
 //! Python in characters.
 
+use crate::error::Result;
 use crate::srcscan::{py_space, py_strip, py_words, Src};
 use crate::clang::FileModel;
 use pyo3::prelude::*;
@@ -371,7 +372,7 @@ pub(crate) struct FileLint {
 
 /// One file's FileLint from its text, its model's declarations, macro definitions (name, line, start, end
 /// offsets), types, macros and dead ranges.
-pub(crate) fn file_lint(rel: &str, src: &Src, m: &FileModel) -> PyResult<FileLint> {
+pub(crate) fn file_lint(rel: &str, src: &Src, m: &FileModel) -> Result<FileLint> {
     let decls = mdecls(&m.decls);
     let defines = &m.defines;
     let code = src.code.as_str();
@@ -482,7 +483,7 @@ fn header_order(headers: &[String], info: &HashMap<&str, &FileLint>) -> Vec<Stri
 /// lint.alldecls over the scan's pieces (srcscan.native_view's ids): headers (include/X.h not private, sorted),
 /// srcs (src/**/*.c in the walk's order), the target whose compile the unit stands for.
 #[pyfunction]
-pub fn lint_alldecls(ids: Vec<u64>, target: Option<String>, headers: Vec<String>, srcs: Vec<String>) -> PyResult<AllDecls> {
+pub fn lint_alldecls(ids: Vec<u64>, target: Option<String>, headers: Vec<String>, srcs: Vec<String>) -> Result<AllDecls> {
     let pieces = crate::srcscan::pieces_by_rel(&ids)?;
     let empty = FileLint::default();
     let lint_of = |rel: &str| pieces.get(rel).and_then(|p| p.lint_for(&target)).unwrap_or(&empty);
@@ -736,7 +737,7 @@ fn cast_view(d: &Decl) -> Option<String> {
 
 /// lint.cross_conflicts: the M5 lines of one run of clang over the all-declarations unit (diags: its
 /// diagnostics as JSON text; root: the project, for the exemptions).
-pub fn lint_cross(ad: &AllDecls, diags: Vec<Diag>, root: &str) -> PyResult<Vec<String>> {
+pub fn lint_cross(ad: &AllDecls, diags: Vec<Diag>, root: &str) -> Result<Vec<String>> {
     let mut lines = Lines { root: std::path::PathBuf::from(root), memo: HashMap::new() };
     let mut groups: Vec<Vec<Diag>> = vec![];
     for d in diags {
@@ -988,7 +989,7 @@ pub fn lint_cross(ad: &AllDecls, diags: Vec<Diag>, root: &str) -> PyResult<Vec<S
 /// The M6 lines (a unit's errors) and M7 calls (file, line, `callee() at line N` / `callee (undeclared) at
 /// line N`) of the units' diagnostics (each unit's list as JSON text), a group with an exempt line left out
 /// (lint.lint's loop; lint.call_of).
-pub fn lint_units(diags: Vec<Vec<Diag>>, root: &str) -> PyResult<(Vec<String>, Vec<(String, i64, String)>)> {
+pub fn lint_units(diags: Vec<Vec<Diag>>, root: &str) -> Result<(Vec<String>, Vec<(String, i64, String)>)> {
     let mut lines = Lines { root: std::path::PathBuf::from(root), memo: HashMap::new() };
     let (mut errors, mut calls) = (vec![], vec![]);
     for ds in diags {

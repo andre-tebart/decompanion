@@ -10,6 +10,7 @@
 //!   [[variant]], [[setup]], [[run]]  build variants and running a build (run.rs).
 //! The single-table form `[target]` of milestone 1 is still read (one target named after the file's stem).
 
+use crate::error::{Error, Result};
 use crate::fsmemo;
 use crate::store::canon;
 use pyo3::exceptions::PyRuntimeError;
@@ -31,8 +32,8 @@ pub const IMAGE_FORMATS: [&str; 1] = ["pe32"];
 pub const ISAS: [&str; 1] = ["x86"];
 pub const TOOLCHAINS: [&str; 1] = ["vc6"];
 
-pub(crate) fn cfg_err(msg: String) -> PyErr {
-    ConfigError::new_err(msg)
+pub(crate) fn cfg_err(msg: String) -> Error {
+    Error::config(msg)
 }
 
 /// A TOML value as JSON (a datetime as its text).
@@ -509,7 +510,7 @@ impl PyProject {
     /// a target selected (None: the default one).
     #[new]
     #[pyo3(signature = (root, target, core_hash))]
-    fn new(root: Option<String>, target: Option<String>, core_hash: &str) -> PyResult<PyProject> {
+    fn new(root: Option<String>, target: Option<String>, core_hash: &str) -> Result<PyProject> {
         let start = match &root {
             Some(r) if Path::new(r).join(CONFIG_NAME).exists() => PathBuf::from(r),
             Some(r) => PathBuf::from(r),
@@ -582,15 +583,15 @@ impl PyProject {
     }
 
     #[pyo3(signature = (name=None))]
-    fn lib_archives(&self, name: Option<&str>) -> PyResult<Vec<String>> {
+    fn lib_archives(&self, name: Option<&str>) -> Result<Vec<String>> {
         self.p.lib_archives(name).map_err(cfg_err)
     }
 
-    fn waiting(&self, name: &str) -> PyResult<Vec<String>> {
+    fn waiting(&self, name: &str) -> Result<Vec<String>> {
         self.p.waiting(name).map_err(cfg_err)
     }
 
-    fn waiting_for(&self, inputs: Vec<String>) -> PyResult<Vec<String>> {
+    fn waiting_for(&self, inputs: Vec<String>) -> Result<Vec<String>> {
         self.p.waiting_for(&inputs).map_err(cfg_err)
     }
 
@@ -603,7 +604,7 @@ impl PyProject {
     }
 
     /// The current target's image, checked: a known format, the file exists, its sha256 is the declared one.
-    fn image(&self) -> PyResult<crate::pyimage::PeImage> {
+    fn image(&self) -> Result<crate::pyimage::PeImage> {
         let t = self.p.target(None).map_err(cfg_err)?;
         if let Some(f) = t.image.as_ref().filter(|f| !IMAGE_FORMATS.contains(&f.as_str())) {
             return Err(cfg_err(format!("target {}: unknown image format {} (known: {})", t.name, crate::decl::py_repr(f), IMAGE_FORMATS.join(", "))));
@@ -620,7 +621,7 @@ impl PyProject {
     }
 
     /// The current target's instruction set: its `isa` key, else what the image's machine type implies.
-    fn isa(&self) -> PyResult<String> {
+    fn isa(&self) -> Result<String> {
         let t = self.p.target(None).map_err(cfg_err)?;
         let key = match &t.isa {
             Some(k) => Some(k.clone()),
@@ -634,7 +635,7 @@ impl PyProject {
     }
 
     /// The analyzer's key ([analyzer] plugin, default ghidra).
-    fn analyzer_key(&self) -> PyResult<String> {
+    fn analyzer_key(&self) -> Result<String> {
         crate::analyzers::Analyzer::of(&self.p).map(|a| a.key).map_err(cfg_err)
     }
 
@@ -646,7 +647,7 @@ impl PyProject {
         self.p.toolchain_available()
     }
 
-    fn input_hash(&self, name: &str) -> PyResult<Option<String>> {
+    fn input_hash(&self, name: &str) -> Result<Option<String>> {
         self.p.input_hash(name).map_err(cfg_err)
     }
 
@@ -734,7 +735,7 @@ reason = "S.rich"
 
 /// The targets (name, path) a configuration's text declares, paths as written relative to root.
 #[pyfunction]
-pub fn config_targets(root: &str, text: &str) -> PyResult<Vec<(String, String)>> {
+pub fn config_targets(root: &str, text: &str) -> Result<Vec<(String, String)>> {
     targets_of(root, text).map_err(cfg_err)
 }
 

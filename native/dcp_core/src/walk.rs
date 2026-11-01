@@ -32,10 +32,10 @@
 //!   repeating it when the next start after the root is unchanged and the walk saw no byte another walk owns;
 //!   everything else is walked again, in the same order as a walk from scratch.
 
+use crate::error::{Error, Result};
 use crate::rules::Ctx;
 use crate::store::{Out, DECLARED, DERIVED};
 use crate::x86::{Decoder, WIns, CALL, CJUMP, IJUMP, JUMP, RET};
-use pyo3::prelude::*;
 use rusqlite::Connection;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -403,8 +403,8 @@ impl Walker<'_> {
 /// S.codewalk: recursive descent over the code sections from every known start, adding the starts the walk
 /// reveals (W1..W5) until the set of starts is stable; functions, their tables, calls, tail calls, immediates and
 /// memory operands as facts, a walk into bytes another function owns as a C.walk conflict.
-pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
-    let err = |e: String| pyo3::exceptions::PyRuntimeError::new_err(e);
+pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
+    let err = |e: String| Error::runtime(e);
     let img = crate::image(&ctx.image)?;
     let tc = crate::setup::toolchain_of(ctx)?;
     let code_secs: Vec<(u32, u32)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va, s.end())).collect();
@@ -618,8 +618,8 @@ pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
 /// relocation sites and memory operands into the image are `ref` facts like the walk's, declared (they rest on
 /// the address comment's start). A match-base report: `dcp refs` missed `test byte ptr [0xfd7f78], 2` in
 /// rd_BuildRoad, a function no walk reached.
-pub fn l_src_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
-    let err = |e: String| pyo3::exceptions::PyRuntimeError::new_err(e);
+pub fn l_src_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
+    let err = |e: String| Error::runtime(e);
     let img = crate::image(&ctx.image)?;
     let code_secs: Vec<(u32, u32)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va, s.end())).collect();
     if code_secs.is_empty() {

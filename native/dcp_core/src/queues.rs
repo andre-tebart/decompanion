@@ -18,10 +18,10 @@
 //! The baseline ledger/grades.tsv: target, address, name, unit, code, readability, level, accepted (a header
 //! line; sorted by target in config order, then address).
 
+use crate::error::{Error, Result};
 use crate::pystore::json_py;
 use crate::store;
 use crate::with_db;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use serde_json::{Map, Value};
@@ -42,11 +42,11 @@ fn s<'a>(r: &'a Row, k: &str) -> &'a str {
 }
 
 /// The function grade rows (the value with addr and by), by address.
-pub fn function_grades(db: &str) -> PyResult<Rc<Vec<Row>>> {
+pub fn function_grades(db: &str) -> Result<Rc<Vec<Row>>> {
     store::derived(db, "grades.function", || function_rows(db))
 }
 
-fn function_rows(db: &str) -> PyResult<Vec<Row>> {
+fn function_rows(db: &str) -> Result<Vec<Row>> {
     let facts = with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("function")))?;
     let mut out: Vec<Row> = facts.iter().map(|f| {
         let mut m = f.value.as_object().cloned().unwrap_or_default();
@@ -58,11 +58,11 @@ fn function_rows(db: &str) -> PyResult<Vec<Row>> {
     Ok(out)
 }
 
-pub fn unit_grades(db: &str) -> PyResult<Rc<Vec<Row>>> {
+pub fn unit_grades(db: &str) -> Result<Rc<Vec<Row>>> {
     store::derived(db, "grades.unit", || unit_rows(db))
 }
 
-fn unit_rows(db: &str) -> PyResult<Vec<Row>> {
+fn unit_rows(db: &str) -> Result<Vec<Row>> {
     let facts = with_db(db, |c| store::facts_of(c, db, "grade", None, |f| f.s("of") == Some("unit")))?;
     let mut out: Vec<Row> = facts.iter().map(|f| {
         let mut m = f.value.as_object().cloned().unwrap_or_default();
@@ -75,7 +75,7 @@ fn unit_rows(db: &str) -> PyResult<Vec<Row>> {
 }
 
 /// The game units of L.unit.extent: (tu, lo, status), by address.
-fn game_units(db: &str) -> PyResult<Vec<(String, i64, String)>> {
+fn game_units(db: &str) -> Result<Vec<(String, i64, String)>> {
     let facts = with_db(db, |c| store::facts_of(c, db, "unit", None, |f| f.value.get("status").is_some()))?;
     let mut out: Vec<(String, i64, String)> = facts.iter().map(|f| (f.s("tu").unwrap_or("").into(), f.lo, f.s("status").unwrap_or("").into())).collect();
     out.sort_by_key(|u| u.1);
@@ -122,11 +122,11 @@ fn tagged(r: &Row, unit: &str, section: &str) -> Row {
 }
 
 /// The items of the base / deep / names queue in order (module docstring).
-pub fn queue(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> PyResult<Rc<Vec<Row>>> {
+pub fn queue(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> Result<Rc<Vec<Row>>> {
     store::derived(db, &format!("queue {which} {shard:?} {unit:?}"), || queue_rows(db, which, shard, unit))
 }
 
-fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> PyResult<Vec<Row>> {
+fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> Result<Vec<Row>> {
     let rows = function_grades(db)?;
     let mut by_unit: Vec<(String, Vec<&Row>)> = vec![];
     for r in rows.iter() {
@@ -327,7 +327,7 @@ fn entry_of(r: &Row) -> Entry {
 /// ledger/grades.tsv from the current grades of every target ((name, store) in config order). An accepted column
 /// of the old text is kept while the function stays below the grade it fell from; with accept_falls every fall
 /// against the old text is written with a note `.. at COMMIT: promote --accept-falls`.
-pub fn baseline_text(targets: &[(String, String)], old: &str, accept_falls: bool, commit: &str) -> PyResult<String> {
+pub fn baseline_text(targets: &[(String, String)], old: &str, accept_falls: bool, commit: &str) -> Result<String> {
     let base = parse_baseline(old);
     let mut rows = vec![];
     for (t, db) in targets {
@@ -353,7 +353,7 @@ pub fn baseline_text(targets: &[(String, String)], old: &str, accept_falls: bool
 }
 
 /// The falls of a target's function grades against a baseline text.
-pub fn regressions(target: &str, db: &str, text: &str) -> PyResult<Vec<String>> {
+pub fn regressions(target: &str, db: &str, text: &str) -> Result<Vec<String>> {
     let mut base: Vec<(i64, Entry)> = parse_baseline(text).into_iter().filter(|x| x.0 .0 == target).map(|x| (x.0 .1, x.1)).collect();
     base.sort_by_key(|x| x.0);
     let now: std::collections::HashMap<i64, Row> = function_grades(db)?.iter().cloned().map(|r| (r["addr"].as_i64().unwrap_or(0), r)).collect();
@@ -401,7 +401,7 @@ pub fn grades_accept(text: &str, target: &str, addr: i64, code: &str, readabilit
 }
 
 #[pyfunction]
-pub fn grades_regressions(target: &str, db: &str, text: &str) -> PyResult<Vec<String>> {
+pub fn grades_regressions(target: &str, db: &str, text: &str) -> Result<Vec<String>> {
     regressions(target, db, text)
 }
 
@@ -583,7 +583,7 @@ fn comment_line(r: &Row) -> i64 {
 
 /// Remove the level tag of every function that reached byte + readable; one line per change.
 #[pyfunction]
-pub fn grades_auto_clear(project: PyRef<'_, crate::project::PyProject>) -> PyResult<Vec<String>> {
+pub fn grades_auto_clear(project: PyRef<'_, crate::project::PyProject>) -> Result<Vec<String>> {
     let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];
@@ -591,7 +591,7 @@ pub fn grades_auto_clear(project: PyRef<'_, crate::project::PyProject>) -> PyRes
         let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let level = r.get("level").is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
         if level && s("code") == "byte" && s("readability") == "readable" {
-            let action = set_level(&root, &s("file"), None, None, comment_line(&r)).map_err(PyValueError::new_err)?;
+            let action = set_level(&root, &s("file"), None, None, comment_line(&r)).map_err(Error::value)?;
             out.push(format!("auto-clear {}: {} is byte + readable, {action}", s("file"), s("name")));
         }
     }
@@ -620,7 +620,7 @@ pub fn size_unexplained(ours: i64, orig: i64) -> Option<(i64, i64, i64)> {
 #[pyo3(signature = (project, level, name, clear, why, capstone=None, size_explained=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn level_command(project: PyRef<'_, crate::project::PyProject>, level: &str, name: &str, clear: bool, why: Option<String>,
-                     capstone: Option<String>, size_explained: Option<String>) -> PyResult<(Vec<String>, Option<String>, i32)> {
+                     capstone: Option<String>, size_explained: Option<String>) -> Result<(Vec<String>, Option<String>, i32)> {
     let p = &project.p;
     let Some(r) = crate::asmcmd::find_function(&p.store_path(), name)? else {
         return Ok((vec![], Some(format!("no graded function {name} (dcp build first)")), 1));
@@ -660,7 +660,7 @@ pub fn level_command(project: PyRef<'_, crate::project::PyProject>, level: &str,
             }
         }
         set_level(&root, &s("file"), Some(level), Some(&why), line)
-    }.map_err(PyValueError::new_err)?;
+    }.map_err(Error::value)?;
     let addr = r.get("addr").and_then(|v| v.as_i64()).unwrap_or(0);
     let rec = crate::cliread::record(&[("fn", crate::cliread::Tok::I(addr)), ("name", crate::cliread::Tok::S(s("name"))),
                                        ("file", crate::cliread::Tok::S(s("file"))), ("action", crate::cliread::Tok::S(action))]);

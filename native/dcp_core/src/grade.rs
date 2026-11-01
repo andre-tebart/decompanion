@@ -2,20 +2,19 @@
 //! sourced function from its compare and instruction diff (diffclass.rs), its readability (readability.rs), the
 //! unit grades.
 
+use crate::error::{Error, Result};
 use crate::diffclass::{self, Env, Verdict};
 use crate::readability::{self, Context, Source};
 use crate::rules::{compiled_functions, Ctx};
 use crate::store::{self, Out, SFact, DECLARED, PROVEN};
 use crate::image;
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
-fn err(e: rusqlite::Error) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: rusqlite::Error) -> Error {
+    Error::runtime(e.to_string())
 }
 
 pub(crate) const CODE: [&str; 3] = ["draft", "shape", "byte"];
@@ -136,7 +135,7 @@ fn compute_all(env: &Env, todo: &[Task], align: i64) -> Vec<(usize, Computed)> {
     })
 }
 
-pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = &ctx.inputs;
     let scan_defs = crate::srcscan::defs(&x.scan)?;
@@ -151,7 +150,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let fills: HashSet<Vec<u8>> = ctx.fill_forms.iter().cloned().collect();
     let forms = crate::compare::fill_order(&ctx.fill_forms);
     let env = Env { dll: &ctx.capstone, img: &img, range, fills: &fills, forms: &forms };
-    let e = |s: String| PyRuntimeError::new_err(s);
+    let e = |s: String| Error::runtime(s);
     let mut rows: Vec<Row> = vec![];
     let world = format!("{}|{}|{:?}|{}", ctx.image, ctx.capstone, ctx.fill_forms, x.function_alignment);
     let mut held = HELD.with(|h| std::mem::take(&mut *h.borrow_mut()));

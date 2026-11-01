@@ -7,6 +7,7 @@
 //! Reads give Store.facts' order: (lo, hi, the value's stored text), ties in run order, then row order.
 //! Also the output a native rule builds (facts and conflicts in record order).
 
+use crate::error::Result;
 use crate::{put_str, ConflictRow, Row};
 use rusqlite::Connection;
 use serde_json::Value;
@@ -99,7 +100,7 @@ pub fn runs_key(db: &Connection) -> rusqlite::Result<Vec<(i64, u64)>> {
 
 /// A value made from the store's current facts (`what` names it with everything else it depends on), made once per
 /// state of the current runs: a run's facts never change under its (id, time), so the same runs give the same value.
-pub fn derived<T: 'static>(db_path: &str, what: &str, make: impl FnOnce() -> pyo3::PyResult<T>) -> pyo3::PyResult<Rc<T>> {
+pub fn derived<T: 'static>(db_path: &str, what: &str, make: impl FnOnce() -> Result<T>) -> Result<Rc<T>> {
     let key = crate::with_db(db_path, |c| runs_key(c))?;
     let id = (db_path.to_string(), what.to_string());
     let hit = MADE.with(|m| m.borrow().get(&id).filter(|e| e.0 == key).and_then(|e| e.1.clone().downcast::<T>().ok()));

@@ -22,8 +22,8 @@
 //! the key is stale, and replace the target's drafts with what it returned. Our starts are the function starts in the
 //! code sections (every start fact but the analyzer's own, every walked or placed function; no inner label).
 
+use crate::error::{Error, Result};
 use crate::project::{py_path, sha256_parts, Project};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -37,8 +37,8 @@ const EXPORT: &str = "drafts.export";
 const STARTS: &str = "drafts.starts";
 const SCRIPT: (&str, &str) = ("DcpExport.java", include_str!("../../../src/decompanion/data/ghidra/DcpExport.java"));
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 fn posix(p: &str) -> String {
@@ -275,7 +275,7 @@ pub fn parse(path: &str, key: &str) -> Result<(String, Vec<Value>, Vec<String>),
 // ------------------------------------------------------------------------------------------------ the export in setup
 
 /// Our function starts in the code sections (module docs).
-fn our_starts(p: &Project, img: &crate::pe::Image) -> PyResult<Vec<i64>> {
+fn our_starts(p: &Project, img: &crate::pe::Image) -> Result<Vec<i64>> {
     let db = p.store_path();
     let code: Vec<(i64, i64)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va as i64, s.end() as i64)).collect();
     let (starts, syms) = crate::with_db(&db, |c| {
@@ -296,7 +296,7 @@ fn export_key(az: &Analyzer, sha: &str, starts: &[i64]) -> String {
 }
 
 /// Make these entries the store's drafts (every older draft of this store goes) and set meta `drafts`.
-fn replace(db: &str, sha: &str, entries: &[Value]) -> PyResult<usize> {
+fn replace(db: &str, sha: &str, entries: &[Value]) -> Result<usize> {
     crate::pystore::st_drop_blobs(db, KIND)?;
     let mut by_start: std::collections::BTreeMap<i64, &Value> = std::collections::BTreeMap::new();
     for e in entries {
@@ -314,12 +314,12 @@ fn replace(db: &str, sha: &str, entries: &[Value]) -> PyResult<usize> {
     Ok(by_start.len())
 }
 
-fn sha_of(p: &Project) -> PyResult<String> {
+fn sha_of(p: &Project) -> Result<String> {
     crate::fsmemo::sha256(&p.target(None).map_err(err)?.path).map_err(err)
 }
 
 /// up-to-date | stale | none (never exported).
-pub fn state(p: &Project) -> PyResult<String> {
+pub fn state(p: &Project) -> Result<String> {
     let db = p.store_path();
     let Some(have) = crate::pystore::st_meta(&db, EXPORT)? else { return Ok("none".into()) };
     let az = Analyzer::of(p).map_err(crate::project::cfg_err)?;

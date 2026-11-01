@@ -26,17 +26,17 @@
 //! preprocessed text (CL /E, before and after the write) differs only by the names keeps its object with the symbols
 //! renamed (compile.rs rename_after); a unit where a name is stringified, pasted or tested by #ifdef compiles.
 
+use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::edit::{self as E, Skip};
 use crate::names::Names;
 use crate::project::{py_path, Project};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 fn s(x: impl Into<String>) -> Tok {
@@ -242,7 +242,7 @@ struct Ctx<'a> {
 }
 
 /// One pair checked against the tree as it stands (nothing written): a plan, or (old, new, message) when refused.
-fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> PyResult<Result<Plan, Refusal>> {
+fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> Result<Result<Plan, Refusal>> {
     let refuse = |o: &str, m: String| Ok(Err((o.to_string(), new.to_string(), m)));
     let (_, addr) = old_arg.rsplit_once(':').unwrap_or(("", old_arg));
     let mut given = None;
@@ -396,7 +396,7 @@ fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
     Ok(())
 }
 
-fn errors_of(db: &str) -> PyResult<Vec<(String, String, i64, String)>> {
+fn errors_of(db: &str) -> Result<Vec<(String, String, i64, String)>> {
     Ok(crate::pystore::st_conflicts(db, None, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").map(|c| (c.0, c.1, c.2, c.4)).collect())
 }
 
@@ -405,7 +405,7 @@ fn errors_of(db: &str) -> PyResult<Vec<(String, String, i64, String)>> {
 /// before: only an error the rename brings is new and fails the call. (stdout lines, stderr lines, the exit status).
 #[pyfunction]
 pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<(String, String, String)>, rebuild: Bound<'_, PyAny>)
-    -> PyResult<(Vec<String>, Vec<String>, i32)> {
+    -> Result<(Vec<String>, Vec<String>, i32)> {
     let p = &project.p;
     let db = p.store_path();
     let main = p.main_uri();

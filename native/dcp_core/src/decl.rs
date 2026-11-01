@@ -3,10 +3,10 @@
 //!
 //! native_inputs of the rules: {"targets": [names, the default first], "target": the current one}.
 
+use crate::error::Result;
 use crate::image;
 use crate::rules::Ctx;
 use crate::store::Out;
-use pyo3::prelude::*;
 use regex::Regex;
 use rusqlite::Connection;
 use serde_json::json;
@@ -429,19 +429,19 @@ pub fn insert(path: &std::path::Path, d: &Decl, targets: &[String]) -> std::io::
 
 // ------------------------------------------------------------------------------------------------ the rules
 
-fn inputs(ctx: &Ctx) -> PyResult<(Vec<String>, String)> {
+fn inputs(ctx: &Ctx) -> Result<(Vec<String>, String)> {
     Ok((ctx.inputs.targets.clone(), ctx.inputs.target.clone()))
 }
 
 /// The declarations of the project (decl.load over decl/*.dcl).
-pub(crate) fn project_decls(ctx: &Ctx) -> PyResult<(Vec<Decl>, Vec<LoadError>, Vec<String>, String)> {
+pub(crate) fn project_decls(ctx: &Ctx) -> Result<(Vec<Decl>, Vec<LoadError>, Vec<String>, String)> {
     let (targets, target) = inputs(ctx)?;
     let (ds, es) = load(&files(&ctx.root), &ctx.root, &targets);
     Ok((ds, es, targets, target))
 }
 
 /// L.decl: every declaration line of the current target as one declared fact; the lines' errors.
-pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let (decls, errors, targets, target) = project_decls(ctx)?;
     let default = targets.first().cloned().unwrap_or_default();
@@ -531,7 +531,7 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
 }
 
 /// L.decl.start: the current target's `start` lines inside a code section, as declared starts.
-pub fn l_decl_start(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
+pub fn l_decl_start(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let (decls, _, targets, target) = project_decls(ctx)?;
     let default = targets.first().cloned().unwrap_or_default();

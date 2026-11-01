@@ -12,9 +12,9 @@
 //!         grades), renames, the boundary levels and status of every unit the session touched, the check before ->
 //!         after, the next item.
 
+use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, Tok};
 use crate::project::{py_path, Project};
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -23,8 +23,8 @@ use std::path::Path;
 /// The length of a session, in minutes.
 pub const MINUTES: i64 = 30;
 
-fn err(e: impl std::fmt::Display) -> PyErr {
-    PyRuntimeError::new_err(e.to_string())
+fn err(e: impl std::fmt::Display) -> Error {
+    Error::runtime(e.to_string())
 }
 
 fn s(x: impl Into<String>) -> Tok {
@@ -79,7 +79,7 @@ fn load(root: &str) -> Option<Value> {
 }
 
 /// The counts a session report compares: functions, units, grades, errors.
-fn state(p: &Project) -> PyResult<Value> {
+fn state(p: &Project) -> Result<Value> {
     let db = p.store_path();
     crate::pystore::st_open(&db, &p.main_uri())?;
     let rows = crate::queues::function_grades(&db)?;
@@ -103,7 +103,7 @@ pub fn session_state<'py>(py: Python<'py>, project: PyRef<'py, crate::project::P
 
 /// Record .dcp/session.json: the base commit, the start time, the states of the targets.
 #[pyfunction]
-pub fn session_save(root: &str, base: &str, states: &Bound<'_, PyAny>) -> PyResult<()> {
+pub fn session_save(root: &str, base: &str, states: &Bound<'_, PyAny>) -> Result<()> {
     let rec = json!({"base": base, "started": iso(now()), "states": crate::pystore::py_value(states)?});
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, serde_json::ser::PrettyFormatter::with_indent(b" "));
@@ -164,7 +164,7 @@ pub(crate) fn unit_rows(v: &crate::layoutview::View) -> Vec<UnitRow> {
 }
 
 /// The layout view of a target's store, made once per state of its current runs (and of the drafts it reads).
-pub(crate) fn view_of(p: &Project) -> PyResult<std::rc::Rc<crate::layoutview::View>> {
+pub(crate) fn view_of(p: &Project) -> Result<std::rc::Rc<crate::layoutview::View>> {
     let db = p.store_path();
     let main = p.main_uri();
     crate::pystore::st_open(&db, &main)?;
@@ -175,7 +175,7 @@ pub(crate) fn view_of(p: &Project) -> PyResult<std::rc::Rc<crate::layoutview::Vi
 
 /// The unit table summary, the first open function, the toolchain level and the analyzer of one target.
 #[pyfunction]
-pub fn session_overview(project: PyRef<'_, crate::project::PyProject>, analyzer: &str) -> PyResult<Vec<String>> {
+pub fn session_overview(project: PyRef<'_, crate::project::PyProject>, analyzer: &str) -> Result<Vec<String>> {
     let p = &project.p;
     let v = view_of(p)?;
     let rows = unit_rows(&v);
@@ -320,7 +320,7 @@ fn grade_changes(root: &str, base: &str, target: &str, rows: &[Map<String, Value
 #[pyo3(signature = (root, base, targets, states, promoted, refused, ok))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn session_report(root: &str, base: &str, targets: Vec<(String, PyRef<'_, crate::project::PyProject>, Option<bool>, Option<usize>)>,
-                      states: &Bound<'_, PyAny>, promoted: Option<String>, refused: bool, ok: bool) -> PyResult<String> {
+                      states: &Bound<'_, PyAny>, promoted: Option<String>, refused: bool, ok: bool) -> Result<String> {
     let rec = load(root).unwrap_or(json!({}));
     let states = crate::pystore::py_value(states)?;
     let c = changes(root, base).map_err(err)?;
