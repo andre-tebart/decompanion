@@ -1,35 +1,17 @@
-//! The names the ledger knows for addresses, as the reading and drafting commands spell them (dcp disasm, dump,
-//! refs, draft): one C name per address, chosen by a fixed order of origins, never guessed.
-//!
-//! Order (the first origin that names an address wins):
-//!   source   the definition in our sources (L.src: a sourced function, a data definition or extern)
-//!   decl     `ADDR name NAME` in decl/*.dcl
-//!   export   the export table (proven)
-//!   entry    the user entry the start-up code calls (S.entry.user: DllMain, WinMain, main)
-//!   lib      a placed library member's symbol (S.crt.code / S.crt.refs / S.crt.data), undecorated by the
-//!            toolchain (`_fclose` -> fclose); of `a|b` aliases (members with identical bytes) the one a lib name
-//!            of its own names (S.crt.refs: the library's relocations call `_memmove`, not `_memcpy`), else the
-//!            first in sorted order
-//!   import   an import slot (`KERNEL32.dll!GetTickCount` -> GetTickCount) and the import thunk that jumps through
-//!            it (`thunk:WS2_32.dll!#3`: by ordinal, no name)
-//!   analyzer the name the analyzer gave a function it found (its drafts, `dcp setup`), unless the analyzer calls
-//!            it one of its own placeholders (Ghidra's dialect, Ghidra's drafts: FUN_, thunk_FUN_, LAB_,
-//!            SUB_, DAT_, PTR_ and a hex number)
-//! A thunk or slot imported by ordinal takes the analyzer's name for it when there is one.
+//! The names the reading and drafting commands spell addresses with (dcp disasm, dump, refs, draft, asmdiff): φ
+//! (phi.rs) as a display, one C name per address, chosen by φ's order of origins (source, decl, export, entry, lib,
+//! import, analyzer: the first that names an address wins), never guessed. Of a fold `a|b` (library members with
+//! identical bytes) the name a lib name of its own names wins (S.crt.refs: the library's relocations call
+//! `_memmove`, not `_memcpy`), else the first in sorted order. An import by ordinal has no name; its thunk or slot
+//! takes the analyzer's when there is one.
 
 use crate::error::Result;
+use crate::phi::{Origin, Phi};
 use crate::store::{self, Claim};
 use crate::with_db;
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
-
-const ORDER: [&str; 7] = ["source", "decl", "export", "entry", "lib", "import", "analyzer"];
-
-fn is_ident(s: &str) -> bool {
-    let mut c = s.chars();
-    c.next().is_some_and(|f| f.is_ascii_alphabetic() || f == '_') && c.all(|x| x.is_alphanumeric() || x == '_')
-}
 
 /// Whether an analyzer calls a name one of its own placeholders.
 pub fn analyzer_placeholder(analyzer: &str, name: &str) -> bool {
@@ -63,14 +45,15 @@ pub fn draft_values(db: &rusqlite::Connection, main: &str) -> rusqlite::Result<V
     Ok(by_start.into_values().collect())
 }
 
+
 /// The size from which a data object can be an array or a record a loop runs over to its end (Names::end_label).
 const END_MIN: i64 = 0x10;
 
-/// address -> (C name, origin), name -> addresses; the symbols for annotation.
+/// φ with the symbols, for annotation.
 pub struct Names {
-    pub(crate) at: HashMap<i64, (String, String)>,
-    pub(crate) all_at: HashMap<i64, Vec<(String, String)>>,
-    pub(crate) by_name: Vec<(String, Vec<i64>)>,
+    pub phi: Phi,
+    /// a shown name -> the addresses φ gives it (any origin, the analyzer's too), sorted
+    shown: HashMap<String, Vec<i64>>,
     syms: Vec<Rc<Claim>>,
     image: String,
     db: String,
@@ -85,71 +68,42 @@ impl Names {
             let symbols = store::claims_of(db, db_path, "symbol", None, |f| !f.rule.starts_with("M."))?;
             Ok((names, symbols, draft_values(db, main)?))
         })?;
-        // within an origin, a lib name chosen from an alias set (`_memcpy|_memmove`: members with identical bytes)
-        // ranks after a lib name that stands alone (S.crt.refs: the library's own relocations name the member)
-        let rank = |o: &str| 2 * ORDER.iter().position(|x| *x == o).unwrap_or(ORDER.len());
-        let mut order: Vec<i64> = vec![];
-        let mut cands: HashMap<i64, Vec<(usize, String, String)>> = HashMap::new();
-        let mut add = |a: i64, c: (usize, String, String)| {
-            cands.entry(a).or_insert_with(|| {
-                order.push(a);
-                vec![]
-            }).push(c);
-        };
-        for f in &names {
-            let origin = f.s("origin").unwrap_or("").to_string();
-            let raw = f.s("name").unwrap_or("");
-            let name = match origin.as_str() {
-                "lib" => {
-                    let mut ns: Vec<String> = raw.split('|').map(crate::coff::undecorate).collect();
-                    ns.sort();
-                    Some(ns.swap_remove(0))
+        let phi = Phi::new(&names, &drafts);
+        let mut shown: HashMap<String, Vec<i64>> = HashMap::new();
+        for a in phi.addrs() {
+            for e in phi.ranked(a) {
+                let v = shown.entry(e.name.clone()).or_default();
+                if !v.contains(&a) {
+                    v.push(a);
                 }
-                "import" => {
-                    let tail = raw.split_once('!').map(|x| x.1).unwrap_or(raw);
-                    (!tail.starts_with('#')).then(|| tail.to_string())
-                }
-                _ => Some(raw.to_string()),
-            };
-            if let Some(n) = name.filter(|n| is_ident(n)) {
-                let chosen = origin == "lib" && raw.contains('|');
-                add(f.lo, (rank(&origin) + chosen as usize, n, origin));
             }
         }
-        for v in &drafts {
-            let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("");
-            let az = v.get("analyzer").and_then(|x| x.as_str()).unwrap_or("");
-            if !name.is_empty() && !analyzer_placeholder(az, name) && is_ident(name) {
-                add(v["start"].as_i64().unwrap_or(0), (rank("analyzer"), name.to_string(), "analyzer".to_string()));
-            }
-        }
-        let mut at = HashMap::new();
-        let mut all_at = HashMap::new();
-        let mut by_name: Vec<(String, Vec<i64>)> = vec![];
-        let mut by_name_ix: HashMap<String, usize> = HashMap::new();
-        for a in &order {
-            let cs = cands.get_mut(a).unwrap();
-            cs.sort();
-            at.insert(*a, (cs[0].1.clone(), cs[0].2.clone()));
-            for (_, n, _) in cs.iter() {
-                let i = *by_name_ix.entry(n.clone()).or_insert_with(|| {
-                    by_name.push((n.clone(), vec![]));
-                    by_name.len() - 1
-                });
-                if !by_name[i].1.contains(a) {
-                    by_name[i].1.push(*a);
-                }
-            }
-            let set: BTreeSet<(String, String)> = cs.iter().map(|(_, n, o)| (n.clone(), o.clone())).collect();
-            all_at.insert(*a, set.into_iter().collect());
+        for v in shown.values_mut() {
+            v.sort_unstable();
         }
         let mut syms = symbols;
         syms.sort_by_key(|f| (f.lo, f.hi));
-        Ok(Names { at, all_at, by_name, syms, image: image.to_string(), db: db_path.to_string(), objects: std::cell::OnceCell::new() })
+        Ok(Names { phi, shown, syms, image: image.to_string(), db: db_path.to_string(), objects: std::cell::OnceCell::new() })
     }
 
+    /// The name a display gives an address.
     pub fn name_of(&self, a: i64) -> Option<&str> {
-        self.at.get(&a).map(|x| x.0.as_str())
+        self.phi.display(a).map(|e| e.name.as_str())
+    }
+
+    /// Where that name comes from.
+    pub fn origin_of(&self, a: i64) -> Option<Origin> {
+        self.phi.display(a).map(|e| e.origin)
+    }
+
+    /// Every name a display could give an address, best first.
+    pub fn names_at(&self, a: i64) -> Vec<String> {
+        self.phi.ranked(a).into_iter().map(|e| e.name.clone()).collect()
+    }
+
+    /// The addresses a name spells (any origin), sorted; empty when it names nothing.
+    pub fn addrs_of(&self, name: &str) -> &[i64] {
+        self.shown.get(name).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     pub fn symbol_at(&self, a: i64) -> Option<&Rc<Claim>> {
@@ -249,6 +203,6 @@ mod tests {
         assert!(!analyzer_placeholder("ghidra", "FUN_"));
         assert!(!analyzer_placeholder("ghidra", "net_Send"));
         assert!(!analyzer_placeholder("none", "FUN_10001000"));
-        assert!(is_ident("_f1") && !is_ident("1f") && !is_ident("a-b"));
+        assert!(crate::phi::is_ident("_f1") && !crate::phi::is_ident("1f") && !crate::phi::is_ident("a-b"));
     }
 }

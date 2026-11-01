@@ -541,8 +541,31 @@ fn value_line(img: &crate::pe::Image, a: i64, owner_hi: i64) -> Option<String> {
     Some(format!("  {}", record(&toks)))
 }
 
-/// `dcp why ADDR|NAME...`: everything known about an address: the byte map row, the value of a datum (value_line),
-/// every fact that covers it, references to and from it. Exit 1 when a name is unknown.
+/// The findings whose range holds an address.
+fn findings_at(db: &str, a: i64) -> Result<Vec<FindingRow>> {
+    with_db(db, |c| {
+        let mut st = c.prepare_cached("SELECT c.severity, c.check_id, c.lo, c.hi, c.message, c.a, c.b FROM finding c JOIN run r ON r.id=c.run_id \
+                                       WHERE r.current=1 AND c.lo<=? AND ?<c.hi ORDER BY c.lo, c.hi, c.check_id, c.message")?;
+        let rows = st.query_map([a, a], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?;
+        rows.collect()
+    })
+}
+
+/// One stored row at an address as `dcp why` prints it (the toolchain's Rich candidates and probe summarised).
+fn why_line(k: &str, f: &Claim) -> String {
+    if k == "toolchain" && f.value.get("compilers").is_some() {
+        let n = |x: &str| f.value.get(x).and_then(|v| v.as_array()).map_or(0, |a| a.len());
+        return format!("{}  toolchain  compilers={}  linkers={}  (dcp toolchain)  {}  by={}", fmt_range(f.lo, f.hi), n("compilers"), n("linkers"),
+                       level(f.support), f.by);
+    }
+    fact_line(k, f)
+}
+
+/// `dcp why ADDR|NAME...`: everything known about an address (the project's question: what is here?): the answer
+/// row, the value of a datum (value_line), then per question the claims covering it, the answer first and the
+/// claims stacked under it after (docs/mental-model.md §3), φ at the address (the objects of H there), what is no
+/// claim (experiments, builds, intermediate results), the findings touching it, references to and from it. Exit 1
+/// when a name is unknown.
 pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -> Result<Out> {
     let db = opened(p)?;
     let img = checked_image(p)?;
@@ -550,6 +573,7 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
     let mut out = vec![];
     let mut missing = 0;
     let mut ref_facts: Option<store::Claims> = None;
+    let mut phi: Option<crate::phi::Phi> = None;
     for key in &keys {
         let a = match parse_addr(key) {
             Ok(a) => a,
@@ -571,28 +595,48 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
             Some(sec) => format!("  section={}  off=+{:#x}", sec.name, a - sec.va as i64),
             None => "  (headers)".into(),
         };
-        out.push(format!("addr={}  target={t}{off}  owner={cls}  support={}  owner={}", fmt_addr(a), level(lvl), fmt_range(lo, hi)));
+        out.push(format!("addr={}  target={t}{off}  owner={cls}  support={}  run={}", fmt_addr(a), level(lvl), fmt_range(lo, hi)));
         if let Some(line) = value_line(&img, a, hi) {
             out.push(line);
         }
         let facts = facts_in(&db, None, a, a + 1)?;
-        let mut probed: Vec<&Claim> = facts.iter().filter(|(k, f)| k == "toolchain" && f.value.get("flag").is_some()).map(|x| &x.1).collect();
-        if let Some(first) = probed.first().copied() {
-            probed.sort_by(|x, y| py_str(&x.value["group"]).cmp(&py_str(&y.value["group"])));
-            out.push(format!("  {}  toolchain probe  {}  (dcp toolchain)  by={}", fmt_range(first.lo, first.hi),
-                             probed.iter().map(|f| format!("{}={}", py_str(&f.value["flag"]), level(f.support))).collect::<Vec<_>>().join(" "), first.by));
+        // per question: the answer (highest support, then the narrowest claim) first, the claims stacked under it after
+        for q in crate::store::Question::ALL {
+            let mut cs: Vec<&(String, Claim)> = facts.iter().filter(|(k, _)| q.kinds().contains(&k.as_str()))
+                .filter(|(k, f)| !(k == "toolchain" && f.value.get("flag").is_some())).collect();
+            cs.sort_by(|x, y| y.1.support.cmp(&x.1.support).then((x.1.hi - x.1.lo).cmp(&(y.1.hi - y.1.lo))));
+            for (i, (k, f)) in cs.iter().enumerate() {
+                out.push(format!("  {:<9} {:<7} {}", if i == 0 { q.name() } else { "" }, if i == 0 { "answer" } else { "stacked" }, why_line(k, f)));
+            }
+            if q == crate::store::Question::Toolchain {
+                let mut probed: Vec<&Claim> = facts.iter().filter(|(k, f)| k == "toolchain" && f.value.get("flag").is_some()).map(|x| &x.1).collect();
+                if let Some(first) = probed.first().copied() {
+                    probed.sort_by(|x, y| py_str(&x.value["group"]).cmp(&py_str(&y.value["group"])));
+                    out.push(format!("  {:<9} {:<7} {}  toolchain probe  {}  (dcp toolchain)  by={}", if cs.is_empty() { "toolchain" } else { "" }, "probe",
+                                     fmt_range(first.lo, first.hi),
+                                     probed.iter().map(|f| format!("{}={}", py_str(&f.value["flag"]), level(f.support))).collect::<Vec<_>>().join(" "), first.by));
+                }
+            }
         }
-        for (k, f) in &facts {
-            if k == "toolchain" && f.value.get("flag").is_some() {
-                continue;
+        // φ: the objects of H at this address (and at the start of the object holding it)
+        if phi.is_none() {
+            let names = with_db(&db, |c| store::claims_of(c, &db, "name", None, |_| true))?;
+            phi = Some(crate::phi::Phi::new(&names, &[]));
+        }
+        let ph = phi.as_ref().unwrap();
+        for at in [Some(a), sym.map(|_| lo).filter(|&l| l != a)].into_iter().flatten() {
+            for e in ph.at(at) {
+                let off = if at == a { String::new() } else { format!("  (holds {} at +{:#x})", fmt_addr(a), a - at) };
+                out.push(format!("  {:<9} {:<7} {}  {}  origin={}  {}  by={}{}{off}", "phi", "", fmt_addr(at), e.name, e.origin.name(), e.support, e.by,
+                                 e.view.as_ref().map(|v| format!("  view={v}")).unwrap_or_default()));
             }
-            if k == "toolchain" && f.value.get("compilers").is_some() {
-                let n = |x: &str| f.value.get(x).and_then(|v| v.as_array()).map_or(0, |a| a.len());
-                out.push(format!("  {}  toolchain  compilers={}  linkers={}  (dcp toolchain)  {}  by={}", fmt_range(f.lo, f.hi), n("compilers"),
-                                 n("linkers"), level(f.support), f.by));
-                continue;
-            }
-            out.push(format!("  {}", fact_line(k, f)));
+        }
+        // the rows that are no claims about I
+        for (k, f) in facts.iter().filter(|(k, _)| !matches!(crate::store::role(k), crate::store::Role::Claim(_) | crate::store::Role::Phi)) {
+            out.push(format!("  {:<9} {:<7} {}", role_name(k), "", why_line(k, f)));
+        }
+        for c in findings_at(&db, a)? {
+            out.push(format!("  {:<9} {:<7} {}", "finding", "", finding_line(&c)));
         }
         let (mut to, mut from): (Vec<Rc<Claim>>, Vec<(String, Claim)>) = (vec![], vec![]);
         if let Some((_, symf)) = sym.map(|id| fact_by_id(&db, id)).transpose()?.flatten() {
@@ -620,7 +664,66 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
     Ok((out, None, if missing > 0 { 1 } else { 0 }))
 }
 
-/// `dcp facts RANGE [--kind K] [--json]`.
+/// `dcp phi [ADDR|NAME] [--many]`: φ at an address (its objects of H), of a name (its addresses), or a summary (the
+/// entries per origin); `--many` the addresses where φ is many-to-one with the reason, `reason=none` where nothing
+/// explains it (ill-formed: C.name.alias, N2). Exit 1 when a name is unknown.
+pub fn phi_command(p: &crate::project::Project, key: Option<String>, many: bool) -> Result<Out> {
+    let db = opened(p)?;
+    let main = p.main_uri();
+    let (names, drafts) = with_db(&db, |c| Ok((store::claims_of(c, &db, "name", None, |_| true)?, crate::names::draft_values(c, &main)?)))?;
+    let phi = crate::phi::Phi::new(&names, &drafts);
+    let t = &p.target_name;
+    let entry = |e: &crate::phi::Entry| {
+        let mut toks = vec![("addr", s(fmt_addr(e.addr))), ("name", s(e.name.clone())), ("origin", s(e.origin.name())), ("support", s(e.support.name())),
+                            ("by", s(e.by.clone()))];
+        if e.raw != e.name {
+            toks.push(("raw", s(e.raw.clone())));
+        }
+        if let Some(v) = &e.view {
+            toks.push(("view", s(v.clone())));
+        }
+        format!("  {}", record(&toks))
+    };
+    let mut out = vec![];
+    if many {
+        let m = phi.many();
+        out.push(record(&[("target", s(t.clone())), ("many", Tok::I(m.len() as i64)),
+                          ("unexplained", Tok::I(m.iter().filter(|(_, es)| crate::phi::Phi::many_reason(es).is_none()).count() as i64))]));
+        for (a, es) in &m {
+            out.push(record(&[("addr", s(fmt_addr(*a))), ("objects", s(es.iter().map(|e| e.name.as_str()).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join(","))),
+                              ("reason", s(crate::phi::Phi::many_reason(es).unwrap_or("none")))]));
+            out.extend(es.iter().map(|e| entry(e)));
+        }
+        return Ok((out, None, 0));
+    }
+    let Some(key) = key.filter(|k| !k.is_empty()) else {
+        let mut n: BTreeMap<crate::phi::Origin, usize> = BTreeMap::new();
+        for e in &phi.entries {
+            *n.entry(e.origin).or_default() += 1;
+        }
+        let mut toks = vec![("target", s(t.clone())), ("entries", Tok::I(phi.entries.len() as i64)), ("addresses", Tok::I(phi.addrs().count() as i64))];
+        toks.extend(n.iter().map(|(o, c)| (o.name(), Tok::I(*c as i64))));
+        out.push(record(&toks));
+        return Ok((out, None, 0));
+    };
+    if let Ok(a) = parse_addr(&key) {
+        let es: Vec<&crate::phi::Entry> = phi.at(a).collect();
+        out.push(record(&[("target", s(t.clone())), ("addr", s(fmt_addr(a))), ("objects", Tok::I(es.len() as i64)),
+                          ("shown", os(phi.display(a).map(|e| e.name.clone())))]));
+        out.extend(es.iter().map(|e| entry(e)));
+        return Ok((out, None, 0));
+    }
+    let es: Vec<&crate::phi::Entry> = phi.entries.iter().filter(|e| e.name == key || e.raw == key).collect();
+    if es.is_empty() {
+        out.push(record(&[("target", s(t.clone())), ("name", s(key.clone()))]) + "  unknown (φ has no object of this name)");
+        return Ok((out, None, 1));
+    }
+    let addrs: BTreeSet<i64> = es.iter().map(|e| e.addr).collect();
+    out.push(record(&[("target", s(t.clone())), ("name", s(key.clone())), ("addresses", s(addrs.iter().map(|a| fmt_addr(*a)).collect::<Vec<_>>().join(",")))]));
+    out.extend(es.iter().map(|e| entry(e)));
+    Ok((out, None, 0))
+}
+
 /// `dcp claims RANGE [--question Q] [--kind K] [--support S] [--json]`: the stored kinds of a range, a claim's with
 /// the question it answers (φ entries, experiments, builds and intermediate results say what they are instead).
 pub fn claims_command(p: &crate::project::Project, range: &str, question: Option<crate::store::Question>, kind: Option<String>,

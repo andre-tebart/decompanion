@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use crate::compare::{compare, Compared};
-use crate::store::{self, Out, Claim, Support, DECLARED, DERIVED, OPEN};
+use crate::store::{self, Out, Claim, DECLARED, DERIVED, OPEN};
 use crate::{image, with_conn};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -418,7 +418,7 @@ pub(crate) fn constant_mismatches(img: &crate::pe::Image, x: &Compiled, aligned:
 fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let (funcs, _) = compiled_functions(ctx, db)?;
-    let (by_name, by_addr) = name_registry(ctx, db)?;
+    let phi = phi_of(ctx, db)?;
     for x in &funcs {
         if !(x.c.matched() || (x.c.abs_image.is_some() && x.c.aid_ok())) {
             continue;
@@ -446,16 +446,13 @@ fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(x.code.secnum, r)) else { continue };
             let linker = target.name.strip_prefix("__imp_").unwrap_or(&target.name);
             let cname = crate::coff::undecorate(linker);
-            let Some(regs) = by_name.get(&cname) else { continue };
+            let Some(regs) = phi.of(&cname) else { continue };
             if regs.is_empty() || regs.contains_key(&(to as i64)) {
                 continue;
             }
             let (b, lvl) = regs.iter().next().unwrap();
-            let others = by_addr.get(&(to as i64)).map(|s| s.iter().cloned().collect::<Vec<_>>().join(", "));
-            let others = match others {
-                Some(o) if !o.is_empty() => o,
-                _ => "nothing registered".to_string(),
-            };
+            let others = phi.names_at(to as i64).into_iter().collect::<Vec<_>>().join(", ");
+            let others = if others.is_empty() { "nothing registered".to_string() } else { others };
             let sev = if lvl.is_top() { "bug" } else { "error" };
             let msg = format!("{symbol} at {:#x}: our object references {cname} (registered at {:#x}) where the original's site \
                                refers to {:#x} ({others})", x.src.lo, b, to);
@@ -583,28 +580,10 @@ fn m_lint(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 
 // ------------------------------------------------------------------------------------------------ data rules
 
-type Registry = (HashMap<String, std::collections::BTreeMap<i64, Support>>, HashMap<i64, std::collections::BTreeSet<String>>);
-
-/// match.name_registry: C name -> {address: the producer's best level}, address -> {C names}.
-fn name_registry(ctx: &Ctx, db: &Connection) -> Result<Registry> {
-    let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
-    let mut by_name: HashMap<String, std::collections::BTreeMap<i64, Support>> = HashMap::new();
-    let mut by_addr: HashMap<i64, std::collections::BTreeSet<String>> = HashMap::new();
-    for f in store::claims(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?.iter() {
-        let raw = f.s("name").unwrap_or("");
-        let origin = f.s("origin");
-        for n in raw.split('|') {
-            let n = match origin {
-                Some("import") => n.split_once('!').map(|x| x.1).unwrap_or(n).to_string(),
-                Some("lib") => crate::coff::undecorate(n),
-                _ => n.to_string(),
-            };
-            let e = by_name.entry(n.clone()).or_default().entry(f.lo).or_insert(OPEN);
-            *e = (*e).max(f.support);
-            by_addr.entry(f.lo).or_default().insert(n);
-        }
-    }
-    Ok((by_name, by_addr))
+/// φ as this rule sees it: from the `name` claims of the rules it needs.
+fn phi_of(ctx: &Ctx, db: &Connection) -> Result<crate::phi::Phi> {
+    let names = store::claims(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(|e| Error::runtime(format!("{}: {e}", ctx.db)))?;
+    Ok(crate::phi::Phi::new(&names, &[]))
 }
 
 /// One data definition of the sources with an address (match_data.data_objects): its L.src fact, its unit's
@@ -1034,7 +1013,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
     }
     // D8: the original's code proves a range one object (S.extent): one declaration must hold all of it
-    let (by_name, by_addr) = name_registry(ctx, db)?;
+    let phi = phi_of(ctx, db)?;
     let ev: Vec<ExtentEv> = store::claims(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("extent")).map_err(err)?
         .iter()
         .map(|f| {
@@ -1047,7 +1026,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                                                       name: d.f.s("symbol").unwrap_or("").to_string(), by: d.f.by.clone(),
                                                       unit: d.f.s("unit").unwrap_or("").to_string(), kind: d.kind().unwrap_or("").to_string() }))
         .collect();
-    let named = |a: i64| by_addr.get(&a).and_then(|s| s.iter().next().cloned());
+    let named = |a: i64| phi.names_at(a).into_iter().next();
     for (sev, lo, hi, msg, by) in d8(&decls, &ev, named) {
         out.finding(sev, "D8", lo, hi, msg, &by);
     }
@@ -1097,12 +1076,12 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             let site = (d.f.lo as u32).wrapping_add(r.offset - sym.value);
             let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(sym.secnum as usize, r)) else { continue };
             let cname = crate::coff::undecorate(t.name.strip_prefix("__imp_").unwrap_or(&t.name));
-            let Some(regs) = by_name.get(&cname) else { continue };
+            let Some(regs) = phi.of(&cname) else { continue };
             if regs.is_empty() || regs.contains_key(&(to as i64)) {
                 continue;
             }
             let (b, lvl) = regs.iter().next().unwrap();
-            let others = by_addr.get(&(to as i64)).map(|s| s.iter().cloned().collect::<Vec<_>>().join(", ")).unwrap_or_default();
+            let others = phi.names_at(to as i64).into_iter().collect::<Vec<_>>().join(", ");
             let others = if others.is_empty() { "nothing registered".to_string() } else { others };
             out.finding(if lvl.is_top() { "bug" } else { "error" }, "D6", site as i64, (site + width) as i64,
                          format!("{} +{:#x}: our entry refers to {cname} (registered at {:#x}), the original's to {:#x} ({others})",

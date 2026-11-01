@@ -82,7 +82,7 @@ fn reloc_val(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crate
         }
         _ => {
             let cname = crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name));
-            let mut at: Vec<i64> = names.by_name.iter().find(|(n, _)| *n == cname).map(|(_, a)| a.clone()).unwrap_or_default();
+            let mut at: Vec<i64> = names.addrs_of(&cname).to_vec();
             if let Some(v) = crate::srcscan::placeholder_whole(&cname) {
                 at.push(v as i64);
             }
@@ -149,7 +149,7 @@ fn reloc_name(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crat
         }
         _ => {
             let cname = crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name));
-            if let Some(t) = to.filter(|&t| names.by_name.iter().any(|(n, at)| *n == cname && at.contains(&(t as i64)))) {
+            if let Some(t) = to.filter(|&t| names.addrs_of(&cname).contains(&(t as i64))) {
                 return theirs(t);
             }
             crate::coff::undecorate(&sym.name)

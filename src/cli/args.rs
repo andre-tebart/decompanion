@@ -73,6 +73,14 @@ pub enum Cmd {
     },
     /// the answers of a range: per run of bytes the owner at its highest support, its unit and section
     Answers { range: Option<String> },
+    /// φ, the correspondence: an address's objects of H, a name's addresses; without either a summary
+    Phi {
+        #[arg(value_name = "ADDR|NAME")]
+        key: Option<String>,
+        /// the addresses where φ is many-to-one, each with the reason the toolchain gives (or none)
+        #[arg(long)]
+        many: bool,
+    },
     /// the findings: contradictions, ill-formed H or φ, gaps, stale results, debt
     Findings {
         /// contradiction, ill-formed, gap, stale, debt

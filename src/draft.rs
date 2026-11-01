@@ -104,7 +104,7 @@ impl Ctx<'_> {
     }
 
     fn origin(&self, a: i64) -> Option<&str> {
-        self.names.at.get(&a).map(|x| x.1.as_str())
+        self.names.origin_of(a).map(|o| o.name())
     }
 
     fn unit_at(&self, a: i64) -> Option<&crate::layout::Unit> {
@@ -155,7 +155,7 @@ impl Ctx<'_> {
             if keywords.contains(&n) || n == own || uses.contains_key(n) {
                 continue;
             }
-            let hit = self.names.by_name.iter().find(|x| x.0 == n).and_then(|x| x.1.iter().min().copied());
+            let hit = self.names.addrs_of(n).first().copied();
             let Some(a) = hit.or_else(|| crate::srcscan::placeholder_whole(n).map(|v| v as i64)) else { continue };
             uses.insert(n.to_string(), (a, self.is_start(a), types.get(&a).cloned().unwrap_or_else(|| d.unknown_data_type().to_string())));
         }

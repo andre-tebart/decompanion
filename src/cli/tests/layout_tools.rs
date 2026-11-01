@@ -44,6 +44,17 @@ fn disasm_dump_refs() {
     assert!(out.contains("instructions=2") && out.contains("mov eax, dword ptr [0x10002000]"), "{out}");
     let (code, out) = dcp(&t, &["why", "GetCounter"]); // why takes a name too
     assert!(code == 0 && out.starts_with("addr=0x10001020") && out.contains("owner=func"), "{out}");
+    // grouped by question: the answer first, the claims stacked under it after; φ names the object of H there
+    let line = |q: &str| out.lines().find(|l| l.trim_start().starts_with(q)).unwrap_or("").to_string();
+    assert!(line("owner").contains("answer") && line("start").contains("answer") && line("section").contains("answer"), "{out}");
+    assert!(out.lines().any(|l| l.trim_start().starts_with("phi") && l.contains("GetCounter") && l.contains("origin=decl")), "{out}");
+    let (code, out) = dcp(&t, &["phi", "GetCounter"]);
+    assert!(code == 0 && out.contains("addresses=0x10001020") && out.contains("origin=decl") && out.contains("support=declared"), "{out}");
+    let (code, out) = dcp(&t, &["phi", "0x10001020"]);
+    assert!(code == 0 && out.contains("objects=1") && out.contains("shown=GetCounter"), "{out}");
+    let (code, out) = dcp(&t, &["phi"]);
+    assert!(code == 0 && out.contains("decl=1"), "{out}");
+    assert_eq!(dcp(&t, &["phi", "NoSuchName"]).0, 1);
     let (code, out) = dcp(&t, &["why", "NoSuchName"]);
     assert!(code == 1 && out.contains("name=NoSuchName") && out.contains("unknown"), "{out}");
     let (code, out) = dcp(&t, &["why", "0x10002000"]); // a datum shows its value

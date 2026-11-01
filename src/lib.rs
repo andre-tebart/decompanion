@@ -54,6 +54,7 @@ mod names;
 mod layout;
 mod layoutview;
 mod pe;
+mod phi;
 mod plan;
 mod probe;
 mod project;

@@ -173,8 +173,8 @@ impl<'a> Reader<'a> {
         if k.to_lowercase().starts_with("0x") {
             return parse_addr(k).map(Some);
         }
-        if let Some((_, hits)) = self.names.by_name.iter().find(|x| x.0 == k) {
-            return Ok(hits.iter().min().copied());
+        if let Some(a) = self.names.addrs_of(k).first() {
+            return Ok(Some(*a));
         }
         Ok(crate::srcscan::placeholder_whole(k).map(|v| v as i64))
     }
@@ -409,7 +409,7 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
             idents.insert(what.to_string());
         }
         Some(a) => {
-            idents.extend(r.names.all_at.get(&a).into_iter().flatten().map(|x| x.0.clone()));
+            idents.extend(r.names.names_at(a));
             if !what.to_lowercase().starts_with("0x") {
                 idents.insert(what.to_string());
             }
@@ -423,7 +423,7 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
             };
             let unit = r.facts_in("unit", a, a + 1)?.into_iter().find(|f| f.value.get("status").is_some());
             out.push(record(&[("target", s(target)), ("refs", s(what)), ("address", Tok::I(a)), ("name", os(r.name(a))),
-                              ("origin", os(r.names.at.get(&a).map(|x| x.1.clone()))), ("symbol", os(sym.as_ref().and_then(|f| f.s("skind").map(|x| x.to_string())))),
+                              ("origin", os(r.names.origin_of(a).map(|o| o.name()))), ("symbol", os(sym.as_ref().and_then(|f| f.s("skind").map(|x| x.to_string())))),
                               ("extent", sym.as_ref().map(|f| Tok::R(f.lo, f.hi)).unwrap_or(Tok::No)),
                               ("support", os(sym.as_ref().map(|f| f.support.name()))), ("unit", os(unit.as_ref().and_then(|f| f.s("tu").map(|x| x.to_string()))))]));
             if let Some(f) = &src {

@@ -977,7 +977,7 @@ fn call_class(text: Option<&str>, line: i64, callee: &str, decl: Option<&crate::
 /// the start) and the `add esp, N` right after it.
 fn call_evidence(x: &Ctx, capstone: &str, names: &crate::names::Names, func: Option<i64>, callee: Option<&str>) -> Result<Vec<String>> {
     let (Some(func), Some(callee)) = (func, callee) else { return Ok(vec![]) };
-    let Some(to) = names.by_name.iter().find(|n| n.0 == callee).and_then(|n| n.1.iter().min().copied()) else {
+    let Some(to) = names.addrs_of(callee).first().copied() else {
         return Ok(vec![format!("{callee}: no address known")]);
     };
     let db = x.p.store_path();

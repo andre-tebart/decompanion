@@ -40,6 +40,11 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let l = crate::clicmd::answers_command(&p, range)?;
             Ok(io.report("answers", &l, None, 0))
         }
+        Cmd::Phi { key, many } => {
+            let p = refreshed(io, sel, None)?;
+            let (l, e, c) = crate::clicmd::phi_command(&p, key, many)?;
+            Ok(io.report("phi", &l, e.as_deref(), c))
+        }
         Cmd::Findings { category, severity, json } => {
             let p = refreshed(io, sel, None)?;
             let l = crate::clicmd::findings_command(&p, category, severity.map(|s| s.as_str().to_string()), json)?;

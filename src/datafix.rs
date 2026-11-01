@@ -909,8 +909,8 @@ pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool
             out.push(format!("  {}", record(&[("unit", s(u)), ("defs", Tok::I(defs.len() as i64)),
                                               ("externs", Tok::I(ds.iter().filter(|d| d.kind == "extern").count() as i64)), ("data", Tok::I(sec("data"))),
                                               ("rdata", Tok::I(sec("rdata"))), ("bss", Tok::I(sec("bss"))), ("common", Tok::I(sec("common"))),
-                                              ("reproduced", Tok::I(defs.iter().filter(|d| (d.level == "reproduced" || d.level == "observed")).count() as i64)),
-                                              ("conflicts", if checks.is_empty() { Tok::No } else { s(checks) })])));
+                                              ("reproduced", Tok::I(defs.iter().filter(|d| d.level == "reproduced" || d.level == "observed").count() as i64)),
+                                              ("findings", if checks.is_empty() { Tok::No } else { s(checks) })])));
         }
         return Ok((out, 0));
     };

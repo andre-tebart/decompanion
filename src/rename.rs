@@ -262,7 +262,7 @@ fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> Result<Resul
     if old == new {
         return refuse(&old, format!("OLD and NEW are the same name {old}"));
     }
-    let hits = x.names.by_name.iter().find(|n| n.0 == old).and_then(|n| n.1.iter().min().copied());
+    let hits = x.names.addrs_of(&old).first().copied();
     let a = given.or(hits).or_else(|| crate::srcscan::placeholder_whole(&old).map(|v| v as i64));
     let mut kind = "ident";
     if let Some(a) = a {
@@ -280,7 +280,7 @@ fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> Result<Resul
     let mut plan = Plan { old: old.clone(), new: new.to_string(), why: why.to_string(), a, kind, decls, recorded: false, used, skip: None,
                           files: BTreeMap::new(), decl_lines: 0, lines: BTreeMap::new(), comments: vec![] };
     if plan.used.is_empty() && plan.decls.is_empty() {
-        let mine = a.is_some_and(|a| x.names.by_name.iter().any(|n| n.0 == new && n.1.contains(&a)));
+        let mine = a.is_some_and(|a| x.names.addrs_of(new).contains(&a));
         if mine {
             plan.recorded = true;
             return Ok(Ok(plan));
@@ -314,7 +314,7 @@ fn check_renames(x: &mut Ctx, plans: &mut [&mut Plan]) -> Result<Vec<Refusal>, S
             continue;
         }
         let clash = E::code_uses(&x.root, &p.new, if p.exact() { Some(&skip) } else { None });
-        let mut elsewhere: Vec<i64> = x.names.by_name.iter().find(|n| n.0 == p.new).map(|n| n.1.clone()).unwrap_or_default();
+        let mut elsewhere: Vec<i64> = x.names.addrs_of(&p.new).to_vec();
         elsewhere.retain(|v| Some(*v) != p.a);
         elsewhere.sort();
         elsewhere.dedup();
