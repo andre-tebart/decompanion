@@ -4,9 +4,11 @@
 //! line --at names; written to build/lint/<target>/trial/) is parsed by clang the way `dcp lint` parses it (the same
 //! flags, system and include directories), and so is the unit as it is; the diagnostics only the trial has are what
 //! the include causes (a group of diagnostics compared by files, messages and lines, a line of the unit's file by
-//! its text, since the include shifts the trial's lines). A finding whose diagnostic group has a line with an
-//! exemption marker (`@original why` / `@vc6 why`, lint::exemption, the lines `dcp lint` exempts for M6) is listed
-//! with `exempt=<marker>` and blocks nothing: the summary's counts, the exit code and --write leave it out.
+//! its text, since the include shifts the trial's lines). A `call` or `other` finding whose diagnostic group has a
+//! line with an exemption marker (`@original why` / `@vc6 why`, lint::exemption, the lines `dcp lint` exempts for
+//! M6: a call's arguments, an asm operand) is listed with `exempt=<marker>` and blocks nothing: the summary's
+//! counts, the exit code and --write leave it out. A `supersedes`, `clash`, `header` or `vc6` finding is never
+//! exempt: VC6 rejects a redeclaration with another type whatever the marker says, and a pair called clean compiles.
 //!
 //!   supersedes  a declaration of the unit the header declares differently (`conflicting types`, `redefinition ..
 //!               with a different type`, a struct defined twice): the local one goes, and its users follow the
@@ -631,8 +633,16 @@ impl Trial {
     }
 
     /// The exemption marker of a trial group (lint::exemption): the first any of its lines carries, as dcp lint
-    /// exempts an M6 group.
+    /// exempts an M6 group; only for what VC6 compiles anyway, a check at a use (a call's arguments, an asm
+    /// operand). A redeclaration with another type (`supersedes`, `clash`) or an error inside a header is never
+    /// exempt: VC6 rejects it whatever the marker says (C2371), so the pair would not compile.
     fn exemption(&self, g: &[Dg], rd: &mut Reader) -> Option<&'static str> {
+        let d = &g[0];
+        let declaration = CONFLICT.is_match(&d.msg) && g.len() > 1;
+        let in_header = d.file.starts_with("include/") && !g.iter().any(|y| y.file == self.unit.file);
+        if declaration || in_header {
+            return None;
+        }
         g.iter().find_map(|d| crate::lint::exemption(&self.text(d, false, rd)))
     }
 }
@@ -762,8 +772,10 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
         items.push(Item { kind: "other", name, at: fix(d), other: g.get(1).map(fix), msg: d.msg.clone(), ours: rd.line(&fix(d)), func: fn_at(d),
                           exempt, ..Default::default() });
     }
-    // what VC6 itself rejects and clang accepted (C2079: a struct by value, incomplete in this unit)
-    let mut reported: HashSet<String> = items.iter().map(|i| i.at.clone()).collect(); // VC6's own C2371 of a `supersedes` line says the same
+    // what VC6 itself rejects and clang accepted (C2079: a struct by value, incomplete in this unit); never exempt
+    // (the pair would not compile). VC6's own C2371 of a `supersedes` line says the same as it; an exempt finding
+    // hides nothing VC6 rejects at its line
+    let mut reported: HashSet<String> = items.iter().filter(|i| i.exempt.is_none()).map(|i| i.at.clone()).collect();
     for d in vc6_new(&t.vc6) {
         let at = if d.file.is_empty() { "(command line)".to_string() } else { fix(&d) };
         if !reported.insert(at.clone()) {
@@ -771,8 +783,7 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
         }
         let q = QUOTED.captures(&d.msg).map(|c| c[1].to_string());
         let ours = if d.file.is_empty() { String::new() } else { rd.line(&at) };
-        let exempt = if d.file.is_empty() { None } else { crate::lint::exemption(&rd.raw(&at)) };
-        items.push(Item { kind: "vc6", name: q, at, msg: d.msg.clone(), ours, func: fn_at(&d), exempt, ..Default::default() });
+        items.push(Item { kind: "vc6", name: q, at, msg: d.msg.clone(), ours, func: fn_at(&d), ..Default::default() });
     }
     let mut per_callee: BTreeMap<String, Vec<(String, i64)>> = BTreeMap::new();
     for ((f, callee), lines) in &base_calls {
@@ -1229,7 +1240,7 @@ pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone
     let t = trial(&x, unit, &hdrs, &drop, at).map_err(err)?;
     let mut rd = Reader { root: root.clone(), memo: HashMap::new() };
     let left: Vec<&Group> = t.new_errors(&mut rd).into_iter().filter(|g| t.exemption(g, &mut rd).is_none()).collect();
-    let vleft: Vec<Dg> = vc6_new(&t.vc6).into_iter().filter(|d| crate::lint::exemption(&t.text(d, false, &mut rd)).is_none()).collect();
+    let vleft = vc6_new(&t.vc6);
     if !left.is_empty() || !vleft.is_empty() {
         out.push(record(&[("write", s("refused")), ("why", s(format!("without the duplicates the trial has {} new errors", left.len() + vleft.len()))),
                           ("at", Tok::I(t.pos as i64 + 1))])

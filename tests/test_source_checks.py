@@ -161,8 +161,9 @@ def test_headers_conflicts(tiny):
 
 @pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")
 def test_headers_conflicts_exempt_and_shifted(tiny):
-    """A finding on a line with `@original` / `@vc6` (lint's exemption) is listed with its marker and blocks
-    nothing; an error the unit had before is no finding, though the include shifts its line."""
+    """A call finding on a line with `@original` / `@vc6` (lint's exemption) is listed with its marker and blocks
+    nothing; an error the unit had before is no finding, though the include shifts its line; a redeclaration with
+    another type is never exempt (VC6 rejects it: C2371)."""
     write(tiny, "include/net.h", "int add2(int a, int b);\n")
     unit(tiny, "net", "extern int counter;\n",
          "/* 0x10001030, logs hello */\nvoid log_hello(void)\n{\n"
@@ -175,6 +176,15 @@ def test_headers_conflicts_exempt_and_shifted(tiny):
     code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
     assert code == 0 and "write=src/net.c" in out, out
     assert '#include "net.h"' in (tiny / "src/net.c").read_text()
+
+    write(tiny, "include/net.h", "extern short width;\n")
+    unit(tiny, "net", "extern char width;  /* @original the unit reads a byte */\n",
+         "/* 0x10001030, logs hello */\nvoid log_hello(void)\n{\n    width = 1;\n}\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net")
+    assert code == 1 and "supersedes=1" in out, out
+    assert "kind=supersedes  name=width  at=src/net.c:1  header=include/net.h:1  exempt=-" in out, out
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
+    assert code == 1 and "write=refused" in out, out
 
 
 @pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")

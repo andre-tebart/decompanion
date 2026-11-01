@@ -88,8 +88,9 @@ code is shape or byte, only readability is missing. `gates=` names the failing r
   `dcp grade` and `dcp next` lint the changed units themselves, so their Q7 is current.
 - `uv run dcp headers conflicts UNIT HEADER..` - before including a header into a unit's head: what it collides with
   (supersedes / duplicate / clash / header / call with the original's pushes / vc6, what only VC6 rejects /
-  prototyped, per call `safe` or re-grade) and the functions to re-grade; a finding on a line marked `@original` /
-  `@vc6` shows `exempt=<marker>` and blocks nothing, an error the unit already had is no finding; `--write` makes the include when only
+  prototyped, per call `safe` or re-grade) and the functions to re-grade; a call / other finding on a line marked
+  `@original` / `@vc6` shows `exempt=<marker>` and blocks nothing (a redeclaration with another type never: VC6
+  rejects it whatever the marker), an error the unit already had is no finding; `--write` makes the include when only
   duplicates are in the way (`--at LINE` places the include when the default line fails the trial). `warning=declaration-set`: re-grade every function of the unit after the include,
   byte ones first (VC6 /O2 moves code by the declaration set alone): `--trial` compiles the unit with the include
   (nothing written) and lists the functions whose grade would fall (`fall=ADDR ... code=byte trial=shape`). A dropped duplicate's
