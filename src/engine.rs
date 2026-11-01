@@ -196,6 +196,7 @@ impl<'a> Engine<'a> {
             images: p.targets.iter().map(|t| (t.name.clone(), t.path.clone())).collect(),
             function_alignment: tc.function_alignment() as i64,
             code_rank: crate::grade::CODE.iter().enumerate().map(|(i, c)| (c.to_string(), i as i64)).collect(),
+            max_debt: p.max_debt(),
             ..Default::default()
         });
         self.base = Some(b.clone());

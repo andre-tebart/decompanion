@@ -283,13 +283,16 @@ fn promote_raises_only_and_accept() {
     let (code, out) = dcp(&t, &["promote"]);
     assert!(code == 1 && out.contains("promote=refused  falls=1") && out.contains("fell: 0x10001020 get: code byte -> draft"), "{out}");
     assert_eq!(tsv(), before);
-    assert_eq!(dcp(&t, &["accept", "get", "--to", "shape", "--why", "x"]).0, 1); // it is draft now, below shape
-    assert_eq!(dcp(&t, &["accept", "get", "--readability", "draft", "--why", "x"]).0, 1); // still draft code
-    let (code, out) = dcp(&t, &["accept", "0x10001020", "--to", "draft", "--why", "a declaration-set tie-break"]);
-    assert!(code == 0 && out.contains("accepted=0x10001020  name=get") && out.contains("was=byte+readable  now=draft+readable"), "{out}");
+    assert_eq!(dcp(&t, &["debt", "add", "get", "--to", "shape", "--why", "x"]).0, 1); // it is draft now, below shape
+    assert_eq!(dcp(&t, &["debt", "add", "get", "--readability", "draft", "--why", "x"]).0, 1); // still draft code
+    let (code, out) = dcp(&t, &["debt", "add", "0x10001020", "--to", "draft", "--why", "a declaration-set tie-break", "--waits-for", "the net header"]);
+    assert!(code == 0 && out.contains("debt=0x10001020  name=get") && out.contains("was=byte+readable  now=draft+readable"), "{out}");
     let line = tsv().lines().nth(1).unwrap().to_string();
-    assert!(line.starts_with("tiny\t0x10001020\tget\tnet\tdraft\treadable\t\tbyte+readable -> draft+readable at ") && line.ends_with(": a declaration-set tie-break"), "{line}");
-    assert!(!dcp(&t, &["findings"]).1.contains("M1"));
+    assert!(line.starts_with("tiny\t0x10001020\tget\tnet\tdraft\treadable\t\tbyte+readable -> draft+readable at ") && line.ends_with(": a declaration-set tie-break [waits for: the net header]"), "{line}");
+    let out = dcp(&t, &["findings"]).1; // no fall: one debt item
+    assert!(!out.contains("  M1  ") && out.contains("warn  debt  M1.debt") && out.contains("waits for the net header"), "{out}");
+    let out = dcp(&t, &["debt", "list"]).1;
+    assert!(out.starts_with("debt=1  max_debt=20") && out.contains("name=get") && out.contains("waits_for='the net header'"), "{out}");
     let (code, out) = dcp(&t, &["promote"]); // no fall against the lowered entry; the note stays
     assert!(code == 0 && out.contains("accepted=1") && tsv().lines().nth(1).unwrap() == line, "{out}");
     unit(&t, "net", &[good]);

@@ -313,16 +313,51 @@ pub fn at_least(code: &str, readability: &str, grade: &str) -> bool {
     rank(code).map(|x| x as i64).unwrap_or(-1) >= rank(gc).map(|x| x as i64).unwrap_or(-1) && (gr != "readable" || readability == "readable")
 }
 
-/// The accepted column: `byte+readable -> shape+readable at 897b411: why` (the reason's whitespace runs as one space).
+/// The accepted column, a debt item (docs/mental-model.md §8.6): `byte+readable -> shape+readable at 897b411: why`,
+/// with ` [waits for: what]` when it names what it waits for (whitespace runs as one space). The commit is the last
+/// witness: the source that reproduced the higher grade.
 pub fn accept_note(before: &str, after: &str, commit: &str, why: &str) -> String {
     format!("{before} -> {after} at {commit}: {}", why.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
+/// A debt item's note with what it waits for.
+pub fn debt_note(before: &str, after: &str, commit: &str, why: &str, waits_for: &str) -> String {
+    let w = waits_for.split_whitespace().collect::<Vec<_>>().join(" ");
+    let note = accept_note(before, after, commit, why);
+    if w.is_empty() { note } else { format!("{note} [waits for: {w}]") }
+}
+
+static ACCEPTED: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^(\w+\+\w+) -> (\w+\+\w+) at (\S+): (.*?)(?: \[waits for: (.*)\])?$").unwrap());
+
 /// The grade an accepted fall came from (None for an empty or unreadable column).
 pub fn note_from(note: &str) -> Option<String> {
-    use std::sync::LazyLock;
-    static ACCEPTED: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^(\w+\+\w+) -> (\w+\+\w+) at (\S+): (.*)$").unwrap());
     ACCEPTED.captures(note).map(|c| c[1].to_string())
+}
+
+/// One debt item of the baseline: a declared regression with its last witness.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Debt {
+    pub target: String,
+    pub addr: i64,
+    pub name: String,
+    pub was: String,
+    pub now: String,
+    /// the commit whose source reproduced `was`
+    pub witness: String,
+    pub why: String,
+    pub waits_for: String,
+}
+
+/// The debt items of a baseline text, in file order (an accepted column that does not parse is listed with its text
+/// as the reason).
+pub fn debts(text: &str) -> Vec<Debt> {
+    parse_baseline(text).into_iter().filter(|x| !x.1.accepted.is_empty()).map(|((t, a), e)| match ACCEPTED.captures(&e.accepted) {
+        Some(c) => Debt { target: t, addr: a, name: e.name.clone(), was: c[1].into(), now: c[2].into(), witness: c[3].into(), why: c[4].into(),
+                          waits_for: c.get(5).map(|m| m.as_str().to_string()).unwrap_or_default() },
+        None => Debt { target: t, addr: a, name: e.name.clone(), was: String::new(), now: grade_of(&e.code, &e.readability), witness: String::new(),
+                       why: e.accepted.clone(), waits_for: String::new() },
+    }).collect()
 }
 
 fn render(rows: &[(String, i64, Entry)]) -> String {
@@ -464,6 +499,38 @@ mod tests {
         let mut all: Vec<String> = names("base", None).into_iter().map(|x| x.0).collect();
         all.sort();
         assert_eq!(got, all);
+    }
+
+    #[test]
+    fn debt_items() {
+        // a debt item names the grade before, the witness, why and (when given) what it waits for
+        let a = debt_note("byte+readable", "shape+readable", "abc1234", "a tie\tbreak", " the net\nheader ");
+        assert_eq!(a, "byte+readable -> shape+readable at abc1234: a tie break [waits for: the net header]");
+        assert_eq!(note_from(&a).as_deref(), Some("byte+readable"));
+        let b = debt_note("shape+draft", "draft+draft", "def5678", "older", "");
+        let text = format!("{HEADER}\nt\t0x10001000\tf\tu\tshape\treadable\t\t{a}\nt\t0x10001010\tg\tu\tdraft\tdraft\t\t{b}\nt\t0x10001020\th\tu\tbyte\treadable\t\t\n");
+        let d = debts(&text);
+        assert_eq!(d.len(), 2);
+        assert_eq!((d[0].name.as_str(), d[0].was.as_str(), d[0].now.as_str(), d[0].witness.as_str(), d[0].why.as_str(), d[0].waits_for.as_str()),
+                   ("f", "byte+readable", "shape+readable", "abc1234", "a tie break", "the net header"));
+        assert_eq!((d[1].why.as_str(), d[1].waits_for.as_str()), ("older", ""));
+    }
+
+    #[test]
+    fn m1_lists_debt_and_bounds_it() {
+        use crate::rules::testkit::Kit;
+        use serde_json::json;
+        let k = Kit::new(&crate::pe::testpe::build(None));
+        let a = debt_note("byte+readable", "draft+readable", "abc1234", "tie-break", "the header");
+        std::fs::create_dir_all(k.dir.join("ledger")).unwrap();
+        std::fs::write(k.dir.join("ledger").join("grades.tsv"), format!("{HEADER}\nt\t0x10001000\tf\tu\tdraft\treadable\t\t{a}\n")).unwrap();
+        k.put("G.grade", &[(0x10001000, 0x10001001, "experiment", json!({"of": "function", "name": "f", "outcome": "draft"}), crate::store::DECLARED),
+                           (0x10001000, 0x10001001, "readability", json!({"of": "function", "name": "f", "grade": "readable"}), crate::store::DECLARED)]);
+        let run = |max: i64| k.run("M1.baseline", &["G.grade"], &format!(r#"{{"target": "t", "max_debt": {max}, "code_rank": {{"draft": 0, "shape": 1, "byte": 2}}}}"#)).1;
+        let f = run(20);
+        assert_eq!(f.iter().map(|x| (x.severity.as_str(), x.check.as_str())).collect::<Vec<_>>(), [("warn", "M1.debt")]);
+        assert!(f[0].message.contains("debt byte+readable -> draft+readable, witness abc1234: tie-break; waits for the header"), "{}", f[0].message);
+        assert!(run(0).iter().any(|x| x.severity == "error" && x.check == "M1.debt"));
     }
 
     #[test]

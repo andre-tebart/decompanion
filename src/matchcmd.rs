@@ -399,7 +399,7 @@ pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> 
     }
     if !falls.is_empty() && !accept_falls {
         let mut out = vec![record(&[("promote", s("refused")), ("falls", Tok::I(falls.len() as i64))])
-            + "  (promote raises entries only: dcp accept FN --to GRADE --why TEXT for a fall wanted on purpose, --accept-falls takes them all)"];
+            + "  (promote raises entries only: dcp debt add FN --to GRADE --why TEXT [--waits-for WHAT] for a fall wanted on purpose, --accept-falls takes them all)"];
         out.extend(falls.iter().map(|f| format!("  fell: {f}")));
         return Ok((out, None, 1));
     }
@@ -415,9 +415,11 @@ pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> 
 
 const CODE: [&str; 3] = ["draft", "shape", "byte"];
 
-/// `dcp accept FN --to GRADE --why TEXT`: lower one function's baseline entry to the grade it fell to, with the
-/// reason (M1 then holds it there).
-pub fn accept_command(project: Option<&Project>, name: &str, to: Option<String>, readability: Option<String>, why: Option<String>) -> Result<Out> {
+/// `dcp debt add FN --to GRADE --why TEXT [--waits-for WHAT]`: declare a regression (docs/mental-model.md §8.6): lower one
+/// function's baseline entry to the grade it fell to, its accepted column the grade before, the last witness commit,
+/// the reason and what it waits for (M1 then holds it there and lists it as debt).
+pub fn debt_add_command(project: Option<&Project>, name: &str, to: Option<String>, readability: Option<String>, why: Option<String>,
+                        waits_for: Option<String>) -> Result<Out> {
     let refuse = |m: String| Ok((vec![], Some(m), 1));
     let why = why.unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
     if why.is_empty() {
@@ -426,7 +428,7 @@ pub fn accept_command(project: Option<&Project>, name: &str, to: Option<String>,
     if to.as_deref().unwrap_or("").is_empty() && readability.as_deref().unwrap_or("").is_empty() {
         return refuse("--to shape|draft or --readability draft says what the entry falls to".into());
     }
-    let Some(p) = project else { return Err(err("accept_command: no project")) };
+    let Some(p) = project else { return Err(err("debt_add_command: no project")) };
     let root = p.root.to_string_lossy().into_owned();
     let old = read_baseline(&root);
     let db = opened(p)?;
@@ -456,11 +458,24 @@ pub fn accept_command(project: Option<&Project>, name: &str, to: Option<String>,
     }
     let grade_to = format!("{to_code}+{to_rd}");
     let commit = queues::grades_commit_of(&root);
-    let note = queues::accept_note(&queues::note_from(&o.accepted).unwrap_or(grade_o.clone()), &grade_to, &commit, &why);
+    let note = queues::debt_note(&queues::note_from(&o.accepted).unwrap_or(grade_o.clone()), &grade_to, &commit, &why, waits_for.as_deref().unwrap_or(""));
     write_baseline(&root, &queues::grades_accept(&old, &p.target_name, addr, &to_code, &to_rd, &note))?;
-    Ok((vec![record(&[("accepted", s(fmt_addr(addr))), ("name", vt(r.get("name"))), ("target", s(p.target_name.clone())), ("was", s(grade_o)),
-                      ("now", s(grade_to)), ("commit", s(commit))])
-             + "  (commit ledger/grades.tsv with the change; dcp check holds it at the accepted grade)"], None, 0))
+    Ok((vec![record(&[("debt", s(fmt_addr(addr))), ("name", vt(r.get("name"))), ("target", s(p.target_name.clone())), ("was", s(grade_o)),
+                      ("now", s(grade_to)), ("witness", s(commit)), ("waits_for", os(waits_for.filter(|w| !w.trim().is_empty())))])
+             + "  (commit ledger/grades.tsv with the change; dcp check holds it at the declared grade and lists it as debt)"], None, 0))
+}
+
+/// `dcp debt list`: every debt item of the baseline, per target, with the gate's bound.
+pub fn debt_list_command(p: &Project) -> Vec<String> {
+    let root = p.root.to_string_lossy().into_owned();
+    let items = queues::debts(&read_baseline(&root));
+    let mut out = vec![record(&[("debt", Tok::I(items.len() as i64)), ("max_debt", Tok::I(p.max_debt()))])];
+    for d in &items {
+        out.push(format!("  {}", record(&[("target", s(d.target.clone())), ("fn", s(fmt_addr(d.addr))), ("name", s(d.name.clone())), ("was", s(d.was.clone())),
+                                          ("now", s(d.now.clone())), ("witness", s(d.witness.clone())), ("why", s(d.why.clone())),
+                                          ("waits_for", os(Some(d.waits_for.clone()).filter(|w| !w.is_empty())))])));
+    }
+    out
 }
 
 // ------------------------------------------------------------------------------------------------ link

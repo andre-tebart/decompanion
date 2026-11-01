@@ -810,6 +810,20 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             out.finding("error", "M1", at, at + 1, format!("{name} at {:#x}: {what} (baseline ledger/grades.tsv)", a), "");
         }
     }
+    // the debt (§8.6): every declared regression is listed, never a gate failure, while the target holds no more
+    // than the gate's max_debt of them
+    let debts: Vec<crate::queues::Debt> = crate::queues::debts(&text).into_iter().filter(|d| d.target == target).collect();
+    for d in &debts {
+        let at = if img.base as i64 <= d.addr && d.addr < img.end() as i64 { d.addr } else { img.base as i64 };
+        let waits = if d.waits_for.is_empty() { "names nothing it waits for".to_string() } else { format!("waits for {}", d.waits_for) };
+        out.finding("warn", "M1.debt", at, at + 1, format!("{} at {:#x}: debt {} -> {}, witness {}: {}; {waits} (dcp debt list)", d.name, d.addr, d.was,
+                                                           d.now, d.witness, d.why), "");
+    }
+    let max = ctx.inputs.max_debt;
+    if debts.len() as i64 > max {
+        out.finding("error", "M1.debt", img.base as i64, img.base as i64 + 1,
+                    format!("{} debt items, more than the gate's max_debt {max} ([gate] max_debt): win some back first (dcp debt list)", debts.len()), "");
+    }
     Ok(())
 }
 

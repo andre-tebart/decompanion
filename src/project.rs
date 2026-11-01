@@ -181,6 +181,11 @@ impl Project {
         }).unwrap_or_default()
     }
 
+    /// The gate's bound on debt items (docs/mental-model.md §8.6): `[gate] max_debt`, 20 when not set.
+    pub fn max_debt(&self) -> i64 {
+        self.cfg.get("gate").and_then(|g| g.get("max_debt")).and_then(|v| v.as_integer()).unwrap_or(20)
+    }
+
     /// [toolchain] plugin, else the only registered toolchain plugin.
     pub fn toolchain_key(&self) -> String {
         let k = self.tc_str("plugin");

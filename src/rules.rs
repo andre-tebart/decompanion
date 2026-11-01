@@ -50,6 +50,7 @@ pub struct Inputs {
     pub lint_calls: Option<HashMap<String, Vec<(i64, String)>>>,
     pub linted: Vec<String>,
     pub units: HashMap<String, String>, // unit -> its text's hash today (M.lint)
+    pub max_debt: i64,                  // the gate's bound on declared regressions ([gate] max_debt; M1.baseline)
 }
 
 #[cfg(test)]

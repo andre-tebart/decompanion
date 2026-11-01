@@ -391,7 +391,7 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
     if let Some(pr) = promoted.filter(|p| !p.is_empty()) {
         let mut lines = pr.lines();
         let first = lines.next().unwrap_or("");
-        out.push(format!("baseline: {first}{}", if refused { " (nothing written: dcp accept each fall wanted on purpose, then dcp promote)" }
+        out.push(format!("baseline: {first}{}", if refused { " (nothing written: dcp debt add each fall wanted on purpose, then dcp promote)" }
                          else { " (commit ledger/grades.tsv with the session)" }));
         if refused {
             out.extend(lines.map(|l| l.to_string()));

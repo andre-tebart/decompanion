@@ -215,26 +215,17 @@ pub enum Cmd {
         #[arg(long)]
         clear: bool,
     },
-    /// raise the grade baseline ledger/grades.tsv to the current grades (main checkout only; a fall no dcp accept
+    /// raise the grade baseline ledger/grades.tsv to the current grades (main checkout only; a fall no dcp debt add
     /// covers is refused)
     Promote {
         /// write the falls too (each noted in the accepted column)
         #[arg(long)]
         accept_falls: bool,
     },
-    /// lower one function's baseline entry to the grade it fell to, with the reason (main checkout only)
-    Accept {
-        #[arg(value_name = "ADDR|NAME")]
-        name: String,
-        /// the code grade the entry falls to
-        #[arg(long, value_parser = ["shape", "draft"])]
-        to: Option<String>,
-        /// the readability falls to draft too
-        #[arg(long, value_parser = ["draft"])]
-        readability: Option<String>,
-        /// the reason (kept in the accepted column)
-        #[arg(long, required = true)]
-        why: String,
+    /// the debt: regressions declared on purpose, each with its last witness; `add` declares one, `list` lists them
+    Debt {
+        #[command(subcommand)]
+        sub: DebtCmd,
     },
     /// the full link of a target with the unresolved externals classified
     Link {
@@ -413,6 +404,30 @@ impl Severity {
             Severity::Warn => "warn",
         }
     }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DebtCmd {
+    /// declare a regression: lower one function's baseline entry to the grade it fell to, with the reason, what it
+    /// waits for and the last witness commit (main checkout only)
+    Add {
+        #[arg(value_name = "ADDR|NAME")]
+        name: String,
+        /// the experiment's outcome the entry falls to
+        #[arg(long, value_parser = ["shape", "draft"])]
+        to: Option<String>,
+        /// the readability falls to draft too
+        #[arg(long, value_parser = ["draft"])]
+        readability: Option<String>,
+        /// the reason (kept in the accepted column)
+        #[arg(long, required = true)]
+        why: String,
+        /// what has to settle before the grade comes back (a prototype, a header, a unit's layout)
+        #[arg(long, value_name = "WHAT")]
+        waits_for: Option<String>,
+    },
+    /// every debt item of the baseline: function, the grade before and now, the witness, why, what it waits for
+    List,
 }
 
 #[derive(Subcommand, Debug)]

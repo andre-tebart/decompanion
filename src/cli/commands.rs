@@ -175,18 +175,23 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         Cmd::Escalate { name, why, clear, size_explained } => level(io, sel, "deep", &name, why, clear, size_explained),
         Cmd::Stuck { name, why, clear } => level(io, sel, "stuck", &name, why, clear, None),
         Cmd::Promote { accept_falls } => promote(io, sel, accept_falls),
-        Cmd::Accept { name, to, readability, why } => {
-            if in_worktree(io, sel, "accept", "changed")? {
+        Cmd::Debt { sub: DebtCmd::Add { name, to, readability, why, waits_for } } => {
+            if in_worktree(io, sel, "debt add", "changed")? {
                 return Ok(1);
             }
             let blank = why.split_whitespace().next().is_none();
             if blank || (to.is_none() && readability.is_none()) {
-                let (l, e, c) = crate::matchcmd::accept_command(None, &name, to, readability, Some(why))?;
-                return Ok(io.report("accept", &l, e.as_deref(), c));
+                let (l, e, c) = crate::matchcmd::debt_add_command(None, &name, to, readability, Some(why), waits_for)?;
+                return Ok(io.report("debt", &l, e.as_deref(), c));
             }
             let p = refreshed(io, sel, None)?;
-            let (l, e, c) = crate::matchcmd::accept_command(Some(&p), &name, to, readability, Some(why))?;
-            Ok(io.report("accept", &l, e.as_deref(), c))
+            let (l, e, c) = crate::matchcmd::debt_add_command(Some(&p), &name, to, readability, Some(why), waits_for)?;
+            Ok(io.report("debt", &l, e.as_deref(), c))
+        }
+        Cmd::Debt { sub: DebtCmd::List } => {
+            let p = glue::config(sel, None)?;
+            let l = crate::matchcmd::debt_list_command(&p);
+            Ok(io.report("debt", &l, None, 0))
         }
         Cmd::Link { all_targets } => {
             let mut failed = false;
