@@ -24,6 +24,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const STAMPS_VERSION: &str = "dcp-stamps 3";
 const RACY_NS: i128 = 2_000_000_000;
+/// The tests that count reads hold it exclusively; the command-line tests hold it shared (they attach their projects
+/// to the one memo of the process).
+#[cfg(test)]
+pub(crate) static EXCLUSIVE: std::sync::RwLock<()> = std::sync::RwLock::new(());
 #[cfg(test)]
 thread_local!(static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
 
@@ -313,6 +317,7 @@ mod tests {
 
     #[test]
     fn walk_order_and_reads() {
+        let _x = EXCLUSIVE.write().unwrap_or_else(|e| e.into_inner());
         let d = std::env::temp_dir().join(format!("dcp-fsmemo-{}", std::process::id()));
         std::fs::create_dir_all(d.join("Sub")).unwrap();
         std::fs::write(d.join("b.c"), "x\r\ny").unwrap();
@@ -340,6 +345,7 @@ mod tests {
     /// One test: the persisted hashes are process state.
     #[test]
     fn persisted_hash_trusted_only_for_an_old_unchanged_stamp_and_racy_entries_hashed_again() {
+        let _x = EXCLUSIVE.write().unwrap_or_else(|e| e.into_inner());
         let root = std::env::temp_dir().join(format!("dcp-stamps-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).unwrap();
         let f = root.join("src").join("a.c");

@@ -130,6 +130,7 @@ fn declare_prints_each_cflag_it_stored() {
 }
 
 #[test]
+#[ignore = "e2e: starts git"]
 fn session_start_fails_on_an_open_obligation() {
     let f = fresh();
     let git = |a: &[&str]| {

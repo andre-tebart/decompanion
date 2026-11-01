@@ -93,6 +93,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[test]
+#[ignore = "e2e: starts git"]
 fn wt_commands() {
     let t = tiny();
     write(&t, ".gitignore", "build/\n.dcp/\n");

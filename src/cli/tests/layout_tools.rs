@@ -299,6 +299,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 #[test]
+#[ignore = "e2e: starts git"]
 fn session_start_and_wrap() {
     let t = tiny();
     git(&t, &["init", "-q", "-b", "main"]);

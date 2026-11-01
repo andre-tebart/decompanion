@@ -285,6 +285,7 @@ pub fn unit(root: &Path, name: &str, parts: &[&str]) -> PathBuf {
 
 /// Run a command line in this process over the project at root: (exit code, stdout, stderr).
 pub fn dcp3(root: &Path, args: &[&str]) -> (i32, String, String) {
+    let _shared = crate::fsmemo::EXCLUSIVE.read().unwrap_or_else(|e| e.into_inner());
     let mut argv: Vec<String> = vec!["dcp".into(), "--root".into(), root.to_string_lossy().into_owned()];
     argv.extend(args.iter().map(|a| a.to_string()));
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -300,6 +301,7 @@ pub fn dcp(root: &Path, args: &[&str]) -> (i32, String) {
 
 /// A command line without --root (init).
 pub fn dcp_bare(args: &[&str]) -> (i32, String, String) {
+    let _shared = crate::fsmemo::EXCLUSIVE.read().unwrap_or_else(|e| e.into_inner());
     let mut argv: Vec<String> = vec!["dcp".into()];
     argv.extend(args.iter().map(|a| a.to_string()));
     let (mut out, mut err) = (Vec::new(), Vec::new());
