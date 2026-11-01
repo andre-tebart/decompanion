@@ -29,6 +29,10 @@ doctest = false
 name = "dcp"
 path = "src/main.rs"
 
+[[bin]]
+name = "dcp-bench"
+path = "tools/bench.rs"
+
 [profile.dev]
 opt-level = 1
 
