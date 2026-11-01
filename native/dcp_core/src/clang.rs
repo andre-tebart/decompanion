@@ -363,6 +363,14 @@ impl Unit {
     }
 }
 
+#[cfg(test)]
+impl Unit {
+    /// The identity of the libclang unit (a reparse keeps it, a new parse makes another).
+    pub(crate) fn tu_id(&self) -> usize {
+        lock(self).tu as usize
+    }
+}
+
 fn lock(u: &Unit) -> std::sync::MutexGuard<'_, Tu> {
     u.inner.lock().unwrap_or_else(|e| e.into_inner())
 }

@@ -30,7 +30,7 @@ pub const ARGS: [&str; 9] = ["--target=i386-pc-windows-msvc", "-fms-compatibilit
                              "-Wimplicit-function-declaration"];
 const DEFAULT_LIBCLANG: &str = "C:/Program Files/LLVM/bin/libclang.dll";
 pub const NOT_FOUND: &str = "libclang not found ([lint] libclang = ... in decompanion.toml, or an LLVM installation: clang on PATH or C:/Program Files/LLVM)";
-const MODEL_VERSION: &str = "20"; // bump when the scan's translation units change
+const MODEL_VERSION: &str = "21"; // bump when the scan's translation units change (21: no model of a preamble reparse)
 const CPARSE_VERSION: &str = "4";
 const LIVE: usize = 4;
 
@@ -128,6 +128,7 @@ struct LiveUnit {
     text: String,
     deps: Vec<(String, String)>,
     unit: Unit,
+    over_preamble: bool, // reparsed over its precompiled preamble: its preamble's headers lex to nothing
 }
 
 static MODELS: std::sync::LazyLock<Mutex<HashMap<String, (Vec<(String, String)>, Files)>>> = std::sync::LazyLock::new(Default::default);
@@ -187,14 +188,21 @@ fn model_keep(root: &str, key: &str, m: &ModelOut, files: &Files) {
     }
 }
 
-/// One parse's model; `keep`: the unit stays live (its next parse with the same arguments while the files it read
-/// are unchanged reparses it over its preamble).
+/// One parse's model; `keep`: the unit stays live (for dcp lint's diagnostics, which may reparse it over its
+/// preamble). A model is always taken from a whole parse: in a unit reparsed over its precompiled preamble the
+/// headers the preamble holds tokenize to nothing (libclang), so their comments (the address comments Q6 reads)
+/// and literals would vanish from the model of whichever header that unit is the first includer of.
 pub fn parse_model(root: &str, path: &str, args: &[String], text: &str, keep: bool) -> Result<ModelOut, String> {
-    with_parse(path, args, text, keep, |u| u.model_out(root, text).map_err(|e| e.to_string()))
+    with_parse_as(path, args, text, keep, true, |u| u.model_out(root, text).map_err(|e| e.to_string()))
 }
 
 /// f of a parse of the text; `keep`: the parse is (or becomes) a live unit (parse_model).
 pub fn with_parse<R>(path: &str, args: &[String], text: &str, keep: bool, f: impl FnOnce(&Unit) -> Result<R, String>) -> Result<R, String> {
+    with_parse_as(path, args, text, keep, false, f)
+}
+
+/// with_parse; `whole`: f needs a unit parsed whole, never one reparsed over its preamble (parse_model).
+fn with_parse_as<R>(path: &str, args: &[String], text: &str, keep: bool, whole: bool, f: impl FnOnce(&Unit) -> Result<R, String>) -> Result<R, String> {
     if !keep {
         let u = clang::parse(path, args, text, false)?;
         return f(&u);
@@ -205,18 +213,19 @@ pub fn with_parse<R>(path: &str, args: &[String], text: &str, keep: bool, f: imp
         live.iter().position(|l| l.key == key).and_then(|i| live.remove(i))
     };
     let mut lu = match hit {
-        Some(mut l) if unchanged(&l.deps) => {
+        Some(mut l) if unchanged(&l.deps) && !(whole && (l.over_preamble || l.text != text)) => {
             if l.text != text {
                 l.unit.reparse_text(text)?;
                 l.deps = deps_of(&l.unit.included().map_err(|e| e.to_string())?)?;
                 l.text = text.to_string();
+                l.over_preamble = true;
             }
             l
         }
         _ => {
             let unit = clang::parse(path, args, text, true)?;
             let deps = deps_of(&unit.included().map_err(|e| e.to_string())?)?;
-            LiveUnit { key, text: text.to_string(), deps, unit }
+            LiveUnit { key, text: text.to_string(), deps, unit, over_preamble: false }
         }
     };
     let m = f(&lu.unit);
@@ -648,6 +657,32 @@ mod tests {
     /// A unit's file from its parts (conftest.unit): each part ends its line, a blank line between two parts.
     fn unit_text(parts: &[&str]) -> String {
         parts.iter().filter(|p| !p.is_empty()).map(|p| if p.ends_with('\n') { p.to_string() } else { format!("{p}\n") }).collect::<Vec<_>>().join("\n")
+    }
+
+    /// A model is taken from a whole parse only: a live unit reparsed over its preamble (lint's reuse) is parsed
+    /// anew for a model (its preamble's headers lex to nothing: their address comments vanished, gildegold
+    /// reg_OpenKey's Q6 after cm's head gained an include); the unit the whole parse made is reused while its text
+    /// stays.
+    #[test]
+    fn a_model_comes_from_a_whole_parse() {
+        if library(None).is_none() {
+            return;
+        }
+        let root = tree("whole", &[("src/a.c", "int x;\n"), ("include/a.h", "int f(void);  /* 0x10001000, f */\n")]);
+        let path = py_path(&format!("{root}/src/a.c"));
+        let args = Front::of(&root).unwrap().args(&[]);
+        let (t0, t1) = ("#include \"a.h\"\nint x;\n", "#include \"a.h\"\nint x;\nint y;\n");
+        let id = |u: &Unit| Ok(u.tu_id());
+        let p0 = with_parse(&path, &args, t0, true, id).unwrap();
+        let p1 = with_parse(&path, &args, t1, true, id).unwrap(); // lint: reparsed over the preamble
+        assert_eq!(p0, p1);
+        let p2 = with_parse_as(&path, &args, t1, true, true, id).unwrap(); // a model: parsed whole
+        assert_ne!(p2, p1);
+        assert_eq!(with_parse_as(&path, &args, t1, true, true, id).unwrap(), p2); // the same text: reused
+        let p3 = with_parse_as(&path, &args, t0, true, true, id).unwrap(); // another text: parsed whole again
+        assert_ne!(p3, p2);
+        let m = parse_model(&root, &path, &args, t0, true).unwrap();
+        assert!(m.files.iter().any(|(r, f)| r == "include/a.h" && f.comments.len() == 1));
     }
 
     #[test]
