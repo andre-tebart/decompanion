@@ -7,7 +7,9 @@
 //!   export   the export table (proven)
 //!   entry    the user entry the start-up code calls (S.entry.user: DllMain, WinMain, main)
 //!   lib      a placed library member's symbol (S.crt.code / S.crt.refs / S.crt.data), undecorated by the
-//!            toolchain (`_fclose` -> fclose); of `a|b` aliases the first in sorted order
+//!            toolchain (`_fclose` -> fclose); of `a|b` aliases (members with identical bytes) the one a lib name
+//!            of its own names (S.crt.refs: the library's relocations call `_memmove`, not `_memcpy`), else the
+//!            first in sorted order
 //!   import   an import slot (`KERNEL32.dll!GetTickCount` -> GetTickCount) and the import thunk that jumps through
 //!            it (`thunk:WS2_32.dll!#3`: by ordinal, no name)
 //!   analyzer the name the analyzer gave a function it found (its drafts, `dcp setup`), unless the analyzer calls
@@ -62,6 +64,9 @@ pub fn draft_values(db: &rusqlite::Connection, main: &str) -> rusqlite::Result<V
     Ok(by_start.into_values().collect())
 }
 
+/// The size from which a data object can be an array or a record a loop runs over to its end (Names::end_label).
+const END_MIN: i64 = 0x10;
+
 /// address -> (C name, origin), name -> addresses; the symbols for annotation.
 #[pyclass(unsendable)]
 pub struct Names {
@@ -70,6 +75,9 @@ pub struct Names {
     pub(crate) by_name: Vec<(String, Vec<i64>)>,
     syms: Vec<Rc<SFact>>,
     image: String,
+    db: String,
+    /// every data object's (lo, hi) of every rule (the match phase's too), sorted: Names::end_label, loaded on use
+    objects: std::cell::OnceCell<Vec<(i64, i64)>>,
     by_name_py: Option<Py<PyDict>>,
     all_at_py: Option<Py<PyDict>>,
 }
@@ -81,7 +89,9 @@ impl Names {
             let symbols = store::facts_of(db, db_path, "symbol", None, |f| !f.rule.starts_with("M."))?;
             Ok((names, symbols, draft_values(db, main)?))
         })?;
-        let rank = |o: &str| ORDER.iter().position(|x| *x == o).unwrap_or(ORDER.len());
+        // within an origin, a lib name chosen from an alias set (`_memcpy|_memmove`: members with identical bytes)
+        // ranks after a lib name that stands alone (S.crt.refs: the library's own relocations name the member)
+        let rank = |o: &str| 2 * ORDER.iter().position(|x| *x == o).unwrap_or(ORDER.len());
         let mut order: Vec<i64> = vec![];
         let mut cands: HashMap<i64, Vec<(usize, String, String)>> = HashMap::new();
         let mut add = |a: i64, c: (usize, String, String)| {
@@ -106,7 +116,8 @@ impl Names {
                 _ => Some(raw.to_string()),
             };
             if let Some(n) = name.filter(|n| is_ident(n)) {
-                add(f.lo, (rank(&origin), n, origin));
+                let chosen = origin == "lib" && raw.contains('|');
+                add(f.lo, (rank(&origin) + chosen as usize, n, origin));
             }
         }
         for v in &drafts {
@@ -138,7 +149,8 @@ impl Names {
         }
         let mut syms = symbols;
         syms.sort_by_key(|f| (f.lo, f.hi));
-        Ok(Names { at, all_at, by_name, syms, image: image.to_string(), by_name_py: None, all_at_py: None })
+        Ok(Names { at, all_at, by_name, syms, image: image.to_string(), db: db_path.to_string(), objects: std::cell::OnceCell::new(),
+                   by_name_py: None, all_at_py: None })
     }
 
     pub fn name_of(&self, a: i64) -> Option<&str> {
@@ -156,6 +168,33 @@ impl Names {
             j -= 1;
         }
         None
+    }
+
+    /// The other reading of an address a compare uses as a bound: `obj+off` from the nearest named data object of
+    /// END_MIN bytes at least below the one holding it that the same code refers to (`used`: the function's other
+    /// image addresses). A loop
+    /// runs a pointer from inside an array to its end pointer `&arr[N]` or `&arr[N].field`, which lies at or
+    /// inside the next object (a match-base report: `cmp ecx, 0xfb91e4` read as d3s_Lights+0x4, really
+    /// &d2_Views[0x30].nwins, and led to wrong code; the loop's start `mov ecx, 0xfb1450` lies in d2_Views). None
+    /// when the code refers to no named object below it (within 1 MB).
+    pub fn end_label(&self, a: i64, used: &[i64]) -> Option<String> {
+        let objs = self.objects.get_or_init(|| {
+            let fs = with_db(&self.db, |db| store::facts_of(db, &self.db, "symbol", None, |f| f.s("skind") == Some("global"))).unwrap_or_default();
+            let mut v: Vec<(i64, i64)> = fs.iter().map(|f| (f.lo, f.hi)).collect();
+            v.sort();
+            v.dedup();
+            v
+        });
+        // the data object holding x (any rule's extent)
+        let holder = |x: i64| -> Option<(i64, i64)> {
+            let k = objs.partition_point(|o| o.0 <= x);
+            objs[..k].iter().rev().take(8).find(|o| o.0 <= x && x < o.1).copied()
+        };
+        let here = holder(a).map(|o| o.0).unwrap_or(a);
+        // an array or a record (END_MIN bytes at least: a scalar has no end pointer) the code refers to
+        let best = used.iter().filter(|&&r| r < here && here - r <= 0x100000).filter_map(|&r| holder(r))
+            .filter(|o| o.0 < here && o.1 - o.0 >= END_MIN && self.name_of(o.0).is_some()).map(|o| o.0).max()?;
+        Some(format!("{}+{}", self.name_of(best)?, crate::x86::py_hex(a - best)))
     }
 
     /// How `dcp disasm` / `dcp dump` spell an address: its name, else `name+off` inside a named symbol (not an

@@ -28,6 +28,23 @@ pub fn distance(a: &[String], b: &[String]) -> usize {
     opcodes(a, b).iter().filter(|o| o.0 != Tag::Equal).map(|o| o.2 - o.1 + o.4 - o.3).sum()
 }
 
+/// The differing instructions of two listings whose frames differ in size (`frame`: ours, the original's), as
+/// `dcp asmdiff` counts them: aligned with the stack offsets masked, a pair that differs only by the frame's shift
+/// equal. A match-base report: `dcp grade`'s dist counted every line the shift touched, and went up on an edit that
+/// took asmdiff's count down.
+pub fn frame_distance(a: &[String], b: &[String], frame: (i64, i64)) -> usize {
+    opcodes(&x86::stack_mask(a, frame), &x86::stack_mask(b, frame)).iter().map(|o| {
+        if o.0 != Tag::Equal {
+            o.2 - o.1 + o.4 - o.3
+        } else {
+            (o.1..o.2).filter(|&i| {
+                let j = o.3 + i - o.1;
+                a[i] != b[j] && x86::frame_explain(&a[i..=i], &b[j..=j], frame).is_none()
+            }).count() * 2
+        }
+    }).sum()
+}
+
 /// diffclass.join: differing opcodes joined into hunks when within 4 equal instructions of each other.
 fn join(raw: impl IntoIterator<Item = (usize, usize, usize, usize)>) -> Vec<(usize, usize, usize, usize)> {
     let mut hs: Vec<(usize, usize, usize, usize)> = vec![];
@@ -216,6 +233,12 @@ fn aligned(la: &[Line], lb: &[Line], hs: &[Hunk]) -> Aligned {
                 m.insert(i1 + k, j1 + k);
             }
         }
+        // the first lines of an explained hunk are one place of the code on both sides: a jump to it is the same
+        // jump though the lines before moved (a match-base report: a longer fpu hunk moved a loop head by 8 bytes,
+        // and the loop's jne counted as other control flow)
+        if !matches!(cls.as_str(), "code" | "fill" | "") && i1 < la.len() && j1 < lb.len() {
+            starts.insert((i1, j1));
+        }
         let mut theirs: HashMap<&str, VecDeque<usize>> = HashMap::new();
         for k in j1..j2 {
             if lb[k].target.is_some() {
@@ -357,14 +380,20 @@ pub fn verdict(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> Verdict {
 /// frames differ in size and the plain diff is no shape.
 pub fn analyse(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> (Vec<Hunk>, Verdict) {
     let hs = classify_hunks(la, lb);
-    let v = judge(la, lb, &hs, tables);
+    let mut v = judge(la, lb, &hs, tables);
+    let frame = x86::frame_delta(&texts(la), &texts(lb));
     if v.shape {
+        // the distance as asmdiff counts it whenever the frames differ
+        if let Some(f) = frame {
+            v.distance = frame_distance(&texts(la), &texts(lb), f);
+        }
         return (hs, v);
     }
-    let Some(frame) = x86::frame_delta(&texts(la), &texts(lb)) else { return (hs, v) };
+    let Some(frame) = frame else { return (hs, v) };
     let fh = frame_hunks(la, lb, frame);
     let mut fv = judge(la, lb, &fh, tables);
     fv.frame = Some(frame);
+    fv.distance = frame_distance(&texts(la), &texts(lb), frame);
     (fh, fv)
 }
 
@@ -706,9 +735,10 @@ mod tests {
         assert!(!judge(&a, &b, &classify_hunks(&a, &b), None).shape);
         let (hs, v) = analyse(&a, &b, None);
         assert!(v.shape && v.frame == Some((0xcc, 0xc8)) && hs.iter().all(|h| h.4 == "frame"));
+        assert_eq!(v.distance, 0); // the frame-aligned count, as asmdiff's (a report: dist counted the shifted lines)
         assert!(hs[0].5.contains("shifted by 0x4 (frame 0xcc vs 0xc8)") && v.summary().contains("frame 0xcc vs 0xc8"));
         let (hs, v) = analyse(&a, &f("0xc8", "0xcc", "0x78", "mov dword ptr [esp + 0x14], 0"), None);
-        assert!(!v.shape);
+        assert!(!v.shape && v.distance == 2, "{}", v.distance);
         assert_eq!(hs.iter().filter(|h| h.4 == "code").map(|h| (h.0, h.1)).collect::<Vec<_>>(), [(8, 9)]);
         let (hs, v) = analyse(&a, &f("0xc8", "0xc4", "0x78", st), None);
         assert!(!v.shape && hs.iter().any(|h| h.4 == "code"));
@@ -742,6 +772,14 @@ mod tests {
         out[1] = ("je X", Some(0x40));
         let v = verdict(&a, &jumps(&out), None);
         assert!(!v.branches.is_empty() && v.branches[0].contains("outside the code"));
+        // a jump to the first line of an fpu hunk on both sides is the same jump, the hunk's lines differing (a
+        // match-base report: a loop head moved by a longer fpu hunk counted as a flow difference)
+        let ours = [("test eax, eax", None), ("je X", Some(3)), ("mov eax, 1", None), ("fld dword ptr [ecx]", None), ("fadd st(1)", None),
+                    ("fstp st(0)", None), ("ret", None)];
+        let theirs = [("test eax, eax", None), ("je X", Some(3)), ("mov eax, 1", None), ("fld st(1)", None), ("fld dword ptr [ecx]", None),
+                      ("faddp st(1)", None), ("fstp st(0)", None), ("ret", None)];
+        let v = verdict(&jumps(&ours), &jumps(&theirs), None);
+        assert!(v.branches.is_empty() && v.hunks.iter().all(|h| h.0 == "fpu"), "{:?} {:?}", v.branches, v.hunks);
     }
 
     /// A switch at the function's start: three cases and a default, the 3-entry jump table at +0x28 after three

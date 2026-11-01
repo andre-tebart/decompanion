@@ -136,6 +136,8 @@ def test_compile_and_byte_match(tiny):
     unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return nothing;\n}\n")
     code, out = dcp(tiny, "build")
     assert code == 1 and "src/net.c(6)" in out and "C2065" in out, out
+    # the last line names the failed unit, not the grades (a report: `| tail -1` read as a grade fall)
+    assert out.rstrip().splitlines()[-1].startswith("  FAILED units=net  "), out
     code, out = dcp(tiny, "check")
     assert code == 1 and "M.compile" in out
 
@@ -170,6 +172,24 @@ def test_byte_match_with_a_differing_literal_is_no_byte(tiny):
 
 
 @needs_vc6
+def test_asmdiff_symbols_marks_an_alias_equal(tiny):
+    """Our code reads 0x10002000 by another source name than the ledger's, a line later than the original: `=` (the
+    same address under another name), not `!` (a wrong datum), although the original's bytes at our offset hold
+    something else (a match-base report: every alias read as `!`); the two names are a C.name.alias warning."""
+    with_vc6(tiny)
+    write(tiny, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n"
+                                 "0x10001030 boundary end tu=net -- f3 is another unit\n")
+    write(tiny, "include/other.h", "extern int net_Counter;  /* 0x10002000 */\n")
+    unit(tiny, "net", '#include "other.h"\nint counter = 0x1234;  /* 0x10002000 */\nvoid put(int x);\n',
+         "/* 0x10001020, reads the counter */\nint get(void)\n{\n    put(1);\n    return net_Counter;\n}\n")
+    code, out = dcp(tiny, "build")
+    code, out = dcp(tiny, "asmdiff", "get", "--symbols")
+    assert "=  " in out and "dword ptr [net_Counter]   | mov eax, dword ptr [counter]" in out and "\n!  " not in out, out
+    code, out = dcp(tiny, "check", "--strict")
+    assert "C.name.alias" in out and "counter (src/net.c:2), net_Counter (include/other.h:1)" in out, out
+
+
+@needs_vc6
 def test_rename_counts_the_errors_of_the_tree_as_from_before(tiny):
     """An M9 an edit brought (not built yet), then one the store holds under the old name: neither is the rename's
     (exit 0, `0 new error(s)`); an error the rename brings still fails it (a match-base report: the rename of a
@@ -195,6 +215,12 @@ def test_rename_counts_the_errors_of_the_tree_as_from_before(tiny):
     assert code == 0, out
     code, out = dcp(tiny, "rename", "counter_value", "FUN_10001021", "--why", "a placeholder of no start (L5)")
     assert code == 1 and "check: 1 new error(s) after the rename, 0 from before" in out and "L5" in out, out
+    # a refusal writes nothing (a match-base report: the rename stayed written although it failed the check): the
+    # files, names.log and the objects are put back, nothing compiles again
+    assert "nothing renamed" in out and "counter_value(void)" in (tiny / "src/net.c").read_text(), out
+    assert "FUN_10001021" not in (tiny / "names.log").read_text()
+    code, out = dcp(tiny, "build")
+    assert code == 0 and "compiled=0" in out, out
 
 
 @needs_vc6

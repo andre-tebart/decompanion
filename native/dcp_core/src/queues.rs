@@ -531,13 +531,49 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
                 Some(o) if o == format!("@{l}") => format!("@{l} reason replaced"),
                 Some(o) => format!("{o} -> @{l}"),
             };
-            (format!("{stripped} @{l} {reason}"), action)
+            let tag = format!("@{l} {reason}");
+            let body = if raw.starts_with("/*") { wrap_tag(&stripped, *cs - own(*cs), &tag) } else { format!("{stripped} {tag}") };
+            (body, action)
         }
     };
     let new_raw = if raw.starts_with("/*") { format!("/*{new_body} */") } else { format!("//{new_body}") };
     let out: String = tx[..*cs].iter().collect::<String>() + &new_raw + &tx[*ce..].iter().collect::<String>();
     crate::edit::write(&path, &out)?;
     Ok(action)
+}
+
+/// The column a level tag's comment is wrapped at.
+const TAG_WIDTH: usize = 110;
+
+/// A `/* ... */` comment body (`body`, the comment starting at column `col`) with the level tag appended: on its
+/// last line when it fits within TAG_WIDTH (with the closing ` */`), else on lines of its own below, indented 3
+/// past the comment's start and wrapped at TAG_WIDTH (a match-base report: each escalation grew one line of the
+/// comment, in txt.c to a single line of 600 characters). The reason's own line breaks are not kept.
+fn wrap_tag(body: &str, col: usize, tag: &str) -> String {
+    let words: Vec<&str> = tag.split_whitespace().collect();
+    let flat = words.join(" ");
+    let last = match body.rfind('\n') {
+        Some(i) => body[i + 1..].chars().count(),
+        None => col + 2 + body.chars().count(),
+    };
+    if last + 1 + flat.chars().count() + 3 <= TAG_WIDTH {
+        return format!("{body} {flat}");
+    }
+    let indent = " ".repeat(col + 3);
+    let room = TAG_WIDTH.saturating_sub(indent.len() + 3).max(40);
+    let mut lines: Vec<String> = vec![];
+    let mut cur = String::new();
+    for w in words {
+        if !cur.is_empty() && cur.chars().count() + 1 + w.chars().count() > room {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(w);
+    }
+    lines.push(cur);
+    format!("{body}\n{indent}{}", lines.join(&format!("\n{indent}")))
 }
 
 /// The line of a graded function's address comment.
@@ -668,11 +704,20 @@ mod level_tests {
         crate::edit::write(&format!("{root}/src/u.c"), orig).unwrap();
         let why = "body reconstructed (354 ins): fall = step * g and perMass = step / mass;\n   the [esp+0x18] / ebx choice is left";
         assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep added");
+        // too long for the comment's last line: lines of its own below it, indented, within TAG_WIDTH (a match-base
+        // report: escalations grew one line to 600 characters); the scan reads the reason over the lines
         let tagged = crate::edit::read(&format!("{root}/src/u.c"));
-        assert!(tagged.contains(&format!("while it flies. @deep {why} */\nvoid f")), "{tagged}");
+        assert!(tagged.contains("while it flies.\n   @deep body reconstructed (354 ins): fall = step * g and perMass = step / mass; the [esp+0x18] / ebx\n   \
+                                 choice is left */\nvoid f"), "{tagged}");
+        assert!(tagged.lines().all(|l| l.chars().count() <= TAG_WIDTH), "{tagged}");
+        if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &tagged) {
+            assert_eq!(part.functions[0].1 .0.as_deref(), Some(why.split_whitespace().collect::<Vec<_>>().join(" ").as_str()));
+        }
         assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("x * y (z)"), 1).unwrap(), "@deep reason replaced");
         assert!(crate::edit::read(&format!("{root}/src/u.c")).contains("while it flies. @deep x * y (z) */\nvoid f"));
         assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep reason replaced");
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep reason replaced");
+        assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), tagged); // replaced, not appended
         assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed");
         assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), orig);
         let _ = std::fs::remove_dir_all(&dir);

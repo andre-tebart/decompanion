@@ -307,8 +307,8 @@ def test_session_start_and_wrap(tiny):
     write(tiny, ".gitignore", "/build/\n.dcp/\n")
     git(tiny, "add", "-A")
     git(tiny, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init")
-    code, out = dcp(tiny, "session", "start")
-    assert code == 0 and "gate: ok" in out and "next=0x10001000" in out, out
+    code, out = dcp(tiny, "session", "start", "--kind", "layout")
+    assert code == 0 and "gate: ok" in out and "next=0x10001000" in out and "over=yes" in out, out
     assert (tiny / ".dcp/session.json").exists()
     code, out = dcp(tiny, "session", "status")
     assert code == 0 and "session=running" in out and "elapsed=0m" in out and "over=no" in out, out
@@ -391,6 +391,10 @@ def test_rename_is_symbol_exact(tiny):
     assert "s.a_10001000 = count;" in text and "return s.a_10001000;" in text
     assert "int a_10001000 = 1;" in text and "return a_10001000 + checksum + a_10001000;" in text
     assert "struct S { int a_10001000; };" in text
+    # the replacements inside comments are listed for review (a match-base report: a note arguing from two names
+    # read "NEW ... NEW" after the rename)
+    assert "  comments: 1 line(s) where a_10001000 stood inside a comment now read checksum" in out, out
+    assert "    src/a.c:4: /* 0x10001000, checksum */" in out, out
 
 
 def test_rename_collides_only_with_code(tiny):
@@ -564,3 +568,12 @@ def test_disasm_inside_an_instruction(tiny):
     assert code == 0 and "is inside an instruction" in out and f"disasm=0x{second:08x}.." in out, out
     assert "do not decode" not in out
     assert [l.split()[0] for l in out.splitlines() if l.startswith("   0x")][0] == f"0x{second:08x}"
+
+
+def test_session_start_guidance_by_kind():
+    """The line after `gate: ok` fits the session's kind (a match-base report: the layout clock's guidance in a
+    match-base session could make an agent stop early)."""
+    from decompanion.cli_session import guidance
+    assert "over=yes" in guidance("layout") and "functions" not in guidance("layout")
+    assert "counted in functions" in guidance("match-base") and "over=yes" not in guidance("match-base")
+    assert "A layout session" in guidance(None) and "A match-base session" in guidance(None)

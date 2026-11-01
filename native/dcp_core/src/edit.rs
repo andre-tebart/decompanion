@@ -198,6 +198,28 @@ pub fn replace_words(text: &str, mapping: &BTreeMap<String, String>, skip: Optio
     (out, n)
 }
 
+/// The lines (from 1) where `name` occurs as a whole word inside a comment: what a rename rewrites in prose.
+pub fn comment_lines(text: &str, name: &str) -> Vec<usize> {
+    if !text.contains(name) {
+        return vec![];
+    }
+    let pat = word(name);
+    let mut out: Vec<usize> = vec![];
+    for m in TOKEN.find_iter(text) {
+        let s = m.as_str();
+        if !(s.starts_with("//") || s.starts_with("/*")) || !s.contains(name) {
+            continue;
+        }
+        for w in pat.find_iter(s) {
+            let line = text[..m.start() + w.start()].matches('\n').count() + 1;
+            if out.last() != Some(&line) {
+                out.push(line);
+            }
+        }
+    }
+    out
+}
+
 /// Replace every whole-word occurrence of each old name by its new one in one pass over src/ and include/ (not
 /// inside string literals or #include lines; not at the positions skip[file] gives). {file: replacements};
 /// `dry` counts them and writes nothing.
@@ -517,6 +539,21 @@ pub fn header_text(unit: &str, what: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comment_lines_of_a_name() {
+        let t = "int ai_X;  /* 0x10, was ai_X */
+void f(void)
+{
+    ai_X = 1; // ai_X twice: ai_X
+    g(\"ai_X\");
+}
+/* a note
+   on ai_Xy and ai_X */
+";
+        assert_eq!(comment_lines(t, "ai_X"), vec![1, 4, 8]);
+        assert!(comment_lines(t, "nothing").is_empty());
+    }
 
     #[test]
     fn rename_leaves_strings_and_includes() {

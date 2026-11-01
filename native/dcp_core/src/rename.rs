@@ -8,7 +8,8 @@
 //! OLD; when NEW occurs already and is not OLD's own (the ledger names another address NEW, or OLD has no address):
 //! NEW written by hand in part for OLD's address is completed; when the pairs of a call chain or repeat. A success
 //! prints per pair the rename record (files, replacements, decl lines) and one line per changed file, with its first
-//! changed lines (`LINE: text` as it reads now, 4 per file, `(+N more line(s))`). names.log
+//! changed lines (`LINE: text` as it reads now, 4 per file, `(+N more line(s))`), and every line where OLD stood inside
+//! a comment (`comments:`, for review: prose may argue from the old name). names.log
 //! records each event, with the address the ledger knows for OLD, all of a call's events in one append. The write is
 //! all or nothing: a failed write of a source, a decl file or names.log puts every file back as it read before
 //! (an error, exit 1). The rename done by hand already (OLD nowhere,
@@ -17,6 +18,9 @@
 //!
 //! A symbol with an address is renamed where clang finds it, not where a local, a parameter or a field of the same
 //! name stands (local_refs); a name without one (a type, a field) by its words.
+//!
+//! A rename the check after its rebuild finds new errors with (NEW declared already with another type, a placeholder
+//! of no start) is refused like any other: every file, names.log and the tu rows are put back and the tree rebuilt.
 //!
 //! The rebuild after the write compiles only what the rename changed: a unit that reads a renamed file and whose
 //! preprocessed text (CL /E, before and after the write) differs only by the names keeps its object with the symbols
@@ -213,6 +217,7 @@ struct Plan {
     files: BTreeMap<String, usize>,
     decl_lines: usize,
     lines: BTreeMap<String, Vec<(usize, String)>>, // file -> (line, its text after the write) of each changed line
+    comments: Vec<(String, usize, String)>,        // (file, line, its text after the write) of each replacement in a comment
 }
 
 impl Plan {
@@ -225,6 +230,9 @@ type Refusal = (String, String, String);
 
 /// The changed lines printed per file of a pair.
 const LINES: usize = 4;
+
+/// The lines of comment replacements printed per pair.
+const COMMENT_LINES: usize = 12;
 
 struct Ctx<'a> {
     p: &'a Project,
@@ -273,7 +281,7 @@ fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> PyResult<Res
         .filter(|p| pat.is_match(&std::fs::read_to_string(p).unwrap_or_default()).unwrap_or(false)).collect();
     let used = E::uses(&x.root, &old);
     let mut plan = Plan { old: old.clone(), new: new.to_string(), why: why.to_string(), a, kind, decls, recorded: false, used, skip: None,
-                          files: BTreeMap::new(), decl_lines: 0, lines: BTreeMap::new() };
+                          files: BTreeMap::new(), decl_lines: 0, lines: BTreeMap::new(), comments: vec![] };
     if plan.used.is_empty() && plan.decls.is_empty() {
         let mine = a.is_some_and(|a| x.names.by_name.iter().any(|n| n.0 == new && n.1.contains(&a)));
         if mine {
@@ -358,7 +366,16 @@ fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
     let old: Vec<(String, String)> = files.into_iter().map(|rel| { let t = E::read(&py_path(&format!("{root}/{rel}"))); (rel, t) }).collect();
     E::rename_words(root, &mapping, false, Some(&skip))?;
     for (rel, text) in &old {
-        changed_lines(rel, text, &E::read(&py_path(&format!("{root}/{rel}"))), plans);
+        let now = E::read(&py_path(&format!("{root}/{rel}")));
+        changed_lines(rel, text, &now, plans);
+        // the replacements inside comments, for review: prose may argue from the old name (a match-base report: a
+        // note about one object with two names read "txt_Random ... txt_Random" after the rename)
+        let now_lines: Vec<&str> = now.lines().collect();
+        for p in plans.iter_mut() {
+            for l in E::comment_lines(text, &p.old) {
+                p.comments.push((rel.clone(), l, now_lines.get(l - 1).map(|x| x.trim().to_string()).unwrap_or_default()));
+            }
+        }
     }
     for p in plans.iter_mut() {
         p.decl_lines = 0;
@@ -457,6 +474,8 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
     // the names keeps its object with the symbols renamed instead of compiling again (compile.rs rename_after)
     let touched: Vec<String> = edits.iter().flat_map(|p| p.files.keys().cloned()).filter(|f| !f.starts_with("decl/")).collect();
     let pre = crate::compile::rename_before(p, &touched).map_err(err)?;
+    // the tu rows as they are: a rename refused after the write puts them back with the files (no compile)
+    let tu_rows = crate::compile::tu_snapshot(p).map_err(err)?;
     // all or nothing: every file the rename writes is kept as it reads now; a failed write of a source, a decl file
     // or names.log puts every one back
     let mut kept: Vec<(String, Vec<u8>)> = vec![];
@@ -509,6 +528,17 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
                 x.out.push(format!("    (+{} more line(s))", lines.len() - LINES));
             }
         }
+        if !pl.comments.is_empty() {
+            x.out.push(format!("  comments: {} line(s) where {} stood inside a comment now read {} (review them: a comment may \
+                                argue from the old name)", pl.comments.len(), pl.old, pl.new));
+            for (f, n, t) in pl.comments.iter().take(COMMENT_LINES) {
+                let t: String = if t.chars().count() > 110 { t.chars().take(107).collect::<String>() + "..." } else { t.clone() };
+                x.out.push(format!("    {f}:{n}: {t}"));
+            }
+            if pl.comments.len() > COMMENT_LINES {
+                x.out.push(format!("    (+{} more line(s))", pl.comments.len() - COMMENT_LINES));
+            }
+        }
         if crate::srcscan::placeholder_whole(&pl.old).is_some() {
             let mut views: Vec<String> = E::words_with_prefix(&root, &pl.old).into_iter().filter(|w| {
                 *w != pl.old && w[pl.old.len()..].chars().next().is_some_and(|c| c.is_uppercase())
@@ -543,6 +573,27 @@ pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<
     for e in new.iter().take(10) {
         x.out.push(format!("  {} {} {:#010x}: {}", e.0, e.1, e.2, e.3));
     }
-    let rc = if new.is_empty() { 0 } else { 1 };
-    Ok((x.out, errs, rc))
+    if new.is_empty() {
+        return Ok((x.out, errs, 0));
+    }
+    // a rename that brings an error is refused, and a refusal writes nothing: every file is put back as it read
+    // before (sources, decl files, names.log) and the tree rebuilt (a match-base report: NEW was declared already
+    // with another array size; the rename wrote both declarations into one unit, then failed the check)
+    let stuck: Vec<String> = kept.iter().filter(|(path, b)| std::fs::read(path).ok().as_ref() != Some(b))
+        .filter_map(|(path, b)| E::write_bytes(path, b).err()).collect();
+    let pairs_txt: Vec<String> = edits.iter().map(|p| format!("{} -> {}", p.old, p.new)).collect();
+    let msg = format!("the rename brings {} new error(s) (listed above; fix them first, e.g. a declaration of the new name with another type)",
+                      new.len());
+    for pl in &edits {
+        x.out.push(record(&[("rename", s(pl.old.clone())), ("to", s(pl.new.clone())), ("error", s(msg.clone()))]));
+    }
+    if stuck.is_empty() {
+        crate::compile::tu_restore(p, &tu_rows).map_err(err)?;
+        rebuild.call0()?;
+        x.out.push(format!("rename: refused, every file put back as it was, nothing renamed ({})", pairs_txt.join(", ")));
+        errs.push(format!("dcp rename: {msg}: nothing written"));
+    } else {
+        errs.push(format!("dcp rename: {msg}, and putting back failed for {} file(s): {} (git checkout them)", stuck.len(), stuck.join("; ")));
+    }
+    Ok((x.out, errs, 1))
 }

@@ -34,7 +34,9 @@ def register(sub, cmd):
     s.add_argument("--why", help="the evidence (required unless every --from line carries its own)")
     from . import cli_session as SE
     ses = sub.add_parser("session", help="the session protocol").add_subparsers(dest="sub", required=True)
-    cmd(ses, "start", SE.cmd_session_start, "the session gate (clean tree, built, checked, linked) and the overview")
+    s = cmd(ses, "start", SE.cmd_session_start, "the session gate (clean tree, built, checked, linked) and the overview")
+    s.add_argument("--kind", choices=SE.KINDS, help="the session's kind: the guidance after the gate (layout: the clock; "
+                                                     "match-base: counted in functions)")
     cmd(ses, "wrap", SE.cmd_session_wrap, "build, link, check, promote, and the computed session report")
     s = cmd(ses, "status", SE.cmd_session_status, "the session clock: base, start time, minutes elapsed and left, over")
     s.add_argument("--minutes", type=int, default=30, help="the session length (default 30)")

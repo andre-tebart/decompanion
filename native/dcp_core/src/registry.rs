@@ -27,6 +27,11 @@ pub static RULES: &[RuleDef] = &[
         doc: "A direct call whose target lies strictly inside a function (not at its start) contradicts that function's\nextent or the call's decoding.",
     },
     RuleDef {
+        id: "C.name.alias", version: "1", ceiling: 3, phase: "C", loader: false,
+        needs: &["L.src"], outputs: &[], inputs: &[],
+        doc: "Several source names declared for one data address (the address comments of definitions and externs; a\nview is another object) are one object under several names: a warning listing each name where it is\ndeclared. Native: native/dcp_core/src/setup.rs c_name_alias.",
+    },
+    RuleDef {
         id: "C.toolchain", version: "2", ceiling: 3, phase: "C", loader: false,
         needs: &["S.rich"], outputs: &[], inputs: &["toolchain"],
         doc: "The target's toolchain declaration ([[target]] compiler / linker with reason.compiler / reason.linker, or\nthe [toolchain] defaults it inherits; written by `dcp toolchain declare`) against the Rich header's\ncandidates (S.rich): a declared compiler, linker or cflags without a reason is an error; when the Rich\nheader lists compiler entries, the declared compiler must name the build of one of them (the last number of\nthe declaration); the same for the linker and the linker entries. Waits until both are declared (the\nobligations toolchain.compiler / toolchain.linker).",
@@ -175,6 +180,11 @@ pub static RULES: &[RuleDef] = &[
         id: "L.src.extent", version: "1", ceiling: 1, phase: "L", loader: false,
         needs: &["L.src", "L.decl", "L.decl.start", "S.sections", "S.codewalk", "S.crt.code", "S.thunk", "S.fill", "M.match", "S.exports", "S.entry"], outputs: &["symbol"], inputs: &[],
         doc: "A sourced function whose start no other function covers (the walk did not reach it: an image without base\nrelocations hides most call-only and pointer-only functions; it does not byte-match) owns its code by the\ncontiguity convention W1 of rules/walk.py: from its start up to the next stop (any known start, the start of\nany claimed symbol or region, a declared unit boundary, the end of the code section), less the alignment fill\nat the end (Toolchain fill forms, at most function_alignment - 1 bytes), as a `func` symbol {extent: source};\nthe trailing fill as a `fill` symbol. Declared: the start is the address comment's (a premise), the extent a\nconvention. Nothing is claimed when the range is only fill. After the end of any claimed code (a function,\nits jump or index table, a match's compared section), a gap of less than function_alignment bytes up to the\nnext stop is claimed too: first a match's padding inside our compiled section (compared equal: `fill`\n{extent: matched}), then alignment fill (`fill` {extent: source}). S.fill cannot see these gaps: it claims\nfill that ends at a claimed byte, and the next function may be one only this rule claims. Native:\nnative/dcp_core/src/layout.rs.",
+    },
+    RuleDef {
+        id: "L.src.refs", version: "1", ceiling: 1, phase: "L", loader: false,
+        needs: &["L.src.extent", "M.match", "S.codewalk", "S.relocs", "S.sections"], outputs: &["ref"], inputs: &[],
+        doc: "The references of a sourced function the walk does not reach (S.codewalk has no function at its start: an\nimage without base relocations hides the functions only a pointer reaches). The function's code is\ndescended inside the extent the ledger gives it (L.src.extent's convention, M.match's comparison): a return\nor an unconditional jump ends a path (W4), a jump out of the extent is a tail call, a jump table's entries\ninside the extent are paths. Its calls, tail calls, code immediates at relocation sites and memory operands\ninto the image are `ref` facts like the walk's, declared (they rest on the address comment's start). Native:\nnative/dcp_core/src/walk.rs l_src_refs.",
     },
     RuleDef {
         id: "L10.unexplained", version: "2", ceiling: 1, phase: "L10", loader: false,
