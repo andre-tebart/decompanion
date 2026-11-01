@@ -3,7 +3,10 @@
 //! before the first file-scope statement that uses a name the headers declare when that comes first, or before the
 //! line --at names; written to build/lint/<target>/trial/) is parsed by clang the way `dcp lint` parses it (the same
 //! flags, system and include directories), and so is the unit as it is; the diagnostics only the trial has are what
-//! the include causes:
+//! the include causes (a group of diagnostics compared by files, messages and lines, a line of the unit's file by
+//! its text, since the include shifts the trial's lines). A finding whose diagnostic group has a line with an
+//! exemption marker (`@original why` / `@vc6 why`, lint::exemption, the lines `dcp lint` exempts for M6) is listed
+//! with `exempt=<marker>` and blocks nothing: the summary's counts, the exit code and --write leave it out.
 //!
 //!   supersedes  a declaration of the unit the header declares differently (`conflicting types`, `redefinition ..
 //!               with a different type`, a struct defined twice): the local one goes, and its users follow the
@@ -74,7 +77,6 @@ re!(INCLUDE_LINE, r#"(?m)^[ \t]*#[ \t]*include[ \t]+"([^"]+)""#);
 re!(IDENT, r"\b[A-Za-z_]\w*\b");
 re!(EXTERN_AT, r"^([ \t]*)extern\b([^;(]*);");
 re!(DECLARATOR, r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$");
-re!(EXEMPT, r"@(original|vc6)\b");
 re!(INT_CONST, r#"^(?:[-+~]?\s*(?:0[xX][0-9a-fA-F]+|\d+)[uUlL]*|'(?:\\.|[^'\\])+'|sizeof\b.*|NULL)$"#);
 re!(FLOAT_CONST, r"^[-+]?\s*(?:(?:\d+\.\d*|\.\d+)(?:[eE][-+]?\d+)?|\d+[eE][-+]?\d+)[fFlL]?$");
 re!(CAST, r"^\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*[\s\w]*\**\s*\)");
@@ -152,9 +154,6 @@ fn fmt_group(g: &Group) -> String {
     s
 }
 
-fn key(g: &Group) -> Vec<(String, i64, String)> {
-    g.iter().map(|d| (d.file.clone(), d.line, d.msg.clone())).collect()
-}
 
 /// An M7 call: (callee, `proto` through a K&R declaration / `undeclared`); None for any other diagnostic.
 fn call_of(d: &Dg) -> Option<(String, &'static str)> {
@@ -490,6 +489,7 @@ struct Trial {
     base: Vec<Group>,
     tri: Vec<Group>,
     new: String,
+    lines: [Vec<String>; 2], // the unit file's lines: the base's, the trial copy's
     vc6: Option<(Vec<Dg>, Vec<Dg>)>,
     pos: usize,
 }
@@ -603,7 +603,38 @@ fn trial(x: &Ctx, unit: &str, headers: &[String], drop: &BTreeMap<i64, HashSet<S
         (Some(b), Some(n)) => Some((map_diags(&a, &old, &rb, b), map_diags(&a, &new, &rn, n))),
         _ => None,
     };
-    Ok(Trial { unit: a, base: grouped(base), tri: grouped(tri), new, vc6, pos })
+    let split = |t: &str| t.split('\n').map(|l| l.to_string()).collect::<Vec<_>>();
+    let lines = [split(&old), split(&new)];
+    Ok(Trial { unit: a, base: grouped(base), tri: grouped(tri), new, lines, vc6, pos })
+}
+
+impl Trial {
+    /// A diagnostic's line as its text reads: the unit file's in the base or the trial copy, another file's as the
+    /// file reads.
+    fn text(&self, d: &Dg, base: bool, rd: &mut Reader) -> String {
+        if d.file == self.unit.file {
+            let ls = &self.lines[if base { 0 } else { 1 }];
+            return if d.line > 0 { ls.get(d.line as usize - 1).cloned().unwrap_or_default() } else { String::new() };
+        }
+        rd.raw(&format!("{}:{}", d.file, d.line))
+    }
+
+    /// The trial's error groups the base does not have. A group compares by its diagnostics' files, messages and
+    /// lines, a line of the unit file by its text: the includes (and the dropped duplicates) shift the trial's lines,
+    /// and an error the unit had before is not the includes' doing.
+    fn new_errors(&self, rd: &mut Reader) -> Vec<&Group> {
+        let mut key = |g: &Group, base: bool| -> Vec<(String, String, String)> {
+            g.iter().map(|d| (d.file.clone(), d.msg.clone(), if d.file == self.unit.file { self.text(d, base, rd) } else { d.line.to_string() })).collect()
+        };
+        let seen: HashSet<_> = self.base.iter().map(|g| key(g, true)).collect();
+        self.tri.iter().filter(|g| g[0].kind == "error" && !seen.contains(&key(g, false))).collect()
+    }
+
+    /// The exemption marker of a trial group (lint::exemption): the first any of its lines carries, as dcp lint
+    /// exempts an M6 group.
+    fn exemption(&self, g: &[Dg], rd: &mut Reader) -> Option<&'static str> {
+        g.iter().find_map(|d| crate::lint::exemption(&self.text(d, false, rd)))
+    }
 }
 
 /// The VC6 errors only the trial has (by file and message: the trial's lines are shifted).
@@ -628,7 +659,7 @@ struct Item {
     evidence: Vec<String>,
     fns: Vec<i64>,
     sites: Vec<String>,
-    exempt: bool,
+    exempt: Option<&'static str>, // the marker of an exempt finding (lint::exemption): not a blocker
 }
 
 struct Analysis {
@@ -650,7 +681,6 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
     let old_lines: Vec<&str> = old_text.split('\n').collect();
     let last_inc = t.pos as i64 - 1; // the trial includes follow the file's line index pos - 1
     let n_added = headers.len() as i64;
-    let seen: HashSet<_> = t.base.iter().map(key).collect();
     let mut base_calls: BTreeMap<(String, String), Vec<i64>> = BTreeMap::new();
     for g in &t.base {
         let d = &g[0];
@@ -692,11 +722,11 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
             if let Some((c, _)) = call_of(d).filter(|c| c.0 != "?") {
                 trial_calls.insert((d.file.clone(), c));
             }
-            continue;
         }
-        if d.kind != "error" || seen.contains(&key(g)) {
-            continue;
-        }
+    }
+    for g in t.new_errors(&mut rd) {
+        let d = &g[0];
+        let exempt = t.exemption(g, &mut rd);
         let name = symbol_of(g);
         if ARGS.is_match(&d.msg) {
             let note = g[1..].iter().find(|x| x.msg.contains("declared here"));
@@ -704,7 +734,7 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
             let func = fn_at(d);
             let evidence = call_evidence(x, capstone, &names, func, callee.as_deref())?;
             items.push(Item { kind: "call", name: callee, at: fix(d), other: note.map(fix), msg: d.msg.clone(), ours: rd.line(&fix(d)),
-                              theirs: note.map(|n| rd.line(&fix(n))).unwrap_or_default(), func, evidence, ..Default::default() });
+                              theirs: note.map(|n| rd.line(&fix(n))).unwrap_or_default(), func, evidence, exempt, ..Default::default() });
             continue;
         }
         if CONFLICT.is_match(&d.msg) && g.len() > 1 {
@@ -713,7 +743,6 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
             let ours = sides.iter().position(|s| is_unit(&s.file));
             let theirs = (0..2).find(|&i| Some(i) != ours && sides[i].file.starts_with("include/"));
             let Some(ours) = ours else {
-                let exempt = g.iter().any(|y| EXEMPT.is_match(&rd.raw(&fix(y))));
                 items.push(Item { kind: "clash", name, at: fix(d), other: Some(fix(note)), msg: d.msg.clone(), ours: rd.line(&fix(d)),
                                   theirs: rd.line(&fix(note)), exempt, ..Default::default() });
                 continue;
@@ -723,15 +752,15 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
             }
             let th = sides[theirs.unwrap_or(1)];
             items.push(Item { kind: "supersedes", name, at: fix(sides[ours]), other: Some(fix(th)), msg: d.msg.clone(), ours: rd.line(&fix(sides[ours])),
-                              theirs: rd.line(&fix(th)), func: fn_at(sides[ours]), ..Default::default() });
+                              theirs: rd.line(&fix(th)), func: fn_at(sides[ours]), exempt, ..Default::default() });
             continue;
         }
         if d.file.starts_with("include/") && !g.iter().any(|y| is_unit(&y.file)) {
-            items.push(Item { kind: "header", name, at: fix(d), msg: d.msg.clone(), ours: rd.line(&fix(d)), ..Default::default() });
+            items.push(Item { kind: "header", name, at: fix(d), msg: d.msg.clone(), ours: rd.line(&fix(d)), exempt, ..Default::default() });
             continue;
         }
         items.push(Item { kind: "other", name, at: fix(d), other: g.get(1).map(fix), msg: d.msg.clone(), ours: rd.line(&fix(d)), func: fn_at(d),
-                          ..Default::default() });
+                          exempt, ..Default::default() });
     }
     // what VC6 itself rejects and clang accepted (C2079: a struct by value, incomplete in this unit)
     let mut reported: HashSet<String> = items.iter().map(|i| i.at.clone()).collect(); // VC6's own C2371 of a `supersedes` line says the same
@@ -742,7 +771,8 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
         }
         let q = QUOTED.captures(&d.msg).map(|c| c[1].to_string());
         let ours = if d.file.is_empty() { String::new() } else { rd.line(&at) };
-        items.push(Item { kind: "vc6", name: q, at, msg: d.msg.clone(), ours, func: fn_at(&d), ..Default::default() });
+        let exempt = if d.file.is_empty() { None } else { crate::lint::exemption(&rd.raw(&at)) };
+        items.push(Item { kind: "vc6", name: q, at, msg: d.msg.clone(), ours, func: fn_at(&d), exempt, ..Default::default() });
     }
     let mut per_callee: BTreeMap<String, Vec<(String, i64)>> = BTreeMap::new();
     for ((f, callee), lines) in &base_calls {
@@ -1090,7 +1120,8 @@ pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone
         }
     };
     let db = p.store_path();
-    let count = |k: &str| an.items.iter().filter(|i| i.kind == k).count() as i64;
+    // an exempt finding is listed with its marker but counts nowhere: the line is the original's or VC6's business
+    let count = |k: &str| an.items.iter().filter(|i| i.kind == k && i.exempt.is_none()).count() as i64;
     let mut head: Vec<(&str, Tok)> = vec![("unit", s(unit)), ("headers", s(hdrs.join(",")))];
     head.extend(ORDER.iter().map(|k| (*k, Tok::I(count(k)))));
     if !an.vc6 {
@@ -1102,7 +1133,7 @@ pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone
         for i in an.items.iter().filter(|i| i.kind == kind) {
             out.push(format!("  {}", record(&[("kind", s(i.kind)), ("name", os(i.name.clone())), ("at", s(i.at.clone())),
                                               (if kind == "call" { "decl" } else { "header" }, os(i.other.clone())),
-                                              ("exempt", if i.exempt { s("@original") } else { Tok::No })])));
+                                              ("exempt", os(i.exempt.map(|m| m.to_string())))])));
             if !i.msg.is_empty() && kind != "duplicate" {
                 out.push(format!("    {}", i.msg));
             }
@@ -1196,9 +1227,9 @@ pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone
         return Ok((out, 1));
     }
     let t = trial(&x, unit, &hdrs, &drop, at).map_err(err)?;
-    let seen: HashSet<_> = t.base.iter().map(key).collect();
-    let left: Vec<&Group> = t.tri.iter().filter(|g| g[0].kind == "error" && !seen.contains(&key(g))).collect();
-    let vleft = vc6_new(&t.vc6);
+    let mut rd = Reader { root: root.clone(), memo: HashMap::new() };
+    let left: Vec<&Group> = t.new_errors(&mut rd).into_iter().filter(|g| t.exemption(g, &mut rd).is_none()).collect();
+    let vleft: Vec<Dg> = vc6_new(&t.vc6).into_iter().filter(|d| crate::lint::exemption(&t.text(d, false, &mut rd)).is_none()).collect();
     if !left.is_empty() || !vleft.is_empty() {
         out.push(record(&[("write", s("refused")), ("why", s(format!("without the duplicates the trial has {} new errors", left.len() + vleft.len()))),
                           ("at", Tok::I(t.pos as i64 + 1))])

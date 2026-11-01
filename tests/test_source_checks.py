@@ -160,6 +160,24 @@ def test_headers_conflicts(tiny):
 
 
 @pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")
+def test_headers_conflicts_exempt_and_shifted(tiny):
+    """A finding on a line with `@original` / `@vc6` (lint's exemption) is listed with its marker and blocks
+    nothing; an error the unit had before is no finding, though the include shifts its line."""
+    write(tiny, "include/net.h", "int add2(int a, int b);\n")
+    unit(tiny, "net", "extern int counter;\n",
+         "/* 0x10001030, logs hello */\nvoid log_hello(void)\n{\n"
+         "    add2(1);  /* @original the original pushes one argument */\n    counter = nope;\n}\n")
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net")
+    assert code == 0, out
+    assert "call=0  vc6=0  other=0" in out, out
+    assert "kind=call  name=add2  at=src/net.c:6  decl=include/net.h:1  exempt=@original" in out, out
+    assert "nope" not in out, out
+    code, out = dcp(tiny, "headers", "conflicts", "net", "net", "--write")
+    assert code == 0 and "write=src/net.c" in out, out
+    assert '#include "net.h"' in (tiny / "src/net.c").read_text()
+
+
+@pytest.mark.skipif(native.core().clang_library() is None, reason="libclang not installed")
 def test_headers_conflicts_warnings(tiny):
     """prototyped calls by argument class; the declaration-set warning."""
     write(tiny, "include/net.h", "int add2(int a, int b);  /* 0x10001020 */\nvoid setf(float f);\nint spare(void);\n")

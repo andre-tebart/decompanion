@@ -30,6 +30,13 @@ static TAGREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(?:struct|union
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(struct|union)\s+([A-Za-z_]\w*)").unwrap());
 static SYSINC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^[ \t]*#[ \t]*include[ \t]*<([^>]+)>").unwrap());
 static EXEMPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@(original|vc6)\b").unwrap());
+
+/// The exemption marker a source line carries (`@original why`, `@vc6 why`: the line's diagnostics are the
+/// original's or VC6's business, not clang's), the first of the line; None when it carries none. A diagnostic group
+/// is exempt when any of its lines carries one (M6, `dcp headers conflicts`).
+pub(crate) fn exemption(line: &str) -> Option<&'static str> {
+    EXEMPT.captures(line).map(|c| if &c[1] == "vc6" { "@vc6" } else { "@original" })
+}
 static CROSS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\A(?:conflicting types for|redeclaration of|redefinition of|typedef redefinition with different types) ('(\w+)'|\()").unwrap()
 });
@@ -676,7 +683,7 @@ impl Lines {
     }
 
     fn exempt(&mut self, file: &str, line: i64) -> bool {
-        self.file(file).line(line).is_some_and(|l| EXEMPT.is_match(l))
+        self.file(file).line(line).and_then(exemption).is_some()
     }
 
     fn exempt_decl(&mut self, d: &Decl) -> bool {
