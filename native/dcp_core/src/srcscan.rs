@@ -36,8 +36,10 @@ static LEAD_ADDRS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"\A\s*({ADDR_ITEM})((?:\s*[,/]\s*{ADDR_ITEM})*)")).unwrap());
 static ONE_ADDR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:([A-Za-z][A-Za-z0-9_-]*):)?(0x[0-9a-fA-F]+)").unwrap());
 pub(crate) static UNLINKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\A\s*unlinked\b\s*,?\s*(.*)").unwrap());
-static DEEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@deep\b[ \t]*(.*?)[ \t]*(?:\*/|\n|\z)").unwrap());
-static STUCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@stuck\b[ \t]*(.*?)[ \t]*(?:\*/|\n|\z)").unwrap());
+// a level tag's reason runs to the next tag or the comment's end, over line breaks (dcp escalate wraps a long one
+// onto lines of its own: queues.rs wrap_tag); its white space runs read as one space
+static DEEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@deep\b\s*(.*?)\s*(?:\*/|@stuck\b|@rough\b|\z)").unwrap());
+static STUCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@stuck\b\s*(.*?)\s*(?:\*/|@deep\b|@rough\b|\z)").unwrap());
 static ROUGH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@rough\b").unwrap());
 static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@(?:deep|stuck|rough)\b").unwrap());
 static DESCRIBED: LazyLock<Regex> =
@@ -468,8 +470,8 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         };
         let what = py_strip(py_strip(what).trim_start_matches(','));
         let what = py_strip(&SPACES.replace_all(before_tags(what), " ")).to_string();
-        let deep = DEEP.captures(body).map(|c| py_strip(&c[1]).to_string());
-        let stuck = STUCK.captures(body).map(|c| py_strip(&c[1]).to_string());
+        let deep = DEEP.captures(body).map(|c| SPACES.replace_all(py_strip(&c[1]), " ").into_owned());
+        let stuck = STUCK.captures(body).map(|c| SPACES.replace_all(py_strip(&c[1]), " ").into_owned());
         let unlinked = um.is_some() && addrs.is_empty();
         functions.push(((rel.to_string(), line, unit.clone(), fname, addrs, unlinked, what),
                         (deep, stuck, ROUGH.is_match(body), sf.line_of(sf.comments[k].0), fstatic, end.map(|e| e.0).unwrap_or(0), ts)));

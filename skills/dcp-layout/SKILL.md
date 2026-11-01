@@ -36,7 +36,7 @@ Hard rules
 
 ## 1. Start
 
-1. `uv run dcp session start`. It is the gate (no open toolchain or libs obligation, clean working tree, every
+1. `uv run dcp session start --kind layout`. It is the gate (no open toolchain or libs obligation, clean working tree, every
    unit compiles, no error conflict, the link ok) and prints the overview: units, the first open function
    (`next=`), the toolchain level, the analyzer (`analyzer=ghidra  drafts=678`), then the status tail (`---
    dcp status`: the phase and the open obligations in order, one `obligation=` line each with what is missing,

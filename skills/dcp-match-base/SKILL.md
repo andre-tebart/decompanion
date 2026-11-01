@@ -44,11 +44,11 @@ Hard rules
 
 ## 1. Start
 
-1. `uv run dcp session start`. It is the gate (no open toolchain or libs obligation, a clean working tree, every
-   unit compiles, no error conflict, the link ok). On `gate: FAIL` fix what it lists (or revert), commit, start
-   again; an `obligation=toolchain.*` / `obligation=libs.archives` line is a human decision: stop and hand it to
-   the user. The session clock it mentions bounds layout sessions; a match-base session is counted in functions
-   (section 4), not minutes.
+1. `uv run dcp session start --kind match-base`. It is the gate (no open toolchain or libs obligation, a clean
+   working tree, every unit compiles, no error conflict, the link ok). On `gate: FAIL` fix what it lists (or
+   revert), commit, start again; an `obligation=toolchain.*` / `obligation=libs.archives` line is a human
+   decision: stop and hand it to the user. A match-base session is counted in functions (section 4), not
+   minutes.
 2. `uv run dcp next` - the base queue, first item first. Read the lead comment of its unit's `src/<unit>.c` (its
    `Open:` lines).
 

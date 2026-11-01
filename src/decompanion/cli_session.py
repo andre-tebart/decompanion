@@ -12,6 +12,20 @@ from .config import Project
 
 DCP_ROOT = Path(__file__).resolve().parents[2]      # the decompanion repository (installed by path): its skills/
 MINUTES = 30                                                  # the length of a session (the core's session.rs)
+KINDS = ("layout", "match-base")                              # dcp session start --kind
+
+
+def guidance(kind: str | None) -> str:
+    """The line after `gate: ok`: what bounds the session of this kind (a match-base report: the layout clock's
+    guidance in a match-base session, counted in functions, could make an agent stop early)."""
+    clock = (f"the session clock runs ({MINUTES} minutes): `dcp session status`, and the first line of `dcp layout next`; "
+             "wrap up once it says over=yes")
+    functions = "a match-base session is counted in functions (the skill's count), not minutes: `dcp next` for the first item"
+    if kind == "layout":
+        return f"gate: ok. The {clock}."
+    if kind == "match-base":
+        return f"gate: ok. This is {functions}."
+    return f"gate: ok. A layout session: {clock}. A match-base session: counted in functions, not minutes (`dcp next`)."
 
 
 def err(cmd: str, msg: str) -> int:
@@ -71,8 +85,7 @@ def cmd_session_start(args):
         overview(p)
         status_tail(p)
     native.core().session_save(root, head, states)
-    print(f"gate: ok. The session clock runs ({MINUTES} minutes): `dcp session status`, and the first line of "
-          "`dcp layout next`; wrap up once it says over=yes.")
+    print(guidance(getattr(args, "kind", None)))
     return 0
 
 
