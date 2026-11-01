@@ -437,7 +437,15 @@ def test_q4_view_forms(tiny):
     unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT_HI;\n}\n")
     code, out = dcp(tiny, "grade", "get")
     assert "Q4" not in out, out
-    assert "L15" not in dcp(tiny, "conflicts")[1]
+    out = dcp(tiny, "conflicts")[1]
+    assert "L15" not in out and "D7" not in out, out
+    # a view past its container's end reads the linker's next object (a play-session crash: d2_ShpLightTable on
+    # the 4-byte d2_ClipTop)
+    head = "int counter = 0;  /* 0x10002000 */\n#define COUNT_HI (*(int *)((char *)&counter + 4))  /* 0x10002004 */\n"
+    unit(tiny, "net", head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return COUNT_HI;\n}\n")
+    dcp(tiny, "build")
+    out = dcp(tiny, "conflicts")[1]
+    assert "D7" in out and "view COUNT_HI at 0x10002004 is counter +0x4, outside counter (4 bytes)" in out, out
 
 
 @needs_vc6

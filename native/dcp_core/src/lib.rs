@@ -10,6 +10,7 @@ mod clicmd;
 mod cliread;
 mod coff;
 mod decl;
+mod extent;
 mod crt;
 mod dialect;
 mod draft;

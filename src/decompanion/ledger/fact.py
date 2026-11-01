@@ -53,7 +53,7 @@ class Kind(StrEnum):
     ref = "ref"              # {rkind: call|jmp|reloc|operand|fptr, to}; at the site interval
     grade = "grade"          # {code, readability, failing}
     build = "build"          # {tu, ok, obj?, errors}
-    evidence = "evidence"    # {ekind: lit|fill|leak, ...}: computed layout evidence, never a claim by itself
+    evidence = "evidence"    # {ekind: lit|fill|leak|extent, ...}: computed evidence, never a claim by itself
 
 
 class Severity(StrEnum):

@@ -175,8 +175,12 @@ One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte 
   recompiles only its includers, and no function anywhere may get worse (`uv run dcp check`: no M1) except by
   an accepted fall (2.6).
 - Never rename struct fields or types other units' matched code uses without checking them (`dcp refs`).
-- Data errors (D1, D4, D5) are not base work, except the ones your own change causes; `uv run dcp data map UNIT`
-  shows a unit's data when a function needs it.
+- Data errors (D1, D4, D5, D7, D8) are not base work, except the ones your own change causes; `uv run dcp data map UNIT`
+  shows a unit's data when a function needs it. D7 (a view past its container's end) and D8 (the original's code
+  uses more bytes as one object than the declaration holds: a field access, a loop bound, a block copy, a reader
+  call) are run-time corruption the gate cannot see otherwise: declare the object at the size D8 names, with the
+  names inside it as views or fields of its type. A reader or copier of the game (`vfs_fread(buf, size, n, f)`)
+  tells S.extent its size through `uv run dcp decl add "0xADDR writes ptr=a0 size=a1*a2 -- why"`.
 - Gap data: the `full_data_<addr>` / `full_rdata_<addr>` blocks (defined in the gap block at the end of `src/main.c`,
   `extern GAPDATA` elsewhere) are bytes no symbol covers yet: name, type, extent and owner are all unknown, and
   their place in main says nothing about ownership. When the function you raise shows what one is, settle all
@@ -190,7 +194,8 @@ One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte 
     functions (`dcp layout literals`, `dcp refs`). Move the definition into that unit's file among its data in
     address order (`dcp data map UNIT` shows where), with its address comment, and its one declaration into `include/<unit>.h`; drop every
     `extern GAPDATA` of it and use the typed name at each site.
-  - `uv run dcp check`: no D1 (overlap), no D4 (address order), no M1 (no function got worse); a matched user
+  - `uv run dcp check`: no D1 (overlap), no D4 (address order), no D8 (smaller than the original's object), no M1
+    (no function got worse); a matched user
     still matching confirms the address (`M.data.site`). A move that breaks one of these was the wrong owner or
     the wrong size: undo it, do not answer it with alignment or padding tricks.
   - An address between two units' blocks with users in both is a boundary question for layout: name and type

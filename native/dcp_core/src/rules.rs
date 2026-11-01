@@ -872,7 +872,93 @@ fn basename(p: &str) -> &str {
     p.rsplit(['/', '\\']).next().unwrap_or(p)
 }
 
-/// D1 / D4 / D5 / D6 (D.data).
+/// A data definition as D8 reads it: its address, least and object size, C name, producer.
+pub(crate) struct ExtentDecl {
+    pub lo: i64,
+    pub least: i64,
+    pub size: i64,
+    pub name: String,
+    pub by: String,
+    pub unit: String,
+    pub kind: String, // the object's section kind (data / rdata / bss)
+}
+
+/// An S.extent fact: [lo, hi) is one object of the original.
+pub(crate) struct ExtentEv {
+    pub lo: i64,
+    pub hi: i64,
+    pub base: i64,
+    pub site: i64,
+    pub how: String,
+    pub to: i64,
+}
+
+/// D8: the evidence merged into objects (overlapping ranges are one object); an object that more than one
+/// declaration overlaps, or that reaches past the one declaration's object size or starts before it, is a
+/// conflict (severity, lo, hi, message, the first declaration's producer). An error, unless the declarations are
+/// pieces of one unit and section kind that tile the object without a hole: those link where the original's bytes
+/// are (a unit's definitions keep their order and adjacency), a warning to declare the object as one. `named`: a
+/// registered name of an address.
+pub(crate) fn d8(decls: &[ExtentDecl], ev: &[ExtentEv], named: impl Fn(i64) -> Option<String>) -> Vec<(&'static str, i64, i64, String, String)> {
+    let mut ev: Vec<&ExtentEv> = ev.iter().collect();
+    ev.sort_by_key(|e| (e.lo, -e.hi));
+    let mut objects: Vec<(i64, i64, &ExtentEv)> = vec![]; // (lo, hi, the evidence reaching farthest)
+    for e in ev {
+        match objects.last_mut() {
+            Some(o) if e.lo < o.1 => {
+                if e.hi > o.1 {
+                    o.1 = e.hi;
+                    o.2 = e;
+                }
+            }
+            _ => objects.push((e.lo, e.hi, e)),
+        }
+    }
+    let mut decls: Vec<&ExtentDecl> = decls.iter().collect();
+    decls.sort_by_key(|d| d.lo);
+    let mut out = vec![];
+    for (lo, hi, why) in objects {
+        let inside: Vec<&&ExtentDecl> = decls.iter().filter(|d| d.lo < hi && lo < d.lo + d.least.max(1)).collect();
+        let Some(first) = inside.first() else { continue };
+        if inside.len() == 1 && first.lo <= lo && hi <= first.lo + first.size.max(1) {
+            continue;
+        }
+        let (base, site) = (why.base, why.site);
+        let how = match why.how.as_str() {
+            "field" => format!("an access through the address {base:#x} at {site:#x}"),
+            "bound" => format!("a loop from {base:#x} at {site:#x}"),
+            "copy" => format!("a block copy at {site:#x}"),
+            "call" => {
+                let f = named(why.to).map(|n| format!("{n} ({:#x})", why.to)).unwrap_or_else(|| format!("{:#x}", why.to));
+                format!("the address {base:#x} passed at {site:#x} to {f}, which reaches that far through it")
+            }
+            h => format!("{h} at {site:#x}"),
+        };
+        let msg = if first.lo <= lo {
+            let rest: Vec<String> = inside[1..].iter().map(|d| format!("{} (+{:#x})", d.name, d.lo - first.lo)).collect();
+            let rest = if rest.is_empty() { String::new() } else { format!("; declared inside it: {}: views of it or fields of its type", rest.join(", ")) };
+            format!("{} at {:#x} is {} bytes, the original's code uses {lo:#x}..{hi:#x} as one object ({how}): {} needs at least {} bytes{rest}",
+                    first.name, first.lo, first.size, first.name, hi - first.lo)
+        } else {
+            let names: Vec<String> = inside.iter().map(|d| format!("{} ({:#x}, {} bytes)", d.name, d.lo, d.size)).collect();
+            format!("the original's code uses {lo:#x}..{hi:#x} ({} bytes) as one object ({how}), which starts before {}: one declaration at {lo:#x} \
+                     holds {}", hi - lo, first.name, names.join(", "))
+        };
+        let tiled = inside.len() > 1 && first.lo <= lo
+            && inside.iter().all(|d| d.unit == first.unit && d.kind == first.kind && !d.unit.is_empty())
+            && inside.windows(2).all(|w| w[1].lo <= w[0].lo + w[0].size)
+            && inside.last().is_some_and(|d| hi <= d.lo + d.size);
+        if tiled {
+            out.push(("warn", lo, hi, format!("{msg} (all of unit {}, in order and without a hole: it links as the original's, declare it as one)",
+                                               first.unit), first.by.clone()));
+        } else {
+            out.push(("error", lo, hi, msg, first.by.clone()));
+        }
+    }
+    out
+}
+
+/// D1 / D4 / D5 / D6 / D7 / D8 (D.data).
 fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     let err = |e: rusqlite::Error| PyRuntimeError::new_err(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
@@ -913,6 +999,59 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
             }
         }
     }
+    // D7: a view whose offset lies at or past its container's end (a view of a view: of the definition the chain
+    // ends at)
+    let views: HashMap<String, (i64, String, String)> = store::facts(db, &ctx.db, "name", &ctx.needed, |f| f.s("view").is_some())
+        .map_err(err)?
+        .iter()
+        .map(|f| (f.s("name").unwrap_or("").to_string(), (f.lo, f.s("view").unwrap_or("").to_string(), f.by.clone())))
+        .collect();
+    let mut defs: HashMap<&str, Vec<&DataObj>> = HashMap::new();
+    for d in &objs {
+        defs.entry(d.f.s("symbol").unwrap_or("")).or_default().push(d);
+    }
+    let mut vnames: Vec<&String> = views.keys().collect();
+    vnames.sort();
+    for vname in vnames {
+        let (at, first, by) = &views[vname];
+        let mut c = first.as_str();
+        for _ in 0..8 {
+            match views.get(c) {
+                Some((_, next, _)) if !defs.contains_key(c) => c = next,
+                _ => break,
+            }
+        }
+        // the definition of that name at or below the view's address (a static name may have several)
+        let Some(d) = defs.get(c).and_then(|ds| ds.iter().filter(|d| d.f.lo <= *at).max_by_key(|d| d.f.lo)) else { continue };
+        // the object's size, padding included: past it the view is outside whatever the padding hides
+        let Some(size) = d.size() else { continue };
+        let off = at - d.f.lo;
+        if off >= size as i64 {
+            let via = if c == first { String::new() } else { format!(" (through {first})") };
+            out.conflict2("error", "D7", *at, *at + 1,
+                          format!("view {vname} at {at:#x} is {c}{via} +{off:#x}, outside {c} ({size} bytes): the view reads whatever the \
+                                   linker puts after {c}; declare {c} as large as the original's object (a struct or an array)"),
+                          by, &d.f.by);
+        }
+    }
+    // D8: the original's code proves a range one object (S.extent): one declaration must hold all of it
+    let (by_name, by_addr) = name_registry(ctx, db)?;
+    let ev: Vec<ExtentEv> = store::facts(db, &ctx.db, "evidence", &ctx.needed, |f| f.s("ekind") == Some("extent")).map_err(err)?
+        .iter()
+        .map(|f| {
+            let i = |k: &str| f.value.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+            ExtentEv { lo: f.lo, hi: f.hi, base: i("base"), site: i("site"), how: f.s("how").unwrap_or("").to_string(), to: i("to") }
+        })
+        .collect();
+    let decls: Vec<ExtentDecl> = objs.iter()
+        .filter_map(|d| d.size().map(|s| ExtentDecl { lo: d.f.lo, least: least_size(d).unwrap_or(1) as i64, size: s as i64,
+                                                      name: d.f.s("symbol").unwrap_or("").to_string(), by: d.f.by.clone(),
+                                                      unit: d.f.s("unit").unwrap_or("").to_string(), kind: d.kind().unwrap_or("").to_string() }))
+        .collect();
+    let named = |a: i64| by_addr.get(&a).and_then(|s| s.iter().next().cloned());
+    for (sev, lo, hi, msg, by) in d8(&decls, &ev, named) {
+        out.conflict(sev, "D8", lo, hi, msg, &by);
+    }
     // D4: per unit and section kind, in the unit file's text order
     let mut per: std::collections::BTreeMap<(String, &'static str), Vec<&DataObj>> = std::collections::BTreeMap::new();
     for d in &objs {
@@ -937,7 +1076,6 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
         }
     }
     // D6: pointer-table entries
-    let (by_name, by_addr) = name_registry(ctx, db)?;
     for d in &objs {
         let (Some(sym), Some(size)) = (d.symbol(), d.size()) else { continue };
         if size == 0 {
@@ -999,6 +1137,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
         "S.unknown" => crate::setup::s_unknown(ctx, db, &mut out),
         "L.decl" => crate::decl::l_decl(ctx, db, &mut out),
         "S.codewalk" => crate::walk::s_codewalk(ctx, db, &mut out),
+        "S.extent" => crate::extent::s_extent(ctx, db, &mut out),
         "M.compile" => crate::mrules::m_compile(ctx, db, &mut out),
         "M.flags.proven" => crate::mrules::m_flags_proven(ctx, db, &mut out),
         "L.decl.start" => crate::decl::l_decl_start(ctx, db, &mut out),
@@ -1143,5 +1282,34 @@ mod tests_aligned {
         assert!(aligned(b"\x55\x8b\xec\xb8\x10\x00\x00\x00\x5d\xc3").is_empty());
         // a match lines up everywhere
         assert_eq!(aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5d\xc3"), [4]);
+    }
+
+    /// D8 against the play-session crashes: a save header declared one int that the original's reader fills up to
+    /// +0xfc, its fields drafted as globals of their own; a table declared short of the loop's bound.
+    #[test]
+    fn d8_declarations_smaller_than_the_proven_object() {
+        use super::{d8, ExtentDecl, ExtentEv};
+        let decl = |lo: i64, size: i64, name: &str, unit: &str| ExtentDecl { lo, least: size, size, name: name.into(), by: format!("src:{name}"),
+                                                                             unit: unit.into(), kind: "bss".into() };
+        let ev = |lo: i64, hi: i64, how: &str, to: i64| ExtentEv { lo, hi, base: lo, site: 0x51c99d, how: how.into(), to };
+        let decls = [decl(0x76f920, 4, "ai_Unk76f920", "ls"), decl(0x76f990, 4, "full_data_76f990", "main"), decl(0x76f994, 4, "full_data_76f994", "main"),
+                     decl(0x60c7c0, 748, "ai_Unk60c7c0", "cm"), decl(0x100, 16, "whole", "a"), decl(0x200, 8, "inner", "a"),
+                     decl(0x300, 4, "gap_300", "main"), decl(0x304, 4, "gap_304", "main")];
+        let evs = [ev(0x76f920, 0x76fa1c, "call", 0x51cee0), ev(0x76f920, 0x76f924, "field", 0), ev(0x60c7c0, 0x60cb00, "bound", 0),
+                   ev(0x100, 0x110, "copy", 0), ev(0x1f8, 0x204, "copy", 0), ev(0x300, 0x308, "copy", 0)];
+        let named = |a: i64| (a == 0x51cee0).then(|| "ls_ReadSaveHeader".to_string());
+        let got = d8(&decls, &evs, named);
+        let msgs: Vec<&str> = got.iter().map(|g| g.3.as_str()).collect();
+        assert_eq!(got.iter().map(|g| (g.0, g.1, g.2, g.4.as_str())).collect::<Vec<_>>(),
+                   [("error", 0x1f8, 0x204, "src:inner"), ("warn", 0x300, 0x308, "src:gap_300"), ("error", 0x60c7c0, 0x60cb00, "src:ai_Unk60c7c0"),
+                    ("error", 0x76f920, 0x76fa1c, "src:ai_Unk76f920")], "{msgs:?}");
+        assert!(msgs[1].ends_with("(all of unit main, in order and without a hole: it links as the original's, declare it as one)"), "{}", msgs[1]);
+        let msgs = [msgs[0], msgs[2], msgs[3]];
+        assert!(msgs[2].starts_with("ai_Unk76f920 at 0x76f920 is 4 bytes, the original's code uses 0x76f920..0x76fa1c as one object (the address \
+                                     0x76f920 passed at 0x51c99d to ls_ReadSaveHeader (0x51cee0), which reaches that far through it): \
+                                     ai_Unk76f920 needs at least 252 bytes; declared inside it: full_data_76f990 (+0x70), full_data_76f994 (+0x74)"),
+                "{}", msgs[2]);
+        assert!(msgs[1].contains("ai_Unk60c7c0 needs at least 832 bytes") && !msgs[1].contains("declared inside"), "{}", msgs[1]);
+        assert!(msgs[0].contains("which starts before inner: one declaration at 0x1f8 holds inner (0x200, 8 bytes)"), "{}", msgs[0]);
     }
 }
