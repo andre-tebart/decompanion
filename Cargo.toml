@@ -1,5 +1,5 @@
 [package]
-name = "dcp_core"
+name = "dcp"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,7 +7,6 @@ edition = "2024"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 fancy-regex = "0.14"
 memchr = "2.8.3"
-pyo3 = { version = "0.30.1", features = ["abi3-py39", "generate-import-lib", "extension-module"] }
 regex = "1.13.1"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 rustc-hash = "2"
@@ -21,8 +20,13 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 sha2 = "0.11.0"
 
 [lib]
-name = "_core"
-crate-type = ["cdylib"]
+name = "dcp"
+path = "src/lib.rs"
+doctest = false
+
+[[bin]]
+name = "dcp"
+path = "src/main.rs"
 
 [profile.dev]
 opt-level = 1

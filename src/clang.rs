@@ -5,8 +5,6 @@
 //! calling conventions of the system headers' functions. Positions as cparse documents them.
 
 use crate::error::{Error, Result};
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use regex::bytes::Regex as BRegex;
 use regex::Regex;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -218,7 +216,6 @@ pub(crate) fn load(path: &str) -> Result<(), String> {
 }
 
 /// The loaded libclang's version text.
-#[pyfunction]
 pub fn clang_version() -> Result<String> {
     let a = api()?;
     Ok(take(a, unsafe { (a.clang_getClangVersion)() }))
@@ -304,7 +301,6 @@ impl Drop for Tu {
 }
 
 /// A parsed translation unit (cparse.parse); one user at a time.
-#[pyclass(frozen)]
 pub struct Unit {
     inner: Mutex<Tu>,
 }
@@ -375,48 +371,7 @@ fn lock(u: &Unit) -> std::sync::MutexGuard<'_, Tu> {
     u.inner.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-#[pymethods]
 impl Unit {
-    /// Parse again with a new text over the precompiled preamble.
-    fn reparse(&self, py: Python<'_>, text: &str) -> PyResult<()> {
-        let a = api()?;
-        let t = lock(self);
-        let ctext = text.as_bytes();
-        struct Send_(P, *const c_char);
-        unsafe impl Send for Send_ {}
-        let s = Send_(t.tu, t.path.as_ptr());
-        let r = py.detach(move || {
-            let s = s;
-            let mut un = CXUnsavedFile { name: s.1, contents: ctext.as_ptr() as *const c_char, length: ctext.len() as c_ulong };
-            unsafe { (a.clang_reparseTranslationUnit)(s.0, 1, &mut un, 0) }
-        });
-        if r != 0 {
-            return Err(Error::runtime(format!("libclang could not reparse {}", t.path_s)).into());
-        }
-        Ok(())
-    }
-
-    /// The names of every file the parse read besides the parsed one (tu.get_includes: an include per line).
-    fn includes(&self) -> Result<Vec<String>> {
-        let a = api()?;
-        let t = lock(self);
-        Ok(includes(a, t.tu))
-    }
-
-    /// cparse.model of the unit (root: the project root; text: the parsed text).
-    fn model<'py>(&self, py: Python<'py>, root: &str, text: &str) -> PyResult<Bound<'py, PyDict>> {
-        let a = api()?;
-        let t = lock(self);
-        model_py(py, &model_rs(a, &t, root, text)?)
-    }
-
-    /// cparse.diagnostics of the unit.
-    fn diagnostics<'py>(&self, py: Python<'py>, root: &str, text: &str, presumed: bool) -> PyResult<Bound<'py, PyList>> {
-        let a = api()?;
-        let t = lock(self);
-        diagnostics(py, a, &t, root, text, presumed)
-    }
-
     /// cparse.refs of the unit.
     pub(crate) fn refs(&self, root: &str, text: &str, names: Vec<String>) -> Result<Vec<(String, Vec<(usize, usize)>)>> {
         let a = api()?;
@@ -867,42 +822,7 @@ fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> Result<ModelOut> {
     Ok(ModelOut { files, deps, missing })
 }
 
-/// One file's model as Python reads it (a dict of lists of tuples).
-pub fn file_model_py<'py>(py: Python<'py>, m: &FileModel) -> PyResult<Bound<'py, PyDict>> {
-    let e = PyDict::new(py);
-    e.set_item("defs", &m.defs)?;
-    e.set_item("vars", &m.vars)?;
-    e.set_item("macros", &m.macros)?;
-    e.set_item("defines", &m.defines)?;
-    e.set_item("casts", &m.casts)?;
-    e.set_item("comments", &m.comments)?;
-    e.set_item("strings", &m.strings)?;
-    let decls = PyList::empty(py);
-    for d in &m.decls {
-        match d {
-            Decl::F(name, stat, ws, n, e, b, knr) => decls.append(("f", name, stat, ws, n, e, b, knr))?,
-            Decl::V(name, stat, ws, n, e, kind, init, agg) => decls.append(("v", name, stat, ws, n, e, kind, init, agg))?,
-        }
-    }
-    e.set_item("decls", decls)?;
-    e.set_item("types", &m.types)?;
-    e.set_item("dead", &m.dead)?;
-    Ok(e)
-}
-
-/// A parse's model as Python reads it: {files: {rel: model}, deps, missing}.
-pub fn model_py<'py>(py: Python<'py>, m: &ModelOut) -> PyResult<Bound<'py, PyDict>> {
-    let files = PyDict::new(py);
-    for (rel, f) in &m.files {
-        files.set_item(rel, file_model_py(py, f)?)?;
-    }
-    let res = PyDict::new(py);
-    res.set_item("files", files)?;
-    res.set_item("deps", &m.deps)?;
-    res.set_item("missing", m.missing)?;
-    Ok(res)
-}
-
+ 
 // ------------------------------------------------------------------------------------------------ diagnostics
 
 static QUOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"'(?:(?:struct|union|enum) )?([A-Za-z_]\w*)'").unwrap());
@@ -991,21 +911,6 @@ pub struct CDiag {
     pub flag: String,
     #[serde(default)]
     pub name: Option<String>,
-}
-
-fn diagnostics<'py>(py: Python<'py>, a: &Api, t: &Tu, root: &str, text: &str, presumed: bool) -> PyResult<Bound<'py, PyList>> {
-    let out = PyList::empty(py);
-    for d in diagnostics_rs(a, t, root, text, presumed)? {
-        let x = PyDict::new(py);
-        x.set_item("file", d.file)?;
-        x.set_item("line", d.line)?;
-        x.set_item("kind", d.kind)?;
-        x.set_item("msg", d.msg)?;
-        x.set_item("flag", d.flag)?;
-        x.set_item("name", d.name)?;
-        out.append(x)?;
-    }
-    Ok(out)
 }
 
 fn diagnostics_rs(a: &Api, t: &Tu, root: &str, text: &str, presumed: bool) -> Result<Vec<CDiag>> {
@@ -1116,8 +1021,7 @@ fn refs(a: &Api, t: &Tu, root: &str, text: &str, names: &[String]) -> Result<Vec
 
 /// cparse.function_headers: name -> the header (lower case) of every C-calling-convention function the system
 /// headers declare, parsed as one unit that includes `headers` in their order of preference.
-#[pyfunction]
-pub fn clang_function_headers(py: Python<'_>, args: Vec<String>, headers: Vec<String>) -> PyResult<Vec<(String, String)>> {
+pub fn clang_function_headers(args: Vec<String>, headers: Vec<String>) -> Result<Vec<(String, String)>> {
     let a = api()?;
     let text: String = headers.iter().map(|h| format!("#include <{h}>\n")).collect();
     let name = "dcp_system_headers.c";
@@ -1126,13 +1030,12 @@ pub fn clang_function_headers(py: Python<'_>, args: Vec<String>, headers: Vec<St
         let cargs: Vec<CString> = args.iter().map(|s| cstr(s)).collect::<Result<_>>()?;
         let argv: Vec<*const c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
         let mut un = CXUnsavedFile { name: cpath.as_ptr(), contents: text.as_ptr() as *const c_char, length: text.len() as c_ulong };
-        let _ = py;
         unsafe {
             let idx = (a.clang_createIndex)(0, 0);
             let tu = (a.clang_parseTranslationUnit)(idx, cpath.as_ptr(), argv.as_ptr(), argv.len() as c_int, &mut un, 1, KEEP_GOING);
             if tu.is_null() {
                 (a.clang_disposeIndex)(idx);
-                return Err(Error::runtime("libclang could not parse the system headers").into());
+                return Err(Error::runtime("libclang could not parse the system headers"));
             }
             Tu { index: idx, tu, path: cpath, path_s: name.to_string() }
         }

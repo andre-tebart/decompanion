@@ -12,7 +12,6 @@ use crate::frontend::{self, Front};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::canon;
-use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -244,7 +243,6 @@ fn run_threads<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
 // ------------------------------------------------------------------------------------------------ Python's face
 
 /// Whether the project's libclang is there.
-#[pyfunction]
-pub fn lint_available(project: PyRef<'_, crate::project::PyProject>) -> bool {
-    frontend::library(Some(&project.p.cfg)).is_some()
+pub fn lint_available(p: &crate::project::Project) -> bool {
+    frontend::library(Some(&p.cfg)).is_some()
 }

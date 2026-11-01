@@ -46,7 +46,6 @@ use crate::layoutview::View;
 use crate::names::Names;
 use crate::project::{py_path, Project};
 use crate::toolchain::Toolchain;
-use pyo3::prelude::*;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -225,7 +224,7 @@ fn declaring_header(p: &Project, tc: &dyn Toolchain, name: &str) -> Option<Strin
                     args.push("-isystem".into());
                     args.push(d.clone());
                 }
-                Python::attach(|py| crate::clang::clang_function_headers(py, args, headers)).map(|v| v.into_iter().collect()).unwrap_or_default()
+                crate::clang::clang_function_headers(args, headers).map(|v| v.into_iter().collect()).unwrap_or_default()
             }
             _ => HashMap::new(),
         };
@@ -452,12 +451,9 @@ fn open<'a>(p: &'a Project, capstone: &str) -> Result<Ctx<'a>> {
 }
 
 /// `dcp draft [ADDR|--next] [--unit U]` and `--show`: (the lines, the error for stderr, the exit status).
-#[pyfunction]
-#[pyo3(signature = (project, capstone, addr, next, show, unit, analyzer))]
 #[allow(clippy::too_many_arguments)]
-pub fn draft_command(project: PyRef<'_, crate::project::PyProject>, capstone: &str, addr: Option<String>, next: bool, show: bool, unit: Option<String>, analyzer: &str)
+pub fn draft_command(p: &crate::project::Project, capstone: &str, addr: Option<String>, next: bool, show: bool, unit: Option<String>, analyzer: &str)
     -> Result<(Vec<String>, Option<String>, i32)> {
-    let p = &project.p;
     let x = open(p, capstone)?;
     let resolve = |s: &str| crate::cliread::resolve_key(p, s);
     if show {

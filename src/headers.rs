@@ -54,7 +54,6 @@ use crate::project::{py_path, Project};
 use crate::readability::Source;
 use crate::srcscan::{py_strip, Src};
 use crate::store;
-use pyo3::prelude::*;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -1099,11 +1098,8 @@ fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str)
 }
 
 /// `dcp headers conflicts UNIT HEADER.. [--write] [--trial] [--at LINE]`: (the lines, the exit status).
-#[pyfunction]
-#[pyo3(signature = (project, capstone, unit, headers, write, at, try_grades=false))]
-pub fn headers_conflicts(project: PyRef<'_, crate::project::PyProject>, capstone: &str, unit: &str, headers: Vec<String>, write: bool, at: Option<i64>,
+pub fn headers_conflicts(p: &crate::project::Project, capstone: &str, unit: &str, headers: Vec<String>, write: bool, at: Option<i64>,
                          try_grades: bool) -> Result<(Vec<String>, i32)> {
-    let p = &project.p;
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];
     if frontend::library(Some(&p.cfg)).is_none() {

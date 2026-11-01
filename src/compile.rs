@@ -18,7 +18,6 @@ use crate::project::{py_path, sha256_parts, Project};
 use crate::store::canon;
 use crate::vc6::{Diag, Tools};
 use crate::with_db;
-use pyo3::prelude::*;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -700,12 +699,10 @@ pub fn rename_after(p: &Project, before: Vec<Before>, mapping: &std::collections
 // ------------------------------------------------------------------------------------------------ Python's face
 
 /// compile.ensure: (target, units, compiled, failed, removed, preprocessed, ms, unavailable, log lines).
-#[pyfunction]
-#[pyo3(signature = (project, force=false, jobs=None))]
 #[allow(clippy::type_complexity)]
-pub fn compile_ensure(project: PyRef<'_, crate::project::PyProject>, force: bool, jobs: Option<usize>)
+pub fn compile_ensure(p: &crate::project::Project, force: bool, jobs: Option<usize>)
     -> Result<(String, usize, Vec<String>, Vec<String>, Vec<String>, usize, i64, bool, Vec<String>)> {
-    let r = ensure(&project.p, force, jobs).map_err(Error::runtime)?;
+    let r = ensure(p, force, jobs).map_err(Error::runtime)?;
     Ok((r.target, r.units, r.compiled, r.failed, r.removed, r.preprocessed, r.ms, r.unavailable, r.log))
 }
 

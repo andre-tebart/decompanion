@@ -18,13 +18,8 @@ use crate::registry::{RuleDef, RULES};
 use crate::rules::{dispatch, Ctx, Inputs};
 use crate::store::DECLARED;
 use crate::{with_db, write_run, Row};
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
-use pyo3::types::PyList;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
-
-pyo3::create_exception!(_core, RuleError, PyRuntimeError);
 
 fn rule_err(msg: String) -> Error {
     Error::rule(msg)
@@ -306,26 +301,10 @@ impl<'a> Engine<'a> {
     }
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
-
-fn results_py<'py>(py: Python<'py>, res: Vec<Result_>) -> PyResult<Bound<'py, PyList>> {
-    let l = PyList::empty(py);
-    for r in res {
-        l.append((r.rule, r.ran, r.ms, r.facts, r.conflicts, r.waiting, r.ms_run, r.ms_rec))?;
-    }
-    Ok(l)
-}
-
 /// Refresh the rules (all, or `ids` and what they need) of a project's current target: [(rule, ran, ms, facts,
 /// conflicts, waiting, ms computing, ms recording)].
-#[pyfunction]
-#[pyo3(signature = (project, core_hash, capstone, ids=None, force=false))]
-pub fn engine_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, core_hash: &str, capstone: &str,
-                       ids: Option<Vec<String>>, force: bool) -> Result<Bound<'py, PyList>> {
-    let _ = core_hash; // the build's own (crate::CORE_HASH, through the project)
-    let mut e = Engine::new(&project.p, &project.p.core_hash, capstone);
-    let res = e.run(ids.as_deref(), force)?;
-    Ok(results_py(py, res)?)
+pub fn engine_run(p: &crate::project::Project, capstone: &str, ids: Option<&[String]>, force: bool) -> Result<Vec<Result_>> {
+    Engine::new(p, &p.core_hash, capstone).run(ids, force)
 }
 
 #[cfg(test)]

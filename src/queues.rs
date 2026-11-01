@@ -19,11 +19,8 @@
 //! line; sorted by target in config order, then address).
 
 use crate::error::{Error, Result};
-use crate::pystore::json_py;
 use crate::store;
 use crate::with_db;
-use pyo3::prelude::*;
-use pyo3::types::PyList;
 use serde_json::{Map, Value};
 use std::rc::Rc;
 use sha1::{Digest, Sha1};
@@ -375,19 +372,9 @@ fn git(root: &str, args: &[&str]) -> String {
     }
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
-
-fn rows_py<'py>(py: Python<'py>, rows: Vec<Row>) -> PyResult<Bound<'py, PyList>> {
-    PyList::new(py, rows.into_iter().map(|r| json_py(py, &Value::Object(r))).collect::<PyResult<Vec<_>>>()?)
-}
-
-#[pyfunction]
-pub fn grades_function<'py>(py: Python<'py>, db: &str) -> PyResult<Bound<'py, PyList>> {
-    rows_py(py, (*function_grades(db)?).clone())
-}
+// ------------------------------------------------------------------------------------------------ the baseline ledger
 
 /// The baseline text with one function's entry lowered to code + readability and its accepted column set.
-#[pyfunction]
 pub fn grades_accept(text: &str, target: &str, addr: i64, code: &str, readability: &str, note: &str) -> String {
     let rows: Vec<(String, i64, Entry)> = parse_baseline(text).into_iter().map(|((t, a), mut e)| {
         if t == target && a == addr {
@@ -400,20 +387,17 @@ pub fn grades_accept(text: &str, target: &str, addr: i64, code: &str, readabilit
     render(&rows)
 }
 
-#[pyfunction]
 pub fn grades_regressions(target: &str, db: &str, text: &str) -> Result<Vec<String>> {
     regressions(target, db, text)
 }
 
 /// The short hash of HEAD ('-' outside a git checkout).
-#[pyfunction]
 pub fn grades_commit_of(root: &str) -> String {
     let h = git(root, &["rev-parse", "--short", "HEAD"]).trim().to_string();
     if h.is_empty() { "-".into() } else { h }
 }
 
 /// ledger/grades.tsv at a git revision ('' when it has none).
-#[pyfunction]
 pub fn grades_baseline_at(root: &str, rev: &str) -> String {
     git(root, &["show", &format!("{rev}:ledger/grades.tsv")])
 }
@@ -582,9 +566,7 @@ fn comment_line(r: &Row) -> i64 {
 }
 
 /// Remove the level tag of every function that reached byte + readable; one line per change.
-#[pyfunction]
-pub fn grades_auto_clear(project: PyRef<'_, crate::project::PyProject>) -> Result<Vec<String>> {
-    let p = &project.p;
+pub fn grades_auto_clear(p: &crate::project::Project) -> Result<Vec<String>> {
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];
     for r in function_grades(&p.store_path())?.iter() {
@@ -616,12 +598,9 @@ pub fn size_unexplained(ours: i64, orig: i64) -> Option<(i64, i64, i64)> {
 /// escalation of a function below byte is refused while its instruction count differs from the original's beyond
 /// size_unexplained's allowance (missing or wrong statements: base work), unless `size_explained` says why
 /// allocation explains it (recorded in the reason).
-#[pyfunction]
-#[pyo3(signature = (project, level, name, clear, why, capstone=None, size_explained=None))]
 #[allow(clippy::too_many_arguments)]
-pub fn level_command(project: PyRef<'_, crate::project::PyProject>, level: &str, name: &str, clear: bool, why: Option<String>,
+pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear: bool, why: Option<String>,
                      capstone: Option<String>, size_explained: Option<String>) -> Result<(Vec<String>, Option<String>, i32)> {
-    let p = &project.p;
     let Some(r) = crate::asmcmd::find_function(&p.store_path(), name)? else {
         return Ok((vec![], Some(format!("no graded function {name} (dcp build first)")), 1));
     };

@@ -14,7 +14,6 @@ use crate::error::{Error, Result};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::{self, canon};
-use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -259,8 +258,6 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
 }
 
 /// probe.probe: (the result with ms, compiles, cached; the log line).
-#[pyfunction]
-pub fn probe_run<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>) -> PyResult<(Bound<'py, PyAny>, String)> {
-    let (v, log) = probe(&project.p).map_err(Error::runtime)?;
-    Ok((crate::pystore::json_py(py, &v)?, log))
+pub fn probe_run(p: &crate::project::Project) -> Result<(Value, String)> {
+    probe(p).map_err(Error::runtime)
 }

@@ -7,7 +7,6 @@
 //! PATH` is the plain-copy fallback: it copies this checkout's stores into another checkout's build/.
 
 use crate::cliread::{record, Tok};
-use pyo3::prelude::*;
 use std::path::{Path, PathBuf};
 
 fn posix(p: &Path) -> String {
@@ -124,8 +123,6 @@ fn seed(build: &Path, dest: &Path) -> Result<Vec<String>, String> {
 }
 
 /// `dcp wt new|list|drop NAME [--force]` and `dcp seed PATH` of the project at root: (lines, the error to exit 2 with).
-#[pyfunction]
-#[pyo3(signature = (root, cmd, arg=None, force=false))]
 pub fn wt_command(root: &str, cmd: &str, arg: Option<String>, force: bool) -> (Vec<String>, Option<String>) {
     let root = Path::new(root);
     let arg = arg.unwrap_or_default();

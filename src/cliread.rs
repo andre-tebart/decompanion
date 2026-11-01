@@ -8,7 +8,6 @@ use crate::layoutview::View;
 use crate::names::Names;
 use crate::project::{py_path, Project};
 use crate::store::{self, SFact};
-use pyo3::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::rc::Rc;
@@ -757,10 +756,8 @@ fn skeleton(r: &Reader, a: i64) -> Result<Out> {
 
 /// One reading command: (the lines it prints, the error it prints instead when there is nothing to show).
 /// `cmd`: disasm | disasm-ours | dump | refs | literals | fptrs | starts; `args`: its arguments by name.
-#[pyfunction]
-#[pyo3(signature = (project, capstone, cmd, args))]
-pub fn read_command(project: PyRef<'_, crate::project::PyProject>, capstone: &str, cmd: &str, args: HashMap<String, Option<String>>) -> Result<Out> {
-    let r = Reader::open(&project.p, capstone)?;
+pub fn read_command(p: &crate::project::Project, capstone: &str, cmd: &str, args: HashMap<String, Option<String>>) -> Result<Out> {
+    let r = Reader::open(p, capstone)?;
     let arg = |k: &str| args.get(k).cloned().flatten();
     let flag = |k: &str| arg(k).is_some_and(|v| v == "1");
     let view = || View::load(&r.db, &r.p.main_uri(), &r.p.target(None).map(|t| t.path.clone()).unwrap_or_default());
@@ -787,9 +784,8 @@ pub fn skeleton_lines(p: &Project, capstone: &str, a: i64) -> Result<Vec<String>
     Ok(skeleton(&Reader::open(p, capstone)?, a)?.0)
 }
 
-#[pyfunction]
-pub fn read_resolve(project: PyRef<'_, crate::project::PyProject>, key: &str) -> Result<Option<i64>> {
-    Reader::open(&project.p, "")?.resolve(key).map_err(Error::value)
+pub fn read_resolve(p: &crate::project::Project, key: &str) -> Result<Option<i64>> {
+    Reader::open(p, "")?.resolve(key).map_err(Error::value)
 }
 
 #[cfg(test)]

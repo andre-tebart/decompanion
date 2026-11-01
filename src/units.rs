@@ -10,7 +10,6 @@ use crate::cliread::{record, Tok};
 use crate::decl::{Decl, KeyVal};
 use crate::edit as E;
 use crate::project::py_path;
-use pyo3::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
@@ -45,8 +44,6 @@ fn head_text(unit: &str, lo: i64, hi: Option<i64>, by: Option<&str>, why: &str) 
 }
 
 /// Write the skeleton files of a new unit (those that do not exist): `wrote <path>` lines.
-#[pyfunction]
-#[pyo3(signature = (root, unit, range, by, why))]
 pub fn unit_create(root: &str, unit: &str, range: &str, by: Option<String>, why: &str) -> Result<Vec<String>> {
     let pa = |x: &str| crate::cliread::parse_addr(x).map_err(Error::value);
     let (lo, hi) = match range.split_once("..") {
@@ -312,16 +309,8 @@ fn placeholder_events(renamed: &BTreeMap<String, String>) -> Vec<(Option<i64>, &
     renamed.iter().map(|(o, n)| (o.rsplit('_').next().and_then(|h| i64::from_str_radix(h, 16).ok()), "func", o.clone(), n.clone())).collect()
 }
 
-/// `dcp unit join A B --why`: (lines, the error for stderr, the exit status). `build()` builds and refreshes the target.
-#[pyfunction]
-pub fn unit_join(project: PyRef<'_, crate::project::PyProject>, a: &str, b: &str, why: &str, build: Bound<'_, PyAny>) -> PyResult<(Vec<String>, Option<String>, i32)> {
-    let slot = std::cell::RefCell::new(None);
-    let r = unit_join_run(&project.p, a, b, why, &mut || crate::py_cb(&build, &slot, None));
-    crate::py_result(r, slot)
-}
-
 /// `dcp unit join` (unit_join): `build()` builds and refreshes the target.
-pub fn unit_join_run(p: &crate::project::Project, a: &str, b: &str, why: &str, build: &mut dyn FnMut() -> Result<()>) -> Result<(Vec<String>, Option<String>, i32)> {
+pub fn unit_join(p: &crate::project::Project, a: &str, b: &str, why: &str, build: &mut dyn FnMut() -> Result<()>) -> Result<(Vec<String>, Option<String>, i32)> {
     let root = p.root.to_string_lossy().into_owned();
     let names = view_units(p)?;
     if let Some(m) = [a, b].into_iter().find(|u| !names.iter().any(|n| n == u)) {
@@ -364,18 +353,8 @@ pub fn unit_join_run(p: &crate::project::Project, a: &str, b: &str, why: &str, b
     Ok((out, None, 0))
 }
 
-/// `dcp unit rename OLD NEW [--by]`: (lines, the error for stderr, the exit status). `rebuild()` compiles and refreshes.
-#[pyfunction]
-#[pyo3(signature = (project, old, new, by, why, rebuild))]
-pub fn unit_rename(project: PyRef<'_, crate::project::PyProject>, old: &str, new: &str, by: Option<String>, why: &str, rebuild: Bound<'_, PyAny>)
-    -> PyResult<(Vec<String>, Option<String>, i32)> {
-    let slot = std::cell::RefCell::new(None);
-    let r = unit_rename_run(&project.p, old, new, by, why, &mut || crate::py_cb(&rebuild, &slot, None));
-    crate::py_result(r, slot)
-}
-
 /// `dcp unit rename` (unit_rename): `rebuild()` compiles and refreshes.
-pub fn unit_rename_run(p: &crate::project::Project, old: &str, new: &str, by: Option<String>, why: &str, rebuild: &mut dyn FnMut() -> Result<()>)
+pub fn unit_rename(p: &crate::project::Project, old: &str, new: &str, by: Option<String>, why: &str, rebuild: &mut dyn FnMut() -> Result<()>)
     -> Result<(Vec<String>, Option<String>, i32)> {
     let root = p.root.to_string_lossy().into_owned();
     let names = view_units(p)?;

@@ -6,8 +6,6 @@ use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::{self, canon, SFact};
 use crate::vc6::{LinkJob, Tools};
-use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -562,20 +560,14 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     Ok(rep)
 }
 
-/// link.classify for Python: the classes of these unresolved externals.
-#[pyfunction]
-pub fn link_classify<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>, names: Vec<String>) -> PyResult<Bound<'py, PyDict>> {
-    let p = &project.p;
+/// link.classify: the classes of these unresolved externals.
+pub fn link_classify(p: &crate::project::Project, names: Vec<String>) -> Result<Vec<(String, Vec<String>)>> {
     let db = p.store_path();
     crate::pystore::st_open(&db, &p.main_uri())?;
     let target = p.target(None).map_err(Error::runtime)?;
     let img = crate::image(&target.path)?;
     let x = Ctx { p, root: p.root.to_string_lossy().into_owned(), db, img, tools: Tools::of(p) };
-    let d = PyDict::new(py);
-    for (k, v) in x.classify(&names).map_err(Error::runtime)? {
-        d.set_item(k, v)?;
-    }
-    Ok(d)
+    Ok(x.classify(&names).map_err(Error::runtime)?.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
 #[cfg(test)]

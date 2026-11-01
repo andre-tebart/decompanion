@@ -596,7 +596,6 @@ pub const IJUMP: u8 = 4;
 pub const RET: u8 = 5;
 
 /// capstone's Intel text of every instruction of `code` at `va`, unchanged: (address, size, text, fill form?).
-#[pyo3::pyfunction]
 pub fn x86_disasm(dll: &str, code: &[u8], va: u32, fill_forms: Vec<Vec<u8>>) -> Result<Vec<(u32, u32, String, bool)>> {
     let fills: HashSet<Vec<u8>> = fill_forms.into_iter().collect();
     let ins = crate::cs::disasm(dll, code, va).map_err(Error::runtime)?;

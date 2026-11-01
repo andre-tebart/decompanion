@@ -17,8 +17,6 @@ use crate::clang::{self, FileModel, ModelOut, Unit};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::srcscan::{self, FilePart};
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -55,7 +53,6 @@ pub fn library(cfg: Option<&toml::Table>) -> Option<String> {
 }
 
 /// The default libclang (no configuration), None when there is none.
-#[pyfunction]
 pub fn clang_library() -> Option<String> {
     library(None)
 }
@@ -531,109 +528,7 @@ pub fn context(s: &Scan) -> (Vec<String>, Vec<i64>) {
     (raw.into_iter().map(|x| x.to_string()).collect(), described)
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
-
-/// A scanned tree as srcscan.Scan's readers see it (srcscan.py makes its dataclasses of the rows).
-#[pyclass(unsendable)]
-pub struct ScanObj {
-    pub s: Rc<Scan>,
-}
-
-fn rows<'py, T: pyo3::IntoPyObject<'py> + Clone>(py: Python<'py>, xs: impl Iterator<Item = T>) -> pyo3::PyResult<Bound<'py, PyList>> {
-    PyList::new(py, xs)
-}
-
-#[pymethods]
-impl ScanObj {
-    #[getter]
-    fn files(&self) -> usize {
-        self.s.files
-    }
-
-    /// The rows of Function: ((file, line, unit, name, addrs, unlinked, what), (deep, stuck, rough, comment line,
-    /// static, end line, targets)).
-    #[getter]
-    fn function_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        rows(py, self.s.functions().cloned())
-    }
-
-    #[getter]
-    fn data_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        rows(py, self.s.parts.iter().flat_map(|p| p.data.iter().cloned()))
-    }
-
-    #[getter]
-    fn placeholder_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        rows(py, self.s.parts.iter().flat_map(|p| p.placeholders.iter().cloned()))
-    }
-
-    /// Every file's errors, then the scan's own (L16).
-    #[getter]
-    fn error_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        rows(py, self.s.parts.iter().flat_map(|p| p.errors.iter().cloned()).chain(self.s.own_errors.iter().cloned()))
-    }
-
-    #[getter]
-    fn own_error_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        rows(py, self.s.own_errors.iter().cloned())
-    }
-
-    #[getter]
-    fn macros<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        rows(py, self.s.parts.iter().flat_map(|p| p.macros.iter().cloned()))
-    }
-
-    #[getter]
-    fn described(&self) -> Vec<u64> {
-        self.s.parts.iter().flat_map(|p| p.described.iter().copied()).collect()
-    }
-
-    #[getter]
-    fn ptrcast_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        rows(py, self.s.parts.iter().flat_map(|p| p.ptrcasts.iter().cloned()))
-    }
-
-    #[getter]
-    fn view_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        rows(py, self.s.parts.iter().flat_map(|p| p.views.iter().cloned()))
-    }
-
-    #[getter]
-    fn rawobj(&self) -> Vec<String> {
-        self.s.parts.iter().flat_map(|p| p.rawobj.iter().cloned()).collect()
-    }
-
-    /// The ids of its files' pieces in the core.
-    #[getter]
-    fn piece_ids(&self) -> Vec<u64> {
-        self.s.piece_ids()
-    }
-
-    fn digest(&self) -> String {
-        self.s.digest()
-    }
-
-    /// The default target's model of a file (the empty model when it has none).
-    fn model<'py>(&self, py: Python<'py>, rel: &str) -> PyResult<Bound<'py, PyDict>> {
-        clang::file_model_py(py, self.s.models.get(rel).map(|m| &**m).unwrap_or(&FileModel::default()))
-    }
-
-    /// (raw macro names, described addresses) of the tree (G.grade's Q4 / Q6 context).
-    fn context(&self) -> (Vec<String>, Vec<i64>) {
-        context(&self.s)
-    }
-}
-
-/// srcscan.scan: the scan of the project at root (memoised per tree hash).
-#[pyfunction]
-#[pyo3(signature = (root, tree_hash=None))]
-pub fn front_scan(py: Python<'_>, root: &str, tree_hash: Option<&str>) -> PyResult<ScanObj> {
-    let _ = py;
-    Ok(ScanObj { s: scan(root, tree_hash).map_err(err)? })
-}
-
 /// The unit files' last parses' dependencies (what local_refs reads): path -> files read.
-#[pyfunction]
 pub fn front_last_deps(path: &str) -> Vec<String> {
     LAST_DEPS.lock().unwrap().get(path).cloned().unwrap_or_default()
 }

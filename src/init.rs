@@ -13,7 +13,6 @@
 
 use crate::error::{Error, Result};
 use crate::project::{is_identifier, target_name_of, CONFIG_NAME, IMAGE_FORMATS};
-use pyo3::prelude::*;
 use std::path::{Path, PathBuf};
 
 const CONFIG: &str = r#"# decompanion target project: {name}
@@ -206,8 +205,6 @@ fn init(dir: &str, target: &str, name: Option<String>, target_name: Option<Strin
 }
 
 /// Create the project around one binary (module docs); the lines to print, or the message to exit with.
-#[pyfunction]
-#[pyo3(signature = (dir, target, name, target_name, dcp_root))]
 pub fn init_project(dir: &str, target: &str, name: Option<String>, target_name: Option<String>, dcp_root: &str) -> (Vec<String>, Option<String>) {
     match init(dir, target, name, target_name, dcp_root) {
         Ok(lines) => (lines, None),
@@ -261,7 +258,6 @@ fn add(root: &str, name: &str, path: &str) -> Result<Vec<String>, String> {
 /// `dcp target add`: append a [[target]] table to decompanion.toml (after the last one), rewriting the single-table
 /// [target] form into the list form first. Like `dcp init` it declares nothing. The lines, or the message to exit
 /// with.
-#[pyfunction]
 pub fn target_add(root: &str, name: &str, path: &str) -> (Vec<String>, Option<String>) {
     match add(root, name, path) {
         Ok(lines) => (lines, None),
@@ -270,7 +266,6 @@ pub fn target_add(root: &str, name: &str, path: &str) -> (Vec<String>, Option<St
 }
 
 /// `dcp skills install`: the paths written.
-#[pyfunction]
 pub fn skills_install(_dcp_root: &str, root: &str, force: bool) -> Result<Vec<String>> {
     install_skills(Path::new(root), force).map_err(|e| Error::os(e.to_string()))
 }

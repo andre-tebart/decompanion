@@ -45,7 +45,6 @@ mod pe;
 mod plan;
 mod probe;
 mod project;
-mod pyimage;
 mod pystore;
 mod queues;
 mod readability;
@@ -94,7 +93,6 @@ cargo test: over its budget of {ms} ms (DCP_TEST_BUDGET_MS): the run fails");
 }
 
 use crate::error::{Error, Result};
-use pyo3::prelude::*;
 use rusqlite::{params, Connection};
 use std::rc::Rc;
 use sha2::{Digest, Sha256};
@@ -102,26 +100,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-// --------------------------------------------------------------------------- Python callables as Rust callbacks
-/// Call a Python callable as a Rust callback: its exception is kept in `slot`, so `py_result` raises it again as it
-/// was (a ConfigError of the callback's refresh stays a ConfigError).
-pub(crate) fn py_cb(f: &Bound<'_, PyAny>, slot: &RefCell<Option<PyErr>>, arg: Option<String>) -> Result<()> {
-    let r = match arg {
-        Some(a) => f.call1((a,)),
-        None => f.call0(),
-    };
-    r.map(|_| ()).map_err(|e| {
-        let m = e.to_string();
-        *slot.borrow_mut() = Some(e);
-        Error::runtime(m)
-    })
-}
-
-/// The result of a core function that called Python callbacks: a callback's exception wins.
-pub(crate) fn py_result<T>(r: Result<T>, slot: RefCell<Option<PyErr>>) -> PyResult<T> {
-    r.map_err(|e| slot.into_inner().unwrap_or_else(|| e.into()))
-}
 
 // ------------------------------------------------------------------------------------------------ canonical
 
@@ -545,130 +523,10 @@ pub(crate) fn live_objects(paths: &std::collections::HashSet<String>) {
 }
 
 /// The build id: the hash of the core's sources this module was built from (build.rs).
-#[pyfunction]
 fn build_id() -> &'static str {
     CORE_HASH
 }
 
-#[pymodule]
-fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<project::PyProject>()?;
-    m.add_function(wrap_pyfunction!(build_id, m)?)?;
-    m.add_class::<names::Names>()?;
-    m.add_function(wrap_pyfunction!(link::link_classify, m)?)?;
-    m.add_function(wrap_pyfunction!(probe::probe_run, m)?)?;
-    m.add_function(wrap_pyfunction!(libcand::libs_candidates_lines, m)?)?;
-    m.add_class::<pyimage::PeImage>()?;
-    m.add_function(wrap_pyfunction!(cliread::read_command, m)?)?;
-    m.add_function(wrap_pyfunction!(cliread::read_resolve, m)?)?;
-    m.add_function(wrap_pyfunction!(datafix::data_map, m)?)?;
-    m.add_function(wrap_pyfunction!(datafix::data_fix, m)?)?;
-    m.add_function(wrap_pyfunction!(headers::headers_conflicts, m)?)?;
-    m.add_function(wrap_pyfunction!(draft::draft_command, m)?)?;
-    m.add_function(wrap_pyfunction!(rename::rename_pairs, m)?)?;
-    m.add_function(wrap_pyfunction!(rename::rename_command, m)?)?;
-    m.add_function(wrap_pyfunction!(units::unit_create, m)?)?;
-    m.add_function(wrap_pyfunction!(units::unit_join, m)?)?;
-    m.add_function(wrap_pyfunction!(units::unit_rename, m)?)?;
-    m.add_function(wrap_pyfunction!(frontend::clang_library, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_auto_clear, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::level_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::report_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::why_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::facts_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::conflicts_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::map_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::rules_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::build_summary, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::check_conflicts, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::fn_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::gate_target, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::target_list, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::decl_add, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::decl_conflicts, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::layout_next, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::layout_units, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::propose_command, m)?)?;
-    m.add_function(wrap_pyfunction!(clicmd::propose_verdict, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::grade_command, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::next_command, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::asmdiff_command, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::diffclass_command, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::promote_command, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::accept_command, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::link_command, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::probe_report, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::lint_plan, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::lint_not_found, m)?)?;
-    m.add_function(wrap_pyfunction!(matchcmd::lint_command, m)?)?;
-    m.add_function(wrap_pyfunction!(wt::wt_command, m)?)?;
-    m.add_function(wrap_pyfunction!(decide::decide_status, m)?)?;
-    m.add_function(wrap_pyfunction!(decide::decide_gate, m)?)?;
-    m.add_function(wrap_pyfunction!(decide::decide_toolchain_view, m)?)?;
-    m.add_function(wrap_pyfunction!(decide::decide_toolchain_declare, m)?)?;
-    m.add_function(wrap_pyfunction!(decide::decide_toolchain_after, m)?)?;
-    m.add_function(wrap_pyfunction!(decide::decide_libs_declare, m)?)?;
-    m.add_function(wrap_pyfunction!(decide::decide_libs_after, m)?)?;
-    m.add_function(wrap_pyfunction!(decide::decide_analyzer_declare, m)?)?;
-    m.add_function(wrap_pyfunction!(init::init_project, m)?)?;
-    m.add_function(wrap_pyfunction!(init::target_add, m)?)?;
-    m.add_function(wrap_pyfunction!(init::skills_install, m)?)?;
-    m.add_function(wrap_pyfunction!(session::session_dirty, m)?)?;
-    m.add_function(wrap_pyfunction!(session::session_head, m)?)?;
-    m.add_function(wrap_pyfunction!(session::session_state, m)?)?;
-    m.add_function(wrap_pyfunction!(session::session_save, m)?)?;
-    m.add_function(wrap_pyfunction!(session::session_clock, m)?)?;
-    m.add_function(wrap_pyfunction!(session::session_record, m)?)?;
-    m.add_function(wrap_pyfunction!(session::session_overview, m)?)?;
-    m.add_function(wrap_pyfunction!(session::session_report, m)?)?;
-    m.add_function(wrap_pyfunction!(analyzers::analyzer_step, m)?)?;
-    m.add_function(wrap_pyfunction!(analyzers::analyzer_default, m)?)?;
-    m.add_function(wrap_pyfunction!(analyzers::analyzer_keys, m)?)?;
-    m.add_function(wrap_pyfunction!(lintrun::lint_available, m)?)?;
-    m.add_function(wrap_pyfunction!(compile::compile_ensure, m)?)?;
-    m.add_function(wrap_pyfunction!(run::run_list, m)?)?;
-    m.add_function(wrap_pyfunction!(run::run_target, m)?)?;
-    m.add_function(wrap_pyfunction!(run::run_prepare, m)?)?;
-    m.add_function(wrap_pyfunction!(run::variant_build_command, m)?)?;
-    m.add_function(wrap_pyfunction!(debugger::debug_launch, m)?)?;
-    m.add_function(wrap_pyfunction!(plan::plan_scan_units, m)?)?;
-    m.add_class::<frontend::ScanObj>()?;
-    m.add_function(wrap_pyfunction!(frontend::front_scan, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_function, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_regressions, m)?)?;
-    m.add_function(wrap_pyfunction!(queues::grades_baseline_at, m)?)?;
-    m.add_function(wrap_pyfunction!(engine::engine_run, m)?)?;
-    m.add("RuleError", m.py().get_type::<engine::RuleError>())?;
-    m.add_function(wrap_pyfunction!(project::config_targets, m)?)?;
-    m.add_function(wrap_pyfunction!(project::config_target_name_of, m)?)?;
-    m.add_function(wrap_pyfunction!(project::config_is_target_name, m)?)?;
-    m.add("ConfigError", m.py().get_type::<project::ConfigError>())?;
-    m.add_class::<pystore::StoredFact>()?;
-    m.add_function(wrap_pyfunction!(pystore::st_facts, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_fact, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_conflicts, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_open, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_close, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_blobs, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_ensure_bytemap, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_bytemap_at, m)?)?;
-    m.add_function(wrap_pyfunction!(pystore::st_bytemap_rows, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_new_epoch, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_epoch, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_exists, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_walk, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_read_bytes, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_read_text, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_sha256, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_tree_hash, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_attach, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_flush, m)?)?;
-    m.add_function(wrap_pyfunction!(fsmemo::fs_forget_all, m)?)?;
-    m.add_class::<clang::Unit>()?;
-    m.add_class::<srcscan::ScanPiece>()?;
-    m.add_class::<lint::AllDecls>()?;
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests_runs {
@@ -734,4 +592,9 @@ mod tests_runs {
         write("in3", "y");
         assert_eq!((*get(), made.get()), (2, 2));
     }
+}
+
+/// The dcp command line (the CLI arrives in the next commits).
+pub fn main() -> i32 {
+    0
 }

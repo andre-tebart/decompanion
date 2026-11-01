@@ -13,16 +13,11 @@
 use crate::error::{Error, Result};
 use crate::fsmemo;
 use crate::store::canon;
-use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
-pyo3::create_exception!(_core, ConfigError, PyRuntimeError);
 
 pub const CONFIG_NAME: &str = "decompanion.toml";
 const TOOLCHAIN_KEYS: [&str; 3] = ["compiler", "linker", "cflags"];
@@ -492,28 +487,13 @@ impl Project {
     }
 }
 
-// ------------------------------------------------------------------------------------------------ Python's face
+// ------------------------------------------------------------------------------------------------ the CLI's project
 
-/// config.Project's core: the parsed configuration and the input hashes.
-#[pyclass(name = "Project")]
-pub struct PyProject {
-    pub p: Project,
-}
-
-fn json_dict<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'py, PyAny>> {
-    crate::pystore::json_py(py, v)
-}
-
-#[pymethods]
-impl PyProject {
-    /// The project at root (None: the directory holding decompanion.toml at or above the working directory), with
-    /// a target selected (None: the default one).
-    #[new]
-    #[pyo3(signature = (root, target, core_hash))]
-    fn new(root: Option<String>, target: Option<String>, core_hash: &str) -> Result<PyProject> {
-        let _ = core_hash; // the build's own (crate::CORE_HASH)
-        let start = match &root {
-            Some(r) if Path::new(r).join(CONFIG_NAME).exists() => PathBuf::from(r),
+impl Project {
+    /// The project at `root` (None: the directory holding decompanion.toml at or above the working directory), with
+    /// a target selected (None: the default one). A missing configuration is an Error::Config.
+    pub fn find(root: Option<&str>, target: Option<&str>) -> Result<Project> {
+        let start = match root {
             Some(r) => PathBuf::from(r),
             None => std::env::current_dir().map_err(|e| cfg_err(e.to_string()))?,
         };
@@ -524,145 +504,17 @@ impl PyProject {
             find_root(&start).ok_or_else(|| cfg_err(format!("no {CONFIG_NAME} in {} or above (run dcp init)", start.display())))?
         };
         let root = PathBuf::from(py_path(&root.to_string_lossy()));
-        Project::open(&root, target.as_deref(), crate::CORE_HASH).map(|p| PyProject { p }).map_err(cfg_err)
-    }
-
-    #[getter]
-    fn root(&self) -> String {
-        self.p.root.to_string_lossy().into_owned()
-    }
-
-    #[getter]
-    fn target_name(&self) -> String {
-        self.p.target_name.clone()
-    }
-
-    /// The configuration as Python objects.
-    #[getter]
-    fn cfg<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        json_dict(py, &toml_json(&toml::Value::Table(self.p.cfg.clone())))
-    }
-
-    /// Every target as (name, path, sha256, image, legacy, toolchain ((key, value), ...), archives, isa, reasons).
-    #[allow(clippy::type_complexity)]
-    fn targets<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let l = PyList::empty(py);
-        for t in &self.p.targets {
-            let tc = PyList::empty(py);
-            for (k, v) in &t.toolchain {
-                let v = json_dict(py, v)?;
-                let v = if v.is_instance_of::<PyList>() { pyo3::types::PyTuple::new(py, v.cast::<PyList>()?.iter())?.into_any() } else { v };
-                tc.append((k, v))?;
-            }
-            l.append((t.name.clone(), t.path.clone(), t.sha256.clone(), t.image.clone(), t.legacy, pyo3::types::PyTuple::new(py, tc.iter())?,
-                      t.archives.clone(), t.isa.clone(), t.reasons.clone()))?;
-        }
-        Ok(l)
-    }
-
-    fn expand(&self, s: &str) -> String {
-        self.p.expand(s)
-    }
-
-    fn toolchain_key(&self) -> String {
-        self.p.toolchain_key()
-    }
-
-    #[pyo3(signature = (name=None))]
-    fn toolchain_decl<'py>(&self, py: Python<'py>, name: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
-        json_dict(py, &self.p.toolchain_decl(name).map_err(cfg_err)?)
-    }
-
-    #[pyo3(signature = (name=None))]
-    fn archives_decl<'py>(&self, py: Python<'py>, name: Option<&str>) -> PyResult<Bound<'py, PyDict>> {
-        let (a, from, reason) = self.p.archives_decl(name).map_err(cfg_err)?;
-        let d = PyDict::new(py);
-        d.set_item("archives", a)?;
-        d.set_item("from", from)?;
-        d.set_item("reason", reason)?;
-        Ok(d)
-    }
-
-    #[pyo3(signature = (name=None))]
-    fn lib_archives(&self, name: Option<&str>) -> Result<Vec<String>> {
-        self.p.lib_archives(name).map_err(cfg_err)
-    }
-
-    fn waiting(&self, name: &str) -> Result<Vec<String>> {
-        self.p.waiting(name).map_err(cfg_err)
-    }
-
-    fn waiting_for(&self, inputs: Vec<String>) -> Result<Vec<String>> {
-        self.p.waiting_for(&inputs).map_err(cfg_err)
-    }
-
-    fn store_path(&self) -> String {
-        self.p.store_path()
-    }
-
-    fn main_build_dir(&self) -> Option<String> {
-        self.p.main_build_dir().map(|p| p.to_string_lossy().into_owned())
-    }
-
-    /// The current target's image, checked: a known format, the file exists, its sha256 is the declared one.
-    fn image(&self) -> Result<crate::pyimage::PeImage> {
-        let t = self.p.target(None).map_err(cfg_err)?;
-        if let Some(f) = t.image.as_ref().filter(|f| !IMAGE_FORMATS.contains(&f.as_str())) {
-            return Err(cfg_err(format!("target {}: unknown image format {} (known: {})", t.name, crate::decl::py_repr(f), IMAGE_FORMATS.join(", "))));
-        }
-        if !Path::new(&t.path).exists() {
-            return Err(cfg_err(format!("target {}: {} does not exist", t.name, t.path)));
-        }
-        let img = crate::pyimage::pe_open(&t.path)?;
-        let sha = img.sha256();
-        if !t.sha256.is_empty() && sha != t.sha256 {
-            return Err(cfg_err(format!("target {}: {} has sha256 {sha}, the declared one is {}", t.name, t.path, t.sha256)));
-        }
-        Ok(img)
-    }
-
-    /// The current target's instruction set: its `isa` key, else what the image's machine type implies.
-    fn isa(&self) -> Result<String> {
-        let t = self.p.target(None).map_err(cfg_err)?;
-        let key = match &t.isa {
-            Some(k) => Some(k.clone()),
-            None => self.image()?.default_isa().map(|k| k.to_string()),
-        };
-        match key {
-            Some(k) if ISAS.contains(&k.as_str()) => Ok(k),
-            k => Err(cfg_err(format!("target {}: unknown instruction set {} (known: {}); declare isa = ... in its [[target]] table", self.p.target_name,
-                                     k.map(|k| crate::decl::py_repr(&k)).unwrap_or_else(|| "None".into()), ISAS.join(", ")))),
-        }
+        Project::open(&root, target, crate::CORE_HASH).map_err(cfg_err)
     }
 
     /// The analyzer's key ([analyzer] plugin, default ghidra).
-    fn analyzer_key(&self) -> Result<String> {
-        crate::analyzers::Analyzer::of(&self.p).map(|a| a.key).map_err(cfg_err)
-    }
-
-    fn toolchain_root(&self) -> Option<String> {
-        self.p.toolchain_root()
-    }
-
-    fn toolchain_available(&self) -> bool {
-        self.p.toolchain_available()
-    }
-
-    fn input_hash(&self, name: &str) -> Result<Option<String>> {
-        self.p.input_hash(name).map_err(cfg_err)
-    }
-
-    fn set_input_hash(&self, name: &str, hash: &str) {
-        self.p.hashes.lock().unwrap().insert(name.to_string(), hash.to_string());
-    }
-
-    fn forget_input(&self, name: &str) {
-        self.p.forget_input(name)
+    pub fn analyzer_key(&self) -> Result<String> {
+        crate::analyzers::Analyzer::of(self).map(|a| a.key).map_err(cfg_err)
     }
 
     /// The reason a table of the configuration gives for one of its keys ('' when none).
-    fn reason(&self, table: &str, key: &str) -> String {
-        reason_of(self.p.table(table), key)
+    pub fn reason(&self, table: &str, key: &str) -> String {
+        reason_of(self.table(table), key)
     }
 }
 
@@ -735,7 +587,6 @@ reason = "S.rich"
 }
 
 /// The targets (name, path) a configuration's text declares, paths as written relative to root.
-#[pyfunction]
 pub fn config_targets(root: &str, text: &str) -> Result<Vec<(String, String)>> {
     targets_of(root, text).map_err(cfg_err)
 }
@@ -749,13 +600,11 @@ pub fn targets_of(root: &str, text: &str) -> Result<Vec<(String, String)>, Strin
 }
 
 /// The default name of a target binary (its stem reduced to [a-z0-9_-]).
-#[pyfunction]
 pub fn config_target_name_of(path: &str) -> String {
     target_name_of(path)
 }
 
 /// Whether a target name is an identifier ([A-Za-z][A-Za-z0-9_-]*).
-#[pyfunction]
 pub fn config_is_target_name(name: &str) -> bool {
     is_identifier(name)
 }

@@ -31,7 +31,6 @@ use crate::cliread::{record, Tok};
 use crate::edit::{self as E, Skip};
 use crate::names::Names;
 use crate::project::{py_path, Project};
-use pyo3::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -130,8 +129,6 @@ pub fn local_refs(root: &str, names: &[String]) -> Result<Skip, String> {
 /// --from FILE (`OLD NEW [why]`, a line without a why takes --why; blank lines and `#` lines skipped); a message
 /// instead when the call is malformed. With them: the target the address OLDs name ('' the default; None when no
 /// OLD is an address) and the first such OLD.
-#[pyfunction]
-#[pyo3(signature = (words, from_file, why))]
 #[allow(clippy::type_complexity)]
 pub fn rename_pairs(words: Vec<String>, from_file: Option<String>, why: Option<String>)
     -> (Option<String>, Vec<(String, String, String)>, Option<String>, Option<String>) {
@@ -400,19 +397,8 @@ fn errors_of(db: &str) -> Result<Vec<(String, String, i64, String)>> {
     Ok(crate::pystore::st_conflicts(db, None, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").map(|c| (c.0, c.1, c.2, c.4)).collect())
 }
 
-/// `dcp rename`: the checked, written pairs of a call (rename_pairs'); `rebuild()` compiles and refreshes after the
-/// write. The errors of the store as the call finds it (the caller built the tree as it stands) are the ones from
-/// before: only an error the rename brings is new and fails the call. (stdout lines, stderr lines, the exit status).
-#[pyfunction]
-pub fn rename_command(project: PyRef<'_, crate::project::PyProject>, pairs: Vec<(String, String, String)>, rebuild: Bound<'_, PyAny>)
-    -> PyResult<(Vec<String>, Vec<String>, i32)> {
-    let slot = std::cell::RefCell::new(None);
-    let r = rename_run(&project.p, pairs, &mut || crate::py_cb(&rebuild, &slot, None));
-    crate::py_result(r, slot)
-}
-
 /// `dcp rename` (rename_command): `rebuild()` compiles and refreshes after the write.
-pub fn rename_run(p: &crate::project::Project, pairs: Vec<(String, String, String)>, rebuild: &mut dyn FnMut() -> Result<()>)
+pub fn rename_command(p: &crate::project::Project, pairs: Vec<(String, String, String)>, rebuild: &mut dyn FnMut() -> Result<()>)
     -> Result<(Vec<String>, Vec<String>, i32)> {
     let db = p.store_path();
     let main = p.main_uri();

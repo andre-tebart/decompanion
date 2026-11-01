@@ -4,9 +4,8 @@
 
 use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, Tok};
-use crate::project::{py_path, PyProject};
+use crate::project::{py_path, Project};
 use crate::queues::{self, Entry};
-use pyo3::prelude::*;
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -93,10 +92,7 @@ fn function_lines(out: &mut Vec<String>, r: &Row, verbose: bool) {
 /// `dcp grade [WHAT]`: without an argument the matrix and the unit table; a unit: its functions with the failing
 /// rules; a function (name or address): its grades, the failing rules with evidence, the distance. `q7`: where Q7
 /// comes from.
-#[pyfunction]
-#[pyo3(signature = (project, what, q7))]
-pub fn grade_command(project: PyRef<'_, PyProject>, what: Option<String>, q7: &str) -> Result<Out> {
-    let p = &project.p;
+pub fn grade_command(p: &crate::project::Project, what: Option<String>, q7: &str) -> Result<Out> {
     let db = opened(p)?;
     let rows = queues::function_grades(&db)?;
     let units = queues::unit_grades(&db)?;
@@ -144,10 +140,7 @@ pub fn grade_command(project: PyRef<'_, PyProject>, what: Option<String>, q7: &s
 }
 
 /// `dcp next`: the next functions of a queue (base, deep, names), of a shard (`--shard k/N`, else .dcp/shard).
-#[pyfunction]
-#[pyo3(signature = (project, which, shard, unit, n))]
-pub fn next_command(project: PyRef<'_, PyProject>, which: &str, shard: Option<String>, unit: Option<String>, n: usize) -> Result<Out> {
-    let p = &project.p;
+pub fn next_command(p: &crate::project::Project, which: &str, shard: Option<String>, unit: Option<String>, n: usize) -> Result<Out> {
     let db = opened(p)?;
     let text = match shard.filter(|x| !x.is_empty()) {
         Some(x) => Some(x),
@@ -177,8 +170,7 @@ pub fn next_command(project: PyRef<'_, PyProject>, which: &str, shard: Option<St
 
 /// One graded function's reading, or the lines to stop with: no such function (exit 1), no reading (a
 /// configuration error, as the Python raised it).
-fn reading(project: &PyProject, capstone: &str, key: &str, cmd: &str, symbols: bool) -> Result<Result<crate::asmcmd::Reading, Out>> {
-    let p = &project.p;
+fn reading(p: &Project, capstone: &str, key: &str, cmd: &str, symbols: bool) -> Result<Result<crate::asmcmd::Reading, Out>> {
     let db = opened(p)?;
     let Some(row) = crate::asmcmd::find_function(&db, key)? else {
         return Ok(Err((vec![], Some(format!("no graded function {key}")), 1)));
@@ -276,11 +268,9 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
 /// differ in size (diffclass's frame alignment), the lines are aligned with their stack offsets masked and a line
 /// that differs from the original's only by the frame's shift counts as equal (`~` when printed); `plain`: the
 /// diff of the texts as they are.
-#[pyfunction]
-#[pyo3(signature = (project, capstone, name, regs, all, symbols=false, plain=false))]
-pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str, regs: Option<String>, all: bool, symbols: bool,
+pub fn asmdiff_command(p: &crate::project::Project, capstone: &str, name: &str, regs: Option<String>, all: bool, symbols: bool,
                        plain: bool) -> Result<Out> {
-    let r = match reading(&project, capstone, name, "asmdiff", symbols)? {
+    let r = match reading(p, capstone, name, "asmdiff", symbols)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
     };
@@ -297,7 +287,7 @@ pub fn asmdiff_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str
     let b: Vec<String> = r.lb.iter().map(|x| x.text.clone()).collect();
     // what a line prints: its X text, or with --symbols its named text
     let (pa, pb) = if r.named.is_some() { (&sa, &sb) } else { (&a, &b) };
-    let img = if r.values.is_some() { Some(crate::image(&project.p.target(None).map_err(Error::runtime)?.path)?) } else { None };
+    let img = if r.values.is_some() { Some(crate::image(&p.target(None).map_err(Error::runtime)?.path)?) } else { None };
     let same = |i: usize, j: usize| img.as_ref().is_some_and(|img| r.same_values(img, i, j));
     let (n, frame, body) = diff_lines(&r.la, &r.lb, &a, &b, pa, pb, plain, all, &same);
     let row = r.row.as_object().cloned().unwrap_or_default();
@@ -330,10 +320,8 @@ const HUNK_LINES: usize = 8;
 
 /// `dcp diffclass`: the hunks of one function's instruction diff with their classes (diffclass.rs); a `code` hunk
 /// with its lines, the first HUNK_LINES of each side and how many more (`all`: every line).
-#[pyfunction]
-#[pyo3(signature = (project, capstone, name, all=false))]
-pub fn diffclass_command(project: PyRef<'_, PyProject>, capstone: &str, name: &str, all: bool) -> Result<Out> {
-    let r = match reading(&project, capstone, name, "diffclass", false)? {
+pub fn diffclass_command(p: &crate::project::Project, capstone: &str, name: &str, all: bool) -> Result<Out> {
+    let r = match reading(p, capstone, name, "diffclass", false)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
     };
@@ -394,15 +382,14 @@ fn write_baseline(root: &str, text: &str) -> Result<()> {
 
 /// `dcp promote` (every target built): ledger/grades.tsv from the current grades of every target; refused when a
 /// grade fell against it unless `accept_falls`.
-#[pyfunction]
-pub fn promote_command(root: &str, projects: Vec<PyRef<'_, PyProject>>, accept_falls: bool) -> Result<Out> {
+pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> Result<Out> {
     let old = read_baseline(root);
     let mut targets = vec![];
     let mut falls = vec![];
-    for p in &projects {
-        let db = opened(&p.p)?;
-        falls.extend(queues::regressions(&p.p.target_name, &db, &old)?);
-        targets.push((p.p.target_name.clone(), db));
+    for p in projects {
+        let db = opened(p)?;
+        falls.extend(queues::regressions(&p.target_name, &db, &old)?);
+        targets.push((p.target_name.clone(), db));
     }
     if !falls.is_empty() && !accept_falls {
         let mut out = vec![record(&[("promote", s("refused")), ("falls", Tok::I(falls.len() as i64))])
@@ -424,9 +411,7 @@ const CODE: [&str; 3] = ["draft", "shape", "byte"];
 
 /// `dcp accept FN --to GRADE --why TEXT`: lower one function's baseline entry to the grade it fell to, with the
 /// reason (M1 then holds it there).
-#[pyfunction]
-#[pyo3(signature = (project, name, to, readability, why))]
-pub fn accept_command(project: Option<PyRef<'_, PyProject>>, name: &str, to: Option<String>, readability: Option<String>, why: Option<String>) -> Result<Out> {
+pub fn accept_command(project: Option<&Project>, name: &str, to: Option<String>, readability: Option<String>, why: Option<String>) -> Result<Out> {
     let refuse = |m: String| Ok((vec![], Some(m), 1));
     let why = why.unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
     if why.is_empty() {
@@ -435,8 +420,7 @@ pub fn accept_command(project: Option<PyRef<'_, PyProject>>, name: &str, to: Opt
     if to.as_deref().unwrap_or("").is_empty() && readability.as_deref().unwrap_or("").is_empty() {
         return refuse("--to shape|draft or --readability draft says what the entry falls to".into());
     }
-    let Some(project) = project else { return Err(err("accept_command: no project")) };
-    let p = &project.p;
+    let Some(p) = project else { return Err(err("accept_command: no project")) };
     let root = p.root.to_string_lossy().into_owned();
     let old = read_baseline(&root);
     let db = opened(p)?;
@@ -477,9 +461,8 @@ pub fn accept_command(project: Option<PyRef<'_, PyProject>>, name: &str, to: Opt
 
 /// The full link of the current target (link.rs): (the report lines, ok, the `link:` reason of a failed link for
 /// `dcp check`, the undrafted externals, the gate's detail lines of a failed link).
-#[pyfunction]
-pub fn link_command(project: PyRef<'_, PyProject>) -> Result<(Vec<String>, bool, Option<String>, usize, Vec<String>)> {
-    link_lines(&project.p)
+pub fn link_command(p: &crate::project::Project) -> Result<(Vec<String>, bool, Option<String>, usize, Vec<String>)> {
+    link_lines(p)
 }
 
 /// A link report's lines (the record, the unresolved externals by class, notes, errors) and whether it linked.
@@ -527,9 +510,8 @@ pub(crate) fn link_lines(p: &crate::project::Project) -> Result<(Vec<String>, bo
 // ------------------------------------------------------------------------------------------------ probe
 
 /// `dcp toolchain probe`'s report of a probe result (probe.rs; the analysis mrules.rs).
-#[pyfunction]
-pub fn probe_report(project: PyRef<'_, PyProject>, result: &Bound<'_, PyAny>) -> Result<Vec<String>> {
-    let res = crate::pystore::py_value(result)?;
+pub fn probe_report(p: &crate::project::Project, result: &Value) -> Result<Vec<String>> {
+    let res = result.clone();
     let an = crate::mrules::analyse(&res);
     let arr = |v: &Value| v.as_array().cloned().unwrap_or_default();
     let anchors = arr(&res["anchors"]);
@@ -543,7 +525,7 @@ pub fn probe_report(project: PyRef<'_, PyProject>, result: &Bound<'_, PyAny>) ->
         .filter_map(|u| u.as_str().map(|x| x.to_string())).filter(|u| crt_units.contains(u)).collect();
     let crt_matched: std::collections::BTreeSet<String> = combos.iter().flat_map(|c| arr(&c["matched"])).map(|a| a.to_string())
         .filter(|a| crt_ids.contains(a)).collect();
-    let mut out = vec![record(&[("target", s(project.p.target_name.clone())), ("anchors", Tok::I(users.len() as i64)), ("crt_anchors", Tok::I(crts.len() as i64)),
+    let mut out = vec![record(&[("target", s(p.target_name.clone())), ("anchors", Tok::I(users.len() as i64)), ("crt_anchors", Tok::I(crts.len() as i64)),
                                 ("combinations", Tok::I(combos.len() as i64)), ("refused", Tok::I(refused as i64)), ("compiles", vt(res.get("compiles"))),
                                 ("cached", Tok::I(res.get("cached").and_then(|v| v.as_i64()).unwrap_or(0))), ("ms", vt(res.get("ms")))])];
     if !crts.is_empty() {
@@ -585,9 +567,7 @@ pub fn probe_report(project: PyRef<'_, PyProject>, result: &Bound<'_, PyAny>) ->
 
 /// What `dcp grade` / `dcp next` do about Q7 before they read the grades: ("lint", note) when a unit changed
 /// since the last lint and libclang is there (the caller lints and refreshes, then prints the note), else ("", note).
-#[pyfunction]
-pub fn lint_plan(project: PyRef<'_, PyProject>) -> Result<(String, String)> {
-    let p = &project.p;
+pub fn lint_plan(p: &crate::project::Project) -> Result<(String, String)> {
     let Some(stale) = crate::lintrun::stale(p).map_err(err)? else {
         return Ok((String::new(), "Q7 not evaluated (no lint run: dcp lint)".into()));
     };
@@ -601,15 +581,12 @@ pub fn lint_plan(project: PyRef<'_, PyProject>) -> Result<(String, String)> {
 }
 
 /// What `dcp lint` says without libclang.
-#[pyfunction]
 pub fn lint_not_found() -> &'static str {
     "libclang not found ([lint] libclang = ... in decompanion.toml, or an LLVM installation: clang on PATH or C:/Program Files/LLVM)"
 }
 
 /// `dcp lint` of the current target: lint every unit (lintrun.rs) and report M6 / M5 / M7; (lines, failed).
-#[pyfunction]
-pub fn lint_command(project: PyRef<'_, PyProject>) -> Result<(Vec<String>, bool)> {
-    let p = &project.p;
+pub fn lint_command(p: &crate::project::Project) -> Result<(Vec<String>, bool)> {
     let (v, parsed, cached) = crate::lintrun::lint(p).map_err(err)?;
     p.forget_input("lint");
     let strs = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|x| x.to_string())).collect::<Vec<_>>()).unwrap_or_default();

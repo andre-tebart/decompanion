@@ -14,7 +14,6 @@ use crate::error::{Error, Result};
 use crate::frontend;
 use crate::fsmemo;
 use crate::project::{py_path, Project};
-use pyo3::prelude::*;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -184,10 +183,8 @@ fn rows(units: &[Tu]) -> Vec<TuRow> {
 }
 
 /// The translation units of one target of a scan (tu.units).
-#[pyfunction]
-#[pyo3(signature = (root, scan, target, default, names=None))]
-pub fn plan_scan_units(root: &str, scan: PyRef<'_, frontend::ScanObj>, target: &str, default: &str, names: Option<HashMap<String, String>>) -> Result<Vec<TuRow>> {
-    Ok(rows(&units(&py_path(root), &scan.s, target, default, &names.unwrap_or_default()).map_err(Error::runtime)?))
+pub fn plan_scan_units(root: &str, scan: &frontend::Scan, target: &str, default: &str, names: Option<HashMap<String, String>>) -> Result<Vec<TuRow>> {
+    Ok(rows(&units(&py_path(root), scan, target, default, &names.unwrap_or_default()).map_err(Error::runtime)?))
 }
 
 #[cfg(test)]

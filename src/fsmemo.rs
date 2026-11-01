@@ -16,8 +16,6 @@
 //! The stamps decide nothing on their own beyond "this file did not change": every input hash is still the
 //! content hash of the files.
 
-use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -298,68 +296,6 @@ pub fn forget_all() {
 
 pub fn epoch() -> u64 {
     state().epoch
-}
-
-// ------------------------------------------------------------------------------------------------ Python's face
-
-fn os_err(e: std::io::Error, path: &str) -> pyo3::PyErr {
-    pyo3::exceptions::PyOSError::new_err((e.raw_os_error().unwrap_or(2), format!("{e}: {path}")))
-}
-
-#[pyfunction]
-pub fn fs_new_epoch() {
-    new_epoch()
-}
-
-#[pyfunction]
-pub fn fs_epoch() -> u64 {
-    epoch()
-}
-
-#[pyfunction]
-pub fn fs_exists(path: &str) -> bool {
-    exists(path)
-}
-
-#[pyfunction]
-pub fn fs_walk(base: &str, patterns: Vec<String>) -> Vec<(String, String)> {
-    walk(base, &patterns)
-}
-
-#[pyfunction]
-pub fn fs_read_bytes<'py>(py: Python<'py>, path: &str) -> pyo3::PyResult<Bound<'py, PyBytes>> {
-    let b = read_bytes(path).map_err(|e| os_err(e, path))?;
-    Ok(PyBytes::new(py, &b))
-}
-
-#[pyfunction]
-pub fn fs_read_text(path: &str) -> pyo3::PyResult<String> {
-    read_text(path).map_err(|e| os_err(e, path))
-}
-
-#[pyfunction]
-pub fn fs_sha256(path: &str) -> pyo3::PyResult<String> {
-    sha256(path).map_err(|e| os_err(e, path))
-}
-
-#[pyfunction]
-pub fn fs_tree_hash(dirs: Vec<String>, patterns: Vec<String>) -> pyo3::PyResult<String> {
-    tree_hash(&dirs, &patterns).map_err(|e| os_err(e, ""))
-}
-
-#[pyfunction]
-pub fn fs_attach(root: &str) {
-    attach(root)
-}
-
-#[pyfunction]
-pub fn fs_flush() {
-    flush()
-}
-
-#[pyfunction]
-pub fn fs_forget_all() {
-    forget_all()
 }
 
 #[cfg(test)]

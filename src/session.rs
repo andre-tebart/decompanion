@@ -15,7 +15,6 @@
 use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, Tok};
 use crate::project::{py_path, Project};
-use pyo3::prelude::*;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -56,7 +55,6 @@ fn iso(t: chrono::NaiveDateTime) -> String {
 }
 
 /// The changed or untracked paths of the working tree outside build/ and .dcp/.
-#[pyfunction]
 pub fn session_dirty(root: &str) -> Vec<String> {
     git(root, &["status", "--porcelain", "--untracked-files=all"]).lines().filter(|l| {
         let path = l.get(3..).unwrap_or("").trim().trim_matches('"');
@@ -65,7 +63,6 @@ pub fn session_dirty(root: &str) -> Vec<String> {
 }
 
 /// The commit of HEAD ('' without one).
-#[pyfunction]
 pub fn session_head(root: &str) -> String {
     git(root, &["rev-parse", "HEAD"]).trim().to_string()
 }
@@ -96,15 +93,13 @@ fn state(p: &Project) -> Result<Value> {
 }
 
 /// The state of a target (a dict: functions, byte, readable, units, separated, errors, grades).
-#[pyfunction]
-pub fn session_state<'py>(py: Python<'py>, project: PyRef<'py, crate::project::PyProject>) -> PyResult<Bound<'py, PyAny>> {
-    crate::pystore::json_py(py, &state(&project.p)?)
+pub fn session_state(p: &crate::project::Project) -> Result<Value> {
+    state(p)
 }
 
 /// Record .dcp/session.json: the base commit, the start time, the states of the targets.
-#[pyfunction]
-pub fn session_save(root: &str, base: &str, states: &Bound<'_, PyAny>) -> Result<()> {
-    let rec = json!({"base": base, "started": iso(now()), "states": crate::pystore::py_value(states)?});
+pub fn session_save(root: &str, base: &str, states: &Value) -> Result<()> {
+    let rec = json!({"base": base, "started": iso(now()), "states": states});
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, serde_json::ser::PrettyFormatter::with_indent(b" "));
     serde::Serialize::serialize(&rec, &mut ser).map_err(err)?;
@@ -114,8 +109,6 @@ pub fn session_save(root: &str, base: &str, states: &Bound<'_, PyAny>) -> Result
 /// The session's clock from .dcp/session.json: (the record line: base commit, start time, minutes elapsed and left
 /// of `minutes`; over once they are used up), None without a started session. The only clock of a session: `dcp
 /// session status`, and the first line of `dcp layout next` while a session runs.
-#[pyfunction]
-#[pyo3(signature = (root, minutes=MINUTES))]
 pub fn session_clock(root: &str, minutes: i64) -> Option<(String, bool)> {
     let r = load(root)?;
     let started = r.get("started")?.as_str().filter(|s| !s.is_empty())?.to_string();
@@ -130,7 +123,6 @@ pub fn session_clock(root: &str, minutes: i64) -> Option<(String, bool)> {
 }
 
 /// The record of a started session: (its base commit, its start time).
-#[pyfunction]
 pub fn session_record(root: &str) -> (Option<String>, Option<String>) {
     let r = load(root).unwrap_or(json!({}));
     let get = |k: &str| r.get(k).and_then(|v| v.as_str()).filter(|v| !v.is_empty()).map(|v| v.to_string());
@@ -174,9 +166,7 @@ pub(crate) fn view_of(p: &Project) -> Result<std::rc::Rc<crate::layoutview::View
 }
 
 /// The unit table summary, the first open function, the toolchain level and the analyzer of one target.
-#[pyfunction]
-pub fn session_overview(project: PyRef<'_, crate::project::PyProject>, analyzer: &str) -> Result<Vec<String>> {
-    let p = &project.p;
+pub fn session_overview(p: &crate::project::Project, analyzer: &str) -> Result<Vec<String>> {
     let v = view_of(p)?;
     let rows = unit_rows(&v);
     let (glo, ghi, _) = v.game;
@@ -316,13 +306,10 @@ fn grade_changes(root: &str, base: &str, target: &str, rows: &[Map<String, Value
 
 /// `dcp session wrap`'s report (written to build/session/report.md too): `targets` are (name, project, link ok or
 /// None when skipped, the undrafted externals), `states` the gate's states now, `promoted` what promote printed.
-#[pyfunction]
-#[pyo3(signature = (root, base, targets, states, promoted, refused, ok))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn session_report(root: &str, base: &str, targets: Vec<(String, PyRef<'_, crate::project::PyProject>, Option<bool>, Option<usize>)>,
-                      states: &Bound<'_, PyAny>, promoted: Option<String>, refused: bool, ok: bool) -> Result<String> {
+pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::project::Project, Option<bool>, Option<usize>)>,
+                      states: &Value, promoted: Option<String>, refused: bool, ok: bool) -> Result<String> {
     let rec = load(root).unwrap_or(json!({}));
-    let states = crate::pystore::py_value(states)?;
     let c = changes(root, base).map_err(err)?;
     let mut out = vec![format!("# session {} (base {}, head {}, {} commits)", &iso(now())[..10], c.base, c.head, c.commits), String::new()];
     for (name, _, link, undrafted) in &targets {
@@ -346,7 +333,7 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, PyRef<'_, cr
     out.extend(c.decl_added.iter().map(|l| format!("  decl + {l}")));
     out.extend(c.decl_removed.iter().map(|l| format!("  decl - {l}")));
     out.push(String::new());
-    let p = &targets[0].1.p;
+    let p = targets[0].1;
     let rows0 = crate::queues::function_grades(&p.store_path())?;
     let st = |r: &Map<String, Value>, k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let by_addr: HashMap<i64, &Map<String, Value>> = rows0.iter().map(|r| (r.get("addr").and_then(|v| v.as_i64()).unwrap_or(0), r)).collect();
@@ -363,7 +350,7 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, PyRef<'_, cr
     let drafted_at: HashSet<i64> = c.drafted.iter().map(|d| d.1).collect();
     let mut graded_units: HashSet<String> = HashSet::new();
     for (name, tp, _, _) in &targets {
-        let rows = crate::queues::function_grades(&tp.p.store_path())?;
+        let rows = crate::queues::function_grades(&tp.store_path())?;
         let ch: Vec<_> = grade_changes(root, base, name, &rows).into_iter().filter(|x| !drafted_at.contains(&x.0) || x.3.is_some()).collect();
         graded_units.extend(ch.iter().map(|x| x.1.clone()));
         out.push(format!("grades changed ({name}): {}", ch.len()));

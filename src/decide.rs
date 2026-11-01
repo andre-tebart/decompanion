@@ -26,12 +26,11 @@
 
 use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
-use crate::project::{py_path, Project, PyProject};
+use crate::project::{py_path, Project};
 use crate::store;
 use crate::tomledit::{self, TV};
 use crate::toolchain::{Install, Toolchain};
 use crate::with_db;
-use pyo3::prelude::*;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -619,19 +618,16 @@ fn status(c: &Ctx, shown: &mut Vec<String>, work: bool, as_json: bool) -> Result
 
 /// The status lines of one target (`dcp status`; other commands print them as their tail after an empty line) and
 /// the project-wide obligation ids shown so far (`shown` extended).
-#[pyfunction]
-#[pyo3(signature = (project, shown, work=true, as_json=false))]
-pub fn decide_status(project: PyRef<'_, PyProject>, shown: Vec<String>, work: bool, as_json: bool) -> Result<(Vec<String>, Vec<String>)> {
-    let c = Ctx::new(&project.p)?;
+pub fn decide_status(p: &crate::project::Project, shown: Vec<String>, work: bool, as_json: bool) -> Result<(Vec<String>, Vec<String>)> {
+    let c = Ctx::new(p)?;
     let mut shown = shown;
     let lines = status(&c, &mut shown, work, as_json)?;
     Ok((lines, shown))
 }
 
 /// The open toolchain and libs obligations of the current target (the session and check gate), as records.
-#[pyfunction]
-pub fn decide_gate(project: PyRef<'_, PyProject>) -> Result<Vec<String>> {
-    gate_records(&project.p)
+pub fn decide_gate(p: &crate::project::Project) -> Result<Vec<String>> {
+    gate_records(p)
 }
 
 pub(crate) fn gate_records(p: &Project) -> Result<Vec<String>> {
@@ -644,9 +640,7 @@ pub(crate) fn gate_records(p: &Project) -> Result<Vec<String>> {
 /// `dcp toolchain` of one target: what is declared (per key with its reason and level), the installs found on this
 /// machine with the versions they report, the Rich candidates with the plugin's build names, the PE linker version
 /// and time stamp, the CRT strings, the C.toolchain verdict, the archives and the members placed, the probe.
-#[pyfunction]
-pub fn decide_toolchain_view(project: PyRef<'_, PyProject>) -> Result<Vec<String>> {
-    let p = &project.p;
+pub fn decide_toolchain_view(p: &crate::project::Project) -> Result<Vec<String>> {
     let c = Ctx::new(p)?;
     let tc = c.tc.as_ref();
     let img = &c.img;
@@ -819,9 +813,7 @@ fn resolved(path: &str) -> String {
 /// `dcp toolchain declare`: compiler= linker= cflags= (the current target's table), root= plugin= ([toolchain]), each
 /// with the reason; the declared lines. `root` is the declared root when one was (the verdict after the rerun names
 /// its versions).
-#[pyfunction]
-pub fn decide_toolchain_declare(project: PyRef<'_, PyProject>, pairs: Vec<String>, why: Option<String>) -> Result<(Vec<String>, Option<String>, i32, Option<String>)> {
-    let p = &project.p;
+pub fn decide_toolchain_declare(p: &crate::project::Project, pairs: Vec<String>, why: Option<String>) -> Result<(Vec<String>, Option<String>, i32, Option<String>)> {
     let r = toolchain_declare(p, &pairs, &why)?;
     Ok(r)
 }
@@ -883,10 +875,7 @@ fn toolchain_declare(p: &Project, pairs: &[String], why: &Option<String>) -> Res
 
 /// After `dcp toolchain declare` reran the rules: the declared root's versions, C.toolchain's verdict, the status
 /// tail; exit 1 when C.toolchain has errors.
-#[pyfunction]
-#[pyo3(signature = (project, root=None))]
-pub fn decide_toolchain_after(project: PyRef<'_, PyProject>, root: Option<String>) -> Result<(Vec<String>, i32)> {
-    let p = &project.p;
+pub fn decide_toolchain_after(p: &crate::project::Project, root: Option<String>) -> Result<(Vec<String>, i32)> {
     let c = Ctx::new(p)?;
     let mut out = vec![];
     if let Some(r) = root {
@@ -907,9 +896,7 @@ pub fn decide_toolchain_after(project: PyRef<'_, PyProject>, root: Option<String
 
 /// `dcp libs declare`: the current target's static library archives (bare names are the toolchain's archives
 /// under the declared root) with the reason.
-#[pyfunction]
-pub fn decide_libs_declare(project: PyRef<'_, PyProject>, archives: Vec<String>, why: Option<String>) -> Result<Out> {
-    let p = &project.p;
+pub fn decide_libs_declare(p: &crate::project::Project, archives: Vec<String>, why: Option<String>) -> Result<Out> {
     if no_why(&why) {
         return refused(NO_WHY);
     }
@@ -932,9 +919,8 @@ pub fn decide_libs_declare(project: PyRef<'_, PyProject>, archives: Vec<String>,
 }
 
 /// After `dcp libs declare` reran the rules: what S.crt.code placed per archive, the status tail.
-#[pyfunction]
-pub fn decide_libs_after(project: PyRef<'_, PyProject>) -> Result<Vec<String>> {
-    let c = Ctx::new(&project.p)?;
+pub fn decide_libs_after(p: &crate::project::Project) -> Result<Vec<String>> {
+    let c = Ctx::new(p)?;
     let mut units: BTreeMap<String, String> = BTreeMap::new();
     for f in c.facts("unit", "S.crt.code")? {
         units.insert(f.s("tu").unwrap_or("").to_string(), f.s("lib").unwrap_or("").to_string());
@@ -950,9 +936,7 @@ pub fn decide_libs_after(project: PyRef<'_, PyProject>) -> Result<Vec<String>> {
 }
 
 /// `dcp analyzer declare`: confirm or change the analyzer ([analyzer] plugin and its keys) with the reason.
-#[pyfunction]
-pub fn decide_analyzer_declare(project: PyRef<'_, PyProject>, plugin: &str, pairs: Vec<String>, why: Option<String>) -> Result<Out> {
-    let p = &project.p;
+pub fn decide_analyzer_declare(p: &crate::project::Project, plugin: &str, pairs: Vec<String>, why: Option<String>) -> Result<Out> {
     if no_why(&why) {
         return refused(NO_WHY);
     }

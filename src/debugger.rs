@@ -784,14 +784,15 @@ pub fn debug_run(_d: &Debuggee, _interrupted: &mut dyn FnMut() -> bool) -> Resul
     Err("dcp run --debug needs Windows".into())
 }
 
-/// `launch.py`'s call: run the program under the debugger. (exit code, stopped, crash dir).
-#[pyo3::pyfunction]
-#[pyo3(signature = (run, exe, cmdline, dir, env, seconds, symbols, capstone, crash_root, dump, spec))]
+/// Set by the console's Ctrl-C handler (launch.rs): the debugged program is stopped.
+pub static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `dcp run --debug`: run the program under the debugger. (exit code, stopped, crash dir).
 #[allow(clippy::too_many_arguments)]
-pub fn debug_launch(py: pyo3::Python<'_>, run: &str, exe: &str, cmdline: &str, dir: &str, env: Vec<(String, String)>, seconds: f64, symbols: &str,
+pub fn debug_launch(run: &str, exe: &str, cmdline: &str, dir: &str, env: Vec<(String, String)>, seconds: f64, symbols: &str,
                     capstone: &str, crash_root: &str, dump: &str, spec: &str) -> Result<(Option<u32>, String, Option<String>)> {
     let d = Debuggee { run, exe, cmdline, dir, env: &env, seconds, symbols, capstone, crash_root, dump, spec };
-    let mut interrupted = || py.check_signals().is_err();
+    let mut interrupted = || INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
     let e = debug_run(&d, &mut interrupted).map_err(Error::runtime)?;
     Ok((e.exit_code, e.stopped, e.crash))
 }

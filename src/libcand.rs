@@ -13,7 +13,6 @@ use crate::crt::{place_members, Placed};
 use crate::fsmemo;
 use crate::project::{py_path, sha256_parts, Project};
 use crate::store::canon;
-use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
@@ -133,11 +132,8 @@ pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, V
 
 /// `dcp libs candidates`: (the lines, the log lines): per archive members, placed members and bytes (sorted by
 /// bytes), whether the target declares it, the archive pairs that conflict.
-#[pyfunction]
-#[pyo3(signature = (project, core_hash, force=false))]
-pub fn libs_candidates_lines(project: PyRef<'_, crate::project::PyProject>, core_hash: &str, force: bool) -> Result<(Vec<String>, Vec<String>)> {
+pub fn libs_candidates_lines(p: &crate::project::Project, core_hash: &str, force: bool) -> Result<(Vec<String>, Vec<String>)> {
     use crate::cliread::{record, Tok};
-    let p = &project.p;
     let _ = core_hash; // the build's own (crate::CORE_HASH, through the project)
     let (v, log) = candidates(p, &p.core_hash, force).map_err(Error::runtime)?;
     let declared: Vec<String> = p.archives_decl(None).map_err(Error::runtime)?.0.unwrap_or_default().iter()

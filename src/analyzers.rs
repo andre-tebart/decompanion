@@ -24,7 +24,6 @@
 
 use crate::error::{Error, Result};
 use crate::project::{py_path, sha256_parts, Project};
-use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -331,7 +330,7 @@ pub fn state(p: &Project) -> Result<String> {
 /// `dcp setup`'s analyzer step: export when the configured analyzer is available and its key is stale (or forced);
 /// store the entries. {analyzer, status (unavailable | up-to-date | exported | failed), reason, where, stored, note,
 /// failed, skipped, ms, out}.
-fn run(py: Python<'_>, p: &Project, force: bool) -> PyResult<Value> {
+fn run(p: &Project, force: bool) -> Result<Value> {
     let az = Analyzer::of(p).map_err(crate::project::cfg_err)?;
     let inst = az.available();
     let mut o = json!({"analyzer": az.key, "status": "", "reason": "", "where": "", "stored": 0, "note": "", "failed": [], "ms": 0, "out": null});
@@ -359,7 +358,7 @@ fn run(py: Python<'_>, p: &Project, force: bool) -> PyResult<Value> {
     });
     let isa = target.isa.clone().unwrap_or_else(|| img.default_isa().unwrap_or("").to_string());
     let out_dir = py_path(&format!("{}/build/{}/{}", p.root.to_string_lossy(), az.key, p.target_name));
-    let ex = match py.detach(|| az.export(&inst, &target.path, &isa, &starts, &out_dir, fresh)) {
+    let ex = match az.export(&inst, &target.path, &isa, &starts, &out_dir, fresh) {
         Ok(ex) => ex,
         Err(e) => {
             o["status"] = json!("failed");
@@ -387,11 +386,9 @@ fn run(py: Python<'_>, p: &Project, force: bool) -> PyResult<Value> {
 
 /// `dcp setup`'s analyzer step, printed: (stdout lines, stderr lines, ok (False: the export failed), exported (the
 /// caller refreshes the rules)).
-#[pyfunction]
-pub fn analyzer_step(py: Python<'_>, project: PyRef<'_, crate::project::PyProject>, force: bool) -> PyResult<(Vec<String>, Vec<String>, bool, bool)> {
+pub fn analyzer_step(p: &crate::project::Project, force: bool) -> Result<(Vec<String>, Vec<String>, bool, bool)> {
     use crate::cliread::{record, Tok};
-    let p = &project.p;
-    let o = run(py, p, force)?;
+    let o = run(p, force)?;
     let st = |k: &str| o[k].as_str().unwrap_or("").to_string();
     let (a, reason) = (st("analyzer"), st("reason"));
     let (mut out, mut errs) = (vec![], vec![]);
@@ -415,19 +412,17 @@ pub fn analyzer_step(py: Python<'_>, project: PyRef<'_, crate::project::PyProjec
     Ok((out, errs, true, st("status") == "exported"))
 }
 
-fn install_py<'py>(py: Python<'py>, key: &str, i: &Install) -> PyResult<Bound<'py, PyAny>> {
-    crate::pystore::json_py(py, &json!({"key": key, "ok": i.ok(), "where": i.at, "reason": i.reason, "note": i.note, "root": i.root, "java_home": i.java_home}))
+fn install_json(key: &str, i: &Install) -> Value {
+    json!({"key": key, "ok": i.ok(), "where": i.at, "reason": i.reason, "note": i.note, "root": i.root, "java_home": i.java_home})
 }
 
 /// The default analyzer without configuration and what it finds (`dcp init`'s [analyzer] keys).
-#[pyfunction]
-pub fn analyzer_default<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+pub fn analyzer_default() -> Value {
     let az = Analyzer::default_unconfigured();
-    install_py(py, &az.key, &az.available())
+    install_json(&az.key, &az.available())
 }
 
 /// The analyzer plugins (the default first).
-#[pyfunction]
 pub fn analyzer_keys() -> Vec<&'static str> {
     KEYS.to_vec()
 }
@@ -440,7 +435,7 @@ mod tests {
     #[test]
     fn script_hash_is_the_files() {
         use sha2::{Digest, Sha256};
-        let f = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/decompanion/data/ghidra/DcpExport.java")).unwrap();
+        let f = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/data/ghidra/DcpExport.java")).unwrap();
         assert_eq!(Analyzer::default_unconfigured().script_hash(), crate::fsmemo::hex(&Sha256::digest(&f)));
     }
 

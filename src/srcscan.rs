@@ -7,7 +7,6 @@
 use crate::error::{Error, Result};
 use crate::layout::{ScanRef, ScanView};
 use crate::clang::FileModel;
-use pyo3::prelude::*;
 
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -323,11 +322,8 @@ impl Piece {
 /// A file's piece, held by the Python scan that holds the file's scan (srcscan.Scan.native); the native rules
 /// name it by its id (native_view). digest: the hash of the items the native rules read of it (the scan's
 /// input hash: srcscan.Scan.digest).
-#[pyclass(frozen)]
 pub struct ScanPiece {
-    #[pyo3(get)]
     id: u64,
-    #[pyo3(get)]
     digest: String,
     _piece: Arc<Piece>,
 }

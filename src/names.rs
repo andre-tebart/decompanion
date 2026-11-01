@@ -20,8 +20,6 @@
 use crate::error::Result;
 use crate::store::{self, SFact};
 use crate::with_db;
-use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
@@ -69,7 +67,6 @@ pub fn draft_values(db: &rusqlite::Connection, main: &str) -> rusqlite::Result<V
 const END_MIN: i64 = 0x10;
 
 /// address -> (C name, origin), name -> addresses; the symbols for annotation.
-#[pyclass(unsendable)]
 pub struct Names {
     pub(crate) at: HashMap<i64, (String, String)>,
     pub(crate) all_at: HashMap<i64, Vec<(String, String)>>,
@@ -79,8 +76,6 @@ pub struct Names {
     db: String,
     /// every data object's (lo, hi) of every rule (the match phase's too), sorted: Names::end_label, loaded on use
     objects: std::cell::OnceCell<Vec<(i64, i64)>>,
-    by_name_py: Option<Py<PyDict>>,
-    all_at_py: Option<Py<PyDict>>,
 }
 
 impl Names {
@@ -150,8 +145,7 @@ impl Names {
         }
         let mut syms = symbols;
         syms.sort_by_key(|f| (f.lo, f.hi));
-        Ok(Names { at, all_at, by_name, syms, image: image.to_string(), db: db_path.to_string(), objects: std::cell::OnceCell::new(),
-                   by_name_py: None, all_at_py: None })
+        Ok(Names { at, all_at, by_name, syms, image: image.to_string(), db: db_path.to_string(), objects: std::cell::OnceCell::new() })
     }
 
     pub fn name_of(&self, a: i64) -> Option<&str> {
@@ -223,32 +217,7 @@ impl Names {
     }
 }
 
-#[pymethods]
 impl Names {
-    /// The names of a store (`main`: the main checkout's store URI under a worktree, else ''), the image for
-    /// strings.
-    #[new]
-    fn new(db_path: &str, main: &str, image: &str) -> Result<Names> {
-        Names::build(db_path, main, image)
-    }
-
-    fn name(&self, a: i64) -> Option<String> {
-        self.name_of(a).map(|s| s.to_string())
-    }
-
-    fn origin(&self, a: i64) -> Option<String> {
-        self.at.get(&a).map(|x| x.1.clone())
-    }
-
-    /// The symbol fact (not the match phase's) covering a, or None.
-    fn symbol(&self, py: Python<'_>, a: i64) -> PyResult<Option<Py<crate::pystore::StoredFact>>> {
-        self.symbol_at(a).map(|f| crate::pystore::object(py, "symbol", f)).transpose()
-    }
-
-    fn label(&self, a: i64) -> Result<Option<String>> {
-        self.label_of(a)
-    }
-
     /// The instruction text with ` <label>` after every number the ledger names (label).
     pub(crate) fn annotate(&self, text: &str) -> Result<String> {
         use std::sync::LazyLock;
@@ -266,34 +235,6 @@ impl Names {
         }
         out.push_str(&text[pos..]);
         Ok(out)
-    }
-
-    /// name -> its addresses (first-named first).
-    #[getter]
-    fn by_name(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        if let Some(d) = &self.by_name_py {
-            return Ok(d.clone_ref(py));
-        }
-        let d = PyDict::new(py);
-        for (n, addrs) in &self.by_name {
-            d.set_item(n, PyList::new(py, addrs)?)?;
-        }
-        self.by_name_py = Some(d.clone().unbind());
-        Ok(d.unbind())
-    }
-
-    /// address -> every (name, origin) of it, sorted.
-    #[getter]
-    fn all_at(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        if let Some(d) = &self.all_at_py {
-            return Ok(d.clone_ref(py));
-        }
-        let d = PyDict::new(py);
-        for (a, xs) in &self.all_at {
-            d.set_item(a, PyList::new(py, xs)?)?;
-        }
-        self.all_at_py = Some(d.clone().unbind());
-        Ok(d.unbind())
     }
 }
 

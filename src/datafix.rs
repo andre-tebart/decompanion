@@ -36,7 +36,6 @@ use crate::project::{py_path, Project};
 use crate::readability::Source;
 use crate::srcscan::{py_space, py_strip};
 use crate::store::{self, SFact};
-use pyo3::prelude::*;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -883,10 +882,7 @@ fn scan_of(p: &Project) -> Result<Rc<crate::frontend::Scan>> {
 }
 
 /// `dcp data map [UNIT]`: (the lines, the exit status).
-#[pyfunction]
-#[pyo3(signature = (project, unit, externs))]
-pub fn data_map(project: PyRef<'_, crate::project::PyProject>, unit: Option<String>, externs: bool) -> Result<(Vec<String>, i32)> {
-    let p = &project.p;
+pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool) -> Result<(Vec<String>, i32)> {
     crate::pystore::st_open(&p.store_path(), &p.main_uri())?;
     let model = data_model(p, &*scan_of(p)?)?;
     let mut out = vec![];
@@ -941,23 +937,9 @@ pub fn data_map(project: PyRef<'_, crate::project::PyProject>, unit: Option<Stri
     Ok((out, 0))
 }
 
-/// `dcp data fix`: the rewrites of each check, listed; with `write` trial-compiled, the accepted ones written and
-/// confirmed by a build. `sync()` builds and refreshes the store (before each check, after writing); `emit(line)`
-/// prints a line. The exit status.
-#[pyfunction]
-#[pyo3(signature = (project, checks, unit, write, limit, verbose, sync, emit))]
-#[allow(clippy::too_many_arguments)]
-pub fn data_fix(project: PyRef<'_, crate::project::PyProject>, checks: Option<String>, unit: Option<String>, write: bool, limit: usize, verbose: bool,
-                sync: Bound<'_, PyAny>, emit: Bound<'_, PyAny>) -> PyResult<i32> {
-    let slot = std::cell::RefCell::new(None);
-    let r = data_fix_run(&project.p, checks, unit, write, limit, verbose, &mut || crate::py_cb(&sync, &slot, None),
-                         &mut |line| crate::py_cb(&emit, &slot, Some(line)));
-    crate::py_result(r, slot)
-}
-
 /// `dcp data fix` (data_fix): `sync()` builds and refreshes the store, `emit(line)` prints a line.
 #[allow(clippy::too_many_arguments)]
-pub fn data_fix_run(p: &Project, checks: Option<String>, unit: Option<String>, write: bool, limit: usize, verbose: bool,
+pub fn data_fix(p: &Project, checks: Option<String>, unit: Option<String>, write: bool, limit: usize, verbose: bool,
                     sync: &mut dyn FnMut() -> Result<()>, emit: &mut dyn FnMut(String) -> Result<()>) -> Result<i32> {
     let mut say = |line: String| emit(line);
     let checks: Vec<String> = match &checks {

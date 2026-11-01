@@ -18,7 +18,6 @@ use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::fsmemo;
 use crate::project::{py_path, toml_json, Project, CONFIG_NAME};
-use pyo3::prelude::*;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -407,9 +406,7 @@ fn err(e: impl std::fmt::Display) -> Error {
 }
 
 /// `dcp run --list`: one line per profile.
-#[pyfunction]
-pub fn run_list(project: PyRef<'_, crate::project::PyProject>) -> Result<Vec<String>> {
-    let p = &project.p;
+pub fn run_list(p: &crate::project::Project) -> Result<Vec<String>> {
     let c = p.run_cfg().map_err(err)?;
     let mut out = vec![record(&[("runs", Tok::I(c.runs.len() as i64)), ("variants", Tok::I(c.variants.len() as i64)), ("setups", Tok::I(c.setups.len() as i64))])];
     for r in &c.runs {
@@ -421,9 +418,7 @@ pub fn run_list(project: PyRef<'_, crate::project::PyProject>) -> Result<Vec<Str
 }
 
 /// The target a run profile builds (None: no such profile).
-#[pyfunction]
-pub fn run_target(project: PyRef<'_, crate::project::PyProject>, name: &str) -> Result<Option<String>> {
-    let p = &project.p;
+pub fn run_target(p: &crate::project::Project, name: &str) -> Result<Option<String>> {
     let c = p.run_cfg().map_err(err)?;
     Ok(c.runs.iter().find(|r| r.name == name).map(|r| r.target.clone().unwrap_or_else(|| p.targets[0].name.clone())))
 }
@@ -436,10 +431,7 @@ fn compile_lines(rep: &crate::compile::Report, variant: &str) -> Vec<String> {
 }
 
 /// `dcp build --variant NAME` after the main build: (lines, ok).
-#[pyfunction]
-#[pyo3(signature = (project, variant, force=false))]
-pub fn variant_build_command(project: PyRef<'_, crate::project::PyProject>, variant: &str, force: bool) -> Result<(Vec<String>, bool)> {
-    let p = &project.p;
+pub fn variant_build_command(p: &crate::project::Project, variant: &str, force: bool) -> Result<(Vec<String>, bool)> {
     let v = p.variant(variant).map_err(err)?;
     let (rep, link) = variant_build(p, &v, force).map_err(err)?;
     let mut out = compile_lines(&rep, &v.name);
@@ -450,12 +442,9 @@ pub fn variant_build_command(project: PyRef<'_, crate::project::PyProject>, vari
 
 /// `dcp run NAME` in the core: build the profile's variant (or link the main build), stage its setup's directory and
 /// write the launch spec build/run/<name>.json. (lines, error, spec path). The main build is the caller's.
-#[pyfunction]
-#[pyo3(signature = (project, name, no_build=false, seconds=None, extra=vec![], debug=None, dump=None, capstone=String::new()))]
 #[allow(clippy::too_many_arguments)]
-pub fn run_prepare(project: PyRef<'_, crate::project::PyProject>, name: &str, no_build: bool, seconds: Option<f64>, extra: Vec<String>,
+pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seconds: Option<f64>, extra: Vec<String>,
                    debug: Option<bool>, dump: Option<String>, capstone: String) -> Result<(Vec<String>, Option<String>, Option<String>)> {
-    let p = &project.p;
     let t0 = std::time::Instant::now();
     let c = p.run_cfg().map_err(err)?;
     let Some(r) = c.runs.iter().find(|r| r.name == name) else {

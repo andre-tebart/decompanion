@@ -7,7 +7,6 @@
 use crate::error::Result;
 use crate::srcscan::{py_space, py_strip, py_words, Src};
 use crate::clang::FileModel;
-use pyo3::prelude::*;
 
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -415,9 +414,7 @@ pub(crate) fn system_includes(text: &str) -> Vec<String> {
 // ------------------------------------------------------------------------------------------------ the unit
 
 /// The all-declarations unit: its text and what its lines stand for (lint.AllDecls).
-#[pyclass(frozen)]
 pub struct AllDecls {
-    #[pyo3(get)]
     text: String,
     every: Vec<Decl>,                    // every declaration of the headers and the sources
     defs: HashMap<String, usize>,        // name -> the definition every other declaration is compared with
@@ -482,7 +479,6 @@ fn header_order(headers: &[String], info: &HashMap<&str, &FileLint>) -> Vec<Stri
 
 /// lint.alldecls over the scan's pieces (srcscan.native_view's ids): headers (include/X.h not private, sorted),
 /// srcs (src/**/*.c in the walk's order), the target whose compile the unit stands for.
-#[pyfunction]
 pub fn lint_alldecls(ids: Vec<u64>, target: Option<String>, headers: Vec<String>, srcs: Vec<String>) -> Result<AllDecls> {
     let pieces = crate::srcscan::pieces_by_rel(&ids)?;
     let empty = FileLint::default();

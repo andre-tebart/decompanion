@@ -65,23 +65,3 @@ impl From<String> for Error {
         Error::Runtime(e)
     }
 }
-
-// ------------------------------------------------------------------------- the Python face (until the cutover)
-impl From<Error> for pyo3::PyErr {
-    fn from(e: Error) -> pyo3::PyErr {
-        use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
-        match e {
-            Error::Config(m) => crate::project::ConfigError::new_err(m),
-            Error::Rule(m) => crate::engine::RuleError::new_err(m),
-            Error::Runtime(m) => PyRuntimeError::new_err(m),
-            Error::Value(m) => PyValueError::new_err(m),
-            Error::Os(m) => PyOSError::new_err(m),
-        }
-    }
-}
-
-impl From<pyo3::PyErr> for Error {
-    fn from(e: pyo3::PyErr) -> Error {
-        Error::Runtime(e.to_string())
-    }
-}
