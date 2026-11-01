@@ -127,6 +127,21 @@ fn start(root: &Path) -> Result<std::process::Child, String> {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         c.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        // the daemon must not inherit our stdin / stdout / stderr: a reader of our output (`dcp x | head`, a test
+        // harness) would wait for the daemon's end instead of ours
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetStdHandle(n: u32) -> *mut std::ffi::c_void;
+            fn SetHandleInformation(h: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+        }
+        for n in [-10i32, -11, -12] {
+            unsafe {
+                let h = GetStdHandle(n as u32);
+                if !h.is_null() && h as isize != -1 {
+                    SetHandleInformation(h, 1, 0); // HANDLE_FLAG_INHERIT off
+                }
+            }
+        }
     }
     c.spawn().map_err(|e| format!("{}: {e}", copy.display()))
 }

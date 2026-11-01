@@ -17,6 +17,8 @@ mod ipc;
 mod launch;
 mod selfinstall;
 mod timing;
+#[doc(hidden)]
+pub mod testkit;
 mod cliread;
 mod coff;
 mod decl;
