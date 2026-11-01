@@ -17,6 +17,8 @@ static IDENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0
 static UNIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z0-9_.\-]*$").unwrap());
 static HEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^0x[0-9a-fA-F]+$").unwrap());
 static PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^[^\s"]+$"#).unwrap());
+/// a product of argument indexes (a0: the first stack argument) and constants: `a2`, `a1*a2`, `0x60`, `4*a1`
+static EXPR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:a\d{1,2}|\d+|0x[0-9a-fA-F]+)(?:\*(?:a\d{1,2}|\d+|0x[0-9a-fA-F]+))*$").unwrap());
 static LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:(?P<target>[A-Za-z][A-Za-z0-9_-]*):)?(?P<lo>0x[0-9a-fA-F]+)(?:\.\.(?P<hi>0x[0-9a-fA-F]+))?(?:\s+(?P<body>.*?))?\s*$").unwrap()
 });
@@ -29,6 +31,7 @@ enum Shape {
     Unit,
     Ident,
     Path,
+    Expr,
     Choice(&'static [&'static str]),
 }
 
@@ -53,6 +56,7 @@ const KINDS: &[Spec] = &[
     Spec { kind: "start", words: &[], required: &[], optional: &[], range: false },
     Spec { kind: "libunit", words: &[], required: &[("tu", Shape::Unit), ("lib", Shape::Path)], optional: &[], range: true },
     Spec { kind: "file", words: &[], required: &[("tu", Shape::Unit), ("path", Shape::Path)], optional: &[], range: false },
+    Spec { kind: "writes", words: &[], required: &[("ptr", Shape::Expr), ("size", Shape::Expr)], optional: &[], range: false },
 ];
 
 fn spec(kind: &str) -> Option<&'static Spec> {
@@ -194,6 +198,12 @@ fn value(kind: &str, key: &str, shape: Shape, v: &str) -> Result<KeyVal, String>
         Shape::Path => {
             if !PATH.is_match(v) {
                 return Err(format!("{kind}: {key}={v} is not a path (no blanks, no quotes)"));
+            }
+            KeyVal::Str(v.into())
+        }
+        Shape::Expr => {
+            if !EXPR.is_match(v) {
+                return Err(format!("{kind}: {key}={v} is not an argument (a0, a1, ...), a number or a product of them (a1*a2)"));
             }
             KeyVal::Str(v.into())
         }
@@ -478,6 +488,16 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> PyResult<()> {
             "foreign" => out.declared(d.lo, d.hi, "symbol", json!({"skind": "foreign", "what": ks("kind"), "extent": "declared"}), &by, &d.reason),
             "fptr" => out.declared(d.lo, d.hi, "symbol", json!({"skind": "fptr", "extent": "declared"}), &by, &d.reason),
             "name" => out.declared(d.lo, d.lo + 1, "name", json!({"name": d.words[0], "origin": "decl"}), &by, &d.reason),
+            // read by S.extent (the function's summary); checked here
+            "writes" => {
+                let p = ks("ptr");
+                if !(p.len() > 1 && p.starts_with('a') && p[1..].bytes().all(|b| b.is_ascii_digit())) {
+                    out.conflict("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: writes ptr={p}: the pointer is one argument (a0, a1, ...)", d.file, d.line), &by);
+                }
+                if !is_code {
+                    out.conflict("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: writes at {:#x}: not a function (outside every code section)", d.file, d.line, d.lo), &by);
+                }
+            }
             "file" => {
                 let path = ks("path");
                 let mut want: Vec<u8> = path.chars().map(|c| c as u32 as u8).collect();
@@ -536,10 +556,14 @@ mod tests {
         assert_eq!(d.text(), "exe:0x10001000..0x10001010 jumptable fn=0x10000ff0 -- a table");
         let b = parse_line("0x10008cb0 boundary start tu=dllmain by=guess -- DllMain", "", 0).unwrap();
         assert_eq!(b.text(), "0x10008cb0 boundary start by=guess tu=dllmain -- DllMain");
+        let w = parse_line("0x430bd0 writes size=a1*a2 ptr=a0 -- vfs_fread", "", 0).unwrap();
+        assert_eq!(w.text(), "0x00430bd0 writes ptr=a0 size=a1*a2 -- vfs_fread");
         for (line, err) in [
             ("0x1 start", "missing reason (` -- why` ends every declaration)"),
             ("0x1 start --", "missing reason after `--`"),
-            ("0x1 frob -- x", "unknown kind 'frob' (known: boundary, bytes, file, foreign, fptr, idxtable, jumptable, libunit, name, start)"),
+            ("0x1 frob -- x", "unknown kind 'frob' (known: boundary, bytes, file, foreign, fptr, idxtable, jumptable, libunit, name, start, writes)"),
+            ("0x1 writes ptr=a0 -- x", "writes: missing size="),
+            ("0x1 writes ptr=a0 size=a1+a2 -- x", "writes: size=a1+a2 is not an argument (a0, a1, ...), a number or a product of them (a1*a2)"),
             ("0x1 bytes dead -- x", "bytes declares a range: ADDR..END"),
             ("0x2..0x1 bytes dead -- x", "empty range 0x2..0x1"),
             ("0x1..0x2 start -- x", "start declares a point: ADDR, not a range"),
