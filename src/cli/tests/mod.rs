@@ -6,9 +6,12 @@
 mod layout;
 mod launch;
 mod layout_tools;
+mod matching;
 mod multitarget;
 mod obligations;
 mod seams;
+mod servers;
+mod source_checks;
 mod targets;
 
 use crate::pystore;
