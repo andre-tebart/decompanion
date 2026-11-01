@@ -507,6 +507,37 @@ impl Project {
         Project::open(&root, target, crate::CORE_HASH).map_err(cfg_err)
     }
 
+    /// The current target's image, checked: a known format, the file exists, its sha256 is the declared one.
+    pub fn image_checked(&self) -> Result<std::rc::Rc<crate::pe::Image>> {
+        let t = self.target(None).map_err(cfg_err)?;
+        if let Some(f) = t.image.as_ref().filter(|f| !IMAGE_FORMATS.contains(&f.as_str())) {
+            return Err(cfg_err(format!("target {}: unknown image format {} (known: {})", t.name, crate::decl::py_repr(f), IMAGE_FORMATS.join(", "))));
+        }
+        if !Path::new(&t.path).exists() {
+            return Err(cfg_err(format!("target {}: {} does not exist", t.name, t.path)));
+        }
+        let img = crate::image(&t.path)?;
+        let sha = crate::fsmemo::sha256(&t.path).map_err(|e| cfg_err(format!("{}: {e}", t.path)))?;
+        if !t.sha256.is_empty() && sha != t.sha256 {
+            return Err(cfg_err(format!("target {}: {} has sha256 {sha}, the declared one is {}", t.name, t.path, t.sha256)));
+        }
+        Ok(img)
+    }
+
+    /// The current target's instruction set: its `isa` key, else what the image's machine type implies.
+    pub fn isa(&self) -> Result<String> {
+        let t = self.target(None).map_err(cfg_err)?;
+        let key = match &t.isa {
+            Some(k) => Some(k.clone()),
+            None => self.image_checked()?.default_isa().map(|k| k.to_string()),
+        };
+        match key {
+            Some(k) if ISAS.contains(&k.as_str()) => Ok(k),
+            k => Err(cfg_err(format!("target {}: unknown instruction set {} (known: {}); declare isa = ... in its [[target]] table", self.target_name,
+                                     k.map(|k| crate::decl::py_repr(&k)).unwrap_or_else(|| "None".into()), ISAS.join(", ")))),
+        }
+    }
+
     /// The analyzer's key ([analyzer] plugin, default ghidra).
     pub fn analyzer_key(&self) -> Result<String> {
         crate::analyzers::Analyzer::of(self).map(|a| a.key).map_err(cfg_err)

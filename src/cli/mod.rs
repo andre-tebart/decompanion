@@ -9,6 +9,8 @@
 pub mod args;
 mod commands;
 mod glue;
+#[cfg(test)]
+mod tests;
 
 use crate::error::Error;
 use clap::Parser;
