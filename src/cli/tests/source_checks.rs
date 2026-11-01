@@ -16,6 +16,16 @@ fn has_clang() -> bool {
 }
 
 #[test]
+fn exceptions_listed_with_their_reasons() {
+    let t = tiny();
+    write(&t, "include/net.h", "int add2(int a);  /* @vc6 */\n");
+    unit(&t, "net", &["extern int counter;\n", "/* 0x10001030, logs hello */\nvoid log_hello(void)\n{\n    add2(1, 2);  /* @original the original pushes two */\n}\n"]);
+    let (code, out) = dcp(&t, &["exceptions"]);
+    assert!(code == 0 && out.starts_with("exceptions=2  original=1  vc6=1  unexplained=1"), "{out}");
+    assert!(out.contains("at=include/net.h:1  kind=@vc6  why=-") && out.contains("at=src/net.c:6  kind=@original  why='the original pushes two'"), "{out}");
+}
+
+#[test]
 fn a1_addr_cast() {
     let t = tiny();
     assert_eq!(dcp(&t, &["decl", "add", "0x10001050 name ShowWorld -- pushes world (test)"]).0, 0);

@@ -39,6 +39,7 @@ mod edit;
 mod difflib;
 mod engine;
 mod error;
+mod exceptions;
 mod fsmemo;
 mod frontend;
 mod headers;

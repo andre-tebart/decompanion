@@ -81,6 +81,9 @@ pub enum Cmd {
         #[arg(long)]
         many: bool,
     },
+    /// the exceptions: the sources' `@original why` (the original was inconsistent here) and `@vc6 why` (the checker
+    /// differs from the toolchain here) markers, each with its reason
+    Exceptions,
     /// the findings: contradictions, ill-formed H or φ, gaps, stale results, debt
     Findings {
         /// contradiction, ill-formed, gap, stale, debt

@@ -45,6 +45,19 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::clicmd::phi_command(&p, key, many)?;
             Ok(io.report("phi", &l, e.as_deref(), c))
         }
+        Cmd::Exceptions => {
+            let p = glue::config(sel, None)?;
+            let es = crate::exceptions::of_project(&p.root);
+            let n = |k: crate::exceptions::Kind| Tok::I(es.iter().filter(|e| e.kind == k).count() as i64);
+            let mut l = vec![rec(&[("exceptions", Tok::I(es.len() as i64)), ("original", n(crate::exceptions::Kind::Original)),
+                                   ("vc6", n(crate::exceptions::Kind::Checker)),
+                                   ("unexplained", Tok::I(es.iter().filter(|e| e.why.is_empty()).count() as i64))])];
+            for e in &es {
+                l.push(format!("  {}", rec(&[("at", s(format!("{}:{}", e.file, e.line))), ("kind", s(e.kind.marker())),
+                                            ("why", if e.why.is_empty() { s("-") } else { s(e.why.clone()) })])));
+            }
+            Ok(io.report("exceptions", &l, None, 0))
+        }
         Cmd::Findings { category, severity, json } => {
             let p = refreshed(io, sel, None)?;
             let l = crate::clicmd::findings_command(&p, category, severity.map(|s| s.as_str().to_string()), json)?;
