@@ -10,6 +10,7 @@
 //! inside its object):
 //!   field  an access [r + disp] (r an address: the object holds the address and the accessed bytes)
 //!   bound  `cmp r, END` before an ordering jump, r walking up from B: B .. END is one array (END one past it)
+//!          (an access a guard of the body, `cmp r, LIMIT; jge past it`, skips counts up to LIMIT's last pass)
 //!   copy   rep movs / stos (and the single forms) with ecx a constant: the bytes written / read
 //!   call   an address passed to a function whose summary says how far it reaches through that argument
 //! A function's summary: per stack argument, the range around the pointer its accesses reach, a constant or a
@@ -369,7 +370,7 @@ fn analyse(ins: &[&WIns], lo: u32, hi: u32, fx: &mut Fx) {
             m |= written(i);
             stores |= i.ops.first().is_some_and(|o| o.typ == OP_MEM && matches!(reg(o.base), Some((ESP, true)) | Some((EBP, true))));
         }
-        loops.push((h, j, steps(&body), m, stores));
+        loops.push((h, j, steps(&body, ins), m, stores));
     }
     loops.sort_by_key(|l| l.1 - l.0);
     // basic blocks: a leader at the start, at every jump target inside, after every jump and return
@@ -476,14 +477,53 @@ fn analyse(ins: &[&WIns], lo: u32, hi: u32, fx: &mut Fx) {
 
 /// Per register of a loop body that only steps it by constants: (the step per pass, the accesses through it
 /// relative to its value at the loop head: lowest displacement, highest end; its offset from that value at each
-/// compare of the body).
-type Steps = HashMap<usize, (i64, Option<(i64, i64)>, HashMap<u32, i64>)>;
+/// compare of the body; the accesses a guard of the body excludes on the passes past its limit: (the last head
+/// value the guard lets through, lowest displacement, highest end)).
+type Steps = HashMap<usize, (i64, Option<(i64, i64)>, HashMap<u32, i64>, Vec<(i64, i64, i64)>)>;
 
-fn steps(body: &[&WIns]) -> Steps {
+/// The guards of a loop body: `cmp r, LIMIT` and a forward `jge` / `jae` (`jg` / `ja`) past a region that only
+/// its fall-through enters (no jump of the function from outside it lands inside): (the register, the
+/// compare's address, the region (the jump, its target), the limit, whether r == LIMIT passes too).
+fn guards(body: &[&WIns], all: &[&WIns]) -> Vec<(usize, u32, u32, u32, i64, bool)> {
+    let mut gs = vec![];
+    for w in body.windows(2) {
+        let (c, j) = (w[0], w[1]);
+        if c.mn != "cmp" || c.ops.len() != 2 || c.ops[1].typ != OP_IMM || c.ops[0].typ != OP_REG || j.flow != CJUMP {
+            continue;
+        }
+        let Some((r, true)) = reg(c.ops[0].reg) else { continue };
+        let incl = match j.mn.as_str() {
+            "jge" | "jae" | "jnl" | "jnb" | "jnc" => false,
+            "jg" | "ja" | "jnle" | "jnbe" => true,
+            _ => continue,
+        };
+        let Some(t) = j.target.map(|t| t as u32).filter(|&t| t > j.addr) else { continue };
+        let entered = all.iter().any(|i| {
+            matches!(i.flow, JUMP | CJUMP)
+                && i.target.is_some_and(|x| (x as u32) > j.addr && (x as u32) < t)
+                && !(i.addr > j.addr && i.addr < t)
+        });
+        if !entered {
+            gs.push((r, c.addr, j.addr, t, c.ops[1].imm, incl));
+        }
+    }
+    gs
+}
+
+fn steps(body: &[&WIns], all: &[&WIns]) -> Steps {
     let mut step: [Option<i64>; 8] = [Some(0); 8];
     let mut acc: [Option<(i64, i64)>; 8] = [None; 8];
     let mut at: [HashMap<u32, i64>; 8] = Default::default();
+    // per guard (as `guards` lists them): the register's offset from its head value at the compare
+    let gs = guards(body, all);
+    let mut gcur: Vec<Option<i64>> = vec![None; gs.len()];
+    let mut gacc: [Vec<(i64, bool, i64, i64)>; 8] = Default::default();
     for i in body {
+        for (g, cur) in gs.iter().zip(gcur.iter_mut()) {
+            if g.1 == i.addr {
+                *cur = step[g.0];
+            }
+        }
         if i.mn == "cmp" {
             for r in 0..8 {
                 if let Some(s) = step[r] {
@@ -510,7 +550,15 @@ fn steps(body: &[&WIns]) -> Steps {
                 if let Some((r, true)) = reg(o.base) {
                     if let Some(cur) = step[r] {
                         let (lo, hi) = (cur + o.disp, cur + o.disp + o.size.max(1) as i64);
-                        acc[r] = Some(acc[r].map_or((lo, hi), |a| (a.0.min(lo), a.1.max(hi))));
+                        // inside a guard's region the access runs only while r passes the guard: on the passes whose
+                        // head value h has h + cur < LIMIT (h + cur <= LIMIT); the tightest guard around it
+                        let lim = gs.iter().zip(&gcur).filter(|(g, _)| g.0 == r && g.2 < i.addr && i.addr < g.3)
+                            .filter_map(|(g, c)| c.map(|c| (g.4 - c, g.5))).min_by_key(|&(l, incl)| (l, !incl));
+                        match lim {
+                            // the step is known only at the end of the body: the last head value is taken there
+                            Some((l, incl)) => gacc[r].push((l, incl, lo, hi)),
+                            None => acc[r] = Some(acc[r].map_or((lo, hi), |a| (a.0.min(lo), a.1.max(hi)))),
+                        }
                     }
                 }
             }
@@ -525,7 +573,16 @@ fn steps(body: &[&WIns]) -> Steps {
             }
         }
     }
-    (0..8).filter_map(|r| step[r].filter(|&s| s != 0).map(|s| (r, (s, acc[r], std::mem::take(&mut at[r]))))).collect()
+    (0..8)
+        .filter_map(|r| {
+            step[r].filter(|&s| s != 0).map(|s| {
+                // a guard h + cur < L lets through the head values up to L - cur - s (aligned like the loop
+                // bound's last pass), h + cur <= L up to L - cur
+                let g = gacc[r].iter().map(|&(l, incl, lo, hi)| (if incl { l } else { l - s }, lo, hi)).collect();
+                (r, (s, acc[r], std::mem::take(&mut at[r]), g))
+            })
+        })
+        .collect()
 }
 
 /// One instruction's effect on the state, and its evidence.
@@ -640,7 +697,7 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
             if ordered && ops[0].typ == OP_REG {
                 let (a, b) = (get(st, &ops[0]), get(st, &ops[1]));
                 let walk = reg(ops[0].reg).filter(|r| r.1).and_then(|r| lp.and_then(|l| l.get(&r.0)));
-                if let (V::Walk(base), V::Addr(end, 0), Some((s, acc, at))) = (a, b, walk) {
+                if let (V::Walk(base), V::Addr(end, 0), Some((s, acc, at, guarded))) = (a, b, walk) {
                     let s = *s;
                     // the last pass starts at END - s (a test at the top: head < END; at the bottom, after the
                     // step: head + s < END); its accesses at the register reach hi
@@ -648,8 +705,22 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
                     if cur != 0 && cur != s {
                         return;
                     }
-                    let (lo_acc, hi_acc) = acc.unwrap_or((0, 1));
-                    let (lo, hi) = ((base as i64).min(base as i64 + lo_acc), end as i64 - s + hi_acc);
+                    // the accesses a guard of the body excludes past its limit: from its last head value when
+                    // that is below the loop bound's
+                    let last = end as i64 - s;
+                    let acc = match (acc, guarded.is_empty()) {
+                        (None, true) => Some((0, 1)),
+                        (a, _) => *a,
+                    };
+                    let (mut lo, mut hi) = (base as i64, i64::MIN);
+                    if let Some((lo_acc, hi_acc)) = acc {
+                        lo = lo.min(base as i64 + lo_acc);
+                        hi = last + hi_acc;
+                    }
+                    for &(gl, glo, ghi) in guarded {
+                        lo = lo.min(base as i64 + glo);
+                        hi = hi.max(last.min(gl) + ghi);
+                    }
                     if s > 0 && end > base && hi > lo {
                         fx.ev.push(Ev { lo, hi, base, site: x.addr, how: "bound", to: 0 });
                     }
@@ -925,7 +996,7 @@ mod tests {
     /// One function per kind of evidence in .text, and their (start, end) offsets.
     fn code() -> (Vec<u8>, Vec<(u32, u32)>) {
         let d = BASE + DATA;
-        let mut c = vec![0xccu8; 0x100];
+        let mut c = vec![0xccu8; 0x120];
         let mut fns = vec![];
         let mut put = |at: usize, b: &[u8]| {
             c[at..at + b.len()].copy_from_slice(b);
@@ -947,6 +1018,11 @@ mod tests {
         // L: mov [esi-0x10], eax; mov [esi], eax; add esi, 4; cmp esi, D+0x2b0; jl L; ret
         put(0xc0, &[&[0xbe][..], &le(d + 0x2a0), &[0x89, 0x46, 0xf0, 0x89, 0x06, 0x83, 0xc6, 0x04, 0x81, 0xfe], &le(d + 0x2b0), &[0x7c, 0xf0, 0xc3]]
             .concat());
+        // 0xe0 a guard in the body (he_Unk53d800's slot shift): mov esi, D+0x310; L: cmp esi, D+0x3c4; jge skip;
+        // mov eax, [esi]; mov [esi+4], eax; skip: mov ecx, [esi-0xc]; add esi, 0xc; cmp esi, D+0x3d0; jl L; ret
+        // (the last pass, esi = D+0x3c4, skips [esi]: the array ends at D+0x3c4 - 0xc + 4, not D+0x3d0 - 0xc + 4)
+        put(0xe0, &[&[0xbe][..], &le(d + 0x310), &[0x81, 0xfe], &le(d + 0x3c4), &[0x7d, 0x05, 0x8b, 0x06, 0x89, 0x46, 0x04,
+            0x8b, 0x4e, 0xf4, 0x83, 0xc6, 0x0c, 0x81, 0xfe], &le(d + 0x3d0), &[0x7c, 0xe5, 0xc3]].concat());
         (c, fns)
     }
 
@@ -973,6 +1049,7 @@ mod tests {
             (0xc0, 0xe0, "copy".into()),
             (0xe0, 0xec, "call".into()),      // the declared reader: 4 * 3 bytes
             (0x2a0, 0x2b0, "bound".into()),   // the register's own array only, not the one at -0x10
+            (0x310, 0x3bc, "bound".into()),   // the guarded accesses stop at the guard's last pass
         ]);
         let call = of(&rows, "evidence").into_iter().find(|r| r.0 == d + 0xe0).unwrap().2;
         assert_eq!((call["to"].as_i64(), call["site"].as_i64()), (Some(t + 0x90), Some(t + 0xa9)));
