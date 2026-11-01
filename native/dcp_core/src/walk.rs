@@ -610,6 +610,129 @@ pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
     Ok(())
 }
 
+/// L.src.refs: the references of the sourced functions the walk does not reach (an image without base relocations
+/// hides most functions only a pointer reaches: on gildegold more than half of them). Each function the ledger
+/// gives an extent (L.src.extent's convention, M.match's comparison) and no S.codewalk function starts at is
+/// descended inside its extent (W4: a return or an unconditional jump ends a path; a jump out of the extent is a
+/// tail call; a jump table's entries inside the extent are paths), and its calls, tail calls, code immediates at
+/// relocation sites and memory operands into the image are `ref` facts like the walk's, declared (they rest on
+/// the address comment's start). A match-base report: `dcp refs` missed `test byte ptr [0xfd7f78], 2` in
+/// rd_BuildRoad, a function no walk reached.
+pub fn l_src_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> PyResult<()> {
+    let err = |e: String| pyo3::exceptions::PyRuntimeError::new_err(e);
+    let img = crate::image(&ctx.image)?;
+    let code_secs: Vec<(u32, u32)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va, s.end())).collect();
+    if code_secs.is_empty() {
+        return Ok(());
+    }
+    let lo = code_secs.iter().map(|s| s.0).min().unwrap();
+    let hi = code_secs.iter().map(|s| s.1).max().unwrap();
+    let symbols = crate::setup::facts(ctx, db, "symbol")?;
+    let walked: HashSet<i64> = symbols.iter().filter(|f| &*f.rule == "S.codewalk" && f.s("skind") == Some("func")).map(|f| f.lo).collect();
+    let mut todo: BTreeMap<i64, i64> = BTreeMap::new();
+    for f in symbols.iter().filter(|f| matches!(&*f.rule, "L.src.extent" | "M.match") && f.s("skind") == Some("func")) {
+        if !walked.contains(&f.lo) && lo as i64 <= f.lo && f.hi <= hi as i64 && f.hi > f.lo {
+            let e = todo.entry(f.lo).or_insert(f.hi);
+            *e = (*e).max(f.hi);
+        }
+    }
+    if todo.is_empty() {
+        return Ok(());
+    }
+    let reloc_sites: HashSet<u32> = crate::setup::facts(ctx, db, "ref")?.iter().filter(|f| f.s("rkind") == Some("reloc")).map(|f| f.lo as u32).collect();
+    let fills: HashSet<Vec<u8>> = ctx.fill_forms.iter().cloned().collect();
+    // contiguous chunks of the functions, each decoded on a thread of its own (capstone's engine is per thread)
+    let fns: Vec<(u32, u32)> = todo.into_iter().map(|(f, e)| (f as u32, e as u32)).collect();
+    let per = fns.len().div_ceil(64).max(1);
+    let chunks: Vec<std::sync::Mutex<(Decoder, &[(u32, u32)])>> = fns.chunks(per)
+        .map(|c| std::sync::Mutex::new((Decoder::new(&ctx.capstone, &img, c[0].0, c[c.len() - 1].1, &fills), c))).collect();
+    let found = crate::compile_threads(&chunks, |m| -> Result<Vec<Ref>, String> {
+        let mut g = m.lock().unwrap();
+        let (dec, fs) = &mut *g;
+        let mut out = vec![];
+        for &(f, e) in fs.iter() {
+            out.extend(refs_inside(dec, f, e, (lo, hi), &reloc_sites)?);
+        }
+        Ok(out)
+    });
+    for r in found {
+        for (site, size, rk, to, osize) in r.map_err(err)? {
+            let v = if rk == "operand" { json!({"rkind": rk, "to": to, "size": osize}) } else { json!({"rkind": rk, "to": to}) };
+            out.fact(site as i64, (site + size) as i64, "ref", v, DECLARED);
+        }
+    }
+    Ok(())
+}
+
+/// A reference L.src.refs finds: (site, size, kind, to, operand size).
+type Ref = (u32, u32, &'static str, i64, u8);
+
+/// The references of the function at f confined to [f, e) (L.src.refs), in order; `code` the code sections' span.
+fn refs_inside(dec: &mut Decoder, f: u32, e: u32, code: (u32, u32), reloc_sites: &HashSet<u32>) -> Result<BTreeSet<Ref>, String> {
+    let (lo, hi) = (code.0 as i64, code.1 as i64);
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut work = vec![f];
+    let mut refs: BTreeSet<Ref> = BTreeSet::new();
+    while let Some(start) = work.pop() {
+        let mut cur = start;
+        while f <= cur && cur < e && seen.insert(cur) {
+            let Some(ins) = dec.at(cur)? else { break };
+            if ins.fill && cur != start {
+                break;
+            }
+            let (addr, size, flow, target, table) = (ins.addr, ins.size, ins.flow, ins.target, ins.table);
+            cur = addr + size;
+            for &(disp, osize) in &ins.mem {
+                refs.insert((addr, size, "operand", disp as i64, osize));
+            }
+            if !matches!(flow, RET | CALL | JUMP | CJUMP | IJUMP) {
+                for &v in &ins.imms {
+                    if lo <= v && v < hi && Decoder::field_starts(ins).any(|k| reloc_sites.contains(&k)) {
+                        refs.insert((addr, 1, "immediate", v, 0));
+                    }
+                }
+            }
+            match flow {
+                RET => break,
+                CALL => {
+                    if let Some(t) = target.filter(|&t| lo <= t && t < hi) {
+                        refs.insert((addr, size, "call", t, 0));
+                    }
+                }
+                JUMP | CJUMP => {
+                    if let Some(t) = target {
+                        if f as i64 <= t && t < e as i64 {
+                            work.push(t as u32);
+                        } else if lo <= t && t < hi {
+                            refs.insert((addr, 1, "tail", t, 0));
+                        }
+                    }
+                    if flow == JUMP {
+                        break;
+                    }
+                }
+                IJUMP => {
+                    // the entries of its table that lie inside the extent, up to the first that does not
+                    if let Some(tbl) = table.filter(|&t| f <= t && t + 4 <= e) {
+                        let mut k = tbl;
+                        while k + 4 <= e {
+                            let v = dec.read_entry(k);
+                            if !(f <= v && v < e) {
+                                break;
+                            }
+                            work.push(v);
+                            k += 4;
+                        }
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(refs)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::pe::testpe::{build, BASE, DATA, TEXT};
@@ -643,5 +766,22 @@ pub(crate) mod tests {
         let refs: Vec<(i64, i64, serde_json::Value)> = of(&rows, "ref").into_iter().map(|(lo, hi, v)| (lo - t, hi - t, v)).collect();
         assert_eq!(refs, [(3, 8, json!({"rkind": "call", "to": t + 0x20})), (8, 0xd, json!({"rkind": "call", "to": t + 0x30})),
                           (0x20, 0x25, json!({"rkind": "operand", "to": d, "size": 4}))]);
+    }
+
+    /// A sourced function no walk reached keeps its references (L.src.refs: a match-base report, `dcp refs` missed
+    /// an operand in such a function); one the walk reached is the walk's alone.
+    #[test]
+    fn refs_of_the_functions_no_walk_reached() {
+        let k = Kit::new(&build(None));
+        let t = (BASE + TEXT) as i64;
+        let d = (BASE + DATA) as i64;
+        k.put("L.src.extent", &[(t + 0x20, t + 0x26, "symbol", json!({"skind": "func", "extent": "source"}), crate::store::DECLARED)]);
+        k.put("M.match", &[(t + 0x30, t + 0x3e, "symbol", json!({"skind": "func", "extent": "matched"}), crate::store::PROVEN)]);
+        k.put("S.codewalk", &[(t + 0x30, t + 0x3e, "symbol", json!({"skind": "func", "extent": "derived"}), DERIVED)]);
+        let ctx = Ctx { capstone: capstone(), ..k.ctx("L.src.refs", &["L.src.extent", "M.match", "S.codewalk"], r#"{"toolchain": "vc6"}"#) };
+        let (rows, _) = dispatch(&ctx).unwrap().sorted();
+        let refs: Vec<(i64, i64, serde_json::Value, i64)> = rows.iter().filter(|r| r.kind == "ref")
+            .map(|r| (r.lo - t, r.hi - t, serde_json::from_str(&r.value).unwrap(), r.level)).collect();
+        assert_eq!(refs, [(0x20, 0x25, json!({"rkind": "operand", "to": d, "size": 4}), crate::store::DECLARED)]);
     }
 }

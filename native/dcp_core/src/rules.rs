@@ -1024,6 +1024,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> PyResult<Out> {
         "D.data" => d_data(ctx, db, &mut out),
         "L9.analyzer.span" => crate::layout::l9_analyzer_span(ctx, db, &mut out),
         "L.src.extent" => crate::layout::l_src_extent(ctx, db, &mut out),
+        "L.src.refs" => crate::walk::l_src_refs(ctx, db, &mut out),
         "L5.placeholder" => crate::layout::l5_placeholder(ctx, db, &mut out),
         "A1.addr.cast" => crate::layout::a1_addr_cast(ctx, db, &mut out),
         "L13.data.code" => crate::layout::l13_data_code(ctx, db, &mut out),
