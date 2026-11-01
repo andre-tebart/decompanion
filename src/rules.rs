@@ -413,6 +413,47 @@ pub(crate) fn constant_mismatches(img: &crate::pe::Image, x: &Compiled, aligned:
     out
 }
 
+/// The original's absolute memory operands inside a function of ours [lo, lo + len) whose instruction holds no
+/// relocated field of ours: (site, size, the address it refers to). `refs`: the walk's operand references (the
+/// instruction's range, its target); `fields`: our relocated fields (offset, width) in the function.
+pub(crate) fn missing_refs(lo: i64, len: i64, fields: &[(u32, u32)], refs: &[(i64, i64, i64)]) -> Vec<(i64, i64, i64)> {
+    refs.iter().filter(|&&(a, b, _)| lo <= a && b <= lo + len).filter(|&&(a, b, _)| {
+        let (o, e) = (a - lo, b - lo);
+        !fields.iter().any(|&(off, w)| (off as i64) < e && o < off as i64 + w as i64)
+    }).copied().collect()
+}
+
+/// M.ref.missing (docs/mental-model.md §8.3): a byte-matched function whose instruction holds, as a constant, the
+/// address an absolute memory operand of the original refers to. The analysis of I claims a reference (derived),
+/// our code none (declared): our bytes equal the original's only at this layout.
+fn m_ref_missing(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
+    let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
+    let (funcs, _) = compiled_functions(ctx, db)?;
+    let refs: Vec<Rc<Claim>> = store::claims(db, &ctx.db, "ref", &ctx.needed, |f| f.s("rkind") == Some("operand")).map_err(err)?;
+    if refs.is_empty() {
+        return Ok(());
+    }
+    let mut sorted: Vec<(i64, i64, i64, usize)> = refs.iter().enumerate()
+        .map(|(i, f)| (f.lo, f.hi, f.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0), i)).collect();
+    sorted.sort_unstable();
+    let phi = phi_of(ctx, db)?;
+    for x in funcs.iter().filter(|x| x.c.matched()) {
+        let (lo, len) = (x.src.lo, x.code.code_len.unwrap_or(x.code.data.len() as u32) as i64);
+        let i = sorted.partition_point(|r| r.0 < lo);
+        let inside: Vec<(i64, i64, i64)> = sorted[i..].iter().take_while(|r| r.0 < lo + len).map(|r| (r.0, r.1, r.2)).collect();
+        let fields: Vec<(u32, u32)> = x.code.relocs.iter().map(|(off, r)| (*off, r.kind_width().1)).collect();
+        for (a, b, to) in missing_refs(lo, len, &fields, &inside) {
+            let by = sorted.iter().find(|r| r.0 == a && r.1 == b && r.2 == to).map(|r| refs[r.3].by.clone()).unwrap_or_default();
+            let what = phi.names_at(to).into_iter().next().map(|n| format!("{n} ({to:#x})")).unwrap_or_else(|| format!("{to:#x}"));
+            out.finding2("error", "M.ref.missing", a, b,
+                         format!("{} at {lo:#x}: the instruction at {a:#x} holds {to:#x} as a constant where the original refers to {what}: \
+                                  write the object, not its address (the bytes match at this layout only)", x.src.s("symbol").unwrap_or("")),
+                         &x.src.by, &by);
+        }
+    }
+    Ok(())
+}
+
 /// M8 / M9 / M10 (M8.reloc): each relocation of ours whose site lines up with the original's code, resolved against
 /// the image: a registered symbol the original's site does not refer to (M8), a literal or a floating constant
 /// whose bytes the original does not hold there (M9 / M10: constant_mismatches).
@@ -1136,6 +1177,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> Result<Out> {
         "M.bytes.declared" => crate::layout::m_bytes_declared(ctx, db, &mut out),
         "M.match" => m_match(ctx, db, &mut out),
         "M8.reloc" => m8_reloc(ctx, db, &mut out),
+        "M.ref.missing" => m_ref_missing(ctx, db, &mut out),
         "M.lint" => m_lint(ctx, db, &mut out),
         "M.data.site" => m_data_site(ctx, db, &mut out),
         "M.data.content" => m_data_content(ctx, db, &mut out),
@@ -1236,6 +1278,20 @@ pub(crate) mod testkit {
     /// (lo, hi, kind, value) of the rows of one kind.
     pub fn of(rows: &[ClaimRow], kind: &str) -> Vec<(i64, i64, serde_json::Value)> {
         rows.iter().filter(|r| r.kind == kind).map(|r| (r.lo, r.hi, serde_json::from_str(&r.value).unwrap())).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests_ref_missing {
+    /// An absolute operand of the original inside our function counts as missing only when no relocated field of
+    /// ours lies in its instruction; operands outside the function are not ours to judge.
+    #[test]
+    fn missing_where_no_field_of_ours() {
+        let lo = 0x401000;
+        // mov eax, [0x4a1230] at +0x10 (6 bytes): our field at +0x12; mov [0x4a1240], ecx at +0x20: none of ours
+        let refs = [(lo + 0x10, lo + 0x16, 0x4a1230), (lo + 0x20, lo + 0x26, 0x4a1240), (lo + 0x40, lo + 0x46, 0x4a1250)];
+        assert_eq!(super::missing_refs(lo, 0x30, &[(0x12, 4)], &refs), [(lo + 0x20, lo + 0x26, 0x4a1240)]);
+        assert!(super::missing_refs(lo, 0x30, &[(0x12, 4), (0x22, 4)], &refs).is_empty());
     }
 }
 
