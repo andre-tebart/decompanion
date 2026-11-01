@@ -8,7 +8,8 @@
 //! OLD; when NEW occurs already and is not OLD's own (the ledger names another address NEW, or OLD has no address):
 //! NEW written by hand in part for OLD's address is completed; when the pairs of a call chain or repeat. A success
 //! prints per pair the rename record (files, replacements, decl lines) and one line per changed file, with its first
-//! changed lines (`LINE: text` as it reads now, 4 per file, `(+N more line(s))`). names.log
+//! changed lines (`LINE: text` as it reads now, 4 per file, `(+N more line(s))`), and every line where OLD stood inside
+//! a comment (`comments:`, for review: prose may argue from the old name). names.log
 //! records each event, with the address the ledger knows for OLD, all of a call's events in one append. The write is
 //! all or nothing: a failed write of a source, a decl file or names.log puts every file back as it read before
 //! (an error, exit 1). The rename done by hand already (OLD nowhere,
