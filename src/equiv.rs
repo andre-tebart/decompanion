@@ -314,6 +314,17 @@ impl Arena {
         }
     }
 
+    /// Whether two memory accesses (address, width) cannot overlap: the same address but for a constant, the
+    /// ranges apart.
+    fn apart(&self, a: E, aw: u8, b: E, bw: u8) -> bool {
+        let ((ca, ta), (cb, tb)) = (self.lin(a), self.lin(b));
+        if ta != tb {
+            return false;
+        }
+        let d = cb.wrapping_sub(ca) as i32 as i64;
+        d >= aw as i64 || -d >= bw as i64
+    }
+
     /// The SP0-relative offset of a value (`esp`, `[esp + 8]`'s address), None for anything else.
     fn sp_off(&self, e: E) -> Option<i32> {
         let (c, t) = self.lin(e);
@@ -371,6 +382,7 @@ impl Arena {
                     (Or, _) if x == y => return x,
                     (Xor, _) if x == y => return self.c(0),
                     (And, Some(0)) | (Mul, Some(0)) => return self.c(0),
+                    (Or, Some(u32::MAX)) => return self.c(u32::MAX),
                     (And, Some(u32::MAX)) | (Or, Some(0)) | (Xor, Some(0)) | (Mul, Some(1)) => return other,
                     (And, Some(0xff)) => return self.op(Zx8, vec![other]),
                     (And, Some(0xffff)) => return self.op(Zx16, vec![other]),
@@ -1139,8 +1151,17 @@ impl Exec<'_> {
         match self.place(a)? {
             Place::Slot(o) => self.slot_load(o, w),
             Place::Mem(m) => {
-                let k = self.effects.len() as u32;
-                Ok(self.ar.mk(Node::Load(m, w, self.pair, k)))
+                // the memory as it was before the stores this load does not overlap (the same base at offsets
+                // far enough apart, two constant addresses apart): a load scheduled across such a store is one
+                // load; a call, a copy, a fill or an escape ends the search
+                let mut k = self.effects.len();
+                while k > 0 {
+                    match self.effects[k - 1] {
+                        Effect::Store(a, sw, _) if self.ar.apart(a, sw, m, w) => k -= 1,
+                        _ => break,
+                    }
+                }
+                Ok(self.ar.mk(Node::Load(m, w, self.pair, k as u32)))
             }
         }
     }
