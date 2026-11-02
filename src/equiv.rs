@@ -1250,14 +1250,24 @@ impl Exec<'_> {
                 }
             }
         }
+        // a slot written on a path so far, whatever became of its correspondence (lost at a join: its own value), or
+        // known
+        let known = if self.side == 0 { &self.corr.known.0 } else { &self.corr.known.1 };
+        let slots = known.keys().filter_map(|l| if let Loc::Slot(o) = l { Some(*o) } else { None });
+        offs.extend(self.written.iter().copied().chain(slots).filter(|&o| c <= o && o < top));
         let mut region = vec![];
         for o in offs {
             let v = self.slot(o);
             // a slot never written before (the rest of a cell a byte was stored to): uninitialised stack, named by
             // its place in the escaped frame on both sides (a program that read it would read garbage either way)
-            let own = self.ar.var(Var::Own(self.pair, self.side, Loc::Slot(o)));
-            let undef = self.ar.var(Var::Undef(o - base));
-            let v = self.ar.subst(v, own, undef);
+            // (only a slot no path wrote: one that lost its correspondence at a join holds a value)
+            let v = if self.written.contains(&o) {
+                v
+            } else {
+                let own = self.ar.var(Var::Own(self.pair, self.side, Loc::Slot(o)));
+                let undef = self.ar.var(Var::Undef(o - base));
+                self.ar.subst(v, own, undef)
+            };
             if self.ar.has_sp(v) {
                 return Err("a stack address stored in the frame escapes with it".into());
             }
@@ -1628,7 +1638,7 @@ impl Exec<'_> {
                     o += 4;
                 }
                 let mut args = vec![];
-                for o in offs {
+                for &o in &offs {
                     let c = self.ar.c(o as u32);
                     let a = self.ar.add(SP0_KEY, c);
                     let v = self.load(a, 4)?;
@@ -1646,6 +1656,7 @@ impl Exec<'_> {
                     let sp = self.sp + 4 * n;
                     self.set_sp(sp);
                 }
+                let popped = self.sp > offs.first().copied().unwrap_or(i32::MAX);
                 let k = self.effects.len() as u32;
                 self.fret = Some(self.ar.var(Var::FRet(self.pair, k)));
                 for g in [0u8, 1, 2] {
@@ -1653,7 +1664,9 @@ impl Exec<'_> {
                     self.regs[g as usize] = Some(v);
                 }
                 self.pushed.clear();
-                self.reserved.clear();
+                // the cells of arguments the caller cleans up later (VC6 merges the add esp of several calls): space
+                // the next call's arguments may be written into (fstp dword ptr [esp])
+                self.reserved = if popped { vec![] } else { offs };
                 self.flags = None;
             }
             (m, _) => {
@@ -1973,15 +1986,19 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
         };
         lower(&mut low.0, ra.esc);
         lower(&mut low.1, rb.esc);
-        if ra.effects != rb.effects {
+        if ra.effects != rb.effects || std::env::var_os("DCP_EQUIV_TRACE").is_some() {
             if std::env::var_os("DCP_EQUIV_DEBUG").is_some() {
                 let show = |e: &[Effect], ar: &Arena| e.iter().map(|x| match x {
                     Effect::Store(a, w, v) => format!("store{w} {} = {}", ar.show(*a), ar.show(*v)),
                     Effect::Call(t, args) => format!("call {} ({})", ar.show(*t), args.iter().map(|&a| ar.show(a)).collect::<Vec<_>>().join(", ")),
+                    Effect::Copy(d, f, n, w) => format!("copy{w} {} <- {} x {}", ar.show(*d), ar.show(*f), ar.show(*n)),
+                    Effect::Fill(d, n, v, w) => format!("fill{w} {} x {} = {}", ar.show(*d), ar.show(*n), ar.show(*v)),
                     other => format!("{other:?}"),
                 }).collect::<Vec<_>>().join("\n    ");
                 eprintln!("equiv: block pair {a:#x} / {b:#x}\n  ours:\n    {}\n  the original:\n    {}", show(&ra.effects, &ar), show(&rb.effects, &ar));
             }
+        }
+        if ra.effects != rb.effects {
             let k = ra.effects.iter().zip(&rb.effects).position(|(x, y)| x != y).unwrap_or(ra.effects.len().min(rb.effects.len()));
             let what = match (ra.effects.get(k), rb.effects.get(k)) {
                 (Some(Effect::Call(..)), Some(Effect::Call(..))) => "a call differs (callee or arguments)",
@@ -1998,11 +2015,21 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
         if std::env::var_os("DCP_EQUIV_TRACE").is_some() {
             eprintln!("trace: pair {pair} {a:#x}/{b:#x} sp {:?} in {} out {} eax {} | {}", corr.sp, corr.pairs.len(), next.pairs.len(),
                       ar.show(ra.eax), ar.show(rb.eax));
+            eprintln!("trace:   pairs {:?}
+  known {:?}", corr.pairs, corr.known);
         }
         match (&ba.term, &bb.term) {
             (Term::Ret(pa), Term::Ret(pb)) => {
                 if pa != pb {
                     return unknown("the returns pop different sizes".into(), a, b);
+                }
+                // the return address where esp points, the callee-saved registers as the caller left them
+                if ra.sp != 0 || rb.sp != 0 {
+                    return unknown("esp is not at the return address at the return".into(), a, b);
+                }
+                let reg = |r: &Run, g: u8| r.exit.iter().find(|x| x.0 == Loc::Reg(g)).map(|x| x.1);
+                if [3u8, 5, 6, 7].iter().any(|&g| reg(&ra, g) != reg(&rb, g)) {
+                    return unknown("a callee-saved register differs at the return".into(), a, b);
                 }
                 if ra.fpu.last() != rb.fpu.last() {
                     return unknown("st0 differs at the return (a float the function returns)".into(), a, b);
@@ -2022,6 +2049,21 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
                 };
                 if !(0..8u8).filter(|&g| g != ESP).all(same) || ra.sp != rb.sp {
                     return unknown("a jump out of the function with other registers or stack".into(), a, b);
+                }
+                // the arguments the target reads: our argument slots as they are now (a slot written on a path whose
+                // value is not followed any more: not shown the same)
+                let offs: BTreeSet<i32> = ra.exit.iter().chain(&rb.exit).filter_map(|x| if let Loc::Slot(o) = x.0 { Some(o) } else { None })
+                    .chain(ra.written.iter().chain(&rb.written).copied()).filter(|&o| o > 0).collect();
+                for o in offs {
+                    let mut at = |r: &Run| match r.exit.iter().find(|x| x.0 == Loc::Slot(o)) {
+                        Some(x) => Some(x.1),
+                        None if r.written.contains(&o) => None,
+                        None => Some(ar.var(Var::Arg(o))),
+                    };
+                    let (x, y) = (at(&ra), at(&rb));
+                    if x.is_none() || x != y {
+                        return unknown("a jump out of the function with other arguments".into(), a, b);
+                    }
                 }
             }
             (Term::Jmp(ta), Term::Jmp(tb)) => work.push((*ta, *tb, next)),
@@ -2199,6 +2241,80 @@ mod tests {
         }
         std::fs::write(std::env::var("DCP_EQUIV_OUT").unwrap_or_else(|_| format!("{dir}.tsv")), rows.concat()).unwrap();
         eprintln!("corpus: {} functions in {:?}", rows.len(), t.elapsed());
+    }
+
+    /// The negative control: every function of the corpus proved equal, with our code changed at one place at a
+    /// time (an immediate's low byte + 1, a displacement's + 4, a conditional jump's condition inverted). A mutant
+    /// proved equal is printed: either the change cannot be seen (a dead stack slot) or the prover is wrong.
+    /// `DCP_EQUIV_CORPUS=dir cargo test --lib equiv::tests::mutants -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn mutants() {
+        let dir = std::env::var("DCP_EQUIV_CORPUS").expect("DCP_EQUIV_CORPUS");
+        // DCP_EQUIV_ONLY=name and DCP_EQUIV_AT=address: that function's mutants there only (DCP_EQUIV_DEBUG: traced)
+        let only = std::env::var("DCP_EQUIV_ONLY").ok().map(|x| format!("{x}.eq"));
+        let at_only = std::env::var("DCP_EQUIV_AT").ok().and_then(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
+            .filter(|f| only.as_ref().is_none_or(|o| f.ends_with(o))).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let out = std::sync::Mutex::new((0usize, 0usize, vec![]));
+        std::thread::scope(|sc| {
+            for _ in 0..std::thread::available_parallelism().map_or(4, |n| n.get()) {
+                sc.spawn(|| loop {
+                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(f) = files.get(k) else { break };
+                    let b = std::fs::read(f).unwrap();
+                    let nl = b.iter().position(|&c| c == b'\n').unwrap();
+                    let head = String::from_utf8_lossy(&b[..nl]).to_string();
+                    let h: Vec<&str> = head.split(' ').collect();
+                    let va: u32 = h[2].parse().unwrap();
+                    let n = u32::from_le_bytes(b[nl + 1..nl + 5].try_into().unwrap()) as usize;
+                    let (ours, theirs) = (&b[nl + 5..nl + 5 + n], &b[nl + 5 + n..]);
+                    if !matches!(prove(ours, theirs, va), Outcome::Equal { .. }) {
+                        continue;
+                    }
+                    let mut tried = 0;
+                    let mut bad = vec![];
+                    for i in dis::decode(ours, va) {
+                        if at_only.is_some_and(|x| x != i.addr) {
+                            continue;
+                        }
+                        let o = (i.addr - va) as usize;
+                        let mut ms: Vec<(usize, u8, &str)> = vec![];
+                        if i.imm.size > 0 {
+                            ms.push((o + i.imm.at as usize, 1, "imm+1"));
+                        }
+                        if i.disp.size > 0 {
+                            ms.push((o + i.disp.at as usize, 4, "disp+4"));
+                        }
+                        if i.flow == Flow::CondJump && i.branch.size > 0 {
+                            let at = o + i.branch.at as usize - 1;
+                            if matches!(ours[at], 0x70..=0x7f | 0x80..=0x8f) {
+                                ms.push((at, 0, "jcc inverted"));
+                            }
+                        }
+                        for (at, d, what) in ms {
+                            let mut m = ours.to_vec();
+                            m[at] = if d == 0 { m[at] ^ 1 } else { m[at].wrapping_add(d) };
+                            tried += 1;
+                            if matches!(prove(&m, theirs, va), Outcome::Equal { .. }) {
+                                bad.push(format!("{} {:#x} {} {what}", h[0], i.addr, i.instr));
+                            }
+                        }
+                    }
+                    let mut o = out.lock().unwrap();
+                    o.0 += 1;
+                    o.1 += tried;
+                    o.2.extend(bad);
+                });
+            }
+        });
+        let (fns, tried, mut bad) = out.into_inner().unwrap();
+        bad.sort();
+        for b in &bad {
+            eprintln!("mutant equal: {b}");
+        }
+        eprintln!("mutants: {fns} functions, {tried} mutants, {} proved equal", bad.len());
     }
 
     #[test]
