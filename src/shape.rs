@@ -522,15 +522,27 @@ pub fn frame_delta(a: &[Shape], b: &[Shape]) -> Option<(i64, i64)> {
     }
 }
 
-/// X86.stack_mask: every stack slot's offset masked, a frame-size adjustment `sub|add esp, F` masked.
+/// An operand that addresses the frame: memory based on esp or ebp, indexed or not (`[esp + eax*4 + 0x10c]`):
+/// (base, offset). A frame of another size shifts all of them, not only the slots.
+fn frame_off(o: &Opnd) -> Option<(Reg, Num)> {
+    match *o {
+        Opnd::Mem { base: b @ (Reg::ESP | Reg::EBP), disp, .. } => Some((b, disp)),
+        _ => None,
+    }
+}
+
+/// X86.stack_mask: every frame offset masked (frame_off), a frame-size adjustment `sub|add esp, F` masked.
 pub fn stack_mask(lines: &[Shape], frame: (i64, i64)) -> Vec<Shape> {
     lines.iter().map(|s| {
         if let Some((_, n)) = s.esp_adjust() {
             if n == frame.0 || n == frame.1 {
-                return Shape { mn: s.mn, rep: s.rep, ops: vec![Opnd::Reg(Reg::ESP), Opnd::Imm(Num::Masked)] };
+                return Shape { ops: vec![Opnd::Reg(Reg::ESP), Opnd::Imm(Num::Masked)], ..s.clone() };
             }
         }
-        mask_slots(s)
+        s.map_ops(|o| match (*o, frame_off(o)) {
+            (Opnd::Mem { seg, size, base, index, scale, .. }, Some(_)) => Opnd::Mem { seg, size, base, index, scale, disp: Num::Masked },
+            (o, _) => o,
+        })
     }).collect()
 }
 
@@ -554,8 +566,8 @@ pub fn frame_explain(xa: &[Shape], xb: &[Shape], frame: (i64, i64)) -> Option<St
             }
             continue;
         }
-        let oa: Vec<Option<i64>> = slots(x).map(|s| value(s.1)).collect();
-        let ob: Vec<Option<i64>> = slots(y).map(|s| value(s.1)).collect();
+        let oa: Vec<Option<i64>> = x.ops.iter().filter_map(frame_off).map(|s| value(s.1)).collect();
+        let ob: Vec<Option<i64>> = y.ops.iter().filter_map(frame_off).map(|s| value(s.1)).collect();
         if oa.len() != ob.len() || oa.iter().zip(&ob).any(|(p, q)| match (p, q) {
             (Some(p), Some(q)) => {
                 let e = (p - q).abs();
@@ -724,6 +736,17 @@ mod tests {
         assert!(c == "slots" && why.contains("across a push"), "{c} {why}");
         let same = ["mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "push edx", "mov word ptr [esp + 0xa8], ax", "mov dword ptr [esp + 0xd4], ecx"];
         assert_eq!(cls(&ours, &same).unwrap().0, "order");
+    }
+
+    #[test]
+    fn frame_shift_in_indexed_operands() {
+        // gildegold sv_RunLocationScripts: frames 0x21c vs 0x218, an array on the stack indexed by eax
+        let f = (0x21c, 0x218);
+        let (a, b) = (parse_all(&["mov dword ptr [esp + eax*4 + 0x10c], 0"]), parse_all(&["mov dword ptr [esp + eax*4 + 0x108], 0"]));
+        assert_eq!(stack_mask(&a, f), stack_mask(&b, f));
+        assert_eq!(frame_explain(&a, &b, f).as_deref(), Some("stack offsets shifted by 0x4 (frame 0x21c vs 0x218)"));
+        // another index register is no shift
+        assert_eq!(frame_explain(&a, &parse_all(&["mov dword ptr [esp + ecx*4 + 0x108], 0"]), f), None);
     }
 
     #[test]
