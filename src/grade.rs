@@ -40,8 +40,10 @@ fn read_text(path: &std::path::Path) -> Option<String> {
 
 /// What one function's code grade is computed from besides its compare: its bytes and relocation mask, where its
 /// code ends (code_len), the targets of the relocated fields after it (its switch tables: offset, width, target
-/// inside the function), its address, the next start, the walk's or the source extent's end.
-type Key = (Vec<u8>, Vec<u8>, Option<u32>, Vec<(u32, u32, Option<i64>)>, i64, u32, Option<i64>);
+/// inside the function), its address, the next start, the walk's or the source extent's end, and per relocation
+/// its symbol's name and a literal's bytes (the prover binds by symbol, the literal check reads the bytes: a
+/// changed callee or string leaves the code bytes as they were).
+type Key = (Vec<u8>, Vec<u8>, Option<u32>, Vec<(u32, u32, Option<i64>)>, i64, u32, Option<i64>, Vec<(String, Option<Vec<u8>>)>);
 
 fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>) -> Key {
     let code = &f.code;
@@ -54,7 +56,10 @@ fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>) -> Key {
             (*off, r.kind_width().1, t)
         }).collect(),
     };
-    (code.data.clone(), code.mask.clone(), code.code_len, tbl, f.src.lo, f.next, w.map(|w| w.hi))
+    let syms = code.relocs.iter().map(|(_, r)| {
+        (obj.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default(), crate::equiv::literal(obj, r.symbol_index))
+    }).collect();
+    (code.data.clone(), code.mask.clone(), code.code_len, tbl, f.src.lo, f.next, w.map(|w| w.hi), syms)
 }
 
 /// A function's code size, its extent and slot, the original as the diff reads it, its verdict (when asked: a

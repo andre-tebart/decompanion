@@ -2200,7 +2200,7 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
 
 /// The bytes of a literal symbol: a floating constant's (`__real@3f800000`, little-endian) or a string's up to
 /// its zero; None for any other symbol.
-fn literal(obj: &crate::coff::Obj, s: u32) -> Option<Vec<u8>> {
+pub(crate) fn literal(obj: &crate::coff::Obj, s: u32) -> Option<Vec<u8>> {
     let sym = obj.symbol_at(s)?;
     match sym.constant()? {
         "float" => {
