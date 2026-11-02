@@ -15,3 +15,13 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 17)
 - sv_RegisterNamePlate's old draft had "Too many Objects: %s" (original: no space). M9 fired only once the rewrite reached 0 differing instructions (surprise `gate=FAIL errors=1`). Proposal: report literal mismatches in `dcp grade` on draft functions too.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 40)
+- A scripted edit turned `f\xfcr` into a real UTF-8 `ü` (2 bytes) in an error-message literal of ai_ExecBuildBuilding; `dcp build` / `dcp grade` reported the same distance (65 ins / 411 bytes) before and after, no warning. Noticed only because grep printed the umlaut. Proposal addition: lint for non-ASCII bytes in C string literals under src/ (VC6 source is Latin-1), or compare the .rdata string with the original. Cost: ~3 minutes.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 44)
+- `dcp grade NAME | head -4` hid an M9 literal mismatch further down; one function (ai_TutorialStepForm) was escalated with wrong literals (`"tutorial\left_form"` lost its backslash in a heredoc) and needed a fix commit. Proposal: M9 is a meaning error - put it first or in the summary line.
+- `dcp asmdiff` without `--symbols` folds a push of a wrong string literal into "... N equal instructions ...". Plain mode should mark differing literals with `!` instead of folding them.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 46)
+- `"Locations\Domizil\Alchemistry2"` was written through a heredoc / Python and landed with single backslashes; `\D`, `\s` compile as unknown escapes that drop the backslash, so the form name was silently wrong. `dcp build` / `dcp grade` said nothing; `asmdiff --symbols` showed `LocationsDomizilAlchemistry2` with `!`, read as the usual literal-vs-address mark. Proposal: `dcp lint` reports unknown escape sequences (clang `-Wunknown-escape-sequence`), and asmdiff says "literal text differs" on such a `!`. Repro: unk_575860 at gildegold 80c1371 (fix commit acec15d). Cost: ~6 calls and a fix commit.

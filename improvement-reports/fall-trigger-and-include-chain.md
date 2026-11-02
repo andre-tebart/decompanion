@@ -17,3 +17,15 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 38)
 - `d3_CloneObject` fell byte -> shape again when `AIBTYPE` got `maxLevel` (recorded with `dcp debt add`), then returned to byte after a later ai.h edit (study message view). `dcp session wrap` promoted it silently; `dcp debt list` no longer showed it and the wrap report didn't mention it (net change zero). Proposal: a wrap line `debt resolved: d3_CloneObject shape -> byte (witness ...)`. Cost: ~2 minutes.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 49)
+- After adding a union member to AIOBJ in include/ai.h, d3_CloneObject (d3_engine, no AIOBJ use) fell byte -> shape. Proving the cause meant copying ai.h aside, checking it out, rebuilding, re-grading, restoring. Want a `--trial` for an uncommitted header edit (not just an include) or `dcp check --why FN` naming the header changes its unit sees. Cost: ~10 minutes, several full builds.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 50)
+- A trial for arbitrary declaration changes (a new prototype, definition or table), not only an include: e.g. `dcp check --trial` on the working tree listing `fall=` lines without writing the baseline, to make declaration-set tie-break hunting cheap (ai_TutorialInitChapter2 again). Cost: moderate.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 54)
+- `dcp check` named ai_TutorialInitChapter2 byte -> shape (after splitting `AIBTYPE.v243` out of padding) but not the cause; found by `git stash` of include/ai.h, rebuild, another struct layout (3 builds). Want M1 cause found by bisecting uncommitted hunks, or a header-edit `--trial`.
+
+## Also seen (match-base session 2026-11-03 (gildegold), worker 70)
+- `GMGOOD.pad38[8]` -> `int price; char pad3c[4]` (include/f3gm_types.h) made `ai_TutorialInitChapter3` (unk_575860, never uses GMGOOD) fall shape -> draft: any member-list change flips allocation of three float constants. M1 and `dcp debt add` worked well; cause found by hand bisect (git stash + 3 variants), ~10-12 minutes. Proposal: `dcp headers trial include/X.h` rebuilding all includers in scratch and listing grade changes before commit (`headers conflicts --trial` covers only adding an include); M1 line names the changed headers the fallen unit includes.

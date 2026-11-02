@@ -7,3 +7,6 @@
 - **Repro:** at gildegold 47bbb96, `uv run dcp diffclass ai_ExecuteMasterBuilder --all`, `uv run dcp asmdiff ai_ExecuteMasterBuilder`.
 - **Impact:** ~5 minutes; function held at draft in the ledger.
 - **Related:** diffclass-rotation-with-reorder-as-code.md, diffclass-slot-permutation-per-hunk.md, ../improvement-reports/asmdiff-regs-auto.md
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 43)
+- ai_TutorialIntroAnswered at gildegold d35b18a: `uv run dcp diffclass ai_TutorialIntroAnswered` shows `0x00577a4f code 4` (ours `mov eax, dword ptr [ecx + 0x14]; test eax, eax`, original `mov ecx, dword ptr [ecx + 0x14]; test ecx, ecx`) next to `0x00577a56 regs 2 eax->ecx` (`push eax` / `push ecx`). Verdict draft, 45 vs 45 instructions, 3 bytes differ; escalated to deep (escalate accepted the code hunk). Cost: ~2 minutes.

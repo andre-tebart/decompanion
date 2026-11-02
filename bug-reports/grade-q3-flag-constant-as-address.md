@@ -7,3 +7,9 @@
 - **Repro:** the expression above, `uv run dcp grade sv_ActivityName` (gildegold 3e842a0).
 - **Impact:** ~2 minutes, plus the risk that workers "fix" it by inventing fake symbol+offset addresses.
 - **Related:** ../improvement-reports/lint-symbol-plus-offset-immediate.md
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 58)
+- Q3 flagged the bit mask `0x800000` (gm_DailyCharacterStep / f3gm) as an address literal; the worker wrote it as `(1 << 23)` to silence it.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 68)
+- gm_CatchDisease (0x505230, f3gm): `(w & 0x700000) == 0` gave `Q3 addresses: 0x700000`; worker rewrote all eight masks in the family as `(7 << 20)`-style shifts. ~1 extra build/grade cycle.

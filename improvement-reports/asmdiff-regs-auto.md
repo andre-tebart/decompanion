@@ -8,3 +8,9 @@
 
 ## Also seen (match-base session 2026-11-01 (gildegold), worker 12)
 - sv_FillDayPhases: diffclass reports one `code 78` hunk; with a hand-built `uv run dcp asmdiff sv_FillDayPhases --regs esi=ecx,edi=esi,ecx=edi,cl=bl` only push/pop ebx and one value register remain. Proposal: diffclass searches the permutation itself and reports "regs + saved-register difference". Related: diffclass-spill-alloc-class.md
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 46)
+- ai_AlchemistResearchWindow (code 140, slots 122, regs 8): the worker ran `--regs esi=ebp,ebp=esi` by hand to argue "allocation only" for an escalation. A permutation search reporting the best rotation and the hunks still differing would turn that claim into numbers.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 57) - bug
+- `dcp asmdiff gm_FindRichest --regs auto` printed `regs=none`, while `dcp diffclass gm_FindRichest` on the same build reported `regs 36 eax->ecx ecx->eax` as its first hunk. Want `auto` to apply diffclass's rotation. Cost: ~5 minutes, fell back to `--regs` by hand.

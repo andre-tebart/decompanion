@@ -20,3 +20,12 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 37)
 - ai_DecideTakeCredit: building-kind mask 0x7d4390 written as `&ai_Unk770d8c + 0x63604` (now `AI_CREDIT_KINDS`). Another remains at src/am.c:4658 (`(unsigned)&ai_Unk770d8c + 0x53628`), probably more; a repo-wide scan would be worthwhile.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 53)
+- Draft of 0x586610 wrote the flag 0x800000 as `((unsigned)&ai_Relations + 0x1aca0)` and ai_GraveNames as `(unsigned)&sv_PhaseMinutes + 0x218`. Want a draft lint for `&sym + off` landing inside another known symbol or past `sym`'s end (D7-like on drafts). Also: the 0x5871c0 address comment said GRAB_MIETEN, but the dispatcher calls it for LIEGEPLAN (draft comment claims unchecked). Cost: one disasm read each.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 58)
+- The same 0x800000 mask again, this time in f3gm's draft of 0x4fbe90: hidden as `(unsigned)&ai_Relations + 0x1aca0`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 68)
+- Draft of 0x505230 had `w & ((unsigned)&he_Events + 0x54c0)` for `test eax, 0x700000` (fixed in f3gm). Still present at gildegold 7193051: `grep -rn "&he_Events + 0x54c0" src` finds 3 in src/he.c and src/unk_58bbd0.c. Proposal addition: treat immediates used as AND/TEST/XOR operands with a contiguous bit run as masks before symbolizing; lint `&sym + off` as an operand of `&`.

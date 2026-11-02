@@ -13,3 +13,12 @@
 
 ## Also seen (match-base session 2026-11-01 (gildegold), worker 14)
 - After renaming ai_Unk6f2338 and related names, comment-only names stayed (`/* ai_Unkf8f128: view of d2_Wins */`) and prose citing only the address (0x6f22e8) still says "ai_Unk6f22e8 ..." in cm.c. Rename did list them under "comments: ... review them". Negligible cost.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 42)
+- `dcp rename` updated declarations in include/unk_575860.h but their trailing comments still said "step callback predicate" (the old reading). Proposal: hint "the declaration comment at include/x.h:N may need updating" for renamed declarations with comments.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 53)
+- `dcp rename ai_Unk586610 ai_GraveSeance` also rewrote the unit's lead comment prose; a later exact-match edit of an `Open:` line then failed after the wrap was committed, splitting the wrap into 85deceb + 4ddb4a4. Want a note when a rewritten line is in the lead comment.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 65)
+- `dcp rename` lists every replacement inside comments, including truncated text from huge `@deep` comments in ch.c. Want a count plus file:line.

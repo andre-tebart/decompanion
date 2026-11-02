@@ -21,3 +21,6 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 35)
 - include/am.h declares `ai_FindWantedItems` three times (lines 558, 845, 990); neither lint nor grade mentions it. Proposal: a duplicate-in-same-header note so dead copies get cleaned up. Cost: ~1 minute of confusion.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 68)
+- f3gm.h prototypes of 4 functions edited by hand with sed after their definitions changed. Proposal: `dcp rename` mentions prototypes that disagree with the definition, or `dcp headers` offers to rewrite the owner header's prototype. Related: headers-signature-dry-run.md

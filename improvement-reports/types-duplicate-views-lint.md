@@ -12,3 +12,6 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 30)
 - `#define ai_TimeT (*(AITIME *)&ai_Time)` is defined separately in 10 units (ai, am, gv, hmt, hst, ls, main, sv, unk_4a7140, unk_4b39f0); am.h also keeps raw `TMX`/`NOWX` macros that keep Q4 on every am function copying the clock. AHMCLOCK (ahm.h) and AITIMEX (am.h) duplicate each other. Proposal addition: lint "same view macro defined in N units", and one declared typed view in a shared header. Cost: a few minutes per function.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 58)
+- The same `AITIME` view macro is redefined per unit (ai.c, am.c, hmt.c, hst.c as `ai_TimeT`; gv.c as `gv_TimeT`); f3gm got one more. Want a shared header entry (e.g. a time view header) or a `dcp headers` suggestion.

@@ -14,3 +14,9 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 37)
 - The fix taking 0x49def0 to byte (ternary order `lvl < 0x42 ? 30 : 10`, compare order, separate exit blocks, o2 store order) applied unchanged to 0x49e350. The same ternary appears 5 times in am.c (lines 7634, 8004, 9047 among them). Proposal addition: point out that a nearby function got this exact source change in a recent commit, so it can be carried over.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 40)
+- ai_PickPartnerChain, ai_PickPartnerInRange, ai_FindPartnersRandomWalk, ai_PickPartnerRandomWalk share filter setup, the ai_Partner try and the rating window; the fix set (if/else swap, double constants, NaN-tolerant `!(r < lo) && !(r > hi)`, `!found return 0; break` exit) carried over almost unchanged.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 68)
+- Seven consecutive f3gm disease functions (0x505230..0x505ad0) shared one template; each needed the same fixes (zero-then-set flags, do/while with found = -1 sentinel, `(unsigned)range * 0.5`, a `sent` copy for the & argument). Proposal: a "siblings" view by call sequence. Queue order happened to group them, so no blocker.

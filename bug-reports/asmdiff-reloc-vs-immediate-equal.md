@@ -7,3 +7,6 @@
 - **Repro:** `uv run dcp asmdiff ai_Unk48f600` at gildegold 3209111; `uv run dcp refs` / `uv run dcp why 0xf00500`. Fixed in "am: ai_DecideUseAlchemyItems -> deep" and "am: ai_DecideGraveyardOwner0 shape + readable".
 - **Impact:** ~5 minutes; silent run-time bug otherwise.
 - **Related:** ../improvement-reports/lint-symbol-plus-offset-immediate.md, grade-q3-flag-constant-as-address.md
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 61) - `--plain`
+- gm_LoadTables: original `mov eax, 0x7d6a64`, ours `mov eax, 0x7d6a68`. `--symbols` marks it `!` with both values; `--plain` folds the line into "... 8 equal instructions ...", hiding a real offset difference. Repro: `dcp asmdiff gm_LoadTables --plain | head -14` vs `--symbols` (commit before its escalation, f3gm). Cost: one confused round trip.

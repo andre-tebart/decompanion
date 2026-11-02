@@ -16,3 +16,9 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 18)
 - sv_UpdateBand / sv_UpdateBandLed: the original loads `info` into ecx then `mov eax, ecx` before `mov ecx, 8`; ours loads straight into eax. One inserted reg-to-reg copy from allocation, reported `code 17`, so draft. Repro: `uv run dcp diffclass sv_UpdateBand` (gildegold 92add7d). Cost: ~10 minutes of variants before escalating two functions.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 69)
+- gm_TakeOverCharacter (0x5064d0): swapping an if/else moved code hunks 145 -> 121; reordering four struct-field stores 71 -> 61. Load/store reordering around `rep movsd` and around a pushed call argument is counted as `code`, not `order`. Main reason the function was escalated rather than graded shape. Repro: `dcp diffclass gm_TakeOverCharacter`, hunks at +0xf0..+0x120 (gildegold 33968a7).
+
+## Also seen (match-base session 2026-11-03 (gildegold), worker 70)
+- gm_CreateCharacter init block: same stores in another order plus a register rename and -1 as an immediate vs in a register; `order` did not catch it, code count 132. Part of ~40 minutes over three escalations.

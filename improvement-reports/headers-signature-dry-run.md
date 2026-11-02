@@ -15,3 +15,9 @@
 
 ## Also suggested (match-base session 2026-11-02 (gildegold), worker 33)
 - `gm_GetJobTalents` typing (returns a 6-byte `JOBTALENTS` by value; new include/f3gm_types.h) touched 7 files; the worker worked out by hand which callers' grades could drop. The preview should list the callee's call sites with their grades (all units), not just same-unit functions. Cost: ~5 minutes.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 46)
+- `ahm_SendAddValue` int -> float (its definition reads the float's bits): edits in ahm.c, ahm.h and a K&R declaration in he.c, plus an M5 only seen in `dcp check` (~6 calls). Proposal: `dcp proto fix NAME 'int f(char *, float)'` rewriting definition, header and every declaration, then printing the M1/M5 effect.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 67)
+- gm_TitlePeriodServed really takes a `GCLOCK *`, but he.c, main.c and unk_58bbd0.c carry their own `int *out` prototypes; no command plans that change, so an `Open:` line was left instead. Want `dcp signature NAME "new prototype" --trial` listing every local prototype and call site to update, plus the grade risk.

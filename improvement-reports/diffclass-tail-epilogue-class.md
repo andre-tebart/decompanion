@@ -38,3 +38,12 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 36)
 - ai_DecideThreaten: VC6 merges the tails of three `ai_ChooseSubAction` calls at different depths on each side; the original's jumps land mid-way through the shared argument pushes. Reported as `code` plus "branch targets differ". Note wanted: "jmp into a shared call sequence at another depth: call tails merged differently (scheduling)" - would have saved ~4 restructuring builds. Repro: `uv run dcp diffclass ai_DecideThreaten`.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 58)
+- gm_CreateCharModel (0x4fbb80): the original places the `d3_PointToWorld` block after the epilogue (jmp back); VC6 canonicalized every block-order and goto variant to our layout. Want a diffclass note like "out-of-line block after the epilogue (jmp back): layout" so the worker knows early it is not reachable from source. Cost: ~6 variant builds.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 66)
+- Two layout classes: `moved` (same instructions, a block placed elsewhere: gm_PermissionBits 0x503530, equal instruction count 491, two moved blocks: the shared check after the switch and the shared `or 0x2200` tail) and `merged` (identical case blocks merged on one side: gm_JobSlots 0x504100, jobs 2/5/10, which also needed `--size-explained`). Both showed as `code` and were argued by hand.
+
+## Also seen (match-base session 2026-11-03 (gildegold), worker 70)
+- An early return that ours duplicates while the original threads it through a shared compare stays `code` (gildegold f3gm, session ending befd916).

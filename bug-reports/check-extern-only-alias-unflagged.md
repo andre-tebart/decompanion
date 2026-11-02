@@ -7,3 +7,6 @@
 - **Repro:** `uv run dcp why 0x91f700` (owner `ai_Unk91f700` before the rename); grep gv.h for `gv_Graveyard` (gildegold before 43ee493).
 - **Impact:** ~5 minutes; proper renaming left open in gv.c's lead comment.
 - **Related:** ../improvement-reports/types-duplicate-views-lint.md, check-unresolved-data-unnamed.md
+
+## Also seen (match-base session 2026-11-03 (gildegold), worker 70)
+- `ai_Unk61a8c8` was declared extern but never defined; its address lay in an unowned run (inside the original's ai_Unk61a8ac block). It linked only because nothing used it. Proposal: flag extern-only names whose address falls in an unowned run.

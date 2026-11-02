@@ -10,3 +10,6 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 20)
 - gv's calls through `UNK_FR` (a cast macro of `ls_Read`) are listed as `?() at line 130`. Proposal: show the macro name or the function it casts.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 65)
+- `dcp grade gm_AssignBuilding`: `M7 consistency: ?() at line 5106`; the call is `ai_ProdSettingK(b)`, a `#define` cast to `(int (*)())ai_ProdSetting`. Want the macro / target named and "K&R cast" stated. Cost: ~2 minutes.

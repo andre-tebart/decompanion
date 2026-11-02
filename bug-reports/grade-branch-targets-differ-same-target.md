@@ -23,3 +23,21 @@
 - The earlier sightings (ai_PokerHighCard, sv_BorderCameraView, ls_*PlayerSlots) come from older drafts and could not be re-checked; if "same target" reports recur they have another cause.
 - **Remaining wording issue:** when the target lines are genuinely different instructions at the same offset (d2_PlotLine), "ours to +0x2d, the original's to +0x2d" still reads as identical; the message should say the target instructions differ.
 
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 50) - after the fix in 5469812
+- Recurs: in ai_GraveDetail (0x582b40), after replacing the `count` local with `for (i = 0; i < gv_EntryCounts[e->size]; i++)`, `dcp grade` / `dcp diffclass` printed `branch targets differ (2): ... je at +0x49: ours to +0x62, the original's to +0x62`. The identical-target entry still counts toward "branch targets differ", which the skill reads as "statement structure differs, never deep". Repro: that edit at gildegold's iteration-3 wrap commit (after 0891251), then `dcp diffclass ai_GraveDetail`. Cost: a few minutes of doubt.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 57)
+- Third time today: `dcp diffclass gm_HandOutMoney` (0x4fae50) reported "branch targets differ" with both sides going to +0xfe (f3gm, before 728c0d8).
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 58) - now changes a grade
+- Fourth time today, and this one holds a function at B3 draft instead of shape: `dcp diffclass` / `dcp grade gm_DailyCharacterStep` (0x4fbe90) report `branch targets differ (1): je at +0x514: ours to +0x53d, the original's to +0x53d`. The target is the join point after the skill block, inside an FPU-only hunk; the checker seems to compare the instructions at the target (which differ only by FPU scheduling) rather than the target offsets. Repro: `dcp grade gm_DailyCharacterStep` at gildegold ca33582. The function was escalated with this flag still listed.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 63)
+- gm_BuildKindObjects (0x500b90): `jne at +0x43: ours to +0x4b, the original's to +0x4b`. Fifth occurrence today (gildegold, before 9d14310).
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 64)
+- `dcp grade gm_FreeBuilding` (0x5012e0): `branch targets differ (2): je at +0x26: ours to +0x4c, the original's to +0x4c; jne at +0x3e: ours to +0x4c, the original's to +0x4c`. Sixth occurrence today.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 65)
+- `dcp diffclass gm_ListWorkers` (0x502eb0): `jmp at +0x97: ours to +0xf6, the original's to +0xf6` among 8 entries (the others only shifted because ours is a few instructions longer). Seventh occurrence today; `dcp escalate` accepted the function. Cost: ~10 minutes. Repro: the commit before its escalation (before 68a0e3c).

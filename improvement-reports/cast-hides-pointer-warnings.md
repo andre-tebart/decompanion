@@ -17,3 +17,9 @@
   macros).
 - **Cost of not having it:** the `ai_UpdateStart` bug went unnoticed until run time. Related:
   `address-vs-value-hunk-class.md`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 51)
+- After retyping ai_GypsyHelperWindow's parameter `char *rec` -> `AIBLD *rec`, four callers (src/unk_5d33b0.c) still passed `char *`; VC6 only warns, so they were found and fixed by hand. Want `dcp grade` (or `dcp rename` / a retype) to list callers passing an incompatible pointer type.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 52)
+- `dcp build` printed only `warnings=578`; after retyping parameters (`char *` -> `AIBLD *` / `GVSEANCE *`) the new pointer-mismatch warnings at callers were invisible. Want the warnings added since the last build with file:line, or at least those in the functions just edited.

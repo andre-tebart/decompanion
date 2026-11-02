@@ -15,3 +15,6 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 38)
 - On ai_DecideUpgradeGuild and ai_DecidePriceManipulation several forms (nested if, negated condition, `goto set` / `goto none` / `goto buy`) gave identical objects, noticed only by comparing `dist` strings. A short object hash in `dcp grade` is most useful during layout and goto experiments. Cost: ~5 minutes.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 57)
+- Several structural experiments compiled to exactly the same code; want an `unchanged-object` note on `dcp build` / `grade` for the edited function.

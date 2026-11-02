@@ -16,3 +16,11 @@
 
 ## Also suggested (match-base session 2026-11-02 (gildegold), worker 18)
 - `dcp data near 0xADDR`: nearest defined objects on each side with their units, so the owner decision for a gap datum (e.g. 0x6f23f0) is one command instead of reading `dcp data map sv`. Cost: ~4 minutes per gap datum, two this session.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 46)
+- ai_ShotTable (0x6f9f60, 3 x 0x38) / ai_ShotDirty (0x6f2664) moved from main.c's gap block into unk_575860: edit main.c, split the remainder (`full_data_6fa008`), drop externs, retype users, then D1/D4/D8 by hand (~10 calls). Proposal: `dcp data adopt NAME UNIT --type T --size N`, atomic, splitting the remainder, ending with the `dcp check` result.
+- Owner evidence for a bss address: `dcp layout literals` covers .data/.rdata only, so neighbours were found by grepping `src/*.c` (~4 calls). Proposal: `dcp data owner 0xADDR` - referencing functions grouped by unit plus the nearest named neighbours per unit (bss included). Same wish as `dcp data near` above.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 55)
+- Moving `ai_Bookmarks[11]` (AIBOOKMARK, 0x6f5ec0..0x6f5f44) and `ai_ScreenshotCount` (0x6f2674) out of the gap: delete/split the GAPDATA line in main.c, delete the unit's `extern GAPDATA` lines, add the definition in address order, add the header declaration, rewrite uses. Want e.g. `dcp data adopt 0xADDR SIZE NAME "TYPE" --unit U` doing all but the uses.
+- `dcp data map UNIT` lists only declared objects; deciding the owner needed `refs` on each neighbouring gap. Want an owner query: neighbours on both sides, their units and their users' units.

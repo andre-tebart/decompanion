@@ -14,3 +14,13 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 20)
 - Third occurrence. At gildegold 9bc6a23^ (after switching sv.c's K&R `void d2_PlaceMainWindow();` to the `d2_PlaceMainWindowF` cast macro), `uv run dcp headers conflicts sv include/unk_5d33b0.h --write` printed `write=src/sv.c included=unk_5d33b0.h at=403`: line 401 `#include "ch.h"`, line 402 `/* 0x520f20, resets the screen clip ... */`, new include at 403 directly above `void sv_ResetScreenClip(void)`. Check: L.src, M.gen, false M1. Fixed by hand in 9bc6a23. Cost ~5 minutes. Note the insertion point is always right after the previous include, which here sits just above an address comment.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 48)
+- Fourth occurrence. `dcp headers conflicts unk_575860 unk_5d33b0.h --write` put the include at `at=765`, between ai_TutorialTick's address comment and its definition. `dcp check`: M1 `ai_TutorialTick ... no grade now (its source is gone?)`. Removed by hand.
+- New detail: the worker had already added `#include "unk_5d33b0.h"` by hand near line 749, so `--write` added a **duplicate**. It does not check whether the header is already included.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 49)
+- Fifth occurrence. `dcp headers conflicts unk_575860 ai.h --write` put the include at line 1208, between ai_QueryDefault's address comment and its definition: L.src / M.gen errors and an M1 on ai_QueryDefault. `--trial` without `--at` had reported `falls=0`, so the trial does not test the layout `--write` produces. Workaround: `--write --at 42` (head region). Commit "unk_575860: head includes ai.h (typing)", before 0891251.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 64) - duplicate include
+- `dcp headers conflicts f3gm unk_58bbd0.h --write` added a second `#include "unk_58bbd0.h"` at line 140 though the unit already included it at line 135, reporting `duplicate=0`. Second time today that `--write` ignores an existing include. Removed by hand.

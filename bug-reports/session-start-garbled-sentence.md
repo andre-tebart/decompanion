@@ -21,3 +21,12 @@
 
 ## Related (match-base session 2026-11-02 (gildegold), worker 36)
 - With `--kind match-base`, `dcp session start` first prints the full layout status of every unit (92 `unit=... status=separated` lines) before the match status and the gate line; the worker had to `tail` for `gate: ok`. Proposal: show gate and match phase first, collapse the layout listing to one summary line.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 56)
+- Still present at gildegold 43c0db8: `This is a match-base session is counted in functions (the skill's count)`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 58)
+- Still present at ca33582: "gate: ok. This is a match-base session is counted in functions (the skill's count)...".
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 65)
+- Still present at 68a0e3c.

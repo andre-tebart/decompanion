@@ -11,3 +11,6 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 24)
 - The byte+draft sender 0x4f0c20 (now gv_OrderAdjustEntry) was renamed in the same commit as its handler gv_AdjustEntry. Section 2.4 ("one function, one commit") doesn't say whether a function renamed alongside may share the commit or needs its own (uncounted) one.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 45)
+- Raising a function to readable (renames + rewrite) and then escalating it produced two commits (`... readable (match-base)`, `... -> deep (match-base)`); section 2.4 says one function, one commit, and section 4 counts commits. Skill line wanted on whether these should be one commit and how the count treats them.

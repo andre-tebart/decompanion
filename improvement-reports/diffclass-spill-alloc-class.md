@@ -33,3 +33,6 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 27)
 - Local copy of a global: in gv_RetireCrime `player = ai_PlayerId` reloaded after a call got its own slot (`mov word ptr [esp+0x18], dx`, twice); the original keeps it in a register. Using `ai_PlayerId` directly gave byte. Hint wanted when a slot store of a register directly follows a global load and the original has the load without the store: "use the global instead of a local". Repro: `uv run dcp asmdiff gv_RetireCrime` at gildegold df8a26c^ with the local restored. Cost: ~5 minutes; nearly escalated a byte-matchable function.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 41)
+- ai_FireCannon (0x4a6ae0): the original stores only some products of each vector step to locals (e.g. `v1[0]` never stored in case 2, kept in st0); ours stores all. diffclass splits this into many `code`/`fpu` hunks, hiding that statements are equivalent. Proposal: a summary like "stores to local vector elements differ: the original omits stores to [esp+0x18] (kept in st0)" (dead-store elimination of array elements). Cost: ~15 minutes before escalating (442/437).

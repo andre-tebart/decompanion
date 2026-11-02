@@ -7,3 +7,6 @@
 - **Repro:** src/gv.c, calls inside `unk_Unk4eeb70` at gildegold 9aad298.
 - **Cost of not having it:** ~3 minutes.
 - **Related:** asmdiff-param-type-mismatch-hint.md, headers-signature-dry-run.md
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 61)
+- `cm_SendExSellObject` is declared void in cm.h but returns a slot handle; units cast around it separately (ai.c, am.c, cm.c, he.c inline, now f3gm.c via a new cast). Want a lint listing calls that use a void prototype's result through a cast, to retire these.

@@ -13,3 +13,9 @@
 
 ## Also suggested (match-base session 2026-11-02 (gildegold), worker 22)
 - One-ulp float immediates: `dcp asmdiff gv_CannonScatter` showed only `mov [esp+8], 0x3c8b4396` vs `0x3c8b4395`; the worker decoded the bits in Python to get `0.0169999991f`. Proposal: print both values as decimals plus the shortest C literal producing the original's bits, e.g. `original 0x3c8b4395 = 0.0169999991f (ours 0.017f, 1 ulp)`.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 45)
+- Immediate float stores: print the value next to immediates stored to memory, e.g. `mov dword ptr [eax], 0x442dc000 ; 695.0f` (tables of screen-width floats are common). The worker scripted 291 such stores into `r->marks[i].field = N.0f;` for the chapter 3 and 5 builders (~5 minutes). Related: ../improvement-reports/extract-stores-command.md
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 65) - differing literals counted equal
+- Worse variant: in a gm_ShowSlotObjects (0x502a60) trial ours multiplied by -1/42 (`_real@bcc30c31`) and the original by +1/42; both lines read `fmul dword ptr [X]`, so the default and `--changed` output counted them **equal**. Only `--side ours --symbols` showed the negative value. Want literal values compared (not just the operand shape) and printed on every line referencing one, also inside elided equal runs. A wrong constant can hide here.

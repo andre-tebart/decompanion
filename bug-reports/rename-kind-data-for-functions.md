@@ -45,3 +45,21 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 38)
 - 0x49fb80, 0x4a0410, 0x4a4e30, 0x4a1640, 0x4c59b0 reported/logged `kind=data` (gildegold db06964).
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 42)
+- ai_QueryBuilding0f, ai_QueryChapter2Step3, ai_QueryChapter2Step5, ai_QueryChapter2Step7 logged `data` (gildegold 70ed8c3); all callbacks referenced only from tutorial run records.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 43)
+- `amt_Unk4eaa00 -> amt_AnnounceOfficeFree` logged `data` (gildegold 81ceaf1).
+
+## Probable root cause (match-base session 2026-11-02 (gildegold), worker 44)
+- See disasm-truncates-function-without-codewalk.md: the affected functions (0x576490, 0x5768a0, 0x576a80, 0x5765e0 this session) have no S.codewalk extent in `dcp why`, only source/ghidra start claims; `dcp disasm` on them also loses the function extent. Consistent with every earlier sighting (callbacks reached only through tables, data pointers, or K&R-only references). Fixing the function-record source likely fixes both.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 45)
+- ai_Unk57aa80 and ai_Unk5770a0 logged `data` in a multi-pair rename (others in the same call `func`) (gildegold 6b681ee).
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 65)
+- `dcp rename gm_Unk5029f0 gm_CollectSlotObject` printed `kind=data`; 0x5029f0 is a function (a d3_ForEachObject callback with its own definition). The next call's three renames printed `kind=func`. The ledger may hold the wrong kind.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 68)
+- Kind went wrong only after a data rename in the same session: `gm_Unk505230`/`gm_Unk5051d0` logged `func`; then `ai_Unk617850 -> gm_Diseases` (data, correct); then six single-pair function renames (gm_Unk505440 -> gm_CatchPlague, gm_Unk5054f0, gm_Unk5056a0, gm_Unk505840, gm_Unk5059d0, gm_Unk505ad0) all logged `data` in names.log and the wrap report. Each had just had its signature rewritten to `int f(ORDCHAR *c)`. Worker's unverified guess: kind sticks from the previous rename. Repro: `tail -9 names.log` at gildegold 7193051.

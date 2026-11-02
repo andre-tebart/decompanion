@@ -13,3 +13,12 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 37)
 - Third time: a `#define` between `/* 0x49eec0, ... */` and `int ai_DecideTakeCredit(` made `dcp grade ai_DecideTakeCredit` answer "is neither a unit nor a graded function". Proposal again: `address comment of 0x49eec0 not directly above its definition (line N)`. Cost: ~2 minutes.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 53)
+- A `#define` placed between a function's address comment and its definition made `dcp grade NAME` answer "neither a unit nor a graded function", without saying why. Want: "address comment at line N is not directly above a definition (a #define intervenes)".
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 60)
+- Two `#define`s placed between the address comment and the function: `dcp grade unk_Unk4fdfd0` said "is neither a unit nor a graded function of target exe", `dcp diffclass` said "no graded function". Want "function at src/f3gm.c:N has no address comment directly above it (found a #define)". Cost: one round trip.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 62)
+- Third time today: `#define` lines between `/* 0xADDR ... */` and the function made `dcp grade gm_UpdatePrices` say `is neither a unit nor a graded function`. Want "an address comment was found at line N but is not directly above the definition".

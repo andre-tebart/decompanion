@@ -20,3 +20,21 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 33)
 - A stray `cat > file` waiting on stdin blocked a multi-file edit (~2 minutes, then git status to confirm nothing was written). Pattern that worked: edit scripts in the scratchpad run as `python -I script spec.json`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 46)
+- Backslashes were halved through heredocs, Python triple-quoted strings and even the agent's own tool input; the worker resorted to `chr(92)`. Proposal: one recommended backslash-safe edit path, e.g. `dcp sub FILE --old-file A --new-file B`. See lint-string-literal-bytes-vs-original.md for the damage it caused.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 48)
+- A long Bash heredoc containing Python was silently truncated (closing `PYEOF` and the script's last line lost); a `.py` writing C string literals with backslashes needed `chr(92)` tricks. A sentence recommending the Write tool for helper scripts would have saved two failed edits.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 55)
+- Heredocs stripped backslashes even in quoted `'EOF'` blocks; one form string broke (caught by M9), another needed `chr(92)`. See scoped-function-body-edit.md for the proposed fix.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 59)
+- A PowerShell write emptied src/f3gm.c because a variable did not survive between shell calls; restored from git. Another argument for a dcp-side function replace (scoped-function-body-edit.md).
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 65)
+- Backslash sequences in heredoc-fed Python and in shell arguments did not survive in Git Bash (`\\n` mangled), breaking several trial edits; scratch files worked around it.
+
+## Also seen (match-base session 2026-11-03 (gildegold), worker 70)
+- Even a *quoted* heredoc (`python - <<'EOF'`) collapsed `\\` to `\`: `"...f\\xfcr '%s'..."` in gm_ItemPrice became the UTF-8 bytes of ü (`303 274` in `od -c`); a second script's search string with `\\xfc` failed its assert. Environment (Bash tool), not dcp; `dcp asmdiff` showed the bad literal. Test: `python - <<'EOF'` with `print(len('a\\x'))` printing 3 means collapse. ~5 minutes plus one build/grade round. Proposal: skill says quoted heredocs are affected too; write scripts to a file or use the Edit tool.

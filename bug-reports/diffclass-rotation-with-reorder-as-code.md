@@ -15,3 +15,12 @@
 
 ## Also seen (match-base session 2026-11-01 (gildegold), worker 13)
 - sv_BorderCameraView: a register rotation across identical blocks classed `code` (gildegold before baa6b2c).
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 48)
+- Hunks that are the same instruction multiset after register renaming, or only differ in the placement of pushes / `add esp`, were classed `code`: ai_CannonSwitchAnim +0x98 (22 lines) and +0x253 (25), ai_CannonPanel's merged `add esp`. Each needed a hand proof in the escalation reason. Want: recognise "same multiset after renaming" and "push / add esp moved". Cost: large, most of four escalation reasons. Related: ../improvement-reports/diffclass-sched-and-regs-with-copy.md
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 59)
+- Reordered stores with stack offsets shifted by a frame difference classed `code`, not `order`: gm_FindHome (+0xfceff, 26 lines), gm_PartnerStep's party fill. Inflates "code 104" and the explanations escalate asks for.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 61)
+- gm_ClearObjects: ours `add eax, esi; push eax`, original `lea ecx, [esi+eax]; push ecx`: the same value in another register, classed `code`, which kept the function at draft and forced an escalation.

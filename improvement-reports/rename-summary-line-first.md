@@ -12,3 +12,27 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 24)
 - A refused batch rename printed seven `file=<path> replacements=N` lines (src/am.c, src/gv.c, src/unk_575860.c, include/cm.h, src/cm.c, ...) before `check: 3 new error(s) after the rename`, the M5/M6 lines, one `error=` per pair and finally `nothing written`; the `file=` lines read like edits already made. Repro: edit include/gv.h:302 to `void gv_OrderMoveGrave(int *c, int to, char *o, int from, int entry, int price);`, then `uv run dcp rename unk_Unk4f0e80 gv_OrderMoveGrave ai_Unk4c60f0 cm_SendGraveMove unk_Unk4f0e80I gv_OrderMoveGraveI --why "..."` (gildegold before b9e651c). Proposal: on refusal print the refusal first and label planned edits `would_change=` (or omit them). Cost: ~2 calls (git status, revert, rerun).
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 50) - output size
+- `dcp rename` lists every changed file with each replaced line; the worker tailed it every time (10 renames this session). Want `renamed OLD -> NEW: N sites in M files`, per-line list behind `-v`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 51) - output noise
+- Two to three `rules: N ran of 60, X ms (target exe)` lines per `dcp rename` before the useful records. Want rules/timing lines only with `-v`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 52)
+- Every replaced line in every file, 20+ lines for a function with many callers; a symbol like `ai_Unk5eb780` (486 refs) would print hundreds. Want `renamed A -> B: src/x.c 12, include/y.h 1; build: N units relinked`, line listing with `-v`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 56)
+- The gm_CharacterUpkeep rename touched 31 units and printed every replaced line (ai_BookmarksPreset printed main.c lines too); the worker always tailed for `build:` / `check:`. Want per-file counts by default, lines behind `-v`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 60)
+- gm_HomeObject: ~10-15 replaced lines across 6 files. Want `file=... replacements=N` and the build line only.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 61)
+- 5 pairs: ~25 lines of `+1 more`; acceptable, maybe `--quiet` for `renamed= ... files= replacements=`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 63)
+- Tens of lines; always piped through `tail`. Want `renamed=9 files=1 replacements=28 build=ok check=0 new errors`, lines behind `-v`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 66)
+- The comment-review list is useful; the per-line listing usually isn't. Want files with replacement counts by default, `--verbose` for lines.

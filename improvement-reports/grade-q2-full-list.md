@@ -9,3 +9,6 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 20)
 - sv_RunFrame had 49 placeholder names; grade showed 8 and `(+N more)`, the rest found by grep (~3 minutes). Proposal: `--all` or a `q2=` list.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 46)
+- `dcp grade ai_AlchemistWindow` listed `Q2 identifiers: ai_Unk57dc50 ...` right after the function itself was renamed; the names were callee placeholders. Proposal: label them `callee placeholder` so it is clear the function's own names are done. Related: next-placeholder-callees.md

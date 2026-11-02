@@ -17,3 +17,12 @@
 
 ## Also suggested (match-base session 2026-11-01 (gildegold), worker 14)
 - `dcp escalate NAME --draft-reason` pre-filling the remaining hunks with their classes and addresses, so the worker only adds what was tried (same need as `--auto-hunks` above).
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 50)
+- Escalation reasons are long free text. Want `dcp escalate` to pre-fill the hunk list from diffclass and only ask for an explanation per hunk. Cost: writing time per escalation.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 65)
+- After `dcp escalate`, echo where the reason was stored (file:line of the `@deep` tag) so it can be checked; it only prints `action='@deep added'`.
+
+## Also suggested (match-base session 2026-11-02 (gildegold), worker 66)
+- A factual mistake in gm_PermissionBits' `@deep` reason had to be fixed in the source by hand with sed. Want `dcp escalate NAME --amend "..."`, or a re-escalate replacing the reason.

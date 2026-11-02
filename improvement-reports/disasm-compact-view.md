@@ -15,3 +15,30 @@
 
 ## Also seen (match-base session 2026-11-02 (gildegold), worker 26)
 - A compact listing of 0x4f2e30 (gv_Accuse, ~120 instructions) via `uv run dcp disasm 0x4f2e30 0x18a | cut -c1-14,40-` was unreadable because the hex-bytes column varies in width; a second call with sed was needed. Proposal: `--no-bytes` / `--compact` printing only `0xADDR  instruction`. Cost: ~2 minutes, one wasted call.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 39)
+- While the aligner was broken the worker stripped the byte column and `<sym+off>` labels with sed so GNU diff could compare `dcp disasm ADDR` against `dcp disasm --ours NAME` (~10 minutes). Proposal: `--plain`/`--text`, or `dcp asmdiff --gnu` printing a register/slot-normalised unified diff as a second opinion.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 50)
+- `dcp disasm` on large functions: ~436 lines; the worker needed the statement structure (calls, branches, memory stores) and grep-filtered out address-arithmetic idioms. Want `--brief` that hides `lea`/`shl`/`add` chains for `*0x2ec`, `*0x3c4` or prints them as `idx*0x2ec`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 53)
+- 130-250 lines per function with an unused 8-16 character hex-bytes column, piped through `cut`. Want `--no-bytes`, or no bytes by default with `--bytes`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 56)
+- Raw opcode bytes take ~30% of the width; cut each time with `cut -c14-` / awk. Want `--no-bytes`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 58)
+- `dcp disasm 0x4fbe90`: 634 instructions (~640 lines) when 3-4 windows of 20-40 lines were needed; filtered with awk. Want `--from 0xA --to 0xB` / `--around 0xA N`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 59)
+- Raw-bytes column and long `<name+0x...>` labels stripped with awk every time. Want `--no-bytes` and short `+0xNN` labels.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 61)
+- Piped through `sed -n` to read part of a 445-instruction function; want `--from ADDR --to ADDR` or `--lines`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 63)
+- Byte column dropped with `cut` again; want `--no-bytes`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 64)
+- Piped through `cut -c1-14,32-`; want `--no-bytes` for reading against the C.

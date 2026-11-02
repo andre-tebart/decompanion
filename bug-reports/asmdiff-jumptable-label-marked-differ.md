@@ -6,3 +6,6 @@
 - **Expected:** treat our local `$Lnnnn` table labels as equal to the original's table address when the tables compare equal.
 - **Repro:** `uv run dcp asmdiff ai_CheckLeisureAction --symbols` (any switch with a jump table) at gildegold 7ef405a.
 - **Impact:** small; noise that draws attention every time.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 67)
+- `dcp asmdiff gm_TitleNumber --symbols`: `jmp dword ptr [eax*4 + $L73874] | jmp dword ptr [eax*4 + 0x50446c]` marked `!` ("another symbol"), only our local table label vs the original's address. Want `=` or no mark (table contents are compared separately).

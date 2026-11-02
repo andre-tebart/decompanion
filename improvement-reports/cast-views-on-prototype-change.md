@@ -7,3 +7,6 @@
 - **Repro:** grep `gm_TitleJobI` at gildegold 28b8643.
 - **Cost of not having it:** a follow-up commit to drop the stale macros and re-grade their callers.
 - **Related:** headers-signature-dry-run.md, lint-placeholder-cast-macros.md
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 56) - stale cast macro
+- f3gm's lead comment said gm_GetWorth was float in gv.h, but gv.h already declares `int gm_GetWorth(unsigned short)`; the cast macro `I50A640 ((int (*)())gm_GetWorth)` was simply stale, found by grepping headers. Want lint / `dcp headers` to flag a unit-local cast macro whose target prototype now agrees with every header. Cost: ~2 calls.

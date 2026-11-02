@@ -41,3 +41,12 @@ Skill notes for 2.2 (next to "const is not a literal"):
 ## Also suggested (match-base session 2026-11-02 (gildegold), worker 35)
 - Local declaration order/renaming did not move frame slots under /O2 (~6 builds to establish). Skill line: "declaration order does not move frame slots; use slot hunks for deep" (note: earlier sessions found initialisation order and block scoping can matter; see frame-slot-layout.md).
 - Writing the partner-flags assignment separately in each branch keeps VC6 from folding it into a branch-free `sbb` form the original lacks.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 62) - pointer-temp form for `ai_Goods`
+- Writing the goods-kind lookup as `char *good = ai_Goods + id * 0x41; *good` gave byte identity in gm_GoodsDemand (0x4ff8c0); the same `add; mov [reg]` hunk was earlier recorded as "tried ... unchanged" in gm_LoadTables and remains in gm_UpdatePrices. Want a lint/hint suggesting the pointer-temp form for `ai_Goods[x * 0x41]` with this hunk.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 66) - switch range
+- VC6 drops case labels that share the default's body, so the switch range (`cmp eax, N`) shrinks. When `cmp eax, N` differs on a switch, a hint like "the original's range is larger: case labels without their own body may have been dropped" would help. ~3 tries on gm_SexForTitle (0x503f50).
+
+## Also seen (match-base session 2026-11-03 (gildegold), worker 70)
+- VC6 emits `fild` + `faddp` instead of `fiadd` when the int is a call result used inline; fix was calling `util_RandomU(...)` inside the expression, not via a variable. Proposal: a diffclass fpu note when a hunk differs only fiadd vs fild+faddp. ~5 minutes.
