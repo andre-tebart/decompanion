@@ -6,6 +6,7 @@ use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, Tok};
 use crate::project::{py_path, Project};
 use crate::queues::{self, Entry};
+use crate::shape::Shape;
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -200,12 +201,13 @@ fn tables_tokens(t: &crate::diffclass::Tables) -> String {
 /// pb the texts printed (named with --symbols); same(i, j): the named lines i and j refer to the same addresses or
 /// literals under other names (Reading::same_values).
 #[allow(clippy::too_many_arguments)]
-fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b: &[String], pa: &[String], pb: &[String], plain: bool, all: bool,
-              same: &dyn Fn(usize, usize) -> bool) -> (usize, Option<(i64, i64)>, Vec<String>) {
+#[allow(clippy::too_many_arguments)]
+fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b: &[String], sa: &[Shape], sb: &[Shape], pa: &[String], pb: &[String],
+              plain: bool, all: bool, same: &dyn Fn(usize, usize) -> bool) -> (usize, Option<(i64, i64)>, Vec<String>) {
     // the frames differ: align with the stack offsets masked; an aligned pair that differs only by the shift is equal
-    let frame = if plain { None } else { crate::x86::frame_delta(&a, &b) };
+    let frame = if plain { None } else { crate::shape::frame_delta(sa, sb) };
     let ops = match frame {
-        Some(f) => crate::difflib::opcodes(&crate::x86::stack_mask(&a, f), &crate::x86::stack_mask(&b, f)),
+        Some(f) => crate::difflib::opcodes(&crate::shape::stack_mask(sa, f), &crate::shape::stack_mask(sb, f)),
         None => crate::difflib::opcodes(&a, &b),
     };
     use crate::difflib::Tag;
@@ -220,14 +222,14 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
             } else {
                 1
             }
-        } else if frame.is_some_and(|f| crate::x86::frame_explain(&a[i..=i], &b[j..=j], f).is_some()) {
+        } else if frame.is_some_and(|f| crate::shape::frame_explain(&sa[i..=i], &sb[j..=j], f).is_some()) {
             2
         } else {
             3
         }
     };
     let n = match frame {
-        Some(f) => crate::diffclass::frame_distance(a, b, f),
+        Some(f) => crate::diffclass::frame_distance(sa, sb, f),
         None => crate::diffclass::distance(a, b),
     };
     let mut out = vec![];
@@ -281,6 +283,8 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
         Err(o) => return Ok(o),
     };
     let mut a: Vec<String> = r.la.iter().map(|x| x.text.clone()).collect();
+    let mut ka: Vec<Shape> = r.la.iter().map(|x| x.shape.clone()).collect();
+    let kb: Vec<Shape> = r.lb.iter().map(|x| x.shape.clone()).collect();
     let (mut sa, sb) = r.named.clone().unwrap_or_default();
     if let Some(m) = regs.filter(|x| !x.is_empty()) {
         let pairs: Vec<(String, String)> = m.split(',').map(|x| {
@@ -289,13 +293,16 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
         }).collect();
         a = crate::x86::rename_registers(&a, &pairs);
         sa = crate::x86::rename_registers(&sa, &pairs);
+        if let Some(map) = crate::shape::reg_map(&pairs.iter().map(|(k, v)| (crate::x86::full_reg(k), crate::x86::full_reg(v))).collect::<Vec<_>>()) {
+            ka = ka.iter().map(|s| crate::shape::rename(s, &map)).collect();
+        }
     }
     let b: Vec<String> = r.lb.iter().map(|x| x.text.clone()).collect();
     // what a line prints: its X text, or with --symbols its named text
     let (pa, pb) = if r.named.is_some() { (&sa, &sb) } else { (&a, &b) };
     let img = if r.values.is_some() { Some(crate::image(&p.target(None).map_err(Error::runtime)?.path)?) } else { None };
     let same = |i: usize, j: usize| img.as_ref().is_some_and(|img| r.same_values(img, i, j));
-    let (n, frame, body) = diff_lines(&r.la, &r.lb, &a, &b, pa, pb, plain, all, &same);
+    let (n, frame, body) = diff_lines(&r.la, &r.lb, &a, &b, &ka, &kb, pa, pb, plain, all, &same);
     let row = r.row.as_object().cloned().unwrap_or_default();
     let mut head = record(&[("fn", Tok::I(int(&row, "addr"))), ("name", vt(row.get("name"))), ("code", vt(row.get("code"))), ("ours", Tok::I(a.len() as i64)),
                             ("original", Tok::I(b.len() as i64)), ("differing", Tok::I(n as i64))]);
@@ -639,16 +646,18 @@ mod tests {
                     "lea ecx, [esp + {loc}]", "push ecx", "call X", "{st}", "add esp, {f}", "ret"];
         let f = |fr: &str, arg: &str, loc: &str, st: &str| -> (Vec<crate::x86::Line>, Vec<String>) {
             let ts: Vec<String> = body.iter().map(|t| t.replace("{f}", fr).replace("{arg}", arg).replace("{loc}", loc).replace("{st}", st)).collect();
-            (ts.iter().enumerate().map(|(k, t)| crate::x86::Line { addr: 0x1000 + k as u32, size: 1, text: t.clone(), fill: false, target: None }).collect(), ts)
+            (ts.iter().enumerate().map(|(k, t)| crate::x86::Line::of(0x1000 + k as u32, t, false, None)).collect(), ts)
         };
         let (la, a) = f("0xcc", "0xd0", "0x7c", "mov dword ptr [esp + 0x14], ecx");
         let (lb, b) = f("0xc8", "0xcc", "0x78", "mov dword ptr [esp + 0x14], 0");
-        let (n, frame, out) = diff_lines(&la, &lb, &a, &b, &a, &b, false, true, &|_, _| false);
+        let sh = |l: &[crate::x86::Line]| l.iter().map(|x| x.shape.clone()).collect::<Vec<_>>();
+        let (sa, sb) = (sh(&la), sh(&lb));
+        let (n, frame, out) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, false, true, &|_, _| false);
         assert_eq!((n, frame), (2, Some((0xcc, 0xc8))));
         assert_eq!(out.iter().filter(|l| l.starts_with('-') || l.starts_with('+')).collect::<Vec<_>>(),
                    ["-  0x00001008  mov dword ptr [esp + 0x14], ecx", "+  0x00001008  mov dword ptr [esp + 0x14], 0"]);
         assert!(out.contains(&"~  0x00001001  mov eax, dword ptr [esp + 0xd0]".to_string()) && out.contains(&"   0x00001003  mov ecx, 3".to_string()));
-        let (n, frame, _) = diff_lines(&la, &lb, &a, &b, &a, &b, true, true, &|_, _| false);
+        let (n, frame, _) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, true, true, &|_, _| false);
         assert_eq!((n, frame), (10, None)); // --plain: the shifted lines differ
     }
 }

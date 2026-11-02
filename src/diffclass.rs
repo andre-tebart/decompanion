@@ -3,6 +3,7 @@
 //! Walker for one root, no stops, no relocation sites).
 
 use crate::difflib::{opcodes, Tag};
+use crate::shape::{self, Shape};
 use crate::x86::{self, py_hex, Line};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -13,7 +14,11 @@ fn texts(l: &[Line]) -> Vec<String> {
     l.iter().map(|x| x.text.clone()).collect()
 }
 
-fn multiset_eq(a: &[String], b: &[String]) -> bool {
+fn shapes(l: &[Line]) -> Vec<Shape> {
+    l.iter().map(|x| x.shape.clone()).collect()
+}
+
+fn multiset_eq<T: Ord + Clone>(a: &[T], b: &[T]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -32,14 +37,14 @@ pub fn distance(a: &[String], b: &[String]) -> usize {
 /// `dcp asmdiff` counts them: aligned with the stack offsets masked, a pair that differs only by the frame's shift
 /// equal. A match-base report: `dcp grade`'s dist counted every line the shift touched, and went up on an edit that
 /// took asmdiff's count down.
-pub fn frame_distance(a: &[String], b: &[String], frame: (i64, i64)) -> usize {
-    opcodes(&x86::stack_mask(a, frame), &x86::stack_mask(b, frame)).iter().map(|o| {
+pub fn frame_distance(a: &[Shape], b: &[Shape], frame: (i64, i64)) -> usize {
+    opcodes(&shape::stack_mask(a, frame), &shape::stack_mask(b, frame)).iter().map(|o| {
         if o.0 != Tag::Equal {
             o.2 - o.1 + o.4 - o.3
         } else {
             (o.1..o.2).filter(|&i| {
                 let j = o.3 + i - o.1;
-                a[i] != b[j] && x86::frame_explain(&a[i..=i], &b[j..=j], frame).is_none()
+                a[i] != b[j] && shape::frame_explain(&a[i..=i], &b[j..=j], frame).is_none()
             }).count() * 2
         }
     }).sum()
@@ -74,30 +79,30 @@ fn hunks(a: &[String], b: &[String]) -> Vec<(usize, usize, usize, usize)> {
     join(opcodes(a, b).into_iter().filter(|o| o.0 != Tag::Equal).map(|o| (o.1, o.2, o.3, o.4)))
 }
 
-/// The lines of both sides hashed after x86::shape_keys: a quick test of whether a class can explain a piece.
+/// The lines of both sides hashed after shape::shape_keys: a quick test of whether a class can explain a piece.
 /// Computed on the first code hunk to split.
 struct Keys<'a> {
-    text: (&'a [String], &'a [String]),
+    text: (&'a [Shape], &'a [Shape]),
     keys: std::cell::OnceCell<(Vec<u64>, Vec<u64>)>,
 }
 
 impl Keys<'_> {
-    fn new<'a>(a: &'a [String], b: &'a [String]) -> Keys<'a> {
+    fn new<'a>(a: &'a [Shape], b: &'a [Shape]) -> Keys<'a> {
         Keys { text: (a, b), keys: Default::default() }
     }
 
     /// Whether any class but code can explain the lines a[i1..i2] / b[j1..j2]: their masked lines the same
-    /// multiset, or every line that differs an FPU one, or all fill (classify's and x86::explain's preconditions).
+    /// multiset, or every line that differs an FPU one, or all fill (classify's and shape::explain's preconditions).
     fn may_explain(&self, la: &[Line], lb: &[Line], i1: usize, i2: usize, j1: usize, j2: usize) -> bool {
         if i2 - i1 == j2 - j1 {
             let (ka, kb) = self.keys.get_or_init(|| {
-                let h = |t: &String| {
+                let h = |t: &Shape| {
                     use std::hash::{Hash, Hasher};
                     let mut s = std::collections::hash_map::DefaultHasher::new();
                     t.hash(&mut s);
                     s.finish()
                 };
-                (x86::shape_keys(self.text.0).iter().map(h).collect(), x86::shape_keys(self.text.1).iter().map(h).collect())
+                (shape::shape_keys(self.text.0).iter().map(h).collect(), shape::shape_keys(self.text.1).iter().map(h).collect())
             });
             let (mut x, mut y) = (ka[i1..i2].to_vec(), kb[j1..j2].to_vec());
             x.sort_unstable();
@@ -106,8 +111,8 @@ impl Keys<'_> {
                 return true;
             }
         }
-        let (sa, sb): (HashSet<&str>, HashSet<&str>) = (la[i1..i2].iter().map(|l| l.text.as_str()).collect(), lb[j1..j2].iter().map(|l| l.text.as_str()).collect());
-        sa.symmetric_difference(&sb).all(|t| t.starts_with('f')) || la[i1..i2].iter().chain(&lb[j1..j2]).all(|l| l.fill)
+        let (sa, sb): (HashSet<&Shape>, HashSet<&Shape>) = (la[i1..i2].iter().map(|l| &l.shape).collect(), lb[j1..j2].iter().map(|l| &l.shape).collect());
+        sa.symmetric_difference(&sb).all(|t| t.fpu()) || la[i1..i2].iter().chain(&lb[j1..j2]).all(|l| l.fill)
     }
 }
 
@@ -116,7 +121,7 @@ impl Keys<'_> {
 /// allocation, the equal lines between them fewer than 5): no one renaming explains the whole, one explains each
 /// copy. A code hunk of several opcodes is cut at its widest run of equal lines and each half classified the same
 /// way; the code pieces in a row are one code hunk again.
-fn classify_joined(la: &[Line], lb: &[Line], at: &[String], keys: &Keys, parts: &[(usize, usize, usize, usize)]) -> Vec<Hunk> {
+fn classify_joined(la: &[Line], lb: &[Line], at: &[Shape], keys: &Keys, parts: &[(usize, usize, usize, usize)]) -> Vec<Hunk> {
     let (i1, i2, j1, j2) = span(parts);
     let (c, n) = classify(la, lb, at, i1, i2, j1, j2);
     if c != "code" || parts.len() == 1 {
@@ -153,28 +158,28 @@ fn classify_joined(la: &[Line], lb: &[Line], at: &[String], keys: &Keys, parts: 
     out
 }
 
-fn classify(la: &[Line], lb: &[Line], at: &[String], i1: usize, i2: usize, j1: usize, j2: usize) -> (String, String) {
-    let a = texts(&la[i1..i2]);
-    let b = texts(&lb[j1..j2]);
+fn classify(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: usize, j2: usize) -> (String, String) {
+    let a = shapes(&la[i1..i2]);
+    let b = shapes(&lb[j1..j2]);
     if la[i1..i2].iter().chain(&lb[j1..j2]).all(|x| x.fill) {
         return ("fill".into(), "alignment fill".into());
     }
     if multiset_eq(&a, &b) {
         return ("order".into(), "same instructions, other order".into());
     }
-    x86::explain(&a, &b, at).unwrap_or(("code".into(), String::new()))
+    shape::explain(&a, &b, at).unwrap_or(("code".into(), String::new()))
 }
 
 fn classify_hunks(la: &[Line], lb: &[Line]) -> Vec<Hunk> {
-    let (a, b) = (texts(la), texts(lb));
+    let (a, b) = (shapes(la), shapes(lb));
     let keys = Keys::new(&a, &b);
-    join_parts(opcodes(&a, &b).into_iter().filter(|o| o.0 != Tag::Equal).map(|o| (o.1, o.2, o.3, o.4)))
+    join_parts(opcodes(&texts(la), &texts(lb)).into_iter().filter(|o| o.0 != Tag::Equal).map(|o| (o.1, o.2, o.3, o.4)))
         .iter().flat_map(|ps| classify_joined(la, lb, &a, &keys, ps)).collect()
 }
 
 fn frame_hunks(la: &[Line], lb: &[Line], frame: (i64, i64)) -> Vec<Hunk> {
-    let (a, b) = (texts(la), texts(lb));
-    let (ma, mb) = (x86::stack_mask(&a, frame), x86::stack_mask(&b, frame));
+    let (a, b) = (shapes(la), shapes(lb));
+    let (ma, mb) = (shape::stack_mask(&a, frame), shape::stack_mask(&b, frame));
     let (mut other, mut shifted) = (vec![], vec![]);
     for (tag, i1, i2, j1, j2) in opcodes(&ma, &mb) {
         if tag != Tag::Equal {
@@ -197,7 +202,7 @@ fn frame_hunks(la: &[Line], lb: &[Line], frame: (i64, i64)) -> Vec<Hunk> {
     }
     let mut out: Vec<Hunk> = vec![];
     for (i1, i2, j1, j2) in shifted {
-        match x86::frame_explain(&a[i1..i2], &b[j1..j2], frame) {
+        match shape::frame_explain(&a[i1..i2], &b[j1..j2], frame) {
             Some(note) => out.push((i1, i2, j1, j2, "frame".into(), note)),
             None => {
                 let (c, n) = classify(la, lb, &a, i1, i2, j1, j2);
@@ -280,17 +285,17 @@ fn mnemonic(t: &str) -> &str {
 
 type Aligned = (Vec<(usize, usize)>, HashMap<usize, usize>, HashSet<(usize, usize)>);
 
-/// The texts an order hunk's lines pair by (ours, the original's): the renaming its note names ("after ecx->edx
+/// The shapes an order hunk's lines pair by (ours, the original's): the renaming its note names ("after ecx->edx
 /// edx->ecx") applied to ours, the esp offsets normalised on both sides when the note says across a push / pop.
-fn order_keys(la: &[Line], lb: &[Line], note: &str) -> (Vec<String>, Vec<String>) {
-    let (mut a, b) = (texts(la), texts(lb));
+fn order_keys(la: &[Line], lb: &[Line], note: &str) -> (Vec<Shape>, Vec<Shape>) {
+    let (mut a, b) = (shapes(la), shapes(lb));
     if note.contains("across a push / pop") {
-        return (x86::esp_normalised(&a), x86::esp_normalised(&b));
+        return (shape::esp_normalised(&a), shape::esp_normalised(&b));
     }
     if let Some((_, m)) = note.rsplit_once(", after ") {
         let pairs: Vec<(String, String)> = m.split(' ').filter_map(|p| p.split_once("->")).map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        if !pairs.is_empty() {
-            a = x86::rename_registers(&a, &pairs);
+        if let Some(map) = shape::reg_map(&pairs).filter(|_| !pairs.is_empty()) {
+            a = a.iter().map(|s| shape::rename(s, &map)).collect();
         }
     }
     (a, b)
@@ -318,13 +323,13 @@ fn aligned(la: &[Line], lb: &[Line], hs: &[Hunk]) -> Aligned {
             // another one the swap made look the same (a match-base report, gv_BuryCharacter: ours' `mov eax, edx`
             // paired with the original's earlier `mov eax, edx`, and a je to the line counted as other control flow)
             let (ka, kb) = order_keys(&la[i1..i2], &lb[j1..j2], &note);
-            let mut same: HashMap<&str, VecDeque<usize>> = HashMap::new();
+            let mut same: HashMap<&Shape, VecDeque<usize>> = HashMap::new();
             for k in j1..j2 {
                 same.entry(&kb[k - j1]).or_default().push_back(k);
             }
             let mut rest = vec![];
             for k in i1..i2 {
-                match same.get_mut(ka[k - i1].as_str()).and_then(|q| q.pop_front()) {
+                match same.get_mut(&ka[k - i1]).and_then(|q| q.pop_front()) {
                     Some(x) => {
                         m.insert(k, x);
                     }
@@ -465,7 +470,7 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
         }
     }
     let moved = !code.is_empty() && multiset_eq(&minus, &plus);
-    let renamed = !code.is_empty() && !moved && x86::one_renaming(&a, &b);
+    let renamed = !code.is_empty() && !moved && shape::one_renaming(&shapes(la), &shapes(lb));
     let bad = tables.is_some_and(|t| !t.diffs.is_empty());
     if bad {
         bump(&mut weight, "table", tables.unwrap().diffs.len() as i64);
@@ -485,11 +490,12 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
 pub fn analyse(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> (Vec<Hunk>, Verdict) {
     let hs = classify_hunks(la, lb);
     let mut v = judge(la, lb, &hs, tables);
-    let frame = x86::frame_delta(&texts(la), &texts(lb));
+    let (sa, sb) = (shapes(la), shapes(lb));
+    let frame = shape::frame_delta(&sa, &sb);
     if v.shape {
         // the distance as asmdiff counts it whenever the frames differ
         if let Some(f) = frame {
-            v.distance = frame_distance(&texts(la), &texts(lb), f);
+            v.distance = frame_distance(&sa, &sb, f);
         }
         return (hs, v);
     }
@@ -497,7 +503,7 @@ pub fn analyse(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> (Vec<Hunk>,
     let fh = frame_hunks(la, lb, frame);
     let mut fv = judge(la, lb, &fh, tables);
     fv.frame = Some(frame);
-    fv.distance = frame_distance(&texts(la), &texts(lb), frame);
+    fv.distance = frame_distance(&sa, &sb, frame);
     (fh, fv)
 }
 
@@ -808,7 +814,7 @@ mod tests {
     }
 
     fn lines(texts: &[&str]) -> Vec<Line> {
-        texts.iter().enumerate().map(|(k, t)| Line { addr: 0x1000 + k as u32, size: 1, text: t.to_string(), fill: *t == "nop" || *t == "int3", target: None }).collect()
+        texts.iter().enumerate().map(|(k, t)| Line::of(0x1000 + k as u32, t, *t == "nop" || *t == "int3", None)).collect()
     }
 
     fn classes(a: &[Line], b: &[Line]) -> Vec<String> {
@@ -898,8 +904,7 @@ mod tests {
     }
 
     fn jumps(rows: &[(&str, Option<u32>)]) -> Vec<Line> {
-        rows.iter().enumerate().map(|(k, (t, g))| Line { addr: 0x1000 + k as u32, size: 1, text: t.to_string(), fill: false,
-                                                         target: g.map(|g| 0x1000 + g as i64) }).collect()
+        rows.iter().enumerate().map(|(k, (t, g))| Line::of(0x1000 + k as u32, t, false, g.map(|g| 0x1000 + g as i64))).collect()
     }
 
     #[test]

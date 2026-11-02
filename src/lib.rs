@@ -77,6 +77,7 @@ mod units;
 mod vc6;
 mod walk;
 mod wt;
+mod shape;
 mod x86;
 
 /// The test run's time budget: a watchdog started before the test harness's main fails the run (exit 1) when it is

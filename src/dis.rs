@@ -207,8 +207,48 @@ pub fn gpr(r: Reg) -> Option<u8> {
     Some((f as u32 - Reg::EAX as u32) as u8)
 }
 
-/// One decoded instruction, typed.
+/// Which part of a general register a register is: (the register eax=0 .. edi=7, the part: 0 the 32 bits, 1 the
+/// low 16, 2 the low byte, 3 the high byte), None for any other register.
+pub fn gpr_part(r: Reg) -> Option<(u8, u8)> {
+    let g = gpr(r)?;
+    let part = match r.size() {
+        4 => 0,
+        2 => 1,
+        _ if matches!(r, Reg::AH | Reg::CH | Reg::DH | Reg::BH) => 3,
+        _ => 2,
+    };
+    Some((g, part))
+}
+
+/// The register of a part of a general register (gpr_part's inverse); None where x86-32 has no such register (esi
+/// has no byte).
+pub fn gpr_reg(g: u8, part: u8) -> Option<Reg> {
+    const R32: [Reg; 8] = [Reg::EAX, Reg::ECX, Reg::EDX, Reg::EBX, Reg::ESP, Reg::EBP, Reg::ESI, Reg::EDI];
+    const R16: [Reg; 8] = [Reg::AX, Reg::CX, Reg::DX, Reg::BX, Reg::SP, Reg::BP, Reg::SI, Reg::DI];
+    const LO: [Reg; 4] = [Reg::AL, Reg::CL, Reg::DL, Reg::BL];
+    const HI: [Reg; 4] = [Reg::AH, Reg::CH, Reg::DH, Reg::BH];
+    let g = g as usize;
+    match part {
+        0 => R32.get(g).copied(),
+        1 => R16.get(g).copied(),
+        2 => LO.get(g).copied(),
+        _ => HI.get(g).copied(),
+    }
+}
+
+/// A register's name as the text writes it (`eax`, `st(1)`).
+pub fn reg_name(r: Reg) -> String {
+    match r {
+        Reg::ST0 => "st".into(),
+        Reg::ST1 | Reg::ST2 | Reg::ST3 | Reg::ST4 | Reg::ST5 | Reg::ST6 | Reg::ST7 => format!("st({})", r as u32 - Reg::ST0 as u32),
+        _ => format!("{r:?}").to_lowercase(),
+    }
+}
+
+/// One decoded instruction, typed. `mnemonic`, `uses` and `defs` wait for their reader: the dataflow lift of
+/// docs/shape-equiv-plan.md Phase 2.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct Ins {
     pub addr: u32,
     pub size: u32,
@@ -245,11 +285,6 @@ impl Ins {
         } else {
             None
         }
-    }
-
-    /// The memory operand, if any.
-    pub fn mem(&self) -> Option<&Op> {
-        self.ops.iter().find(|o| o.typ == OpType::Mem)
     }
 
     pub fn text(&self) -> Text {
@@ -423,7 +458,7 @@ mod tests {
     fn typed() {
         let i = &decode(&[0x8b, 0x04, 0x8d, 0x80, 0xb7, 0x5e, 0x00], 0x401000)[0];
         assert_eq!(i.mn, "mov");
-        let m = i.mem().unwrap();
+        let m = i.ops.iter().find(|o| o.typ == OpType::Mem).unwrap();
         assert_eq!((m.base, m.index, m.scale, m.disp, m.size), (Reg::None, Reg::ECX, 4, 0x5eb780, 4));
         assert_eq!(i.field_at(3), Some(FieldKind::Disp));
         assert_eq!(i.field_at(6), Some(FieldKind::Disp));

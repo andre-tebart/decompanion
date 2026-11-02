@@ -1,0 +1,749 @@
+//! The typed shape of a listing line and the explanations of a differing hunk over it (diffclass.rs reads them).
+//!
+//! A `Shape` is one instruction as the instruction diff compares it: the mnemonic, the rep prefix and the operands
+//! (registers, immediates, memory with segment / size / base / index / scale / displacement), every number that
+//! is a relocated field or an address inside the image reading `X`, as the listing's text does. The explanations
+//! are structural checks on shapes:
+//! - `regs`: equal under one bijective renaming of general registers (a part of a register follows its register);
+//! - `slots`: equal under such a renaming and a bijective remap of stack slots (`[esp + N]` / `[ebp + N]`);
+//! - `order`: the same instructions in another order, after a renaming; across a push / pop with the esp offsets
+//!   taken at the hunk's start, also with a slot remap;
+//! - `sib`: base and index of `[r1 + r2 + disp]` exchanged;
+//! - `fpu`: only FPU instructions differ (and the same ones with the stack registers masked: other stack order);
+//! - `frame`: stack offsets shifted by the difference of two frame sizes.
+//! A renaming is found by unifying the two sides once (linear), not by trying permutations; only `order`, which
+//! compares multisets, tries them.
+
+use crate::dis::{self, Reg};
+use crate::x86::py_hex;
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+/// A number of an operand: its value, `X` (a relocated field of ours, an address inside the image), or masked by a
+/// comparison (stack_mask's slot offsets and frame sizes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Num {
+    V(i64),
+    X,
+    Masked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Opnd {
+    Reg(Reg),
+    Imm(Num),
+    /// [seg: base + index*scale + disp], size bytes (0: no size, lea); registers Reg::None where absent
+    Mem { seg: Reg, size: u8, base: Reg, index: Reg, scale: u8, disp: Num },
+}
+
+/// One instruction as the diff compares it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Shape {
+    pub mn: &'static str,
+    /// 0 none, 1 rep / repe, 2 repne
+    pub rep: u8,
+    pub ops: Vec<Opnd>,
+}
+
+/// A register no instruction of x86-32 names: what a masked register reads (shape_keys).
+const ANY: Reg = Reg::EIP;
+
+/// The general registers a renaming may exchange (esp never).
+pub const RENAMABLE: u8 = 0b1110_1111;
+const ESP: u8 = 4;
+const EBP: u8 = 5;
+
+impl Shape {
+    /// The shape of a decoded instruction. `masked(field)`: the field is one of our relocated fields (it reads X);
+    /// `range`: the image's addresses (a number inside reads X).
+    pub fn of(ins: &dis::Ins, masked: &dyn Fn(dis::FieldKind) -> bool, range: (i64, i64)) -> Shape {
+        let x = |v: i64| if range.0 <= v.abs() && v.abs() < range.1 { Num::X } else { Num::V(v) };
+        let branch = ins.target.is_some();
+        let mut imms = 0;
+        let ops = ins.ops.iter().enumerate().map(|(k, o)| match o.typ {
+            dis::OpType::Reg => Opnd::Reg(o.reg),
+            dis::OpType::Imm => {
+                let field = if branch && k == 0 {
+                    dis::FieldKind::Branch
+                } else {
+                    imms += 1;
+                    if imms == 1 { dis::FieldKind::Imm } else { dis::FieldKind::Imm2 }
+                };
+                Opnd::Imm(if masked(field) { Num::X } else { x(o.imm) })
+            }
+            dis::OpType::Mem => {
+                let disp = if masked(dis::FieldKind::Disp) { Num::X } else { x(o.disp) };
+                Opnd::Mem { seg: o.seg, size: o.size, base: o.base, index: o.index, scale: o.scale, disp }
+            }
+        }).collect();
+        let rep = if ins.instr.has_repne_prefix() { 2 } else if ins.rep { 1 } else { 0 };
+        Shape { mn: ins.mn, rep, ops }
+    }
+
+    fn is(&self, mn: &str) -> bool {
+        self.mn == mn
+    }
+
+    /// `sub|add esp, N`: (sub?, N).
+    fn esp_adjust(&self) -> Option<(bool, i64)> {
+        match (self.mn, self.ops.as_slice()) {
+            ("sub" | "add", [Opnd::Reg(Reg::ESP), Opnd::Imm(Num::V(n))]) if *n >= 0 => Some((self.mn == "sub", *n)),
+            _ => None,
+        }
+    }
+
+    pub fn fpu(&self) -> bool {
+        self.mn.starts_with('f')
+    }
+
+    fn map_ops(&self, f: impl Fn(&Opnd) -> Opnd) -> Shape {
+        Shape { mn: self.mn, rep: self.rep, ops: self.ops.iter().map(f).collect() }
+    }
+}
+
+/// A stack slot: a memory operand of base esp or ebp alone (`[esp + N]`).
+fn slot(o: &Opnd) -> Option<(Reg, Num)> {
+    match *o {
+        Opnd::Mem { base: b @ (Reg::ESP | Reg::EBP), index: Reg::None, disp, .. } => Some((b, disp)),
+        _ => None,
+    }
+}
+
+fn slots(s: &Shape) -> impl Iterator<Item = (Reg, Num)> + '_ {
+    s.ops.iter().filter_map(slot)
+}
+
+/// The general registers (eax=0 .. edi=7) a line names, any part of them.
+fn gprs(s: &Shape) -> impl Iterator<Item = u8> + '_ {
+    s.ops.iter().flat_map(|o| match *o {
+        Opnd::Reg(r) => [Some(r), None],
+        Opnd::Mem { base, index, .. } => [Some(base), Some(index)],
+        Opnd::Imm(_) => [None, None],
+    }).flatten().filter_map(|r| dis::gpr(r))
+}
+
+// ------------------------------------------------------------------------------------------------ unification
+
+/// What a renaming maps a stack slot by: its offset (explain: the base follows the register renaming), or its base
+/// and offset (one_renaming: a slot is a name of its own, like a register).
+#[derive(Clone, Copy, PartialEq)]
+enum Slots {
+    None,
+    ByOffset,
+    ByBaseAndOffset,
+}
+
+/// A renaming found by walking two sides together: registers ours -> theirs (bijective, over `allowed`), and with
+/// slots on, stack slots ours -> theirs (bijective).
+struct Unify {
+    allowed: u8,
+    fwd: [Option<u8>; 8],
+    back: [Option<u8>; 8],
+    slots: Slots,
+    sfwd: HashMap<(Reg, Num), (Reg, Num)>,
+    sback: HashMap<(Reg, Num), (Reg, Num)>,
+}
+
+impl Unify {
+    fn new(allowed: u8, slots: Slots) -> Unify {
+        Unify { allowed, fwd: [None; 8], back: [None; 8], slots, sfwd: HashMap::new(), sback: HashMap::new() }
+    }
+
+    fn reg(&mut self, a: Reg, b: Reg) -> bool {
+        let (Some((ga, pa)), Some((gb, pb))) = (dis::gpr_part(a), dis::gpr_part(b)) else { return a == b };
+        let (ra, rb) = (self.allowed & 1 << ga != 0, self.allowed & 1 << gb != 0);
+        if !ra || !rb {
+            return a == b && !ra && !rb;
+        }
+        if pa != pb {
+            return false;
+        }
+        match (self.fwd[ga as usize], self.back[gb as usize]) {
+            (None, None) => {
+                self.fwd[ga as usize] = Some(gb);
+                self.back[gb as usize] = Some(ga);
+                true
+            }
+            (f, _) => f == Some(gb),
+        }
+    }
+
+    fn slot(&mut self, a: (Reg, Num), b: (Reg, Num)) -> bool {
+        let (ka, kb) = match self.slots {
+            Slots::ByOffset => {
+                if !self.reg(a.0, b.0) {
+                    return false;
+                }
+                ((Reg::None, a.1), (Reg::None, b.1))
+            }
+            _ => (a, b),
+        };
+        match (self.sfwd.get(&ka), self.sback.get(&kb)) {
+            (None, None) => {
+                self.sfwd.insert(ka, kb);
+                self.sback.insert(kb, ka);
+                true
+            }
+            (f, _) => f == Some(&kb),
+        }
+    }
+
+    fn op(&mut self, a: &Opnd, b: &Opnd) -> bool {
+        match (a, b) {
+            (Opnd::Reg(x), Opnd::Reg(y)) => self.reg(*x, *y),
+            (Opnd::Imm(x), Opnd::Imm(y)) => x == y,
+            (Opnd::Mem { seg: sa, size: za, base: ba, index: ia, scale: ca, disp: da },
+             Opnd::Mem { seg: sb, size: zb, base: bb, index: ib, scale: cb, disp: db }) => {
+                if sa != sb || za != zb || ca != cb {
+                    return false;
+                }
+                if self.slots != Slots::None {
+                    if let (Some(x), Some(y)) = (slot(a), slot(b)) {
+                        return self.slot(x, y);
+                    }
+                }
+                da == db && self.reg(*ba, *bb) && self.reg(*ia, *ib)
+            }
+            _ => false,
+        }
+    }
+
+    fn line(&mut self, a: &Shape, b: &Shape) -> bool {
+        a.mn == b.mn && a.rep == b.rep && a.ops.len() == b.ops.len() && a.ops.iter().zip(&b.ops).all(|(x, y)| self.op(x, y))
+    }
+
+    fn all(&mut self, a: &[Shape], b: &[Shape]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| self.line(x, y))
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ renamings
+
+/// A renaming of the general registers, total over the 8 (identity where not renamed).
+pub type RegMap = [u8; 8];
+
+fn identity() -> RegMap {
+    [0, 1, 2, 3, 4, 5, 6, 7]
+}
+
+/// The shape with its registers renamed (a part of a register follows its register; a part the other register does
+/// not have stays).
+pub fn rename(s: &Shape, m: &RegMap) -> Shape {
+    let r = |x: Reg| match dis::gpr_part(x) {
+        Some((g, p)) => dis::gpr_reg(m[g as usize], p).unwrap_or(x),
+        None => x,
+    };
+    s.map_ops(|o| match *o {
+        Opnd::Reg(x) => Opnd::Reg(r(x)),
+        Opnd::Mem { seg, size, base, index, scale, disp } => Opnd::Mem { seg, size, base: r(base), index: r(index), scale, disp },
+        i => i,
+    })
+}
+
+/// The register map of `name->name` pairs (`asmdiff --regs`, an order note's renaming); None for a name that is no
+/// general register.
+pub fn reg_map(pairs: &[(String, String)]) -> Option<RegMap> {
+    let full = |n: &str| (0..8u8).flat_map(|g| (0..4u8).map(move |p| (g, p))).find(|&(g, p)| dis::gpr_reg(g, p).is_some_and(|r| dis::reg_name(r) == n)).map(|x| x.0);
+    let mut m = identity();
+    for (k, v) in pairs {
+        m[full(k)? as usize] = full(v)?;
+    }
+    Some(m)
+}
+
+fn name(g: u8) -> String {
+    dis::reg_name(dis::gpr_reg(g, 0).unwrap())
+}
+
+/// The registers the renaming moves, as the notes write them (`eax->ecx edx->eax`: ours -> the original's), in the
+/// order of our names.
+fn reg_desc(u: &Unify) -> String {
+    let mut pairs: Vec<(String, String)> = (0..8u8).filter_map(|g| u.fwd[g as usize].filter(|&t| t != g).map(|t| (name(g), name(t)))).collect();
+    pairs.sort();
+    pairs.iter().map(|(k, v)| format!("{k}->{v}")).collect::<Vec<_>>().join(" ")
+}
+
+/// A stack offset as the text writes it inside the brackets (`` for 0, ` + 0x10`, ` - 4`).
+fn offset(n: Num) -> String {
+    let small = |v: i64| if v <= 9 { v.to_string() } else { format!("{v:#x}") };
+    match n {
+        Num::V(0) => String::new(),
+        Num::V(v) if v > 0 => format!(" + {}", small(v)),
+        Num::V(v) => format!(" - {}", small(-v)),
+        Num::X => " + X".into(),
+        Num::Masked => " S".into(),
+    }
+}
+
+fn slot_desc(pairs: &[(String, String)]) -> String {
+    let or0 = |s: &str| if s.is_empty() { "+0".to_string() } else { s.to_string() };
+    pairs.iter().map(|(k, v)| format!("[{}]->[{}]", or0(k), or0(v))).collect::<Vec<_>>().join(" ")
+}
+
+/// The slot offsets the remap moves (Slots::ByOffset), ours -> the original's, in the order of ours.
+fn slot_pairs(u: &Unify) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = u.sfwd.iter().filter(|(k, v)| k != v).map(|(k, v)| (offset(k.1), offset(v.1))).collect();
+    pairs.sort();
+    pairs
+}
+
+/// itertools.permutations(range(n)) in its order (lexicographic in the positions), until f says stop.
+fn permutations(n: usize, mut f: impl FnMut(&[usize]) -> bool) {
+    let mut p: Vec<usize> = (0..n).collect();
+    loop {
+        if f(&p) {
+            return;
+        }
+        let Some(i) = (0..n.saturating_sub(1)).rev().find(|&i| p[i] < p[i + 1]) else { return };
+        let j = (i + 1..n).rev().find(|&j| p[j] > p[i]).unwrap();
+        p.swap(i, j);
+        p[i + 1..].reverse();
+    }
+}
+
+fn multiset_eq(a: &[Shape], b: &[Shape]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let (mut x, mut y) = (a.to_vec(), b.to_vec());
+    x.sort();
+    y.sort();
+    x == y
+}
+
+// ------------------------------------------------------------------------------------------------ masks
+
+/// The line with its registers masked (but esp): what a renaming cannot change.
+fn mask_regs(s: &Shape) -> Shape {
+    let m = |r: Reg| if dis::gpr(r).is_some_and(|g| g != ESP) { ANY } else { r };
+    s.map_ops(|o| match *o {
+        Opnd::Reg(r) => Opnd::Reg(m(r)),
+        Opnd::Mem { seg, size, base, index, scale, disp } => Opnd::Mem { seg, size, base: m(base), index: m(index), scale, disp },
+        i => i,
+    })
+}
+
+/// The line with its stack slots' offsets masked: what a slot remap cannot change.
+fn mask_slots(s: &Shape) -> Shape {
+    s.map_ops(|o| match (*o, slot(o)) {
+        (Opnd::Mem { seg, size, base, index, scale, .. }, Some(_)) => Opnd::Mem { seg, size, base, index, scale, disp: Num::Masked },
+        (o, _) => o,
+    })
+}
+
+/// Each line with its register names and its `[reg +- N]` offsets masked: what no class of a hunk changes but its
+/// order (a hunk's lines whose multisets of these differ is code, or fpu, or fill).
+pub fn shape_keys(lines: &[Shape]) -> Vec<Shape> {
+    lines.iter().map(|s| {
+        let m = mask_regs(s);
+        m.map_ops(|o| match *o {
+            Opnd::Mem { seg, size, base, index: Reg::None, scale, disp: Num::V(_) } if base != Reg::None => {
+                Opnd::Mem { seg, size, base, index: Reg::None, scale, disp: Num::Masked }
+            }
+            o => o,
+        })
+    }).collect()
+}
+
+/// The esp offsets taken at the start of the lines: a push moves the later ones by 4, a pop back, `sub|add esp`.
+pub fn esp_normalised(lines: &[Shape]) -> Vec<Shape> {
+    let mut delta: i64 = 0;
+    lines.iter().map(|s| {
+        let d = delta;
+        let out = s.map_ops(|o| match *o {
+            Opnd::Mem { seg, size, base: Reg::ESP, index: Reg::None, scale, disp: Num::V(v) } => {
+                Opnd::Mem { seg, size, base: Reg::ESP, index: Reg::None, scale, disp: Num::V(v - d) }
+            }
+            o => o,
+        });
+        if s.is("push") || s.is("pushfd") {
+            delta += 4;
+        } else if s.is("pop") || s.is("popfd") {
+            delta -= 4;
+        } else if let Some((sub, n)) = s.esp_adjust() {
+            delta += if sub { n } else { -n };
+        }
+        out
+    }).collect()
+}
+
+/// rename_slots: the slot offsets mapped (any slot of that offset, esp or ebp).
+fn rename_slots(lines: &[Shape], m: &[(Num, Num)]) -> Vec<Shape> {
+    lines.iter().map(|s| s.map_ops(|o| match (*o, slot(o)) {
+        (Opnd::Mem { seg, size, base, index, scale, disp }, Some(_)) => {
+            Opnd::Mem { seg, size, base, index, scale, disp: m.iter().find(|p| p.0 == disp).map(|p| p.1).unwrap_or(disp) }
+        }
+        (o, _) => o,
+    })).collect()
+}
+
+// ------------------------------------------------------------------------------------------------ explain
+
+/// The renamable registers in a function's context: ebp is the frame pointer (not renamable) when the function
+/// sets it up (`mov ebp, esp` among its first lines).
+fn allowed_for(context: &[Shape]) -> u8 {
+    let frame = context.iter().take(4).any(|s| s.is("mov") && s.ops == [Opnd::Reg(Reg::EBP), Opnd::Reg(Reg::ESP)]);
+    if frame { RENAMABLE & !(1 << EBP) } else { RENAMABLE }
+}
+
+fn swap_sib(s: &Shape) -> Shape {
+    s.map_ops(|o| match *o {
+        Opnd::Mem { seg, size, base, index, scale: 1, disp } if dis::gpr_part(base).is_some_and(|p| p.1 == 0) && dis::gpr_part(index).is_some_and(|p| p.1 == 0) => {
+            Opnd::Mem { seg, size, base: index, index: base, scale: 1, disp }
+        }
+        o => o,
+    })
+}
+
+fn sib_explain(xa: &[Shape], xb: &[Shape]) -> Option<String> {
+    if xa.len() != xb.len() {
+        return None;
+    }
+    let mut changed = false;
+    for (x, y) in xa.iter().zip(xb) {
+        if x == y {
+            continue;
+        }
+        let s = swap_sib(x);
+        if s == *x || s != *y {
+            return None;
+        }
+        changed = true;
+    }
+    changed.then(|| "base/index swapped in [r1 + r2 + disp]".to_string())
+}
+
+fn st_masked(s: &Shape) -> Shape {
+    s.map_ops(|o| match *o {
+        Opnd::Reg(r) if (Reg::ST0 as u32..=Reg::ST7 as u32).contains(&(r as u32)) => Opnd::Reg(Reg::ST0),
+        o => o,
+    })
+}
+
+/// X86.explain: (class, note) of one differing hunk, None when nothing explains it.
+pub fn explain(xa: &[Shape], xb: &[Shape], context: &[Shape]) -> Option<(String, String)> {
+    let allowed = allowed_for(context);
+    // the registers in play, by name (the order a permutation search goes through them)
+    let toks: Vec<u8> = {
+        let s: BTreeSet<(String, u8)> = xa.iter().chain(xb).flat_map(gprs).filter(|g| allowed & 1 << g != 0).map(|g| (name(g), g)).collect();
+        s.into_iter().map(|x| x.1).collect()
+    };
+    let mut u = Unify::new(allowed, Slots::None);
+    if u.all(xa, xb) {
+        let d = reg_desc(&u);
+        if !d.is_empty() {
+            return Some(("regs".into(), d));
+        }
+    }
+    let mut u = Unify::new(allowed, Slots::ByOffset);
+    if u.all(xa, xb) {
+        let (rd, sd) = (reg_desc(&u), slot_desc(&slot_pairs(&u)));
+        if !sd.is_empty() {
+            return Some(("slots".into(), format!("{}{sd}", if rd.is_empty() { String::new() } else { rd + " " })));
+        }
+    }
+    if xa.len() == xb.len() && toks.len() <= 6 {
+        let masked = |l: &[Shape]| l.iter().map(mask_regs).collect::<Vec<_>>();
+        if multiset_eq(&masked(xa), &masked(xb)) {
+            let mut got = None;
+            permutations(toks.len(), |perm| {
+                let mut m = identity();
+                for (k, &g) in toks.iter().enumerate() {
+                    m[g as usize] = toks[perm[k]];
+                }
+                if m == identity() {
+                    return false;
+                }
+                if multiset_eq(&xa.iter().map(|s| rename(s, &m)).collect::<Vec<_>>(), xb) {
+                    let mut names: Vec<(String, String)> = toks.iter().map(|&g| (name(g), name(m[g as usize]))).filter(|p| p.0 != p.1).collect();
+                    names.sort();
+                    got = Some(("order".to_string(), format!("same instructions, other order, after {}",
+                                                            names.iter().map(|(k, v)| format!("{k}->{v}")).collect::<Vec<_>>().join(" "))));
+                    return true;
+                }
+                false
+            });
+            if got.is_some() {
+                return got;
+            }
+        }
+    }
+    if xa.len() == xb.len() && xa.iter().chain(xb).any(|s| s.is("push") || s.is("pop") || s.esp_adjust().is_some()) {
+        let (na, nb) = (esp_normalised(xa), esp_normalised(xb));
+        if multiset_eq(&na, &nb) {
+            return Some(("order".into(), "same instructions, other order across a push / pop (esp offsets taken at the hunk's start)".into()));
+        }
+        let offs: Vec<Num> = {
+            let s: BTreeSet<(String, Num)> = na.iter().chain(&nb).flat_map(|s| slots(s).filter(|x| x.0 == Reg::ESP).map(|x| (offset(x.1), x.1)).collect::<Vec<_>>()).collect();
+            s.into_iter().map(|x| x.1).collect()
+        };
+        let ms = |l: &[Shape]| l.iter().map(mask_slots).collect::<Vec<_>>();
+        if offs.len() <= 5 && multiset_eq(&ms(&na), &ms(&nb)) {
+            let mut got = None;
+            permutations(offs.len(), |perm| {
+                let sm: Vec<(Num, Num)> = offs.iter().zip(perm).filter(|(k, v)| **k != offs[**v]).map(|(k, v)| (*k, offs[*v])).collect();
+                if !sm.is_empty() && multiset_eq(&rename_slots(&na, &sm), &nb) {
+                    let pairs: Vec<(String, String)> = sm.iter().map(|(k, v)| (offset(*k), offset(*v))).collect();
+                    got = Some(("slots".to_string(), format!("other order across a push / pop (esp offsets taken at the hunk's start), {}", slot_desc(&pairs))));
+                    return true;
+                }
+                false
+            });
+            if got.is_some() {
+                return got;
+            }
+        }
+    }
+    if let Some(s) = sib_explain(xa, xb) {
+        return Some(("sib".into(), s));
+    }
+    let (sa, sb): (HashSet<&Shape>, HashSet<&Shape>) = (xa.iter().collect(), xb.iter().collect());
+    if sa.symmetric_difference(&sb).all(|s| s.fpu()) {
+        let norm = |l: &[Shape]| {
+            let mut v: Vec<Shape> = l.iter().map(st_masked).collect();
+            v.sort();
+            v
+        };
+        return Some(("fpu".into(), if norm(xa) == norm(xb) { "same FPU instructions, other stack order" } else { "FPU instructions differ" }.into()));
+    }
+    None
+}
+
+// ------------------------------------------------------------------------------------------------ frames
+
+fn frame_size(lines: &[Shape]) -> Option<i64> {
+    lines.iter().take(8).find_map(|s| s.esp_adjust().filter(|a| a.0).map(|a| a.1))
+}
+
+/// X86.frame_delta: (our frame size, the original's) when both allocate one and the sizes differ.
+pub fn frame_delta(a: &[Shape], b: &[Shape]) -> Option<(i64, i64)> {
+    match (frame_size(a), frame_size(b)) {
+        (Some(fa), Some(fb)) if fa != fb => Some((fa, fb)),
+        _ => None,
+    }
+}
+
+/// X86.stack_mask: every stack slot's offset masked, a frame-size adjustment `sub|add esp, F` masked.
+pub fn stack_mask(lines: &[Shape], frame: (i64, i64)) -> Vec<Shape> {
+    lines.iter().map(|s| {
+        if let Some((_, n)) = s.esp_adjust() {
+            if n == frame.0 || n == frame.1 {
+                return Shape { mn: s.mn, rep: s.rep, ops: vec![Opnd::Reg(Reg::ESP), Opnd::Imm(Num::Masked)] };
+            }
+        }
+        mask_slots(s)
+    }).collect()
+}
+
+/// X86.frame_explain: the note of a `frame` hunk, None when the lines differ in more than the frame delta.
+pub fn frame_explain(xa: &[Shape], xb: &[Shape], frame: (i64, i64)) -> Option<String> {
+    if xa.len() != xb.len() || stack_mask(xa, frame) != stack_mask(xb, frame) {
+        return None;
+    }
+    let d = frame.0 - frame.1;
+    let value = |n: Num| match n {
+        Num::V(v) => Some(v),
+        _ => None,
+    };
+    for (x, y) in xa.iter().zip(xb) {
+        if x == y {
+            continue;
+        }
+        if let (Some(p), Some(q)) = (x.esp_adjust(), y.esp_adjust()) {
+            if p.1 - q.1 != d {
+                return None;
+            }
+            continue;
+        }
+        let oa: Vec<Option<i64>> = slots(x).map(|s| value(s.1)).collect();
+        let ob: Vec<Option<i64>> = slots(y).map(|s| value(s.1)).collect();
+        if oa.len() != ob.len() || oa.iter().zip(&ob).any(|(p, q)| match (p, q) {
+            (Some(p), Some(q)) => {
+                let e = (p - q).abs();
+                e != 0 && e != d.abs()
+            }
+            _ => p != q,
+        }) {
+            return None;
+        }
+    }
+    let sign = if d < 0 { "-" } else { "" };
+    Some(format!("stack offsets shifted by {sign}{} (frame {} vs {})", py_hex(d.abs()), py_hex(frame.0), py_hex(frame.1)))
+}
+
+/// X86.one_renaming: the whole function equal under one bijective renaming of registers and stack slots.
+pub fn one_renaming(a: &[Shape], b: &[Shape]) -> bool {
+    Unify::new(RENAMABLE, Slots::ByBaseAndOffset).all(a, b)
+}
+
+// ------------------------------------------------------------------------------------------------ the text, for tests
+
+/// A shape from a listing line's text (`mov eax, dword ptr [esp + 0x10]`, `je X`): the tests write listings as
+/// text. Implicit operands the decoder lists (`fld st(1)`'s st) are not in the text and not in this shape.
+#[cfg(test)]
+pub fn parse(text: &str) -> Shape {
+    fn reg(t: &str) -> Option<Reg> {
+        if t == "st" {
+            return Some(Reg::ST0);
+        }
+        if let Some(n) = t.strip_prefix("st(").and_then(|r| r.strip_suffix(')')).and_then(|n| n.parse::<u32>().ok()) {
+            return Reg::values().find(|r| *r as u32 == Reg::ST0 as u32 + n);
+        }
+        Reg::values().find(|r| *r != Reg::None && format!("{r:?}").to_lowercase() == t)
+    }
+    fn num(t: &str) -> Num {
+        if t == "X" { Num::X } else { Num::V(crate::x86::py_int0(t)) }
+    }
+    fn operand(t: &str) -> Opnd {
+        let Some(open) = t.find('[') else {
+            return match reg(t) {
+                Some(r) => Opnd::Reg(r),
+                None => Opnd::Imm(num(t)),
+            };
+        };
+        let head = &t[..open];
+        let size = match head.split_whitespace().next().unwrap_or("") {
+            "byte" => 1,
+            "word" => 2,
+            "dword" => 4,
+            "fword" => 6,
+            "qword" => 8,
+            "tbyte" => 10,
+            _ => 0,
+        };
+        let seg = head.rsplit(' ').next().and_then(|s| s.strip_suffix(':')).and_then(reg).unwrap_or(Reg::None);
+        let inner = &t[open + 1..t.rfind(']').unwrap()];
+        let (mut base, mut index, mut scale, mut disp, mut sign) = (Reg::None, Reg::None, 0u8, Num::V(0), 1i64);
+        for tok in inner.split_whitespace() {
+            match tok {
+                "+" => sign = 1,
+                "-" => sign = -1,
+                t => {
+                    if let Some((r, s)) = t.split_once('*') {
+                        index = reg(r).unwrap();
+                        scale = s.parse().unwrap();
+                    } else if let Some(r) = reg(t) {
+                        if base == Reg::None {
+                            base = r;
+                        } else {
+                            index = r;
+                            scale = 1;
+                        }
+                    } else {
+                        disp = match num(t) {
+                            Num::V(v) => Num::V(sign * v),
+                            n => n,
+                        };
+                    }
+                }
+            }
+        }
+        Opnd::Mem { seg, size, base, index, scale, disp }
+    }
+    let (rep, rest) = match text.split_once(' ') {
+        Some(("rep" | "repe", r)) => (1, r),
+        Some(("repne", r)) => (2, r),
+        _ => (0, text),
+    };
+    let (mn, ops) = rest.split_once(' ').unwrap_or((rest, ""));
+    let mn = iced_x86::Mnemonic::values().map(dis::mnemonic_name).find(|n| *n == mn).unwrap_or_else(|| panic!("no mnemonic {mn}"));
+    let ops = if ops.is_empty() { vec![] } else { ops.split(", ").map(operand).collect() };
+    Shape { mn, rep, ops }
+}
+
+#[cfg(test)]
+pub(crate) fn parse_all(lines: &[&str]) -> Vec<Shape> {
+    lines.iter().map(|t| parse(t)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cls(a: &[&str], b: &[&str]) -> Option<(String, String)> {
+        let (a, b) = (parse_all(a), parse_all(b));
+        let ctx: Vec<Shape> = a.iter().chain(&b).cloned().collect();
+        explain(&a, &b, &ctx)
+    }
+
+    #[test]
+    fn shapes_of_decoded_instructions() {
+        let range = (0x40_0000, 0x60_0000);
+        let one = |b: &[u8], masked: &dyn Fn(dis::FieldKind) -> bool| Shape::of(&dis::decode(b, 0x401000)[0], masked, range);
+        let none = |_: dis::FieldKind| false;
+        // the decoded shape and the parsed text agree where the text names every operand
+        assert_eq!(one(&[0x8b, 0x44, 0x24, 0x10], &none), parse("mov eax, dword ptr [esp + 0x10]"));
+        assert_eq!(one(&[0x8d, 0x44, 0x8b, 0x10], &none), parse("lea eax, [ebx + ecx*4 + 0x10]"));
+        assert_eq!(one(&[0xa1, 0x80, 0xb7, 0x5e, 0x00], &none), parse("mov eax, dword ptr [X]"));
+        assert_eq!(one(&[0xe8, 0, 0, 0, 0], &none), parse("call X"));
+        assert_eq!(one(&[0x66, 0x83, 0x3a, 0xff], &none), parse("cmp word ptr [edx], -1"));
+        assert_ne!(one(&[0x66, 0x81, 0x3a, 0xff, 0xff], &none), parse("cmp word ptr [edx], -1"));
+        // a relocated field reads X whatever its bytes hold; outside the image a number is a number
+        assert_eq!(one(&[0xb8, 1, 0, 0, 0], &|f| f == dis::FieldKind::Imm), parse("mov eax, X"));
+        assert_eq!(one(&[0xb8, 1, 0, 0, 0], &none), parse("mov eax, 1"));
+        assert_eq!(one(&[0xf3, 0xa5], &none).rep, 1);
+        assert_eq!(one(&[0xf2, 0xae], &none).rep, 2);
+    }
+
+    #[test]
+    fn regs_and_slots_by_unification() {
+        assert_eq!(cls(&["mov eax, dword ptr [esp + 4]", "add eax, ecx"], &["mov edx, dword ptr [esp + 4]", "add edx, ecx"]),
+                   Some(("regs".into(), "eax->edx".into())));
+        // parts follow their register
+        assert_eq!(cls(&["mov al, byte ptr [ecx]", "movzx eax, al"], &["mov dl, byte ptr [ecx]", "movzx edx, dl"]).unwrap().0, "regs");
+        // not a bijection: two of ours to one of theirs
+        assert_eq!(cls(&["mov eax, ecx", "mov edx, ecx"], &["mov eax, ecx", "mov eax, ecx"]), None);
+        // more than six registers in play: a permutation search gave up, the unification does not
+        let a = ["mov eax, ebx", "mov ecx, edx", "mov esi, edi", "mov ebp, eax", "add ebx, ecx"];
+        let b = ["mov ebx, eax", "mov edx, ecx", "mov edi, esi", "mov ebp, ebx", "add eax, edx"];
+        assert_eq!(cls(&a, &b).unwrap().0, "regs");
+        // slots: renamed offsets (and registers)
+        assert_eq!(cls(&["mov dword ptr [esp + 0x10], eax", "mov ecx, dword ptr [esp + 0x14]"],
+                       &["mov dword ptr [esp + 0x14], eax", "mov ecx, dword ptr [esp + 0x10]"]),
+                   Some(("slots".into(), "[ + 0x10]->[ + 0x14] [ + 0x14]->[ + 0x10]".into())));
+        // the note names what the remap moves: no pair of offsets only the original has
+        assert_eq!(cls(&["mov eax, dword ptr [esp + 0x38]"], &["mov eax, dword ptr [esp + 0x34]"]), Some(("slots".into(), "[ + 0x38]->[ + 0x34]".into())));
+        // ebp is the frame pointer when the function sets it up: not renamable
+        let ctx = parse_all(&["push ebp", "mov ebp, esp"]);
+        assert_eq!(explain(&parse_all(&["mov eax, ebp"]), &parse_all(&["mov eax, esi"]), &ctx), None);
+    }
+
+    #[test]
+    fn esp_offsets_normalised() {
+        let lines = parse_all(&["mov dword ptr [esp + 0x10], eax", "push edx", "mov dword ptr [esp + 0x14], eax", "sub esp, 8",
+                                "mov dword ptr [esp + 0x1c], eax", "pop ecx", "mov eax, dword ptr [esp]"]);
+        assert_eq!(esp_normalised(&lines), parse_all(&["mov dword ptr [esp + 0x10], eax", "push edx", "mov dword ptr [esp + 0x10], eax", "sub esp, 8",
+                                                       "mov dword ptr [esp + 0x10], eax", "pop ecx", "mov eax, dword ptr [esp - 8]"]));
+    }
+
+    #[test]
+    fn store_moved_across_a_push() {
+        // ai_CurseWindow of GildeGold.exe: ours stores before the push, the original after it
+        let ours = ["mov word ptr [esp + 0xa4], ax", "mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "mov dword ptr [esp + 0xd0], ecx", "push edx"];
+        let orig = ["mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "push edx", "mov word ptr [esp + 0xa8], ax", "mov dword ptr [esp + 0xd0], ecx"];
+        let (c, why) = cls(&ours, &orig).unwrap();
+        assert!(c == "slots" && why.contains("across a push"), "{c} {why}");
+        let same = ["mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "push edx", "mov word ptr [esp + 0xa8], ax", "mov dword ptr [esp + 0xd4], ecx"];
+        assert_eq!(cls(&ours, &same).unwrap().0, "order");
+    }
+
+    #[test]
+    fn one_function_wide_renaming() {
+        let a = parse_all(&["mov eax, dword ptr [esp + 4]", "mov ecx, dword ptr [esp + 8]", "add eax, ecx", "ret"]);
+        let b = parse_all(&["mov ecx, dword ptr [esp + 8]", "mov eax, dword ptr [esp + 4]", "add ecx, eax", "ret"]);
+        assert!(one_renaming(&a, &b));
+        let c = parse_all(&["mov ecx, dword ptr [esp + 8]", "mov ecx, dword ptr [esp + 4]", "add ecx, eax", "ret"]);
+        assert!(!one_renaming(&a, &c));
+        // a register and its part are not one name (gildegold ai_Unk5a91c0: `mov esi, eax` against `mov si, ax`
+        // passed as a renaming while the text mapped si to esi)
+        assert!(!one_renaming(&parse_all(&["mov esi, eax", "ret"]), &parse_all(&["mov si, ax", "ret"])));
+    }
+
+    #[test]
+    fn slot_remaps_beyond_five_offsets() {
+        // gildegold sv_FlyCameraToModel: a moved push shifts three offsets by 4, a fourth local moves; eight
+        // offsets in play were beyond the permutation search's limit
+        let ours = ["fld dword ptr [esp + 0x38]", "fsub dword ptr [esp + 0x6c]", "fstp dword ptr [esp + 0x2c]", "lea edx, [esp + 0x44]"];
+        let orig = ["fld dword ptr [esp + 0x34]", "fsub dword ptr [esp + 0x68]", "fstp dword ptr [esp + 0xb8]", "lea edx, [esp + 0x40]"];
+        assert_eq!(cls(&ours, &orig), Some(("slots".into(), "[ + 0x2c]->[ + 0xb8] [ + 0x38]->[ + 0x34] [ + 0x44]->[ + 0x40] [ + 0x6c]->[ + 0x68]".into())));
+    }
+}
