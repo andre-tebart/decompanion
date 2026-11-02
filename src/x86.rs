@@ -129,6 +129,7 @@ pub fn listing_named(code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64, i64
         let bytes = &code[o.min(code.len())..(o + size as usize).min(code.len())];
         out.push(Line { addr: a, size, text, fill: fills.contains(bytes), target, shape });
     }
+    crate::shape::mark_saves(&mut out.iter_mut().map(|l| &mut l.shape).collect::<Vec<_>>());
     out
 }
 

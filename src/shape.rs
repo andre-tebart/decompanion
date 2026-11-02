@@ -45,6 +45,9 @@ pub struct Shape {
     /// the first operand is a 32-bit general register written whole without being read (dis::Ins::kill): its old
     /// value dies here, so a renaming may map it anew
     pub kill: bool,
+    /// a push that saves a callee-saved register for the caller (one the function has not written yet), or a pop
+    /// that restores one before the return (mark_saves): which register it names is the allocation's choice
+    pub save: bool,
 }
 
 /// A register no instruction of x86-32 names: what a masked register reads (shape_keys).
@@ -79,7 +82,7 @@ impl Shape {
             }
         }).collect();
         let rep = if ins.instr.has_repne_prefix() { 2 } else if ins.rep { 1 } else { 0 };
-        Shape { mn: ins.mn, rep, ops, kill: ins.kill }
+        Shape { mn: ins.mn, rep, ops, kill: ins.kill, save: false }
     }
 
     fn is(&self, mn: &str) -> bool {
@@ -267,6 +270,10 @@ impl Unify {
     fn line(&mut self, a: &Shape, b: &Shape) -> bool {
         if a.mn != b.mn || a.rep != b.rep || a.ops.len() != b.ops.len() {
             return false;
+        }
+        // a register saved for the caller on both sides (or restored): the allocation picked which
+        if a.save && b.save {
+            return true;
         }
         if self.kill && a.kill && b.kill {
             if let (Opnd::Reg(x), Opnd::Reg(y)) = (a.ops[0], b.ops[0]) {
@@ -566,6 +573,45 @@ pub fn voted_renaming(a: &[Shape], b: &[Shape]) -> Vec<(String, String)> {
     out
 }
 
+/// The callee-saved registers (ebx, ebp, esi, edi).
+const CALLEE_SAVED: u8 = 1 << 3 | 1 << 5 | 1 << 6 | 1 << 7;
+
+/// Marks the saves of a function's listing (Shape::save): a `push` of a callee-saved register the function has
+/// not written before it (in the listing's order), and the `pop`s of callee-saved registers in the run of pops
+/// (and `add esp, N`) right before a `ret`.
+pub fn mark_saves(lines: &mut [&mut Shape]) {
+    let mut written = 0u8;
+    for s in lines.iter_mut() {
+        match (s.mn, s.ops.first()) {
+            ("push", Some(Opnd::Reg(r))) => {
+                if dis::gpr(*r).is_some_and(|g| r.size() == 4 && CALLEE_SAVED & 1 << g != 0 && written & 1 << g == 0) {
+                    s.save = true;
+                }
+            }
+            ("cmp" | "test", _) => {}
+            (_, Some(Opnd::Reg(r))) => {
+                if let Some(g) = dis::gpr(*r) {
+                    written |= 1 << g;
+                }
+            }
+            _ => {}
+        }
+    }
+    let rets: Vec<usize> = (0..lines.len()).filter(|&t| lines[t].mn == "ret").collect();
+    for t in rets {
+        let mut k = t;
+        while k > 0 {
+            k -= 1;
+            let l = &mut lines[k];
+            match (l.mn, l.ops.first()) {
+                ("pop", Some(Opnd::Reg(r))) if r.size() == 4 && dis::gpr(*r).is_some_and(|g| CALLEE_SAVED & 1 << g != 0) => l.save = true,
+                _ if l.esp_adjust().is_some_and(|a| !a.0) => {}
+                _ => break,
+            }
+        }
+    }
+}
+
 /// Whether two runs of lines are the same code but for a renaming of registers (diffclass's tail class: a block
 /// one side shares by a jump and the other has inline).
 pub fn same_code(a: &[Shape], b: &[Shape], context: &[Shape]) -> bool {
@@ -790,7 +836,7 @@ pub fn parse(text: &str) -> Shape {
     // the instructions the tests write that overwrite their first operand without reading it
     let kill = matches!(mn, "mov" | "lea" | "movzx" | "movsx" | "pop")
         && matches!(ops.first(), Some(Opnd::Reg(r)) if r.size() == 4 && dis::gpr(*r).is_some());
-    Shape { mn, rep, ops, kill }
+    Shape { mn, rep, ops, kill, save: false }
 }
 
 #[cfg(test)]
@@ -909,6 +955,24 @@ mod tests {
                                "inc eax", "push ebx", "ret"]);
         let v = voted_renaming(&ours, &orig);
         assert_eq!(v, [("eax".to_string(), "ecx".to_string()), ("ecx".into(), "edx".into()), ("edx".into(), "eax".into())]);
+    }
+
+    #[test]
+    fn saves_are_the_allocations_choice() {
+        // gildegold evt_FindLogic: ours saves edi and zeroes it, the original zeroes esi and saves edi
+        let marked = |l: &[&str]| {
+            let mut v = parse_all(l);
+            mark_saves(&mut v.iter_mut().collect::<Vec<_>>());
+            v
+        };
+        let ours = marked(&["push esi", "push edi", "xor edi, edi", "mov eax, edi", "pop edi", "pop esi", "ret"]);
+        let orig = marked(&["push esi", "xor esi, esi", "push edi", "mov eax, esi", "pop edi", "pop esi", "ret"]);
+        assert!(ours[1].save && orig[2].save && ours[4].save && ours[5].save && !ours[2].save);
+        let (c, n) = explain(&ours[1..4], &orig[1..4], &ours).unwrap();
+        assert!(c == "order" && n.ends_with("after edi->esi"), "{c} {n}");
+        // a push of a register the function has written is an argument, not a save
+        let args = marked(&["xor edi, edi", "push edi", "ret"]);
+        assert!(!args[1].save);
     }
 
     #[test]

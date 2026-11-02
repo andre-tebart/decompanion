@@ -62,23 +62,35 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
 - `dcp grade NAME` - the failing rules with their evidence (B1..B3: the experiment, byte / shape / draft; Q1..Q6, Q8:
   readability, kept apart), `dist`, and the calls without a prototype (`M7 consistency:`, the experiment's side).
 - `dcp asmdiff NAME` - our instructions against the original's, aligned; `--regs eax=ecx,esi=edi` renames
-  registers on our side. Run it first on every big `code` hunk: a pure register rotation reads as `code`.
+  registers on our side, `--regs auto` by the renaming most of the function agrees on (the head shows it:
+  `regs=...`). Views: `--changed` (only the differing lines, `--context N` around each), `--at 0xADDR` (a
+  window, `--context N` each way), `--side ours|original` (one side alone, in its own order); `returns=2/5` in
+  the head when the sides return from different numbers of places (merged or duplicated tails).
   `--symbols` prints the call targets, data and string literals by name instead of `X`; `!` marks an equal
   instruction that names another symbol or literal than the original's (a wrong callee, datum or string); `=`
   one that names the same address or literal by another name (an alias, `sym+off` for a bare address: no
   error; two source names of one datum are a `C.name.alias` warning of `dcp check --strict`). A compare against
   an address (`cmp ecx, 0xfb91e4 (or d2_Views+0x81c4)`) also names the array below it the function uses: a
-  loop's end pointer lies past the array's end, inside the next object.
+  loop's end pointer lies past the array's end, inside the next object. A `!` line ends with both addresses
+  (`0x770ae4 | 0x770ae0`); a floating constant shows its value on both sides; `calls differ: ours ... | the
+  original ...` lists the callees one side calls and the other does not, whatever the alignment (a wrong callee
+  in a hunk of other differences, or call sites merged on one side).
   Frames of other sizes are aligned as diffclass aligns them (`frame=0x3bc/0x3b8`): a line that differs only
   by the shift is equal (`~`), so only the real differences show; `--plain` diffs the texts as they are.
 - `dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`, `fpu`,
-  `frame` (all explained: shape) and `code` (the rest: a meaning difference until shown otherwise). `frame`:
+  `frame`, `tail` (all explained: shape) and `code` (the rest: a meaning difference until shown otherwise).
+  `regs` / `slots` / `order`: the same code under a renaming of registers and stack offsets (a register reused
+  once its value is dead may map anew; another order with a renaming is `order`, the renaming in its note).
+  `tail`: one side jumps (or branches) to a block the other side has inline, the same code (VC6 merges
+  identical return tails and call sequences, or keeps a copy per path); `dcp escalate` counts its instructions
+  as explained. `frame`:
   the two frames differ in size (`frame: ours 0xcc, the original's 0xc8`) and these lines differ only by the
   shifted stack offsets; the `code` hunks left beside them are the real cause (often a variable in a register
   on one side, in a slot on the other). A switch's jump and index tables are data, not code: `tables=equal`
   (or `differ` with the entries that point elsewhere: a case body or the case order differs). grade, asmdiff
   and diffclass read the same extent, so `hunks=0` with equal tables is shape.
-- `dcp disasm 0xADDR` - the original code; `dcp dump 0xADDR [LEN]` - its constants and strings.
+- `dcp disasm 0xADDR` - the original code (`--ours NAME`: ours from its object; `--no-bytes`, `--range +0x200..+0x400`);
+  `dcp dump 0xADDR [LEN]` - its constants and strings.
 - `dcp refs NAME|0xADDR` - every use and declaration: the callers say what a parameter means.
 - `dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
 - `dcp why 0xADDR|NAME` - everything the ledger knows about an address or a function / data name, by question (section,
@@ -105,7 +117,7 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
 Explain every `code` hunk from the evidence and fix the C's meaning: a wrong condition, operand or constant, a
 missing or extra statement, a wrong type (signed / unsigned compare, `char` vs `int` load, a struct field at the
 wrong offset), a call with the wrong arguments, a loop of another form. Stop when only `fill` / `order` / `regs`
-/ `slots` / `sib` / `fpu` / `frame` hunks remain: that is shape (B2). Reconstructing missing statements is always base
+/ `slots` / `sib` / `fpu` / `frame` / `tail` hunks remain: that is shape (B2). Reconstructing missing statements is always base
 work, however long.
 - Note `dist` before an edit; after `dcp build`, `dcp grade NAME`: when the distance grew and the
   edit corrected no meaning, revert it (Edit back, or `git checkout -- <file>`). A meaning fix that costs
