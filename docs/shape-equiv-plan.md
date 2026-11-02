@@ -71,10 +71,12 @@ from the escaped address (locals) or by offset (arguments); the x87 stack as loc
 stores by width, fild / fistp, the arithmetic with its reversed and popping forms, compares through fnstsw / sahf /
 test ah with the parity conditions, the stack as a call's arguments and st0 as its float return), 8-byte stack
 values, sbb / adc on a compare's carry, the space a `sub esp` reserves outside the prologue as a call's arguments
-once written. Not yet: switch tables, flags across blocks, string scans (repne scasb), return liveness (eax always
-compared). gildegold af0cd2c: equal for 255 of 317 byte functions sampled (the rest unknown; three wrongly report
-a difference: ch_AttachMotion, ts_GetHiColTab, ai_PickDislikedColumn, gaps of the prover, open), 86 of 259 shape,
-49 of 1557 draft; ai_SaveNetworkGame and ch_AnimDone come out not equal (an extra store, eax at the return).
+once written; values known on every path (constants, stack addresses, entry values) carried across blocks;
+conditions in one 32-bit form; loads past stores they do not overlap. Not yet: switch tables, flags across
+blocks, string scans (repne scasb), return liveness (eax always compared), an escaped object apart from the frame
+around it (most remaining concrete differences are an escaped frame laid out otherwise), loads kept in a register
+against reloaded across blocks. gildegold af0cd2c: equal for 263 of 317 byte functions sampled (none reports a
+difference), 91 of 259 shape, 67 of 1557 draft; ai_SaveNetworkGame and ch_AnimDone come out not equal (an extra store, eax at the return).
 
 New flat modules in native/dcp_core/src:
 - **`equiv_lift.rs`**: `dis::Ins` → micro-ops. dis.rs (iced-x86) already gives the mnemonic id, typed operands
