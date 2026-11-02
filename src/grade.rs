@@ -41,11 +41,17 @@ fn read_text(path: &std::path::Path) -> Option<String> {
 /// What one function's code grade is computed from besides its compare: its bytes and relocation mask, where its
 /// code ends (code_len), the targets of the relocated fields after it (its switch tables: offset, width, target
 /// inside the function), its address, the next start, the walk's or the source extent's end, and per relocation
-/// its symbol's name and a literal's bytes (the prover binds by symbol, the literal check reads the bytes: a
-/// changed callee or string leaves the code bytes as they were).
-type Key = (Vec<u8>, Vec<u8>, Option<u32>, Vec<(u32, u32, Option<i64>)>, i64, u32, Option<i64>, Vec<(String, Option<Vec<u8>>)>);
+/// its symbol's name, a literal's bytes and the ledger's address of the name (the prover binds by symbol and by
+/// name, the literal check reads the bytes: a changed callee, string or name leaves the code bytes as they were).
+type Key = (Vec<u8>, Vec<u8>, Option<u32>, Vec<(u32, u32, Option<i64>)>, i64, u32, Option<i64>, Vec<(String, Option<Vec<u8>>, Option<u32>)>);
 
-fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>) -> Key {
+/// A relocation's symbol as the ledger names it (the C name: no `__imp_`, undecorated), for names::unique_addrs.
+fn ledger_name(obj: &crate::coff::Obj, s: u32) -> Option<String> {
+    let sym = obj.symbol_at(s).filter(|s| s.constant().is_none())?;
+    Some(crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name)))
+}
+
+fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>, names: &HashMap<String, u32>) -> Key {
     let code = &f.code;
     let obj = &f.obj.0;
     let tbl = match code.code_len {
@@ -57,7 +63,8 @@ fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>) -> Key {
         }).collect(),
     };
     let syms = code.relocs.iter().map(|(_, r)| {
-        (obj.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default(), crate::equiv::literal(obj, r.symbol_index))
+        (obj.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default(), crate::equiv::literal(obj, r.symbol_index),
+         ledger_name(obj, r.symbol_index).and_then(|n| names.get(&n).copied()))
     }).collect();
     (code.data.clone(), code.mask.clone(), code.code_len, tbl, f.src.lo, f.next, w.map(|w| w.hi), syms)
 }
@@ -104,6 +111,8 @@ struct Task<'a> {
     next: u32,
     whi: Option<i64>,
     matched: bool,
+    /// the ledger's names at one address (names::unique_addrs)
+    names: &'a HashMap<String, u32>,
 }
 
 type Computed = (i64, i64, i64, diffclass::Original, Option<Judged>);
@@ -120,37 +129,43 @@ fn compute(env: &Env, t: &Task, align: i64) -> Computed {
     let extent = t.whi.map(|h| h - t.lo).unwrap_or(size);
     let slot = extent.max(t.next as i64 - t.lo);
     let o = diffclass::original(env, t.lo as u32, extent, slot, align);
-    let v = if t.matched { None } else { Some(verdict(env, t.obj, t.code, t.lo as u32, &o)) };
+    let v = if t.matched { None } else { Some(verdict(env, t.obj, t.code, t.lo as u32, &o, t.names)) };
     (size, extent, slot, o, v)
 }
 
 /// A function's shape verdict, and where the shape check leaves it draft, the prover's: the block pairs when it
 /// shows our code's behaviour the same as the original's (equiv: the same effects in the same order, the same
 /// branches, the same returns).
-fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: u32, o: &diffclass::Original) -> Judged {
+fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: u32, o: &diffclass::Original,
+           names: &HashMap<String, u32>) -> Judged {
     let fc = diffclass::FunctionCompare::new(env, obj, code, lo, o);
     let data = env.img.read(lo, o.code.max(0) as usize);
     let proof = if fc.verdict.shape {
         None
     } else {
-        let (ours, _) = crate::equiv::bind(obj, code, env.img, lo, &fc.la, &fc.lb, None);
+        // relocations no aligned site binds: through the ledger's names, as dcp diffclass binds them
+        let by_name = |n: &str| names.get(n).copied();
+        let (ours, _) = crate::equiv::bind(obj, code, env.img, lo, &fc.la, &fc.lb, Some(&by_name));
         match crate::equiv::prove(&ours, &data, lo) {
             crate::equiv::Outcome::Equal { pairs } => Some(pairs),
             _ => None,
         }
     };
     // the listings compare our literals as X: a shape function may still reference another string or constant
-    let lits = if fc.verdict.shape || proof.is_some() {
-        let hex = |b: &[u8]| b.iter().map(|c| format!("{c:02x}")).collect::<Vec<_>>().join(" ");
-        crate::equiv::literal_mismatches(obj, code, env.img, lo, &fc.la, &fc.lb, &data).into_iter().map(|(at, name, ours, theirs)| {
-            let (rule, what) = if name.starts_with("??_C@") { ("M9", "literal") } else { ("M10", "constant") };
-            format!("{rule} at +{:#x}: our {what} {name} ({}) is nowhere the original refers to (its bytes there: {})", at - lo,
-                    hex(&ours[..ours.len().min(40)]), hex(&theirs[..theirs.len().min(40)]))
-        }).collect()
-    } else {
-        vec![]
-    };
+    let lits = if fc.verdict.shape || proof.is_some() { literal_lines(obj, code, env.img, lo, &fc.la, &fc.lb, &data) } else { vec![] };
     (fc.verdict, proof, lits)
+}
+
+/// The M9 / M10 lines of equiv::literal_mismatches: our strings and floating constants whose bytes the original
+/// holds nowhere it refers to (G.grade keeps such a shape function at draft; dcp diffclass prints them).
+pub(crate) fn literal_lines(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, lo: u32,
+                            la: &[crate::x86::Line], lb: &[crate::x86::Line], data: &[u8]) -> Vec<String> {
+    let hex = |b: &[u8]| b.iter().map(|c| format!("{c:02x}")).collect::<Vec<_>>().join(" ");
+    crate::equiv::literal_mismatches(obj, code, img, lo, la, lb, data).into_iter().map(|(at, name, ours, theirs)| {
+        let (rule, what) = if name.starts_with("??_C@") { ("M9", "literal") } else { ("M10", "constant") };
+        format!("{rule} at +{:#x}: our {what} {name} ({}) is nowhere the original refers to (its bytes there: {})", at - lo,
+                hex(&ours[..ours.len().min(40)]), hex(&theirs[..theirs.len().min(40)]))
+    }).collect()
 }
 
 /// compute over the tasks on every core: (index, result).
@@ -197,10 +212,11 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         held = (world, HashMap::new());
     }
     let mut used: HashMap<Key, Rc<Held>> = HashMap::new();
-    let keys: Vec<Key> = funcs.iter().map(|f| key_of(f, walk.get(&f.src.lo))).collect();
+    let names = crate::names::unique_addrs(&store::claims(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?);
+    let keys: Vec<Key> = funcs.iter().map(|f| key_of(f, walk.get(&f.src.lo), &names)).collect();
     // the functions not held (all of them after a start): computed on every core, each independent of the others
     let todo: Vec<Task> = funcs.iter().zip(&keys).enumerate().filter(|(_, (_, k))| !held.1.contains_key(*k)).map(|(i, (f, _))| Task {
-        i, code: &f.code, obj: &f.obj.0, lo: f.src.lo, next: f.next, whi: walk.get(&f.src.lo).map(|w| w.hi), matched: matched.contains(&f.src.lo),
+        i, code: &f.code, obj: &f.obj.0, lo: f.src.lo, next: f.next, whi: walk.get(&f.src.lo).map(|w| w.hi), matched: matched.contains(&f.src.lo), names: &names,
     }).collect();
     let mut fresh: HashMap<usize, Rc<Held>> = HashMap::new();
     for (i, r) in compute_all(&env, &todo, x.function_alignment) {
@@ -242,7 +258,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             why = w;
         } else {
             if h.verdict.get().is_none() {
-                let _ = h.verdict.set(verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o));
+                let _ = h.verdict.set(verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o, &names));
             }
             let (v, proof, lits) = h.verdict.get().unwrap();
             g = if (v.shape || proof.is_some()) && lits.is_empty() { "shape" } else { "draft" }.to_string();

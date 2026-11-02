@@ -25,6 +25,9 @@ pub struct Reading {
     /// a concrete difference (equiv::witness: a call or a global store one side has and the other never refers
     /// to), said with the ledger's name of its address
     pub witness: Option<String>,
+    /// our literals and floating constants the original does not hold (grade::literal_lines: G.grade's check,
+    /// which keeps a shape function at draft)
+    pub literals: Vec<String>,
 }
 
 /// What one of our X fields refers to, for comparing it with the original's number: the addresses its symbol
@@ -435,11 +438,9 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
             built.get_or_init(|| p.target(None).ok().and_then(|t| crate::names::Names::build(&db, &p.main_uri(), &t.path).ok())).as_ref()
         });
         if unbound > 0 {
-            if let Some(names) = ledger() {
-                let f = |n: &str| match names.addrs_of(n) {
-                    [one] => Some(*one as u32),
-                    _ => None,
-                };
+            // through the ledger's names at one address, as G.grade binds them (names::unique_addrs)
+            if let Ok(at) = crate::names::ledger_addrs(&db) {
+                let f = |n: &str| at.get(n).copied();
                 (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb, Some(&f));
             }
         }
@@ -456,7 +457,8 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
         }
         (crate::timing::phase("r.prove", || crate::equiv::prove(&ours, &data, a as u32)), unbound)
     }) })?;
-    Ok(Ok(Reading { row, fc, named, values, proof, witness }))
+    let literals = crate::grade::literal_lines(&obj, &code, &img, a as u32, &fc.la, &fc.lb, &data);
+    Ok(Ok(Reading { row, fc, named, values, proof, witness, literals }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points

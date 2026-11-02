@@ -49,6 +49,31 @@ pub fn draft_values(db: &rusqlite::Connection, main: &str) -> rusqlite::Result<V
 /// The size from which a data object can be an array or a record a loop runs over to its end (Names::end_label).
 const END_MIN: i64 = 0x10;
 
+/// The rules whose `name` claims place a name at an address (the ledger's names): G.grade needs them all, so
+/// its binding (equiv::bind by name) reruns when one changes.
+pub const NAME_RULES: &[&str] = &["L.decl", "L.src", "S.imports", "S.exports", "S.crt.code", "S.lib.data", "S.crt.refs", "S.crt.data",
+                                  "S.thunk", "S.entry.user"];
+
+/// The address each name of `claims` (`name` claims) places at exactly one address: what a relocation's symbol
+/// binds to when no aligned site binds it (equiv::bind). G.grade and dcp diffclass bind through the same map.
+pub fn unique_addrs(claims: &[Rc<Claim>]) -> HashMap<String, u32> {
+    let mut at: HashMap<String, Option<u32>> = HashMap::new();
+    for c in claims {
+        let Some(n) = c.s("name") else { continue };
+        let e = at.entry(n.to_string()).or_insert(Some(c.lo as u32));
+        if *e != Some(c.lo as u32) {
+            *e = None;
+        }
+    }
+    at.into_iter().filter_map(|(n, a)| Some((n, a?))).collect()
+}
+
+/// unique_addrs over the current `name` claims of a store.
+pub fn ledger_addrs(db_path: &str) -> Result<HashMap<String, u32>> {
+    let rules: Vec<String> = NAME_RULES.iter().map(|r| r.to_string()).collect();
+    with_db(db_path, |db| Ok(unique_addrs(&store::claims(db, db_path, "name", &rules, |_| true)?)))
+}
+
 /// φ with the symbols, for annotation.
 pub struct Names {
     pub phi: Phi,

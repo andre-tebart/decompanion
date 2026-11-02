@@ -140,6 +140,13 @@ symbol to the other's address (two names at one address: neither site binding is
 wins), and a literal bound where the original holds other bytes (`_real@bf800000` -1.0 at the original's 1.0,
 `"d2_fadeinfo"` at `"d2:fadeinfo"`): the prover had shown those functions equal. G.grade version 10.
 
+Consistency (G.grade 11, 12): the held verdict is keyed by the relocations' symbols, literal bytes and ledger
+addresses too (a changed string, callee or name leaves the code bytes alone); grading binds through the ledger's
+names at one address (names::unique_addrs over the name claims of names::NAME_RULES, now among G.grade's needs)
+and dcp diffclass / dcp escalate through the same map, so the proof is one: on the gildegold af0cd2c clone 16
+more functions shape, and dcp diffclass's verdict (`shape`, `shape (proved)`, `draft` with a `literal:` line)
+equals the grade on all 1816 draft and shape functions.
+
 The same functions were shape by the classes too: the listings compare relocated fields as X, and M9 / M10
 (constant_mismatches) run on byte matches only. G.grade 10 checks every shape function's literals at its
 aligned sites (equiv::literal_mismatches; a literal the original holds at any address its code names is not

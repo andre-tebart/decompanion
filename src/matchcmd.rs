@@ -431,9 +431,17 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
     let (la, lb) = (&r.la, &r.lb);
     let row = r.row.as_object().cloned().unwrap_or_default();
     let v = &r.verdict;
+    // the code grade G.grade gives: the shape classes or a proof, and no literal of ours the original lacks
+    let proved = matches!(r.proof.0, crate::equiv::Outcome::Equal { .. });
+    let verdict = match (v.shape, proved, r.literals.is_empty()) {
+        (_, _, false) => "draft",
+        (true, _, true) => "shape",
+        (false, true, true) => "shape (proved)",
+        (false, false, true) => "draft",
+    };
     let mut out = vec![record(&[("fn", Tok::I(int(&row, "addr"))), ("name", vt(row.get("name"))), ("ours", Tok::I(la.len() as i64)),
                                 ("original", Tok::I(lb.len() as i64)), ("hunks", Tok::I(r.hunks.len() as i64)), ("differing", Tok::I(v.distance as i64)),
-                                ("verdict", s(if v.shape { "shape" } else { "draft" }))])];
+                                ("verdict", s(verdict))])];
     if let Some((ours, orig)) = v.frame {
         out.push(format!("  frame: ours {ours:#x}, the original's {orig:#x}: the hunks of the frame-aligned diff (stack offsets masked for the alignment)"));
     }
@@ -460,6 +468,7 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
         }
     }
     out.push(format!("  summary: {}", v.summary()));
+    out.extend(r.literals.iter().map(|l| format!("  literal: {l} (a meaning difference: draft)")));
     let (proof, unbound) = &r.proof;
     let base = int(&row, "addr") as u32;
     out.push(format!("  proof: {}{}", proof.summary(base),
