@@ -64,7 +64,7 @@ struct Held {
     extent: i64,
     slot: i64,
     o: diffclass::Original,
-    verdict: std::cell::OnceCell<(Verdict, Option<usize>)>,
+    verdict: std::cell::OnceCell<Judged>,
 }
 
 thread_local! {
@@ -101,7 +101,12 @@ struct Task<'a> {
     matched: bool,
 }
 
-type Computed = (i64, i64, i64, diffclass::Original, Option<(Verdict, Option<usize>)>);
+type Computed = (i64, i64, i64, diffclass::Original, Option<Judged>);
+
+/// A function's shape verdict, the prover's block pairs when it shows the behaviour the same, and the literals
+/// that keep it from shape (equiv::literal_mismatches: a string or a floating constant of ours whose bytes the
+/// original does not hold).
+type Judged = (Verdict, Option<usize>, Vec<String>);
 
 /// A function's code size, extent, slot, original and (no byte match) its verdict.
 fn compute(env: &Env, t: &Task, align: i64) -> Computed {
@@ -117,18 +122,30 @@ fn compute(env: &Env, t: &Task, align: i64) -> Computed {
 /// A function's shape verdict, and where the shape check leaves it draft, the prover's: the block pairs when it
 /// shows our code's behaviour the same as the original's (equiv: the same effects in the same order, the same
 /// branches, the same returns).
-fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: u32, o: &diffclass::Original) -> (Verdict, Option<usize>) {
+fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: u32, o: &diffclass::Original) -> Judged {
     let fc = diffclass::FunctionCompare::new(env, obj, code, lo, o);
-    if fc.verdict.shape {
-        return (fc.verdict, None);
-    }
     let data = env.img.read(lo, o.code.max(0) as usize);
-    let (ours, _) = crate::equiv::bind(obj, code, env.img, lo, &fc.la, &fc.lb, None);
-    let proof = match crate::equiv::prove(&ours, &data, lo) {
-        crate::equiv::Outcome::Equal { pairs } => Some(pairs),
-        _ => None,
+    let proof = if fc.verdict.shape {
+        None
+    } else {
+        let (ours, _) = crate::equiv::bind(obj, code, env.img, lo, &fc.la, &fc.lb, None);
+        match crate::equiv::prove(&ours, &data, lo) {
+            crate::equiv::Outcome::Equal { pairs } => Some(pairs),
+            _ => None,
+        }
     };
-    (fc.verdict, proof)
+    // the listings compare our literals as X: a shape function may still reference another string or constant
+    let lits = if fc.verdict.shape || proof.is_some() {
+        let hex = |b: &[u8]| b.iter().map(|c| format!("{c:02x}")).collect::<Vec<_>>().join(" ");
+        crate::equiv::literal_mismatches(obj, code, env.img, lo, &fc.la, &fc.lb, &data).into_iter().map(|(at, name, ours, theirs)| {
+            let (rule, what) = if name.starts_with("??_C@") { ("M9", "literal") } else { ("M10", "constant") };
+            format!("{rule} at +{:#x}: our {what} {name} ({}) is nowhere the original refers to (its bytes there: {})", at - lo,
+                    hex(&ours[..ours.len().min(40)]), hex(&theirs[..theirs.len().min(40)]))
+        }).collect()
+    } else {
+        vec![]
+    };
+    (fc.verdict, proof, lits)
 }
 
 /// compute over the tasks on every core: (index, result).
@@ -222,8 +239,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             if h.verdict.get().is_none() {
                 let _ = h.verdict.set(verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o));
             }
-            let (v, proof) = h.verdict.get().unwrap();
-            g = if v.shape || proof.is_some() { "shape" } else { "draft" }.to_string();
+            let (v, proof, lits) = h.verdict.get().unwrap();
+            g = if (v.shape || proof.is_some()) && lits.is_empty() { "shape" } else { "draft" }.to_string();
             hunks = v.hunks_json();
             dist_ins = v.distance;
             let mut w = vec![];
@@ -231,7 +248,12 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             if !c_why.is_empty() {
                 w.push(format!("B1 byte: {c_why}"));
             }
-            if g == "draft" {
+            if !lits.is_empty() {
+                // the code is shape, a literal it references is not the original's: a meaning difference
+                w.extend(lits.iter().map(|l| format!("B2 shape: {l}")));
+                w.push(format!("B3 draft: {} referenced literal(s) / constant(s) differ from the original's: a meaning difference; the hunks: {}",
+                               lits.len(), v.summary()));
+            } else if g == "draft" {
                 w.push(format!("{}{}", if v.code.is_empty() { "B3 draft: " } else { "B3 draft: unexplained code hunks: " }, v.summary()));
             } else if let (false, Some(pairs)) = (v.shape, proof) {
                 w.push(format!("B2 shape: the same behaviour, proved ({pairs} block pairs); the hunks: {}", v.summary()));

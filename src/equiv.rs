@@ -2217,15 +2217,11 @@ fn literal(obj: &crate::coff::Obj, s: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// Our function's code with each relocated field holding the address the original's field holds where the two
-/// instructions line up (the listings' equal lines and same-shape lines of equal-length hunks): a symbol's
-/// address is learned at its aligned sites, and the same symbol must get the same address at every one; a symbol
-/// that never lines up (or gets two addresses) gets one the original cannot hold. Returns the code and how many
-/// relocations stayed unbound.
-///
-/// `by_name`: a symbol no site binds may still get its address from the ledger (a name it places at one address).
-pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
-            la: &[crate::x86::Line], lb: &[crate::x86::Line], by_name: Option<&dyn Fn(&str) -> Option<u32>>) -> (Vec<u8>, usize) {
+/// Our relocations at instructions that line up with the original's (the listings' equal lines and same-shape
+/// lines of equal-length hunks), each resolved against the original's field there: (the symbol, the address the
+/// original's field refers to, our instruction's address).
+fn aligned_sites(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
+                 la: &[crate::x86::Line], lb: &[crate::x86::Line]) -> Vec<(u32, u32, u32)> {
     use crate::difflib::{opcodes, Tag};
     let (cd, _) = code.code();
     let ta: Vec<&str> = la.iter().map(|l| l.text.as_str()).collect();
@@ -2236,7 +2232,7 @@ pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crat
             pairs.extend((0..i2 - i1).map(|k| (i1 + k, j1 + k)).filter(|&(i, j)| la[i].shape.mn == lb[j].shape.mn));
         }
     }
-    let mut bound: HashMap<u32, Option<u32>> = HashMap::new();
+    let mut out = vec![];
     for (i, j) in pairs {
         let (ia, ib) = (la[i].addr, lb[j].addr);
         let o = ia - va;
@@ -2259,13 +2255,57 @@ pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crat
             }
             let site = ib + f.at as u32;
             let addend = obj.addend(code.secnum, r);
-            let Some(s) = r.resolve(site, &img.bytes(site, 4), addend) else { continue };
-            // a literal binds only where the original holds its bytes (else the two loads differ in value)
-            let ok = literal(obj, r.symbol_index).is_none_or(|b| img.in_image(s) && *img.bytes(s, b.len()) == *b);
-            let e = bound.entry(r.symbol_index).or_insert(Some(s));
-            if *e != Some(s) || !ok {
-                *e = None; // two addresses for one symbol: no binding
+            if let Some(s) = r.resolve(site, &img.bytes(site, 4), addend) {
+                out.push((r.symbol_index, s, ia));
             }
+        }
+    }
+    out
+}
+
+/// Our literals (strings, floating constants) whose bytes the original holds nowhere it refers to, though an
+/// instruction of ours that references one lines up with one of the original's: (our instruction's address, the
+/// literal's symbol, its bytes, the original's bytes at the aligned site's address). A literal the original holds
+/// at any address its code names (an immediate, a displacement) is not one: reordered pushes pair literals
+/// crosswise.
+pub fn literal_mismatches(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
+                          la: &[crate::x86::Line], lb: &[crate::x86::Line], theirs: &[u8]) -> Vec<(u32, String, Vec<u8>, Vec<u8>)> {
+    let mut refs = None;
+    let mut out: Vec<(u32, String, Vec<u8>, Vec<u8>)> = vec![];
+    for (sym, s, at) in aligned_sites(obj, code, img, va, la, lb) {
+        let Some(lit) = literal(obj, sym) else { continue };
+        if img.in_image(s) && *img.bytes(s, lit.len()) == *lit {
+            continue;
+        }
+        let refs = refs.get_or_insert_with(|| acts(theirs, va).1);
+        if refs.iter().any(|&r| img.in_image(r) && *img.bytes(r, lit.len()) == *lit) {
+            continue;
+        }
+        let name = obj.symbol_at(sym).map(|x| x.name.clone()).unwrap_or_default();
+        let have = if img.in_image(s) { img.bytes(s, lit.len()).to_vec() } else { vec![] };
+        if !out.iter().any(|o| o.1 == name) {
+            out.push((at, name, lit, have));
+        }
+    }
+    out
+}
+
+/// Our function's code with each relocated field holding the address the original's field holds where the two
+/// instructions line up (aligned_sites): a symbol's address is learned at its aligned sites, and the same symbol
+/// must get the same address at every one; a symbol that never lines up (or gets two addresses) gets one the
+/// original cannot hold. Returns the code and how many relocations stayed unbound.
+///
+/// `by_name`: a symbol no site binds may still get its address from the ledger (a name it places at one address).
+pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
+            la: &[crate::x86::Line], lb: &[crate::x86::Line], by_name: Option<&dyn Fn(&str) -> Option<u32>>) -> (Vec<u8>, usize) {
+    let (cd, _) = code.code();
+    let mut bound: HashMap<u32, Option<u32>> = HashMap::new();
+    for (sym, s, _) in aligned_sites(obj, code, img, va, la, lb) {
+        // a literal binds only where the original holds its bytes (else the two loads differ in value)
+        let ok = literal(obj, sym).is_none_or(|b| img.in_image(s) && *img.bytes(s, b.len()) == *b);
+        let e = bound.entry(sym).or_insert(Some(s));
+        if *e != Some(s) || !ok {
+            *e = None; // two addresses for one symbol, or a literal's other bytes: no binding
         }
     }
     // two symbols at one address: an aligned site paired a call or a load with another one (reordered calls);

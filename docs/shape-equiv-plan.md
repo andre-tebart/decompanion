@@ -140,6 +140,13 @@ symbol to the other's address (two names at one address: neither site binding is
 wins), and a literal bound where the original holds other bytes (`_real@bf800000` -1.0 at the original's 1.0,
 `"d2_fadeinfo"` at `"d2:fadeinfo"`): the prover had shown those functions equal. G.grade version 10.
 
+The same functions were shape by the classes too: the listings compare relocated fields as X, and M9 / M10
+(constant_mismatches) run on byte matches only. G.grade 10 checks every shape function's literals at its
+aligned sites (equiv::literal_mismatches; a literal the original holds at any address its code names is not
+one: reordered pushes pair them crosswise): gildegold af0cd2c, 6 shape functions to draft, each real
+(d3fl_FarDist -1.0 / 1.0, d2_StartFade and ai_FavourComment strings, ai_FilePickWindow "s_menu_fileselector",
+d3_MatInverse a double 1e-7 against the float's, unk_Unk4f2660 0.00625 / 0.0125).
+
 After the size check: a concrete `Diverge` refuses deep escalation and prints the evidence; `--divergence-explained
 "why"` as safety valve (recorded in the reason). An Equal proof skips `size_unexplained`. Enabled only after the
 negative control shows zero concrete divergences. Update docs/match.md (B2, ladder) and

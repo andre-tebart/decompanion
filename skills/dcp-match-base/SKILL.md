@@ -124,6 +124,10 @@ missing or extra statement, a wrong type (signed / unsigned compare, `char` vs `
 wrong offset), a call with the wrong arguments, a loop of another form. Stop when only `fill` / `order` / `regs`
 / `slots` / `sib` / `fpu` / `frame` / `tail` hunks remain: that is shape (B2). Reconstructing missing statements is always base
 work, however long.
+- A function whose hunks are all explained is still draft when a string or floating constant it references is not
+  the original's (`B2 shape: M9 at +0x..: our literal ... is nowhere the original refers to (its bytes there:
+  ...)`, M10 for a constant): fix the text or the constant (a missing prefix, `1e-7` where the original has
+  `1e-7f`, a wrong value); the listings show both as `X`, `dcp asmdiff NAME --symbols` shows them.
 - Shape can also come from a proof: `B2 shape: the same behaviour, proved (N block pairs); the hunks: ...` means
   the prover showed our code doing what the original does (the same calls, stores, branches and returns) although
   `code` hunks remain. Such a function is done for the experiment; only readability may be left. `dcp diffclass
