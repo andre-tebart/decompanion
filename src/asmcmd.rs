@@ -39,6 +39,55 @@ impl std::ops::Deref for Reading {
 }
 
 impl Reading {
+    /// The addresses behind the X fields of line i of ours and line j of the original's (a `!` line: the names
+    /// differ, the addresses say whether they are one datum): `0x770ae4 | 0x770ae0`.
+    pub fn addresses(&self, i: usize, j: usize) -> Option<String> {
+        let (va, vb) = self.values.as_ref()?;
+        // where a value of ours is unknown (a jump of our own, a symbol the ledger does not place) there is nothing
+        // to compare
+        let ours: Vec<String> = va.get(i)?.iter().map(|v| match v {
+            Val::Addrs(a) => Some(a.iter().map(|x| format!("{x:#x}")).collect::<Vec<_>>().join("/")),
+            Val::Lit(_) => Some("literal".into()),
+            Val::Unknown => None,
+        }).collect::<Option<_>>()?;
+        let theirs: Vec<String> = vb.get(j)?.iter().map(|v| format!("{v:#x}")).collect();
+        (!ours.is_empty() || !theirs.is_empty()).then(|| format!("{} | {}", ours.join(", "), theirs.join(", ")))
+    }
+
+    /// The calls of each side that the other side does not make, whatever the alignment (a wrong callee in a hunk
+    /// of other differences shows only as a - / + pair): (ours, the original's), each as (name, count). A call of
+    /// ours is the original's when the address the original calls is one its symbol has in the ledger; a callee
+    /// either side cannot name is left out.
+    pub fn unmatched_calls(&self) -> (Vec<(String, usize)>, Vec<(String, usize)>) {
+        let (Some((va, vb)), Some((na, nb))) = (&self.values, &self.named) else { return (vec![], vec![]) };
+        let calls = |l: &[Line]| -> Vec<usize> { (0..l.len()).filter(|&k| l[k].shape.mn == "call" && l[k].text.ends_with('X')).collect() };
+        // known on both sides: ours placed by the ledger, the original's named by it (`call 0x5df681` is not known)
+        let ca: Vec<usize> = calls(&self.la).into_iter().filter(|&i| matches!(va[i].first(), Some(Val::Addrs(_)))).collect();
+        let cb: Vec<usize> = calls(&self.lb).into_iter().filter(|&j| !nb[j].trim_start_matches("call ").starts_with("0x")).collect();
+        let mut left: Vec<usize> = cb.clone();
+        let mut ours_left = vec![];
+        for i in ca {
+            let hit = left.iter().position(|&j| match (va[i].first(), vb[j].first()) {
+                (Some(Val::Addrs(xs)), Some(y)) => xs.contains(y),
+                _ => na[i] == nb[j],
+            });
+            match hit {
+                Some(k) => {
+                    left.remove(k);
+                }
+                None => ours_left.push(i),
+            }
+        }
+        let count = |names: Vec<&String>| -> Vec<(String, usize)> {
+            let mut m: std::collections::BTreeMap<String, usize> = Default::default();
+            for n in names {
+                *m.entry(n.trim_start_matches("call ").to_string()).or_default() += 1;
+            }
+            m.into_iter().collect()
+        };
+        (count(ours_left.iter().map(|&i| &na[i]).collect()), count(left.iter().map(|&j| &nb[j]).collect()))
+    }
+
     /// Whether line i of ours and line j of the original's refer to the same things by their X fields although
     /// they name them differently (`asmdiff --symbols` `=`: an alias, a placeholder and its name, `sym+off` and the
     /// bare address, a literal and the original's datum holding the same bytes). A match-base report: such lines
@@ -60,9 +109,18 @@ fn bound(lines: &[Line], ins: u32) -> bool {
 }
 
 /// What our relocated field refers to (Val), independent of where the original's field lies.
-fn reloc_val(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crate::coff::Reloc, names: &crate::names::Names) -> Val {
+fn reloc_val(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crate::coff::Reloc, names: &crate::names::Names,
+             tables: &[(i64, i64)]) -> Val {
     let Some(sym) = obj.symbol_at(r.symbol_index) else { return Val::Unknown };
     let addend = obj.addend(code.secnum, r) as i32 as i64;
+    // a label of our function's own section ($L16004, a switch table): the original's table at the same index,
+    // when the tables compare equal (tables: (our offset, the original's address))
+    if sym.secnum as usize == code.secnum {
+        let off = sym.value as i64 + addend - code.start as i64;
+        if let Some(t) = tables.iter().find(|t| t.0 == off) {
+            return Val::Addrs(vec![t.1]);
+        }
+    }
     let data = if sym.secnum > 0 { obj.sections.get(sym.secnum as usize).and_then(|s| s.data.as_ref()) } else { None };
     match sym.constant() {
         Some("string") => {
@@ -99,6 +157,33 @@ fn reloc_val(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crate
     }
 }
 
+/// The value of a floating constant of `size` bytes (4 or 8) at an address of the image's read-only data, as the
+/// text writes it.
+fn float_at(img: &crate::pe::Image, v: i64, size: u8) -> Option<String> {
+    if img.section_of(v as u32).is_none_or(|s| s.writable()) {
+        return None; // a variable: its initial value says nothing
+    }
+    let b = img.bytes(v as u32, size as usize);
+    match size {
+        4 => Some(format!("{:?}", f32::from_le_bytes(b[..4].try_into().ok()?))),
+        8 => Some(format!("{:?}", f64::from_le_bytes(b[..8].try_into().ok()?))),
+        _ => None,
+    }
+}
+
+/// The size of the floating constant line `ins` of `lines` loads from memory (an FPU instruction with a dword /
+/// qword operand at an X address), None for any other line.
+fn float_operand(lines: &[Line], ins: u32) -> Option<u8> {
+    let l = lines.iter().find(|l| l.addr == ins)?;
+    if !l.shape.fpu() {
+        return None;
+    }
+    l.shape.ops.iter().find_map(|o| match *o {
+        crate::shape::Opnd::Mem { size: z @ (4 | 8), disp: crate::shape::Num::X, .. } => Some(z),
+        _ => None,
+    })
+}
+
 /// How an address of the original reads by name (`asmdiff --symbols`): a number inside the function's slot `own`
 /// (a jump of its own) as the number, else the ledger's label (dcp disasm's), else the printable C string the
 /// image holds there, else the number. `bound`: the number is the immediate a compare tests against (a loop's end
@@ -108,21 +193,29 @@ fn label(names: &crate::names::Names, img: &crate::pe::Image, own: (i64, i64), v
     if own.0 <= v && v < own.1 {
         return format!("{v:#x}");
     }
+    let text = || {
+        let s = img.cstr_n(v as u32, 256);
+        (s.len() >= 2 && s.len() < 256 && s.iter().all(|&c| (0x20..0x7f).contains(&c) || c == b'\t' || c == b'\n')).then(|| {
+            let t: String = s.iter().take(40).map(|&c| c as char).collect();
+            format!("\"{}\"", t.replace('\n', "\\n"))
+        })
+    };
     if let Ok(Some(l)) = names.label_of(v) {
         if let Some(e) = bound.and_then(|u| names.end_label(v, u)) {
             return format!("{l} (or {e})");
+        }
+        // a placeholder name the ledger gave a pooled string literal (ai_Unk5fe7d0 for "%i") reads as the string
+        if l.contains("_Unk") && crate::srcscan::placeholder_whole(&l).is_some() {
+            if let Some(t) = text() {
+                return t;
+            }
         }
         return l;
     }
     if let Some(e) = bound.and_then(|u| names.end_label(v, u)) {
         return format!("{v:#x} (or {e})");
     }
-    let s = img.cstr_n(v as u32, 256);
-    if s.len() >= 2 && s.len() < 256 && s.iter().all(|&c| (0x20..0x7f).contains(&c) || c == b'\t' || c == b'\n') {
-        let t: String = s.iter().take(40).map(|&c| c as char).collect();
-        return format!("\"{}\"", t.replace('\n', "\\n"));
-    }
-    format!("{v:#x}")
+    text().unwrap_or_else(|| format!("{v:#x}"))
 }
 
 /// How our relocated field (at `off` of the function at `a`) reads by name: what the original's field refers to
@@ -150,6 +243,17 @@ fn reloc_name(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crat
                 _ => format!("\\x{c:02x}"),
             }).collect();
             format!("\"{t}\"")
+        }
+        // __real@42480000: the name with its bits (undecorate would take an all-digit suffix for stdcall's @N) and
+        // the value
+        (Some("float"), _) => {
+            let hex = sym.name.rsplit('@').next().unwrap_or("");
+            let value = u64::from_str_radix(hex, 16).ok().map(|b| if hex.len() == 8 { format!("{:?}", f32::from_bits(b as u32)) } else { format!("{:?}", f64::from_bits(b)) });
+            let theirs_too = to.and_then(|t| float_at(img, t as i64, (hex.len() / 2) as u8)).filter(|v| Some(v) == value.as_ref());
+            if let (Some(t), Some(_)) = (to, theirs_too) {
+                return format!("{} ({})", theirs(t), value.unwrap_or_default());
+            }
+            format!("{} ({})", sym.name.strip_prefix('_').unwrap_or(&sym.name), value.unwrap_or_else(|| "?".into()))
         }
         _ => {
             let cname = crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name));
@@ -251,6 +355,21 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
                 });
                 seen.into_inner()
             };
+            // our switch tables against the original's, in order, when they compare equal: (our offset, the address)
+            let table_pairs: Vec<(i64, i64)> = if fc.tables.as_ref().is_some_and(|t| t.diffs.is_empty()) {
+                let mut ours: Vec<i64> = code.relocs.iter().filter_map(|(_, r)| {
+                    let sym = obj.symbol_at(r.symbol_index).filter(|s| s.secnum as usize == code.secnum)?;
+                    let off = sym.value as i64 + obj.addend(code.secnum, r) as i32 as i64 - code.start as i64;
+                    (off >= code.code_len.unwrap_or(u32::MAX) as i64).then_some(off)
+                }).collect::<BTreeSet<_>>().into_iter().collect();
+                ours.sort();
+                let theirs: Vec<i64> = o.tables.iter().map(|t| t.0).collect();
+                if ours.len() == theirs.len() { ours.into_iter().zip(theirs).collect() } else { vec![] }
+            } else {
+                vec![]
+            };
+            // our code's own extent: a jump inside it is ours, whatever the original has at that address
+            let ours_end = la.last().map(|l| (l.addr + l.size) as i64).unwrap_or(a);
             // the values behind the X fields, by instruction address, in text order (Reading::same_values)
             let vals_a: std::cell::RefCell<std::collections::HashMap<u32, Vec<Val>>> = Default::default();
             let vals_b: std::cell::RefCell<std::collections::HashMap<u32, Vec<i64>>> = Default::default();
@@ -260,18 +379,37 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
                 match k {
                     Some(k) => {
                         let hit = code.relocs.iter().filter(|(off, _)| o <= *off && *off < o + size).nth(k);
-                        vals_a.borrow_mut().entry(ins).or_default().push(hit.map(|(_, r)| reloc_val(&obj, &code, r, names)).unwrap_or(Val::Unknown));
-                        hit.map(|(off, r)| reloc_name(&obj, &code, r, a as u32, *off, &img, names, own))
+                        let val = hit.map(|(_, r)| reloc_val(&obj, &code, r, names, &table_pairs)).unwrap_or(Val::Unknown);
+                        let name = hit.map(|(off, r)| reloc_name(&obj, &code, r, a as u32, *off, &img, names, own));
+                        // a floating constant we load through a symbol the ledger places (extern ai_Unk5eb9b8): its
+                        // value there, as the original's line shows it (a __real@ constant names its own)
+                        let value = match (&val, float_operand(la, ins)) {
+                            (Val::Addrs(xs), Some(z)) if !xs.is_empty() && name.as_ref().is_some_and(|n| !n.ends_with(')')) => float_at(&img, xs[0], z),
+                            _ => None,
+                        };
+                        vals_a.borrow_mut().entry(ins).or_default().push(val);
+                        name.map(|n| match value {
+                            Some(f) => format!("{n} ({f})"),
+                            None => n,
+                        })
                     }
+                    // a number of ours no relocation covers: a jump inside our own code, or a constant (every address
+                    // an object holds is relocated): the number, never a name
                     None => {
-                        vals_a.borrow_mut().entry(ins).or_default().push(if own.0 <= v && v < own.1 { Val::Unknown } else { Val::Addrs(vec![v]) });
-                        Some(label(names, &img, own, v, bound(la, ins).then_some(used.as_slice())))
+                        let inside = (own.0 <= v && v < own.1) || (a <= v && v < ours_end);
+                        vals_a.borrow_mut().entry(ins).or_default().push(if inside { Val::Unknown } else { Val::Addrs(vec![v]) });
+                        Some(format!("{v:#x}"))
                     }
                 }
             };
             let theirs = |ins: u32, _: Option<usize>, v: i64| -> Option<String> {
                 vals_b.borrow_mut().entry(ins).or_default().push(v);
-                Some(label(names, &img, own, v, bound(lb, ins).then_some(used.as_slice())))
+                let l = label(names, &img, own, v, bound(lb, ins).then_some(used.as_slice()));
+                // a floating constant the original loads: its value too
+                Some(match float_operand(lb, ins).and_then(|z| float_at(&img, v, z)) {
+                    Some(f) => format!("{l} ({f})"),
+                    None => l,
+                })
             };
             let na = crate::x86::listing_named(cd, a as u32, Some(cm), env.range, env.fills, &ours);
             let nb = crate::x86::listing_named(&data, a as u32, None, env.range, env.fills, &theirs);

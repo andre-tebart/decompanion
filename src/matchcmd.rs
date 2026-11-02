@@ -203,7 +203,8 @@ fn tables_tokens(t: &crate::diffclass::Tables) -> String {
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b: &[String], sa: &[Shape], sb: &[Shape], pa: &[String], pb: &[String],
-              plain: bool, all: bool, same: &dyn Fn(usize, usize) -> bool) -> (usize, Option<(i64, i64)>, Vec<String>) {
+              plain: bool, all: bool, same: &dyn Fn(usize, usize) -> bool, addresses: &dyn Fn(usize, usize) -> Option<String>)
+              -> (usize, Option<(i64, i64)>, Vec<String>) {
     // the frames differ: align with the stack offsets masked; an aligned pair that differs only by the shift is equal
     let frame = if plain { None } else { crate::shape::frame_delta(sa, sb) };
     let ops = match frame {
@@ -246,7 +247,10 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
                     e += 1;
                 }
                 match group(i) {
-                    1 => out.extend((i..e).map(|k| format!("!  {:#010x}  {}   | {}", la[k].addr, pa[k], pb[j1 + k - i1]))),
+                    1 => out.extend((i..e).map(|k| {
+                        let at = addresses(k, j1 + k - i1).map(|x| format!("   ({x})")).unwrap_or_default();
+                        format!("!  {:#010x}  {}   | {}{at}", la[k].addr, pa[k], pb[j1 + k - i1])
+                    })),
                     4 => out.extend((i..e).map(|k| format!("=  {:#010x}  {}   | {}", la[k].addr, pa[k], pb[j1 + k - i1]))),
                     3 => {
                         out.extend((i..e).map(|k| format!("-  {:#010x}  {}", la[k].addr, pa[k])));
@@ -310,7 +314,7 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     let (pa, pb) = if r.named.is_some() { (&sa, &sb) } else { (&a, &b) };
     let img = if r.values.is_some() { Some(crate::image(&p.target(None).map_err(Error::runtime)?.path)?) } else { None };
     let same = |i: usize, j: usize| img.as_ref().is_some_and(|img| r.same_values(img, i, j));
-    let (n, frame, body) = diff_lines(&r.la, &r.lb, &a, &b, &ka, &kb, pa, pb, plain, all, &same);
+    let (n, frame, body) = diff_lines(&r.la, &r.lb, &a, &b, &ka, &kb, pa, pb, plain, all, &same, &|i, j| r.addresses(i, j));
     let row = r.row.as_object().cloned().unwrap_or_default();
     let mut head = record(&[("fn", Tok::I(int(&row, "addr"))), ("name", vt(row.get("name"))), ("code", vt(row.get("code"))), ("ours", Tok::I(a.len() as i64)),
                             ("original", Tok::I(b.len() as i64)), ("differing", Tok::I(n as i64))]);
@@ -335,6 +339,11 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     }
     if n > 0 {
         out.push("  legend: '-' ours (our object), '+' the original (the image)".into());
+    }
+    let (ca, cb) = r.unmatched_calls();
+    if !ca.is_empty() || !cb.is_empty() {
+        let list = |c: &[(String, usize)]| if c.is_empty() { "none".to_string() } else { c.iter().map(|(n, k)| format!("{n} x{k}")).collect::<Vec<_>>().join(", ") };
+        out.push(format!("  calls differ: ours {} | the original {}", list(&ca), list(&cb)));
     }
     if r.named.is_some() {
         out.push("  symbols: ours by our relocations, the original's by the ledger; '!' the same instruction naming another symbol \
@@ -668,12 +677,12 @@ mod tests {
         let (lb, b) = f("0xc8", "0xcc", "0x78", "mov dword ptr [esp + 0x14], 0");
         let sh = |l: &[crate::x86::Line]| l.iter().map(|x| x.shape.clone()).collect::<Vec<_>>();
         let (sa, sb) = (sh(&la), sh(&lb));
-        let (n, frame, out) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, false, true, &|_, _| false);
+        let (n, frame, out) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, false, true, &|_, _| false, &|_, _| None);
         assert_eq!((n, frame), (2, Some((0xcc, 0xc8))));
         assert_eq!(out.iter().filter(|l| l.starts_with('-') || l.starts_with('+')).collect::<Vec<_>>(),
                    ["-  0x00001008  mov dword ptr [esp + 0x14], ecx", "+  0x00001008  mov dword ptr [esp + 0x14], 0"]);
         assert!(out.contains(&"~  0x00001001  mov eax, dword ptr [esp + 0xd0]".to_string()) && out.contains(&"   0x00001003  mov ecx, 3".to_string()));
-        let (n, frame, _) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, true, true, &|_, _| false);
+        let (n, frame, _) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, true, true, &|_, _| false, &|_, _| None);
         assert_eq!((n, frame), (10, None)); // --plain: the shifted lines differ
     }
 }
