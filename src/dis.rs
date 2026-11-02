@@ -267,6 +267,9 @@ pub struct Ins {
     /// counts as read too, the rest of it survives), flags as FLAGS
     pub uses: RegSet,
     pub defs: RegSet,
+    /// the first operand is a 32-bit general register written whole without being read (`mov esi, [esi + 0x10]`
+    /// reads esi through its address, not through the operand): the register's old value dies here
+    pub kill: bool,
     pub rep: bool,
     pub instr: Instruction,
 }
@@ -338,7 +341,8 @@ thread_local! {
     static INFO: RefCell<InstructionInfoFactory> = RefCell::new(InstructionInfoFactory::new());
 }
 
-fn def_use(i: &Instruction) -> (RegSet, RegSet) {
+/// (uses, defs, whether the first operand is a 32-bit general register the instruction writes without reading it).
+fn def_use(i: &Instruction) -> (RegSet, RegSet, bool) {
     INFO.with(|f| {
         let mut f = f.borrow_mut();
         let info = f.info(i);
@@ -368,7 +372,9 @@ fn def_use(i: &Instruction) -> (RegSet, RegSet) {
         if i.rflags_modified() != 0 {
             defs |= FLAGS;
         }
-        (uses, defs)
+        let kill = i.op_count() > 0 && i.op0_kind() == OpKind::Register && i.op0_register().size() == 4 && gpr(i.op0_register()).is_some()
+            && info.op0_access() == OpAccess::Write;
+        (uses, defs, kill)
     })
 }
 
@@ -385,7 +391,7 @@ fn record(d: &Decoder, i: &Instruction) -> Ins {
         OpKind::NearBranch16 | OpKind::NearBranch32 => (Field::default(), field(c.immediate_offset(), c.immediate_size())),
         _ => (field(c.immediate_offset(), c.immediate_size()), Field::default()),
     };
-    let (uses, defs) = def_use(i);
+    let (uses, defs, kill) = def_use(i);
     Ins {
         addr: i.ip32(),
         size: i.len() as u32,
@@ -400,6 +406,7 @@ fn record(d: &Decoder, i: &Instruction) -> Ins {
         branch,
         uses,
         defs,
+        kill,
         rep: i.has_rep_prefix() || i.has_repne_prefix(),
         instr: *i,
     }

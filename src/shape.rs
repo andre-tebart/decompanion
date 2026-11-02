@@ -42,6 +42,9 @@ pub struct Shape {
     /// 0 none, 1 rep / repe, 2 repne
     pub rep: u8,
     pub ops: Vec<Opnd>,
+    /// the first operand is a 32-bit general register written whole without being read (dis::Ins::kill): its old
+    /// value dies here, so a renaming may map it anew
+    pub kill: bool,
 }
 
 /// A register no instruction of x86-32 names: what a masked register reads (shape_keys).
@@ -76,7 +79,7 @@ impl Shape {
             }
         }).collect();
         let rep = if ins.instr.has_repne_prefix() { 2 } else if ins.rep { 1 } else { 0 };
-        Shape { mn: ins.mn, rep, ops }
+        Shape { mn: ins.mn, rep, ops, kill: ins.kill }
     }
 
     fn is(&self, mn: &str) -> bool {
@@ -96,7 +99,7 @@ impl Shape {
     }
 
     fn map_ops(&self, f: impl Fn(&Opnd) -> Opnd) -> Shape {
-        Shape { mn: self.mn, rep: self.rep, ops: self.ops.iter().map(f).collect() }
+        Shape { ops: self.ops.iter().map(f).collect(), ..self.clone() }
     }
 }
 
@@ -132,12 +135,26 @@ enum Slots {
     ByBaseAndOffset,
 }
 
+/// What a register of one side corresponds to while the walk goes on: nothing yet, a register of the other side,
+/// or nothing any more (its partner was overwritten while it lives on: reading it does not correspond).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Bind {
+    Free,
+    To(u8),
+    Dead,
+}
+
 /// A renaming found by walking two sides together: registers ours -> theirs (bijective, over `allowed`), and with
-/// slots on, stack slots ours -> theirs (bijective).
+/// slots on, stack slots ours -> theirs (bijective). With `kill` on, a register both sides overwrite at the same
+/// line (Shape::kill) may be mapped anew there: the old values are dead, and the old partners lose theirs.
 struct Unify {
     allowed: u8,
-    fwd: [Option<u8>; 8],
-    back: [Option<u8>; 8],
+    fwd: [Bind; 8],
+    back: [Bind; 8],
+    kill: bool,
+    /// every pair the renaming has made, in order (a register may map to two over a hunk: before and after it is
+    /// overwritten)
+    pairs: Vec<(u8, u8)>,
     slots: Slots,
     sfwd: HashMap<(Reg, Num), (Reg, Num)>,
     sback: HashMap<(Reg, Num), (Reg, Num)>,
@@ -145,26 +162,70 @@ struct Unify {
 
 impl Unify {
     fn new(allowed: u8, slots: Slots) -> Unify {
-        Unify { allowed, fwd: [None; 8], back: [None; 8], slots, sfwd: HashMap::new(), sback: HashMap::new() }
+        Unify { allowed, fwd: [Bind::Free; 8], back: [Bind::Free; 8], kill: false, pairs: vec![], slots, sfwd: HashMap::new(), sback: HashMap::new() }
+    }
+
+    /// The same with the map renewed where both sides overwrite a register (explain's classes: a hunk reuses a
+    /// register once its value is dead; one_renaming stays one map for the function).
+    fn renewing(allowed: u8, slots: Slots) -> Unify {
+        Unify { kill: true, ..Unify::new(allowed, slots) }
+    }
+
+    /// Both registers general and renamable, of the same part: Ok((ours, theirs)); else Err(whether they are the
+    /// same register, which they must be).
+    fn renamable(&self, a: Reg, b: Reg) -> Result<(u8, u8), bool> {
+        let (Some((ga, pa)), Some((gb, pb))) = (dis::gpr_part(a), dis::gpr_part(b)) else { return Err(a == b) };
+        let (ra, rb) = (self.allowed & 1 << ga != 0, self.allowed & 1 << gb != 0);
+        if !ra || !rb {
+            return Err(a == b && !ra && !rb);
+        }
+        if pa != pb {
+            return Err(false);
+        }
+        Ok((ga, gb))
+    }
+
+    fn bind(&mut self, ga: u8, gb: u8) {
+        self.fwd[ga as usize] = Bind::To(gb);
+        self.back[gb as usize] = Bind::To(ga);
+        if !self.pairs.contains(&(ga, gb)) {
+            self.pairs.push((ga, gb));
+        }
     }
 
     fn reg(&mut self, a: Reg, b: Reg) -> bool {
-        let (Some((ga, pa)), Some((gb, pb))) = (dis::gpr_part(a), dis::gpr_part(b)) else { return a == b };
-        let (ra, rb) = (self.allowed & 1 << ga != 0, self.allowed & 1 << gb != 0);
-        if !ra || !rb {
-            return a == b && !ra && !rb;
-        }
-        if pa != pb {
-            return false;
-        }
+        let (ga, gb) = match self.renamable(a, b) {
+            Ok(p) => p,
+            Err(same) => return same,
+        };
         match (self.fwd[ga as usize], self.back[gb as usize]) {
-            (None, None) => {
-                self.fwd[ga as usize] = Some(gb);
-                self.back[gb as usize] = Some(ga);
+            (Bind::Free, Bind::Free) => {
+                self.bind(ga, gb);
                 true
             }
-            (f, _) => f == Some(gb),
+            (f, _) => f == Bind::To(gb),
         }
+    }
+
+    /// Both sides overwrite a and b whole: they correspond from here on. The old partners lose their
+    /// correspondence: the value each of them corresponded to is gone.
+    fn renew(&mut self, a: Reg, b: Reg) -> bool {
+        let (ga, gb) = match self.renamable(a, b) {
+            Ok(p) => p,
+            Err(same) => return same,
+        };
+        if let Bind::To(t) = self.fwd[ga as usize] {
+            if t != gb {
+                self.back[t as usize] = Bind::Dead;
+            }
+        }
+        if let Bind::To(t) = self.back[gb as usize] {
+            if t != ga {
+                self.fwd[t as usize] = Bind::Dead;
+            }
+        }
+        self.bind(ga, gb);
+        true
     }
 
     fn slot(&mut self, a: (Reg, Num), b: (Reg, Num)) -> bool {
@@ -208,7 +269,16 @@ impl Unify {
     }
 
     fn line(&mut self, a: &Shape, b: &Shape) -> bool {
-        a.mn == b.mn && a.rep == b.rep && a.ops.len() == b.ops.len() && a.ops.iter().zip(&b.ops).all(|(x, y)| self.op(x, y))
+        if a.mn != b.mn || a.rep != b.rep || a.ops.len() != b.ops.len() {
+            return false;
+        }
+        if self.kill && a.kill && b.kill {
+            if let (Opnd::Reg(x), Opnd::Reg(y)) = (a.ops[0], b.ops[0]) {
+                // what it reads first (`mov esi, [esi + 0x10]` reads the old esi), then the overwrite
+                return a.ops[1..].iter().zip(&b.ops[1..]).all(|(x, y)| self.op(x, y)) && self.renew(x, y);
+            }
+        }
+        a.ops.iter().zip(&b.ops).all(|(x, y)| self.op(x, y))
     }
 
     fn all(&mut self, a: &[Shape], b: &[Shape]) -> bool {
@@ -257,7 +327,7 @@ fn name(g: u8) -> String {
 /// The registers the renaming moves, as the notes write them (`eax->ecx edx->eax`: ours -> the original's), in the
 /// order of our names.
 fn reg_desc(u: &Unify) -> String {
-    let mut pairs: Vec<(String, String)> = (0..8u8).filter_map(|g| u.fwd[g as usize].filter(|&t| t != g).map(|t| (name(g), name(t)))).collect();
+    let mut pairs: Vec<(String, String)> = u.pairs.iter().filter(|p| p.0 != p.1).map(|&(g, t)| (name(g), name(t))).collect();
     pairs.sort();
     pairs.iter().map(|(k, v)| format!("{k}->{v}")).collect::<Vec<_>>().join(" ")
 }
@@ -427,14 +497,14 @@ pub fn explain(xa: &[Shape], xb: &[Shape], context: &[Shape]) -> Option<(String,
         let s: BTreeSet<(String, u8)> = xa.iter().chain(xb).flat_map(gprs).filter(|g| allowed & 1 << g != 0).map(|g| (name(g), g)).collect();
         s.into_iter().map(|x| x.1).collect()
     };
-    let mut u = Unify::new(allowed, Slots::None);
+    let mut u = Unify::renewing(allowed, Slots::None);
     if u.all(xa, xb) {
         let d = reg_desc(&u);
         if !d.is_empty() {
             return Some(("regs".into(), d));
         }
     }
-    let mut u = Unify::new(allowed, Slots::ByOffset);
+    let mut u = Unify::renewing(allowed, Slots::ByOffset);
     if u.all(xa, xb) {
         let (rd, sd) = (reg_desc(&u), slot_desc(&slot_pairs(&u)));
         if !sd.is_empty() {
@@ -658,8 +728,11 @@ pub fn parse(text: &str) -> Shape {
     };
     let (mn, ops) = rest.split_once(' ').unwrap_or((rest, ""));
     let mn = iced_x86::Mnemonic::values().map(dis::mnemonic_name).find(|n| *n == mn).unwrap_or_else(|| panic!("no mnemonic {mn}"));
-    let ops = if ops.is_empty() { vec![] } else { ops.split(", ").map(operand).collect() };
-    Shape { mn, rep, ops }
+    let ops: Vec<Opnd> = if ops.is_empty() { vec![] } else { ops.split(", ").map(operand).collect() };
+    // the instructions the tests write that overwrite their first operand without reading it
+    let kill = matches!(mn, "mov" | "lea" | "movzx" | "movsx" | "pop")
+        && matches!(ops.first(), Some(Opnd::Reg(r)) if r.size() == 4 && dis::gpr(*r).is_some());
+    Shape { mn, rep, ops, kill }
 }
 
 #[cfg(test)]
@@ -703,7 +776,7 @@ mod tests {
         // parts follow their register
         assert_eq!(cls(&["mov al, byte ptr [ecx]", "movzx eax, al"], &["mov dl, byte ptr [ecx]", "movzx edx, dl"]).unwrap().0, "regs");
         // not a bijection: two of ours to one of theirs
-        assert_eq!(cls(&["mov eax, ecx", "mov edx, ecx"], &["mov eax, ecx", "mov eax, ecx"]), None);
+        assert_eq!(cls(&["add eax, ecx", "add edx, ecx"], &["add eax, ecx", "add eax, ecx"]), None);
         // more than six registers in play: a permutation search gave up, the unification does not
         let a = ["mov eax, ebx", "mov ecx, edx", "mov esi, edi", "mov ebp, eax", "add ebx, ecx"];
         let b = ["mov ebx, eax", "mov edx, ecx", "mov edi, esi", "mov ebp, ebx", "add eax, edx"];
@@ -736,6 +809,19 @@ mod tests {
         assert!(c == "slots" && why.contains("across a push"), "{c} {why}");
         let same = ["mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "push edx", "mov word ptr [esp + 0xa8], ax", "mov dword ptr [esp + 0xd4], ecx"];
         assert_eq!(cls(&ours, &same).unwrap().0, "order");
+    }
+
+    #[test]
+    fn renaming_renewed_where_a_register_is_overwritten() {
+        // gildegold ai_ExecuteMasterBuilder: ours reuses esi once s1 is dead, the original takes eax
+        let ours = ["mov esi, dword ptr [esi + 0x10]", "test esi, esi", "cmp esi, 4", "fstp dword ptr [esi*8 + X]"];
+        let orig = ["mov eax, dword ptr [esi + 0x10]", "test eax, eax", "cmp eax, 4", "fstp dword ptr [eax*8 + X]"];
+        assert_eq!(cls(&ours, &orig), Some(("regs".into(), "esi->eax".into())));
+        // the old partner is dead after the overwrite: the original still reading esi there is no renaming
+        let orig = ["mov eax, dword ptr [esi + 0x10]", "test eax, eax", "cmp esi, 4", "fstp dword ptr [eax*8 + X]"];
+        assert_eq!(cls(&ours, &orig), None);
+        // one renaming for the whole function does not renew
+        assert!(!one_renaming(&parse_all(&["mov esi, dword ptr [esi + 0x10]", "ret"]), &parse_all(&["mov eax, dword ptr [esi + 0x10]", "ret"])));
     }
 
     #[test]

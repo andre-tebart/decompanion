@@ -863,14 +863,14 @@ mod tests {
         let v = verdict(&a, &b, None);
         assert!(v.shape && v.distance == 20 && v.hunks == [("slots".to_string(), 20)], "{:?} {}", v.hunks, v.distance);
         // two copies whose differences are fewer than 5 lines apart join into one hunk; each copy has its own
-        // register allocation (ours edx in both, the original's ecx in the first, ebx in the second): no one
-        // renaming explains the hunk, one explains each piece of it
+        // register allocation (ours edx in both, the original's ecx in the first, ebx in the second). Each copy
+        // starts by loading the register, so the renaming is renewed there and one hunk reads regs as a whole
         let a = to_lines([body(0, "0x10", "edx"), body(1, "0x10", "edx"), vec!["ret".to_string()]].concat());
         let b = to_lines([body(0, "0x10", "ecx"), body(1, "0x10", "ebx"), vec!["ret".to_string()]].concat());
         assert_eq!(hunks(&texts(&a), &texts(&b)).len(), 1);
         let hs = classify_hunks(&a, &b);
-        assert!(hs.len() > 1 && hs.iter().all(|h| h.4 == "regs"), "{hs:?}");
-        assert!(hs[0].5.contains("edx->ecx") && hs[hs.len() - 1].5.contains("edx->ebx"), "{hs:?}");
+        assert!(hs.iter().all(|h| h.4 == "regs"), "{hs:?}");
+        assert!(hs.iter().any(|h| h.5.contains("edx->ecx")) && hs.iter().any(|h| h.5.contains("edx->ebx")), "{hs:?}");
         assert!(verdict(&a, &b, None).shape);
         // a piece no class explains stays code beside the explained ones
         let mut c = [body(0, "0x10", "ecx"), body(1, "0x10", "ebx"), vec!["ret".to_string()]].concat();
