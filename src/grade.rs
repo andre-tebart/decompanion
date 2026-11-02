@@ -110,7 +110,7 @@ fn compute(env: &Env, t: &Task, align: i64) -> Computed {
     let extent = t.whi.map(|h| h - t.lo).unwrap_or(size);
     let slot = extent.max(t.next as i64 - t.lo);
     let o = diffclass::original(env, t.lo as u32, extent, slot, align);
-    let v = if t.matched { None } else { Some(diffclass::function_verdict(env, t.obj, t.code, t.lo as u32, &o)) };
+    let v = if t.matched { None } else { Some(diffclass::FunctionCompare::new(env, t.obj, t.code, t.lo as u32, &o).verdict) };
     (size, extent, slot, o, v)
 }
 
@@ -203,7 +203,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             why = w;
         } else {
             if h.verdict.get().is_none() {
-                let v = diffclass::function_verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o);
+                let v = diffclass::FunctionCompare::new(&env, &f.obj.0, &f.code, lo as u32, &h.o).verdict;
                 let _ = h.verdict.set(v);
             }
             let v: &Verdict = h.verdict.get().unwrap();

@@ -1089,7 +1089,7 @@ fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Resul
             let extent = d.get("extent").and_then(|v| v.as_i64()).unwrap_or(size);
             let slot = d.get("slot").and_then(|v| v.as_i64()).unwrap_or(extent.max(next as i64 - a));
             let orig = crate::diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64);
-            if crate::diffclass::function_verdict(&env, &o, &code, a as u32, &orig).shape { "shape" } else { "draft" }
+            if crate::diffclass::FunctionCompare::new(&env, &o, &code, a as u32, &orig).verdict.shape { "shape" } else { "draft" }
         };
         out.push((a, name, now, grade.to_string()));
     }

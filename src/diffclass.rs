@@ -480,11 +480,6 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
               branches: branches.into_iter().take(12).collect() }
 }
 
-/// diffclass.verdict: the plain diff's, or the frame-aligned one's when the frames differ and the plain one is no shape.
-pub fn verdict(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> Verdict {
-    analyse(la, lb, tables).1
-}
-
 /// diffclass.analyse: (the hunks, the verdict) of two listings: the plain diff, or the frame-aligned one when the
 /// frames differ in size and the plain diff is no shape.
 pub fn analyse(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> (Vec<Hunk>, Verdict) {
@@ -779,20 +774,38 @@ pub fn compare_tables(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::Fun
     Some(Tables { entries, bytes: nbytes, diffs })
 }
 
-/// diffclass.compare_function + verdict: our function against the original at addr, given the Original.
-pub fn function_verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, addr: u32, o: &Original) -> Verdict {
-    let (cd, cm) = code.code();
-    let la = x86::strip_fill(x86::listing(cd, addr, Some(cm), env.range, env.fills));
-    let data = env.img.read(addr, o.code.max(0) as usize);
-    let lb = x86::strip_fill(x86::listing(&data, addr, None, env.range, env.fills));
-    let t = compare_tables(env, obj, code, addr, &la, &lb, &o.tables);
-    verdict(&la, &lb, t.as_ref())
+/// One function's comparison, computed once: our object's function against the original at `addr` (as the walk of
+/// its slot found it: `Original`), both listings, the switch tables, the classified hunks and the verdict. G.grade (which
+/// keeps the verdict by the function's content), `dcp asmdiff`, `dcp diffclass`, `dcp level` and the header trial
+/// all read it.
+pub struct FunctionCompare {
+    pub la: Vec<Line>,
+    pub lb: Vec<Line>,
+    pub tables: Option<Tables>,
+    pub hunks: Vec<Hunk>,
+    pub verdict: Verdict,
+}
+
+impl FunctionCompare {
+    pub fn new(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, addr: u32, original: &Original) -> FunctionCompare {
+        let (cd, cm) = code.code();
+        let la = x86::strip_fill(x86::listing(cd, addr, Some(cm), env.range, env.fills));
+        let data = env.img.read(addr, original.code.max(0) as usize);
+        let lb = x86::strip_fill(x86::listing(&data, addr, None, env.range, env.fills));
+        let tables = compare_tables(env, obj, code, addr, &la, &lb, &original.tables);
+        let (hunks, verdict) = analyse(&la, &lb, tables.as_ref());
+        FunctionCompare { la, lb, tables, hunks, verdict }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::pe::testpe::{build_with, BASE, TEXT};
+
+    fn verdict(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> Verdict {
+        analyse(la, lb, tables).1
+    }
 
     fn lines(texts: &[&str]) -> Vec<Line> {
         texts.iter().enumerate().map(|(k, t)| Line { addr: 0x1000 + k as u32, size: 1, text: t.to_string(), fill: *t == "nop" || *t == "int3", target: None }).collect()

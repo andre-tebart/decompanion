@@ -2,21 +2,18 @@
 //! listing against the original's, the switch tables, the hunks and the verdict), for the commands to print.
 
 use crate::error::{Error, Result};
-use crate::diffclass::{self, Env, Hunk, Tables, Verdict};
+use crate::diffclass::{self, Env, FunctionCompare};
 use crate::project::Project;
 use crate::store;
 use crate::x86::Line;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
 
-/// A function's reading: its grade row, our listing, the original's, the tables compare, the hunks and the verdict.
+/// A function's reading: its grade row and its comparison (our listing, the original's, the tables compare, the
+/// hunks and the verdict: `FunctionCompare`, which it derefs to).
 pub struct Reading {
     pub row: Value,
-    pub la: Vec<Line>,
-    pub lb: Vec<Line>,
-    pub tables: Option<Tables>,
-    pub hunks: Vec<Hunk>,
-    pub verdict: Verdict,
+    pub fc: FunctionCompare,
     /// the texts of la and lb with names for X (reading's `names`): our relocations' symbols, the ledger's labels
     pub named: Option<(Vec<String>, Vec<String>)>,
     /// with `named`, per line the values behind its X fields in text order: ours what each resolves to, the
@@ -32,6 +29,13 @@ pub enum Val {
     Addrs(Vec<i64>),
     Lit(Vec<u8>),
     Unknown,
+}
+
+impl std::ops::Deref for Reading {
+    type Target = FunctionCompare;
+    fn deref(&self) -> &FunctionCompare {
+        &self.fc
+    }
 }
 
 impl Reading {
@@ -225,12 +229,10 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
         }
     };
     let o = diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64);
-    let (cd, cm) = code.code();
-    let la = crate::x86::strip_fill(crate::x86::listing(cd, a as u32, Some(cm), env.range, env.fills));
     let data = img.read(a as u32, o.code.max(0) as usize);
-    let lb = crate::x86::strip_fill(crate::x86::listing(&data, a as u32, None, env.range, env.fills));
-    let tables = diffclass::compare_tables(&env, &obj, &code, a as u32, &la, &lb, &o.tables);
-    let (hunks, verdict) = diffclass::analyse(&la, &lb, tables.as_ref());
+    let fc = FunctionCompare::new(&env, &obj, &code, a as u32, &o);
+    let (cd, cm) = code.code();
+    let (la, lb) = (&fc.la, &fc.lb);
     let (named, values) = match names {
         None => (None, None),
         Some(names) => {
@@ -263,13 +265,13 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
                     }
                     None => {
                         vals_a.borrow_mut().entry(ins).or_default().push(if own.0 <= v && v < own.1 { Val::Unknown } else { Val::Addrs(vec![v]) });
-                        Some(label(names, &img, own, v, bound(&la, ins).then_some(used.as_slice())))
+                        Some(label(names, &img, own, v, bound(la, ins).then_some(used.as_slice())))
                     }
                 }
             };
             let theirs = |ins: u32, _: Option<usize>, v: i64| -> Option<String> {
                 vals_b.borrow_mut().entry(ins).or_default().push(v);
-                Some(label(names, &img, own, v, bound(&lb, ins).then_some(used.as_slice())))
+                Some(label(names, &img, own, v, bound(lb, ins).then_some(used.as_slice())))
             };
             let na = crate::x86::listing_named(cd, a as u32, Some(cm), env.range, env.fills, &ours);
             let nb = crate::x86::listing_named(&data, a as u32, None, env.range, env.fills, &theirs);
@@ -280,7 +282,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
              Some(values))
         }
     };
-    Ok(Ok(Reading { row, la, lb, tables, hunks, verdict, named, values }))
+    Ok(Ok(Reading { row, fc, named, values }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points
