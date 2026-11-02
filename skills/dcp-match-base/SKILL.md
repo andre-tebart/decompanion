@@ -89,6 +89,11 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   on one side, in a slot on the other). A switch's jump and index tables are data, not code: `tables=equal`
   (or `differ` with the entries that point elsewhere: a case body or the case order differs). grade, asmdiff
   and diffclass read the same extent, so `hunks=0` with equal tables is shape.
+  `proof:` (the last line) is the dataflow prover's reading of the whole function: `equal` means it showed both do
+  the same (the same stores and calls with the same arguments in the same order, the same branches and return
+  value, whatever registers, slots, instruction choice or block layout); `unknown:` names what stopped it and
+  where (an FPU instruction, a call or store that differs, ...): the first place to read. It is a report: the
+  grade does not read it yet.
 - `dcp disasm 0xADDR` - the original code (`--ours NAME`: ours from its object; `--no-bytes`, `--range +0x200..+0x400`);
   `dcp dump 0xADDR [LEN]` - its constants and strings.
 - `dcp refs NAME|0xADDR` - every use and declaration: the callers say what a parameter means.

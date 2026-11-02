@@ -38,6 +38,7 @@ mod diffclass;
 mod edit;
 mod difflib;
 mod engine;
+mod equiv;
 mod error;
 mod exceptions;
 mod fsmemo;

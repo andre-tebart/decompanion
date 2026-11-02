@@ -460,6 +460,10 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
         }
     }
     out.push(format!("  summary: {}", v.summary()));
+    let (proof, unbound) = &r.proof;
+    let base = int(&row, "addr") as u32;
+    out.push(format!("  proof: {}{}", proof.summary(base),
+                     if *unbound > 0 { format!("; {unbound} of our relocations without a site that lines up") } else { String::new() }));
     Ok((out, None, 0))
 }
 

@@ -61,6 +61,18 @@ regular expressions over the listing text; Phase 2's lift reads the same record.
 
 ## Phase 2 — dataflow-equivalence prover (report first, then grade)
 
+Status (2026-11-02): first slice in equiv.rs, reported by `dcp diffclass` (`proof:`), not graded. One module:
+the arena (linear normal form, partial registers, loads keyed by the memory state, conditions canonical under
+mirror and complement), blocks paired in lockstep with a location correspondence narrowed to a fixpoint (a block
+may pair with several), our relocations bound through aligned sites (equiv::bind), calls compared by target and
+the slots pushed since the last call (saves of callee-saved registers left out; through memory without `add esp`
+after: stdcall), an escaped frame (an address passed on, an indexed access, rep stos / movs) compared as memory
+from the escaped address (locals) or by offset (arguments). Not yet: the FPU, parity conditions, switch tables,
+sbb / adc, flags across blocks, return liveness (eax always compared). gildegold af0cd2c: equal for 216 of 317
+byte functions sampled (the rest unknown; one, ch_AttachMotion, wrongly reports a store that differs: a gap
+of the prover, open), 62 of 259 shape, 37 of 1557 draft;
+ai_SaveNetworkGame and ch_AnimDone come out not equal (an extra store, eax at the return).
+
 New flat modules in native/dcp_core/src:
 - **`equiv_lift.rs`**: `dis::Ins` → micro-ops. dis.rs (iced-x86) already gives the mnemonic id, typed operands
   (registers as `iced_x86::Register`, memory with segment / base / index / scale / disp / size), the disp / imm /

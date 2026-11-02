@@ -19,6 +19,9 @@ pub struct Reading {
     /// with `named`, per line the values behind its X fields in text order: ours what each resolves to, the
     /// original's the number (Reading::same_values)
     pub values: Option<(Vec<Vec<Val>>, Vec<Vec<i64>>)>,
+    /// the dataflow-equivalence prover's verdict (equiv.rs: reported, not graded yet), and how many of our
+    /// relocations it could not bind to the original's addresses
+    pub proof: (crate::equiv::Outcome, usize),
 }
 
 /// What one of our X fields refers to, for comparing it with the original's number: the addresses its symbol
@@ -420,7 +423,11 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
              Some(values))
         }
     };
-    Ok(Ok(Reading { row, fc, named, values }))
+    let proof = {
+        let (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb);
+        (crate::equiv::prove(&ours, &data, a as u32), unbound)
+    };
+    Ok(Ok(Reading { row, fc, named, values, proof }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points
