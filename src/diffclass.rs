@@ -45,23 +45,112 @@ pub fn frame_distance(a: &[String], b: &[String], frame: (i64, i64)) -> usize {
     }).sum()
 }
 
-/// diffclass.join: differing opcodes joined into hunks when within 4 equal instructions of each other.
-fn join(raw: impl IntoIterator<Item = (usize, usize, usize, usize)>) -> Vec<(usize, usize, usize, usize)> {
-    let mut hs: Vec<(usize, usize, usize, usize)> = vec![];
+/// diffclass.join: differing opcodes joined into hunks when within 4 equal instructions of each other, each hunk
+/// with its opcodes.
+fn join_parts(raw: impl IntoIterator<Item = (usize, usize, usize, usize)>) -> Vec<Vec<(usize, usize, usize, usize)>> {
+    let mut hs: Vec<Vec<(usize, usize, usize, usize)>> = vec![];
     for (i1, i2, j1, j2) in raw {
         if let Some(h) = hs.last_mut() {
-            if i1 as i64 - h.1 as i64 <= 4 && j1 as i64 - h.3 as i64 <= 4 {
-                *h = (h.0, i2, h.2, j2);
+            let l = h[h.len() - 1];
+            if i1 as i64 - l.1 as i64 <= 4 && j1 as i64 - l.3 as i64 <= 4 {
+                h.push((i1, i2, j1, j2));
                 continue;
             }
         }
-        hs.push((i1, i2, j1, j2));
+        hs.push(vec![(i1, i2, j1, j2)]);
     }
     hs
 }
 
+fn span(ps: &[(usize, usize, usize, usize)]) -> (usize, usize, usize, usize) {
+    (ps[0].0, ps[ps.len() - 1].1, ps[0].2, ps[ps.len() - 1].3)
+}
+
+fn join(raw: impl IntoIterator<Item = (usize, usize, usize, usize)>) -> Vec<(usize, usize, usize, usize)> {
+    join_parts(raw).iter().map(|h| span(h)).collect()
+}
+
 fn hunks(a: &[String], b: &[String]) -> Vec<(usize, usize, usize, usize)> {
     join(opcodes(a, b).into_iter().filter(|o| o.0 != Tag::Equal).map(|o| (o.1, o.2, o.3, o.4)))
+}
+
+/// The lines of both sides hashed after x86::shape_keys: a quick test of whether a class can explain a piece.
+/// Computed on the first code hunk to split.
+struct Keys<'a> {
+    text: (&'a [String], &'a [String]),
+    keys: std::cell::OnceCell<(Vec<u64>, Vec<u64>)>,
+}
+
+impl Keys<'_> {
+    fn new<'a>(a: &'a [String], b: &'a [String]) -> Keys<'a> {
+        Keys { text: (a, b), keys: Default::default() }
+    }
+
+    /// Whether any class but code can explain the lines a[i1..i2] / b[j1..j2]: their masked lines the same
+    /// multiset, or every line that differs an FPU one, or all fill (classify's and x86::explain's preconditions).
+    fn may_explain(&self, la: &[Line], lb: &[Line], i1: usize, i2: usize, j1: usize, j2: usize) -> bool {
+        if i2 - i1 == j2 - j1 {
+            let (ka, kb) = self.keys.get_or_init(|| {
+                let h = |t: &String| {
+                    use std::hash::{Hash, Hasher};
+                    let mut s = std::collections::hash_map::DefaultHasher::new();
+                    t.hash(&mut s);
+                    s.finish()
+                };
+                (x86::shape_keys(self.text.0).iter().map(h).collect(), x86::shape_keys(self.text.1).iter().map(h).collect())
+            });
+            let (mut x, mut y) = (ka[i1..i2].to_vec(), kb[j1..j2].to_vec());
+            x.sort_unstable();
+            y.sort_unstable();
+            if x == y {
+                return true;
+            }
+        }
+        let (sa, sb): (HashSet<&str>, HashSet<&str>) = (la[i1..i2].iter().map(|l| l.text.as_str()).collect(), lb[j1..j2].iter().map(|l| l.text.as_str()).collect());
+        sa.symmetric_difference(&sb).all(|t| t.starts_with('f')) || la[i1..i2].iter().chain(&lb[j1..j2]).all(|l| l.fill)
+    }
+}
+
+/// The classified hunks of one joined hunk: the whole when a class explains it, else its pieces. A joined hunk can
+/// span several places that differ each in its own way (two copies of a loop, each with its own register
+/// allocation, the equal lines between them fewer than 5): no one renaming explains the whole, one explains each
+/// copy. A code hunk of several opcodes is cut at its widest run of equal lines and each half classified the same
+/// way; the code pieces in a row are one code hunk again.
+fn classify_joined(la: &[Line], lb: &[Line], at: &[String], keys: &Keys, parts: &[(usize, usize, usize, usize)]) -> Vec<Hunk> {
+    let (i1, i2, j1, j2) = span(parts);
+    let (c, n) = classify(la, lb, at, i1, i2, j1, j2);
+    if c != "code" || parts.len() == 1 {
+        return vec![(i1, i2, j1, j2, c, n)];
+    }
+    let mut pieces: Vec<Hunk> = vec![];
+    let cut = |ps: &[(usize, usize, usize, usize)]| (1..ps.len()).max_by_key(|&k| (ps[k].0 - ps[k - 1].1).max(ps[k].2 - ps[k - 1].3)).unwrap();
+    let k = cut(parts);
+    let mut todo = vec![&parts[k..], &parts[..k]];
+    while let Some(ps) = todo.pop() {
+        let (x1, x2, y1, y2) = span(ps);
+        if keys.may_explain(la, lb, x1, x2, y1, y2) {
+            let (c, n) = classify(la, lb, at, x1, x2, y1, y2);
+            if c != "code" {
+                pieces.push((x1, x2, y1, y2, c, n));
+                continue;
+            }
+        }
+        if ps.len() == 1 {
+            pieces.push((x1, x2, y1, y2, "code".into(), String::new()));
+            continue;
+        }
+        let k = cut(ps);
+        todo.push(&ps[k..]);
+        todo.push(&ps[..k]);
+    }
+    let mut out: Vec<Hunk> = vec![];
+    for h in pieces {
+        match out.last_mut() {
+            Some(l) if l.4 == "code" && h.4 == "code" => (l.1, l.3) = (h.1, h.3),
+            _ => out.push(h),
+        }
+    }
+    out
 }
 
 fn classify(la: &[Line], lb: &[Line], at: &[String], i1: usize, i2: usize, j1: usize, j2: usize) -> (String, String) {
@@ -78,10 +167,9 @@ fn classify(la: &[Line], lb: &[Line], at: &[String], i1: usize, i2: usize, j1: u
 
 fn classify_hunks(la: &[Line], lb: &[Line]) -> Vec<Hunk> {
     let (a, b) = (texts(la), texts(lb));
-    hunks(&a, &b).into_iter().map(|(i1, i2, j1, j2)| {
-        let (c, n) = classify(la, lb, &a, i1, i2, j1, j2);
-        (i1, i2, j1, j2, c, n)
-    }).collect()
+    let keys = Keys::new(&a, &b);
+    join_parts(opcodes(&a, &b).into_iter().filter(|o| o.0 != Tag::Equal).map(|o| (o.1, o.2, o.3, o.4)))
+        .iter().flat_map(|ps| classify_joined(la, lb, &a, &keys, ps)).collect()
 }
 
 fn frame_hunks(la: &[Line], lb: &[Line], frame: (i64, i64)) -> Vec<Hunk> {
@@ -117,9 +205,9 @@ fn frame_hunks(la: &[Line], lb: &[Line], frame: (i64, i64)) -> Vec<Hunk> {
             }
         }
     }
-    for (i1, i2, j1, j2) in join(other) {
-        let (c, n) = classify(la, lb, &a, i1, i2, j1, j2);
-        out.push((i1, i2, j1, j2, c, n));
+    let keys = Keys::new(&a, &b);
+    for ps in join_parts(other) {
+        out.extend(classify_joined(la, lb, &a, &keys, &ps));
     }
     out.sort();
     out
@@ -741,6 +829,38 @@ mod tests {
         assert_eq!(classes(&a, &b), ["code"]);
         assert!(!v.shape && v.distance == 2);
         assert_eq!(weight(&verdict(&lines(&["ret", "nop", "nop"]), &lines(&["ret", "int3"]), None), "fill"), Some(3));
+    }
+
+    #[test]
+    fn repeated_loops() {
+        // eleven copies of one column loop (a match-base report, gildegold ai_FillNearRing): ours keeps the column
+        // pointer in another stack slot, the original's sixth copy as ours. Each copy aligns with its own and every
+        // difference reads slots (the longest-run alignment paired copies across: one code hunk of hundreds of lines)
+        let body = |k: usize, slot: &str, r: &str| -> Vec<String> {
+            vec![format!("mov {r}, dword ptr [esp + {slot}]"), format!("mov eax, dword ptr [{r} + {k}]"), "push eax".into(), "call X".into(),
+                 format!("mov esi, {r}"), "add esp, 4".into(), "test esi, esi".into(), "je X".into(), "fstp dword ptr [edi]".into(),
+                 format!("inc {r}"), "add edi, 0xc".into()]
+        };
+        let to_lines = |v: Vec<String>| lines(&v.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+        let a = to_lines((0..11).flat_map(|k| body(k % 3, "0x10", "edx")).chain(["ret".to_string()]).collect());
+        let b = to_lines((0..11).flat_map(|k| body(k % 3, if k == 5 { "0x10" } else { "0x18" }, "edx")).chain(["ret".to_string()]).collect());
+        let v = verdict(&a, &b, None);
+        assert!(v.shape && v.distance == 20 && v.hunks == [("slots".to_string(), 20)], "{:?} {}", v.hunks, v.distance);
+        // two copies whose differences are fewer than 5 lines apart join into one hunk; each copy has its own
+        // register allocation (ours edx in both, the original's ecx in the first, ebx in the second): no one
+        // renaming explains the hunk, one explains each piece of it
+        let a = to_lines([body(0, "0x10", "edx"), body(1, "0x10", "edx"), vec!["ret".to_string()]].concat());
+        let b = to_lines([body(0, "0x10", "ecx"), body(1, "0x10", "ebx"), vec!["ret".to_string()]].concat());
+        assert_eq!(hunks(&texts(&a), &texts(&b)).len(), 1);
+        let hs = classify_hunks(&a, &b);
+        assert!(hs.len() > 1 && hs.iter().all(|h| h.4 == "regs"), "{hs:?}");
+        assert!(hs[0].5.contains("edx->ecx") && hs[hs.len() - 1].5.contains("edx->ebx"), "{hs:?}");
+        assert!(verdict(&a, &b, None).shape);
+        // a piece no class explains stays code beside the explained ones
+        let mut c = [body(0, "0x10", "ecx"), body(1, "0x10", "ebx"), vec!["ret".to_string()]].concat();
+        c[13] = "push ebx".into();
+        let hs = classify_hunks(&a, &to_lines(c));
+        assert!(hs.iter().any(|h| h.4 == "code") && hs.iter().any(|h| h.4 == "regs"), "{hs:?}");
     }
 
     #[test]

@@ -74,6 +74,12 @@ fn t_both(lines: &[String]) -> Vec<String> {
     t_reg(lines).iter().map(|t| rslot_re().replace_all(t, "[$1 S]").into_owned()).collect()
 }
 
+/// Each line with its register names and its `[reg +- N]` offsets masked: what no class of a hunk changes but its
+/// order (a hunk's lines whose multisets of these differ is code, or fpu, or fill).
+pub fn shape_keys(lines: &[String]) -> Vec<String> {
+    t_both(lines)
+}
+
 /// int(s, 0) of the numbers capstone and the listing write (an optional sign, 0x hex or decimal).
 pub fn py_int0(s: &str) -> i64 {
     let (neg, t) = match s.strip_prefix('-') {
