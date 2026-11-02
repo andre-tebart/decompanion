@@ -907,10 +907,10 @@ impl Exec<'_> {
             if o > 0 && !self.corr.written.contains(&o) {
                 return self.ar.var(Var::Arg(o));
             }
-            // a local read before anything was written to it on the path from the entry (the rest of a cell a
-            // byte was stored to): stack garbage on both sides, one value (a program that read it would read
-            // garbage either way)
-            if o < 0 && self.pair == 0 {
+            // a local nothing has written on any path so far (an uninitialised variable, the rest of a cell a byte
+            // was stored to): stack garbage on both sides, one value (a program that read it would read garbage
+            // either way)
+            if o < 0 && !self.corr.written.contains(&o) {
                 return self.ar.var(Var::Undef(i32::MIN));
             }
         }
@@ -983,9 +983,7 @@ impl Exec<'_> {
     }
 
     fn set_slot(&mut self, o: i32, v: E) {
-        if o > 0 {
-            self.written.insert(o);
-        }
+        self.written.insert(o);
         // a cell reserved for a call's arguments, written: an argument
         if let Some(k) = self.reserved.iter().position(|&r| r == o) {
             self.reserved.remove(k);
@@ -1393,9 +1391,14 @@ impl Exec<'_> {
             ("call", 1) => {
                 let t = self.get(&ops[0])?;
                 let t = self.launder(t)?;
-                let mut offs: Vec<i32> = self.pushed.iter().copied().filter(|&o| o >= self.sp).collect();
-                offs.sort();
-                offs.dedup();
+                // the arguments: the cells from esp up that were pushed (or written into space reserved by a
+                // `sub esp`), up to the first one that was not (a save, a local)
+                let mut offs: Vec<i32> = vec![];
+                let mut o = self.sp;
+                while self.pushed.contains(&o) {
+                    offs.push(o);
+                    o += 4;
+                }
                 let mut args = vec![];
                 for o in offs {
                     let c = self.ar.c(o as u32);
@@ -1598,7 +1601,7 @@ fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
     // pair of the slot with itself), made explicit before the two meet
     let explicit = |c: &Corr, other: &Corr| -> Vec<(Loc, Loc)> {
         let mut p = c.pairs.clone();
-        for &o in other.written.difference(&c.written) {
+        for &o in other.written.difference(&c.written).filter(|&&o| o > 0) {
             if !p.iter().any(|x| x.0 == Loc::Slot(o) || x.1 == Loc::Slot(o)) {
                 p.push((Loc::Slot(o), Loc::Slot(o)));
             }
@@ -1711,6 +1714,10 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
         }
         let written: BTreeSet<i32> = ra.written.union(&rb.written).copied().collect();
         let next = exit_corr(&ra, &rb, written);
+        if std::env::var_os("DCP_EQUIV_TRACE").is_some() {
+            eprintln!("trace: pair {pair} {a:#x}/{b:#x} sp {:?} in {} out {} eax {} | {}", corr.sp, corr.pairs.len(), next.pairs.len(),
+                      ar.show(ra.eax), ar.show(rb.eax));
+        }
         match (&ba.term, &bb.term) {
             (Term::Ret(pa), Term::Ret(pb)) => {
                 if pa != pb {
@@ -1755,6 +1762,10 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
                     work.push((*ta, *fb, next.clone()));
                     work.push((*fa, *tb, next));
                 } else {
+                    if std::env::var_os("DCP_EQUIV_DEBUG").is_some() {
+                        eprintln!("equiv: block pair {a:#x} / {b:#x}: conditions\n  ours: {}\n  the original: {}\n  correspondence: {:?}",
+                                  ar.show(ka), ar.show(kb), corr.pairs);
+                    }
                     return unknown("the branches test different conditions".into(), a, b);
                 }
             }
