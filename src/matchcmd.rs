@@ -280,8 +280,58 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
 /// differ in size (diffclass's frame alignment), the lines are aligned with their stack offsets masked and a line
 /// that differs from the original's only by the frame's shift counts as equal (`~` when printed); `plain`: the
 /// diff of the texts as they are.
+/// Which lines of asmdiff's listing print (`--changed`, `--at`, `--context`, `--side`).
+pub struct View {
+    pub changed: bool,
+    pub at: Option<String>,
+    pub context: Option<usize>,
+    pub side: Option<String>,
+}
+
+/// The lines of an aligned listing (every line: `all`) that `--changed` / `--at` keep: the differing lines (or the
+/// line at the address) with `context` lines around each, a gap as `... N lines ...`.
+fn window(body: Vec<String>, view: &View) -> std::result::Result<Vec<String>, String> {
+    let addr_of = |l: &str| l.get(3..13).and_then(|h| i64::from_str_radix(h.trim_start_matches("0x"), 16).ok());
+    let differs = |l: &str| matches!(l.as_bytes().first(), Some(b'-' | b'+' | b'!' | b'='));
+    let mut keep = vec![false; body.len()];
+    let mut mark = |k: usize, n: usize| {
+        for x in keep.iter_mut().take((k + n + 1).min(body.len())).skip(k.saturating_sub(n)) {
+            *x = true;
+        }
+    };
+    if let Some(at) = &view.at {
+        let a = crate::cliread::parse_addr(at)?;
+        let n = view.context.unwrap_or(20);
+        let k = body.iter().position(|l| addr_of(l).is_some_and(|x| x >= a)).ok_or_else(|| format!("--at {at}: past the function's last line"))?;
+        mark(k, n);
+    }
+    if view.changed {
+        let n = view.context.unwrap_or(3);
+        for k in (0..body.len()).filter(|&k| differs(&body[k])) {
+            mark(k, n);
+        }
+    }
+    let mut out = vec![];
+    let mut gap = 0;
+    for (l, k) in body.into_iter().zip(keep) {
+        if k {
+            if gap > 0 {
+                out.push(format!("     ... {gap} line{} ...", if gap == 1 { "" } else { "s" }));
+                gap = 0;
+            }
+            out.push(l);
+        } else {
+            gap += 1;
+        }
+    }
+    if gap > 0 {
+        out.push(format!("     ... {gap} line{} ...", if gap == 1 { "" } else { "s" }));
+    }
+    Ok(out)
+}
+
 pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<String>, all: bool, symbols: bool,
-                       plain: bool) -> Result<Out> {
+                       plain: bool, view: View) -> Result<Out> {
     let r = match reading(p, name, "asmdiff", symbols)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
@@ -314,7 +364,22 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     let (pa, pb) = if r.named.is_some() { (&sa, &sb) } else { (&a, &b) };
     let img = if r.values.is_some() { Some(crate::image(&p.target(None).map_err(Error::runtime)?.path)?) } else { None };
     let same = |i: usize, j: usize| img.as_ref().is_some_and(|img| r.same_values(img, i, j));
-    let (n, frame, body) = diff_lines(&r.la, &r.lb, &a, &b, &ka, &kb, pa, pb, plain, all, &same, &|i, j| r.addresses(i, j));
+    // a window (--changed, --at) cuts the whole listing; one side (--side) prints its own lines in its own order
+    let windowed = view.changed || view.at.is_some();
+    let (n, frame, mut body) = diff_lines(&r.la, &r.lb, &a, &b, &ka, &kb, pa, pb, plain, all || windowed, &same, &|i, j| r.addresses(i, j));
+    if let Some(side) = &view.side {
+        body = if side == "ours" {
+            r.la.iter().zip(pa).map(|(l, t)| format!("   {:#010x}  {t}", l.addr)).collect()
+        } else {
+            r.lb.iter().zip(pb).map(|(l, t)| format!("   {:#010x}  {t}", l.addr)).collect()
+        };
+    }
+    if windowed {
+        body = match window(body, &view) {
+            Ok(b) => b,
+            Err(e) => return Ok((vec![], Some(e), 2)),
+        };
+    }
     let row = r.row.as_object().cloned().unwrap_or_default();
     let mut head = record(&[("fn", Tok::I(int(&row, "addr"))), ("name", vt(row.get("name"))), ("code", vt(row.get("code"))), ("ours", Tok::I(a.len() as i64)),
                             ("original", Tok::I(b.len() as i64)), ("differing", Tok::I(n as i64))]);
@@ -662,6 +727,22 @@ pub fn lint_command(p: &crate::project::Project) -> Result<(Vec<String>, bool)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asmdiff_windows() {
+        let body: Vec<String> = (0..20u32).map(|k| {
+            let m = if k == 10 { "-" } else if k == 11 { "+" } else { " " };
+            format!("{m}  {:#010x}  nop", 0x1000 + k)
+        }).collect();
+        let v = |changed, at: Option<&str>, context| View { changed, at: at.map(|x| x.to_string()), context, side: None };
+        let w = window(body.clone(), &v(true, None, Some(1))).unwrap();
+        assert_eq!(w, ["     ... 9 lines ...", "   0x00001009  nop", "-  0x0000100a  nop", "+  0x0000100b  nop", "   0x0000100c  nop",
+                       "     ... 7 lines ..."]);
+        let w = window(body.clone(), &v(false, Some("0x1002"), Some(2))).unwrap();
+        assert_eq!(w.first().map(|s| s.as_str()), Some("   0x00001000  nop"));
+        assert_eq!(w.len(), 6); // 0x1000..0x1004 and the gap
+        assert!(window(body, &v(false, Some("0x2000"), None)).is_err());
+    }
 
     /// A frame 4 bytes larger shifts every stack offset: aligned, only the store that differs otherwise is a
     /// difference (a match-base report: hundreds of lines differed by the shift alone).

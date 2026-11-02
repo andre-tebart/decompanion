@@ -175,9 +175,10 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::matchcmd::next_command(&p, which, shard, unit, n)?;
             Ok(io.report("next", &l, e.as_deref(), c))
         }
-        Cmd::Asmdiff { name, regs, all, symbols, plain } => {
+        Cmd::Asmdiff { name, regs, all, symbols, plain, changed, at, context, side } => {
             let (p, _) = build_target(io, sel, None, true, false)?;
-            let (l, e, c) = crate::matchcmd::asmdiff_command(&p, &name, regs, all, symbols, plain)?;
+            let view = crate::matchcmd::View { changed, at, context, side };
+            let (l, e, c) = crate::matchcmd::asmdiff_command(&p, &name, regs, all, symbols, plain, view)?;
             Ok(io.report("asmdiff", &l, e.as_deref(), c))
         }
         Cmd::Diffclass { name, all } => {
@@ -271,9 +272,9 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::clicmd::fn_command(&p, &key)?;
             Ok(io.report("fn", &l, e.as_deref(), c))
         }
-        Cmd::Disasm { addr, len, ours } => match ours {
-            Some(n) => read(io, sel, "disasm", "disasm-ours", &[("name", Some(n))]),
-            None => read(io, sel, "disasm", "disasm", &[("addr", addr), ("len", len)]),
+        Cmd::Disasm { addr, len, ours, no_bytes, range } => match ours {
+            Some(n) => read(io, sel, "disasm", "disasm-ours", &[("name", Some(n)), ("no_bytes", flag(no_bytes)), ("range", range)]),
+            None => read(io, sel, "disasm", "disasm", &[("addr", addr), ("len", len), ("no_bytes", flag(no_bytes)), ("range", range)]),
         },
         Cmd::Dump { addr, len, str, dword, float } => {
             read(io, sel, "dump", "dump", &[("addr", Some(addr)), ("len", len), ("str", flag(str)), ("dword", flag(dword)), ("float", flag(float))])

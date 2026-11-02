@@ -192,6 +192,18 @@ pub enum Cmd {
         /// aligns them and a line shifted only by the frame counts as equal)
         #[arg(long)]
         plain: bool,
+        /// only the differing lines, with --context lines around each
+        #[arg(long)]
+        changed: bool,
+        /// only the lines around this address (the original's, or ours on a '-' line): --context lines each way
+        #[arg(long, value_name = "ADDR")]
+        at: Option<String>,
+        /// the lines around a difference (--changed, default 3) or an address (--at, default 20)
+        #[arg(long, value_name = "N")]
+        context: Option<usize>,
+        /// one side's listing alone, in its own order: ours or original (names with --symbols, renamed with --regs)
+        #[arg(long, value_name = "SIDE", value_parser = ["ours", "original"])]
+        side: Option<String>,
     },
     /// the hunk classes of one function's instruction diff
     Diffclass {
@@ -301,6 +313,12 @@ pub enum Cmd {
         /// disassemble our compiled function from its unit's object
         #[arg(long, value_name = "NAME")]
         ours: Option<String>,
+        /// leave out the bytes column (`ADDR  instruction`)
+        #[arg(long, alias = "compact")]
+        no_bytes: bool,
+        /// only the instructions from LO to HI; `+N` is an offset from the listing's start (`+0x200..+0x400`)
+        #[arg(long, value_name = "LO..HI")]
+        range: Option<String>,
     },
     /// the original's bytes: hex and latin-1, strings, dwords, floats, with the symbols of each row
     Dump {

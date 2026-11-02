@@ -206,7 +206,49 @@ type Out = (Vec<String>, Option<String>);
 
 // ------------------------------------------------------------------------------------------------ disasm
 
-fn disasm(r: &Reader, addr: Option<&str>, len: Option<&str>) -> Result<Out> {
+/// How a listing prints (`dcp disasm`, `dcp disasm --ours`): with or without the bytes column, and which of its
+/// instructions (`--range LO..HI`: an address, or `+N` from the listing's start; either end may be left out).
+pub struct ListingView {
+    pub bytes: bool,
+    range: Option<(Option<String>, Option<String>)>,
+}
+
+impl ListingView {
+    pub fn of(no_bytes: bool, range: Option<&str>) -> std::result::Result<ListingView, String> {
+        let range = match range {
+            None => None,
+            Some(r) => {
+                let (lo, hi) = r.split_once("..").ok_or_else(|| format!("--range {r}: LO..HI"))?;
+                let end = |x: &str| (!x.trim().is_empty()).then(|| x.trim().to_string());
+                Some((end(lo), end(hi)))
+            }
+        };
+        Ok(ListingView { bytes: !no_bytes, range })
+    }
+
+    /// Whether the instruction at `a` of a listing that starts at `start` is in the range.
+    fn keeps(&self, a: i64, start: i64) -> std::result::Result<bool, String> {
+        let Some((lo, hi)) = &self.range else { return Ok(true) };
+        let at = |x: &str| -> std::result::Result<i64, String> {
+            match x.strip_prefix('+') {
+                Some(off) => parse_addr(off).map(|o| start + o),
+                None => parse_addr(x),
+            }
+        };
+        Ok(lo.as_deref().map(at).transpose()?.is_none_or(|l| l <= a) && hi.as_deref().map(at).transpose()?.is_none_or(|h| a < h))
+    }
+
+    /// One instruction line: `   ADDR  BYTES  text` (the bytes column when asked).
+    fn line(&self, a: i64, bytes: &[u8], text: &str) -> String {
+        if self.bytes {
+            format!("   {}  {:<16} {text}", fmt_addr(a), crate::fsmemo::hex(bytes))
+        } else {
+            format!("   {}  {text}", fmt_addr(a))
+        }
+    }
+}
+
+fn disasm(r: &Reader, addr: Option<&str>, len: Option<&str>, lv: &ListingView) -> Result<Out> {
     let mut out = vec![];
     let Some(addr) = addr else { return Ok((out, Some("ADDR (or --ours NAME) is required".into()))) };
     let target = &r.p.target_name;
@@ -247,14 +289,16 @@ fn disasm(r: &Reader, addr: Option<&str>, len: Option<&str>) -> Result<Out> {
     let mut end = a;
     for (la, size, text, fill) in &lines {
         let la = *la as i64;
+        end = la + *size as i64;
+        if !lv.keeps(la, a).map_err(Error::value)? {
+            continue;
+        }
         if starts.contains(&la) {
             let hows: BTreeSet<String> = r.facts_in("start", la, la + 1)?.iter().filter_map(|f| f.s("how")).filter(|h| !h.is_empty()).map(|h| h.to_string()).collect();
             let hows = if hows.is_empty() { "symbol".to_string() } else { hows.into_iter().collect::<Vec<_>>().join(",") };
             out.push(format!("-- {}  {}  start: {hows}", fmt_addr(la), r.name(la).unwrap_or_else(|| "-".into())));
         }
-        let raw = crate::fsmemo::hex(&r.img.read(la as u32, *size as usize));
-        out.push(format!("   {}  {:<16} {}{}", fmt_addr(la), raw, r.annotate(text)?, if *fill { "   ; fill" } else { "" }));
-        end = la + *size as i64;
+        out.push(format!("{}{}", lv.line(la, &r.img.read(la as u32, *size as usize), &r.annotate(text)?), if *fill { "   ; fill" } else { "" }));
     }
     if end < hi {
         out.push(format!("   {}  ({} bytes do not decode)", fmt_addr(end), hi - end));
@@ -262,7 +306,7 @@ fn disasm(r: &Reader, addr: Option<&str>, len: Option<&str>) -> Result<Out> {
     Ok((out, None))
 }
 
-fn disasm_ours(r: &Reader, key: &str) -> Result<Out> {
+fn disasm_ours(r: &Reader, key: &str, lv: &ListingView) -> Result<Out> {
     let Some(row) = crate::asmcmd::find_function(&r.db, key)? else {
         return Ok((vec![], Some(format!("--ours {key}: no compiled function of that name or address (dcp build)"))));
     };
@@ -283,11 +327,14 @@ fn disasm_ours(r: &Reader, key: &str) -> Result<Out> {
     let mut out = vec![record(&[("target", s(r.p.target_name.clone())), ("ours", s(name)), ("unit", s(unit)), ("at", Tok::I(addr)),
                                 ("size", Tok::I(code.data.len() as i64)), ("relocations", Tok::I(relocs.len() as i64)), ("code", os(row["code"].as_str()))])];
     for (la, size, text, fill) in lines {
+        if !lv.keeps(la as i64, addr).map_err(Error::value)? {
+            continue;
+        }
         let o = (la as i64 - addr) as u32;
         let hit: Vec<&str> = relocs.range(o..o + size).map(|x| x.1.as_str()).collect();
         let tail = if hit.is_empty() { String::new() } else { format!("   ; reloc {}", hit.join(", ")) };
-        let bytes = crate::fsmemo::hex(&code.data[o as usize..((o + size) as usize).min(code.data.len())]);
-        out.push(format!("   {}  {:<16} {text}{tail}{}", fmt_addr(la as i64), bytes, if fill { "   ; fill" } else { "" }));
+        let bytes = &code.data[o as usize..((o + size) as usize).min(code.data.len())];
+        out.push(format!("{}{tail}{}", lv.line(la as i64, bytes, &text), if fill { "   ; fill" } else { "" }));
     }
     Ok((out, None))
 }
@@ -760,8 +807,14 @@ pub fn read_command(p: &crate::project::Project, cmd: &str, args: HashMap<String
     let flag = |k: &str| arg(k).is_some_and(|v| v == "1");
     let view = || View::load(&r.db, &r.p.main_uri(), &r.p.target(None).map(|t| t.path.clone()).unwrap_or_default());
     match cmd {
-        "disasm" => disasm(&r, arg("addr").as_deref(), arg("len").as_deref()),
-        "disasm-ours" => disasm_ours(&r, &arg("name").unwrap_or_default()),
+        "disasm" => {
+            let lv = ListingView::of(flag("no_bytes"), arg("range").as_deref()).map_err(Error::value)?;
+            disasm(&r, arg("addr").as_deref(), arg("len").as_deref(), &lv)
+        }
+        "disasm-ours" => {
+            let lv = ListingView::of(flag("no_bytes"), arg("range").as_deref()).map_err(Error::value)?;
+            disasm_ours(&r, &arg("name").unwrap_or_default(), &lv)
+        }
         "dump" => dump(&r, &arg("addr").unwrap_or_default(), arg("len").as_deref(), flag("str"), flag("dword"), flag("float")),
         "refs" => refs(&r, &arg("what").unwrap_or_default()),
         "literals" => layout_literals(&r, &view()?, arg("what").as_deref()),
@@ -785,6 +838,17 @@ pub fn skeleton_lines(p: &Project, a: i64) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listing_views() {
+        let v = ListingView::of(true, Some("+0x10..+0x20")).unwrap();
+        assert!(!v.keeps(0x100f, 0x1000).unwrap() && v.keeps(0x1010, 0x1000).unwrap() && !v.keeps(0x1020, 0x1000).unwrap());
+        assert_eq!(v.line(0x1010, &[0x90], "nop"), "   0x00001010  nop");
+        let v = ListingView::of(false, Some("0x1018..")).unwrap();
+        assert!(!v.keeps(0x1010, 0x1000).unwrap() && v.keeps(0x5000, 0x1000).unwrap());
+        assert_eq!(v.line(0x1018, &[0x90], "nop"), "   0x00001018  90               nop");
+        assert!(ListingView::of(false, Some("0x10")).is_err());
+    }
 
     #[test]
     fn python_formats() {
