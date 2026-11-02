@@ -12,3 +12,6 @@
 ## Also seen (match-base session 2026-11-01 (gildegold), worker 1)
 - Stripped the bytes column with a regex on every 500-600 line listing again.
 - Wants `dcp disasm --symbols` (only `asmdiff` has it; `uv run dcp disasm 0x5194c0 --symbols` exits 2 with `unrecognized arguments`), mainly to print string literals like `push "SCENARIO"` instead of resolving each address with `dcp dump`.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 26)
+- A compact listing of 0x4f2e30 (gv_Accuse, ~120 instructions) via `uv run dcp disasm 0x4f2e30 0x18a | cut -c1-14,40-` was unreadable because the hex-bytes column varies in width; a second call with sed was needed. Proposal: `--no-bytes` / `--compact` printing only `0xADDR  instruction`. Cost: ~2 minutes, one wasted call.

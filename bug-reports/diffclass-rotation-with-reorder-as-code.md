@@ -7,3 +7,11 @@
 - **Repro:** `uv run dcp diffclass ls_ReadSceneRecords --all` at gildegold commit 52c6fec.
 - **Impact:** the largest cost of the session: 15-20 minutes reading ~400 hunk lines by hand; the function was escalated instead of graded shape.
 - **Related:** improvement-reports/asmdiff-regs-auto.md, improvement-reports/diffclass-sched-and-regs-with-copy.md
+
+## Also seen (match-base session 2026-11-01 (gildegold), worker 5)
+- main_CreateStartCouple (0x53b840): the only remaining hunk is a consistent eax<->ecx / al<->cl swap in one copy loop, classed `code 14` instead of `regs`. Possibly because eax also holds the random index just before the loop. The function stays draft though it is really shape.
+- Repro: `uv run dcp diffclass main_CreateStartCouple` at gildegold commit f47bfc6.
+- Cost: several build rounds trying source variants before concluding it was allocation.
+
+## Also seen (match-base session 2026-11-01 (gildegold), worker 13)
+- sv_BorderCameraView: a register rotation across identical blocks classed `code` (gildegold before baa6b2c).

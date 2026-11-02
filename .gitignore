@@ -1,3 +1,4 @@
 /build/
 /target/
 .dcp/
+.claude/worktrees/

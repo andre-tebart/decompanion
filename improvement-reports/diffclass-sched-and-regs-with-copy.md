@@ -13,3 +13,6 @@
 ## Also seen (match-base session 2026-11-01 (gildegold), worker 3)
 - **Slot-shifted, misaligned block counted as `code`:** in `lobby_ChoosePlayer`, hunks 0x58b595 and 0x58b5bd (27 and 33 lines) are the same instruction sequence. They differ only by stack slots, but the alignment slipped by a few instructions. Repro: `uv run dcp diffclass lobby_ChoosePlayer`. Cost: about 5 minutes reading asmdiff.
 - **Push moved to the prologue counted as `code`:** in `lobby_ShowCity`, the original pushes ebx/esi/edi at entry and ours pushes them at the join, so every stack offset in between is +0xc. diffclass says "code 113" for pure scheduling plus a frame shift. Proposal: a `prologue`/`pushes` class, or `frame` alignment that also covers this case. The function stays draft when it is really shape.
+
+## Also seen (match-base session 2026-11-02 (gildegold), worker 18)
+- sv_UpdateBand / sv_UpdateBandLed: the original loads `info` into ecx then `mov eax, ecx` before `mov ecx, 8`; ours loads straight into eax. One inserted reg-to-reg copy from allocation, reported `code 17`, so draft. Repro: `uv run dcp diffclass sv_UpdateBand` (gildegold 92add7d). Cost: ~10 minutes of variants before escalating two functions.
