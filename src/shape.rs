@@ -521,6 +521,51 @@ fn st_masked(s: &Shape) -> Shape {
     })
 }
 
+/// The renaming of registers most of a function agrees on (`asmdiff --regs auto`): the two listings aligned with
+/// their registers masked, every aligned pair votes for the registers it pairs (ours -> the original's, whole
+/// registers, esp never), and the pairs with the most votes are taken while they stay one-to-one. The pairs that
+/// move something, by our names.
+pub fn voted_renaming(a: &[Shape], b: &[Shape]) -> Vec<(String, String)> {
+    let (ma, mb): (Vec<Shape>, Vec<Shape>) = (a.iter().map(mask_regs).collect(), b.iter().map(mask_regs).collect());
+    let mut votes: HashMap<(u8, u8), usize> = HashMap::new();
+    let regs = |s: &Shape| -> Vec<Reg> {
+        s.ops.iter().flat_map(|o| match *o {
+            Opnd::Reg(r) => vec![r],
+            Opnd::Mem { base, index, .. } => vec![base, index],
+            Opnd::Imm(_) => vec![],
+        }).collect()
+    };
+    for (tag, i1, i2, j1, _) in crate::difflib::opcodes(&ma, &mb) {
+        if tag != crate::difflib::Tag::Equal {
+            continue;
+        }
+        for k in 0..i2 - i1 {
+            for (x, y) in regs(&a[i1 + k]).into_iter().zip(regs(&b[j1 + k])) {
+                if let (Some(gx), Some(gy)) = (dis::gpr(x), dis::gpr(y)) {
+                    if RENAMABLE & 1 << gx != 0 && RENAMABLE & 1 << gy != 0 {
+                        *votes.entry((gx, gy)).or_default() += 1;
+                    }
+                }
+            }
+        }
+    }
+    let mut ranked: Vec<((u8, u8), usize)> = votes.into_iter().collect();
+    ranked.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(&y.0)));
+    let (mut fwd, mut back) = ([false; 8], [false; 8]);
+    let mut out = vec![];
+    for ((x, y), _) in ranked {
+        if !fwd[x as usize] && !back[y as usize] {
+            fwd[x as usize] = true;
+            back[y as usize] = true;
+            if x != y {
+                out.push((name(x), name(y)));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Whether two runs of lines are the same code but for a renaming of registers (diffclass's tail class: a block
 /// one side shares by a jump and the other has inline).
 pub fn same_code(a: &[Shape], b: &[Shape], context: &[Shape]) -> bool {
@@ -853,6 +898,17 @@ mod tests {
         let orig = ["mov esi, X", "xor edi, edi", "mov dword ptr [esp + 0x20], edi", "mov dword ptr [esp + 0x24], edi"];
         let (c, n) = cls(&ours, &orig).unwrap();
         assert!(c == "order" && n.contains("[ + 0x1c]->[ + 0x20]"), "{c} {n}");
+    }
+
+    #[test]
+    fn renaming_voted_over_a_function() {
+        // surf_Up16-like: one rotation over the whole function, one line that differs otherwise
+        let ours = parse_all(&["mov eax, dword ptr [esp + 4]", "mov ecx, dword ptr [eax]", "add ecx, edx", "mov dword ptr [eax], ecx",
+                               "inc edx", "mov eax, 1", "ret"]);
+        let orig = parse_all(&["mov ecx, dword ptr [esp + 4]", "mov edx, dword ptr [ecx]", "add edx, eax", "mov dword ptr [ecx], edx",
+                               "inc eax", "push ebx", "ret"]);
+        let v = voted_renaming(&ours, &orig);
+        assert_eq!(v, [("eax".to_string(), "ecx".to_string()), ("ecx".into(), "edx".into()), ("edx".into(), "eax".into())]);
     }
 
     #[test]

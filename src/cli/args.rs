@@ -178,7 +178,7 @@ pub enum Cmd {
     /// the instruction diff of one function (ours '-', the original '+')
     Asmdiff {
         name: String,
-        /// rename registers on our side: a=b,c=d
+        /// rename registers on our side: a=b,c=d, or `auto`: the renaming most of the function agrees on
         #[arg(long)]
         regs: Option<String>,
         /// print every equal instruction

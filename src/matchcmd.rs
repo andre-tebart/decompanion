@@ -286,11 +286,19 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     let mut ka: Vec<Shape> = r.la.iter().map(|x| x.shape.clone()).collect();
     let kb: Vec<Shape> = r.lb.iter().map(|x| x.shape.clone()).collect();
     let (mut sa, sb) = r.named.clone().unwrap_or_default();
+    // --regs auto: the renaming most of the function agrees on (shape::voted_renaming), printed in the header
+    let mut voted = None;
     if let Some(m) = regs.filter(|x| !x.is_empty()) {
-        let pairs: Vec<(String, String)> = m.split(',').map(|x| {
-            let (k, v) = x.split_once('=').unwrap_or((x, ""));
-            (k.to_string(), v.to_string())
-        }).collect();
+        let pairs: Vec<(String, String)> = if m == "auto" {
+            let v = crate::shape::voted_renaming(&ka, &kb);
+            voted = Some(v.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","));
+            v
+        } else {
+            m.split(',').map(|x| {
+                let (k, v) = x.split_once('=').unwrap_or((x, ""));
+                (k.to_string(), v.to_string())
+            }).collect()
+        };
         a = crate::x86::rename_registers(&a, &pairs);
         sa = crate::x86::rename_registers(&sa, &pairs);
         if let Some(map) = crate::shape::reg_map(&pairs.iter().map(|(k, v)| (crate::x86::full_reg(k), crate::x86::full_reg(v))).collect::<Vec<_>>()) {
@@ -308,6 +316,9 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
                             ("original", Tok::I(b.len() as i64)), ("differing", Tok::I(n as i64))]);
     if let Some((fa, fb)) = frame {
         head += &format!("  {}", record(&[("frame", s(format!("{fa:#x}/{fb:#x}")))]));
+    }
+    if let Some(v) = &voted {
+        head += &format!("  {}", record(&[("regs", s(if v.is_empty() { "none".to_string() } else { v.clone() }))]));
     }
     // the returns of each side, when they differ: tails merged or duplicated (diffclass's tail class)
     let rets = |l: &[crate::x86::Line]| l.iter().filter(|x| x.shape.mn == "ret").count();
