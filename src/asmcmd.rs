@@ -424,7 +424,25 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
         }
     };
     let proof = {
-        let (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb);
+        let (mut ours, mut unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb, None);
+        if unbound > 0 {
+            // relocations no aligned site binds: through the ledger's names (built only for them)
+            let built;
+            let names = match names {
+                Some(n) => Some(n),
+                None => {
+                    built = crate::names::Names::build(&db, &p.main_uri(), &p.target(None).map_err(Error::runtime)?.path).ok();
+                    built.as_ref()
+                }
+            };
+            if let Some(names) = names {
+                let f = |n: &str| match names.addrs_of(n) {
+                    [one] => Some(*one as u32),
+                    _ => None,
+                };
+                (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb, Some(&f));
+            }
+        }
         (crate::equiv::prove(&ours, &data, a as u32), unbound)
     };
     Ok(Ok(Reading { row, fc, named, values, proof }))

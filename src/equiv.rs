@@ -67,6 +67,8 @@ enum Opc {
     Ins8Lo,
     Ins8Hi,
     Ins16,
+    /// a byte (width 1) or a word (2) written at a byte position of a 4-byte stack cell: InsAt(position, width)
+    InsAt(u8, u8),
     MulHi,
     IMulHi,
     Div,
@@ -363,6 +365,10 @@ impl Arena {
                 (Ins8Lo, [x, y]) => (x & !0xff) | (y & 0xff),
                 (Ins8Hi, [x, y]) => (x & !0xff00) | ((y & 0xff) << 8),
                 (Ins16, [x, y]) => (x & !0xffff) | (y & 0xffff),
+                (InsAt(p, w), [x, y]) => {
+                    let m = (if w == 1 { 0xffu32 } else { 0xffff }) << (8 * p as u32);
+                    (x & !m) | ((y << (8 * p as u32)) & m)
+                }
                 (SxHi, [x]) => if (*x as i32) < 0 { u32::MAX } else { 0 },
                 (F32 | F64 | ToF32 | ToF64 | FInt | FToInt | FAdd | FSub | FMul | FDiv | FChs | FAbs | FSqrt | FUnary(_) | FConst | FCmp | Lo32 | Hi32 | Join64, _) => {
                     return self.mk(Node::Op(o, a));
@@ -456,6 +462,41 @@ impl Arena {
             _ => {}
         }
         self.mk(Node::Op(o, a))
+    }
+
+    /// The bytes [p, p + w) of a 4-byte value, zero-extended: through the inserts at other positions to the value
+    /// below them.
+    fn extract(&mut self, mut v: E, p: u8, w: u8) -> E {
+        loop {
+            let at = match self.nodes[v as usize] {
+                Node::Op(Opc::InsAt(q, wq), ref a) => Some((q, wq, a[0], a[1])),
+                Node::Op(Opc::Ins8Lo, ref a) => Some((0, 1, a[0], a[1])),
+                Node::Op(Opc::Ins8Hi, ref a) => Some((1, 1, a[0], a[1])),
+                Node::Op(Opc::Ins16, ref a) => Some((0, 2, a[0], a[1])),
+                _ => None,
+            };
+            match at {
+                Some((q, wq, _, nv)) if q <= p && p + w <= q + wq => {
+                    let s = if p > q {
+                        let k = self.c(8 * (p - q) as u32);
+                        self.op(Opc::Shr, vec![nv, k])
+                    } else {
+                        nv
+                    };
+                    return self.width(s, w);
+                }
+                // an insert the bytes are apart from: they are the older value's
+                Some((q, wq, old, _)) if p + w <= q || q + wq <= p => v = old,
+                _ => break,
+            }
+        }
+        let s = if p > 0 {
+            let k = self.c(8 * p as u32);
+            self.op(Opc::Shr, vec![v, k])
+        } else {
+            v
+        };
+        self.width(s, w)
     }
 
     /// The value at a width (the low byte / word, zero-extended).
@@ -1173,16 +1214,11 @@ impl Exec<'_> {
         }
         let cell = o.div_euclid(4) * 4;
         let v = self.slot(cell);
-        match (w, o - cell) {
+        let p = (o - cell) as u8;
+        match (w, p) {
             (4, 0) => Ok(v),
-            (2, 0) => Ok(self.ar.op(Opc::Zx16, vec![v])),
-            (1, 0) => Ok(self.ar.op(Opc::Zx8, vec![v])),
-            (1, 1) => {
-                let k = self.ar.c(8);
-                let s = self.ar.op(Opc::Shr, vec![v, k]);
-                Ok(self.ar.op(Opc::Zx8, vec![s]))
-            }
-            _ => Err(format!("a {w}-byte stack access at an offset the model does not split ({o:#x})")),
+            (1, _) | (2, 0 | 2) => Ok(self.ar.extract(v, p, w)),
+            _ => Err(format!("a {w}-byte stack access across two cells ({o:#x})")),
         }
     }
 
@@ -1197,12 +1233,16 @@ impl Exec<'_> {
             Place::Slot(o) => {
                 let cell = o.div_euclid(4) * 4;
                 let old = self.slot(cell);
-                let nv = match (w, o - cell) {
+                let nv = match (w, (o - cell) as u8) {
                     (4, 0) => v,
                     (2, 0) => self.ar.op(Opc::Ins16, vec![old, v]),
                     (1, 0) => self.ar.op(Opc::Ins8Lo, vec![old, v]),
                     (1, 1) => self.ar.op(Opc::Ins8Hi, vec![old, v]),
-                    _ => return Err(format!("a {w}-byte stack store at an offset the model does not split ({o:#x})")),
+                    (1, p) | (2, p @ 2) => {
+                        let v = self.ar.width(v, w);
+                        self.ar.op(Opc::InsAt(p, w), vec![old, v])
+                    }
+                    _ => return Err(format!("a {w}-byte stack store across two cells ({o:#x})")),
                 };
                 self.set_slot(cell, nv);
             }
@@ -1850,8 +1890,10 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
 /// address is learned at its aligned sites, and the same symbol must get the same address at every one; a symbol
 /// that never lines up (or gets two addresses) gets one the original cannot hold. Returns the code and how many
 /// relocations stayed unbound.
+///
+/// `by_name`: a symbol no site binds may still get its address from the ledger (a name it places at one address).
 pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
-            la: &[crate::x86::Line], lb: &[crate::x86::Line]) -> (Vec<u8>, usize) {
+            la: &[crate::x86::Line], lb: &[crate::x86::Line], by_name: Option<&dyn Fn(&str) -> Option<u32>>) -> (Vec<u8>, usize) {
     use crate::difflib::{opcodes, Tag};
     let (cd, _) = code.code();
     let ta: Vec<&str> = la.iter().map(|l| l.text.as_str()).collect();
@@ -1889,6 +1931,19 @@ pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crat
             let e = bound.entry(r.symbol_index).or_insert(Some(s));
             if *e != Some(s) {
                 *e = None; // two addresses for one symbol: no binding
+            }
+        }
+    }
+    if let Some(f) = by_name {
+        for (_, r) in &code.relocs {
+            if matches!(bound.get(&r.symbol_index), Some(Some(_))) {
+                continue;
+            }
+            // a literal (??_C@, __real@) has no name of its own in the ledger
+            let Some(sym) = obj.symbol_at(r.symbol_index).filter(|s| s.constant().is_none()) else { continue };
+            let cname = crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name));
+            if let Some(a) = f(&cname) {
+                bound.insert(r.symbol_index, Some(a));
             }
         }
     }
@@ -1989,6 +2044,21 @@ mod tests {
         // reading the slot next to the one passed is another value
         let c = [0x83, 0xec, 0x08, 0x8d, 0x04, 0x24, 0x50, 0xe8, 0xf4, 0x0f, 0, 0, 0x8b, 0x44, 0x24, 0x08, 0x83, 0xc4, 0x0c, 0xc3];
         assert!(matches!(p(&a, &c), Outcome::Unknown(_)), "{:?}", p(&a, &c));
+    }
+
+    #[test]
+    fn bytes_anywhere_in_a_stack_cell() {
+        // sub esp,4; mov dword [esp],0; mov byte [esp+3],7; mov eax,[esp]; add esp,4; ret
+        let a = [0x83, 0xec, 0x04, 0xc7, 0x04, 0x24, 0, 0, 0, 0, 0xc6, 0x44, 0x24, 0x03, 0x07, 0x8b, 0x04, 0x24, 0x83, 0xc4, 0x04, 0xc3];
+        // sub esp,4; mov dword [esp],0x07000000; mov eax,[esp]; add esp,4; ret
+        let b = [0x83, 0xec, 0x04, 0xc7, 0x04, 0x24, 0, 0, 0, 0x07, 0x8b, 0x04, 0x24, 0x83, 0xc4, 0x04, 0xc3];
+        assert!(matches!(p(&a, &b), Outcome::Equal { .. }), "{:?}", p(&a, &b));
+        // the byte read back through a store to another byte of the cell
+        // sub esp,4; mov byte [esp+3],7; mov byte [esp+1],9; movzx eax, byte [esp+3]; add esp,4; ret
+        let c = [0x83, 0xec, 0x04, 0xc6, 0x44, 0x24, 0x03, 0x07, 0xc6, 0x44, 0x24, 0x01, 0x09, 0x0f, 0xb6, 0x44, 0x24, 0x03, 0x83, 0xc4, 0x04, 0xc3];
+        // mov eax, 7; ret
+        let d = [0xb8, 0x07, 0, 0, 0, 0xc3];
+        assert!(matches!(p(&c, &d), Outcome::Equal { .. }), "{:?}", p(&c, &d));
     }
 
     #[test]
