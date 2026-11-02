@@ -416,6 +416,14 @@ impl Arena {
                 Node::Op(Ins16, v) => return self.op(Zx16, vec![v[1]]),
                 _ => {}
             },
+            Sx8 | Sx16 => {
+                if let Node::Op(Zx8 | Zx16, v) = self.nodes[a[0] as usize].clone() {
+                    let inner = if o == Sx8 { Zx8 } else { Zx16 };
+                    if self.nodes[a[0] as usize] == Node::Op(inner, v.clone()) {
+                        a[0] = v[0];
+                    }
+                }
+            }
             Ins8Lo => {
                 let v = self.op(Zx8, vec![a[1]]);
                 if self.konst(a[0]).is_some_and(|k| k & !0xff == 0) {
@@ -447,10 +455,31 @@ impl Arena {
         }
     }
 
-    /// A condition in its canonical form: the operands ordered, cc mirrored with them.
+    /// A condition in its canonical form: at 32 bits (a narrower compare's operands zero-extended for an equality or
+    /// an unsigned order, sign-extended for a signed one: `cmp eax, 0xffff` on a zero-extended word is `cmp word
+    /// ptr, 0xffff`), the operands ordered, cc mirrored with them.
     fn cond(&mut self, cc: Cc, a: E, b: E, w: u8) -> E {
-        let (a, b) = (self.width(a, w), self.width(b, w));
+        let (mut a, mut b) = (self.width(a, w), self.width(b, w));
+        if w < 4 && matches!(cc, Cc::L | Cc::Ge | Cc::Le | Cc::G) {
+            let sx = if w == 1 { Opc::Sx8 } else { Opc::Sx16 };
+            a = self.op(sx, vec![a]);
+            b = self.op(sx, vec![b]);
+        }
+        let w = 4;
         if a > b { self.mk(Node::Cond(cc.mirror(), b, a, w)) } else { self.mk(Node::Cond(cc, a, b, w)) }
+    }
+
+    /// Whether a value is the same whatever block it is read in: built from constants, the stack pointer, the
+    /// arguments and the registers' values at the entry (no block's inputs, loads or call results).
+    fn global(&self, e: E) -> bool {
+        match &self.nodes[e as usize] {
+            Node::Const(_) => true,
+            Node::Var(v) => matches!(v, Var::Sp0 | Var::Arg(_) | Var::In(0, _) | Var::Undef(_) | Var::EscBase | Var::ArgBase),
+            Node::Lin(_, t) => t.iter().all(|x| self.global(x.0)),
+            Node::Op(_, a) => a.iter().all(|&x| self.global(x)),
+            Node::Cond(_, a, b, _) => self.global(*a) && self.global(*b),
+            Node::Load(..) => false,
+        }
     }
 
     fn not_cond(&mut self, e: E) -> Option<E> {
@@ -622,6 +651,9 @@ struct Corr {
     esc: (Esc, Esc),
     /// the FPU stack's depth on each side
     fpu: (u8, u8),
+    /// the locations whose values are known whatever the path (constants, stack addresses, entry values: global),
+    /// on each side
+    known: (BTreeMap<Loc, E>, BTreeMap<Loc, E>),
 }
 
 /// The escaped parts of one side's frame: the locals from `local.1` up to the return address (addressed from the
@@ -899,6 +931,9 @@ impl Exec<'_> {
 
     fn input(&mut self, l: Loc) -> E {
         self.read.insert(l);
+        if let Some(&v) = if self.side == 0 { self.corr.known.0.get(&l) } else { self.corr.known.1.get(&l) } {
+            return v;
+        }
         let k = self.corr.pairs.iter().position(|p| if self.side == 0 { p.0 == l } else { p.1 == l });
         if let Some(k) = k {
             return self.ar.var(Var::In(self.pair, k as u32));
@@ -1558,6 +1593,11 @@ fn run(ar: &mut Arena, b: &Block, pair: u32, side: u8, corr: &Corr) -> Result<Ru
             slots.insert(o);
         }
     }
+    for &l in if side == 0 { corr.known.0.keys() } else { corr.known.1.keys() } {
+        if let Loc::Slot(o) = l {
+            slots.insert(o);
+        }
+    }
     // the escaped part of the frame is memory now
     let esc = x.esc;
     slots.retain(|&o| !(if o < 0 { esc.local.is_some_and(|(_, low)| low <= o) } else { esc.args.is_some_and(|low| low <= o) }));
@@ -1574,7 +1614,9 @@ fn run(ar: &mut Arena, b: &Block, pair: u32, side: u8, corr: &Corr) -> Result<Ru
 
 /// The correspondence at the successors: our locations and theirs that hold the same value at the end, one to one
 /// (a value two locations of a side hold pairs in order).
-fn exit_corr(ra: &Run, rb: &Run, written: BTreeSet<i32>) -> Corr {
+fn exit_corr(ar: &Arena, ra: &Run, rb: &Run, written: BTreeSet<i32>) -> Corr {
+    let known = |r: &Run| -> BTreeMap<Loc, E> { r.exit.iter().filter(|(_, v)| ar.global(*v)).copied().collect() };
+    let known = (known(ra), known(rb));
     let mut by: HashMap<E, Vec<Loc>> = HashMap::new();
     for (l, v) in &rb.exit {
         by.entry(*v).or_default().push(*l);
@@ -1590,7 +1632,7 @@ fn exit_corr(ra: &Run, rb: &Run, written: BTreeSet<i32>) -> Corr {
         }
     }
     Corr { pairs, written, sp: (ra.sp, rb.sp), pushed: (ra.pushed.clone(), rb.pushed.clone()),
-           reserved: (ra.reserved.clone(), rb.reserved.clone()), esc: (ra.esc, rb.esc), fpu: (ra.fpu.len() as u8, rb.fpu.len() as u8) }
+           reserved: (ra.reserved.clone(), rb.reserved.clone()), esc: (ra.esc, rb.esc), known, fpu: (ra.fpu.len() as u8, rb.fpu.len() as u8) }
 }
 
 fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
@@ -1614,7 +1656,10 @@ fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
     let union = |a: &Vec<i32>, b: &Vec<i32>| -> Vec<i32> { a.iter().chain(b).copied().collect::<BTreeSet<_>>().into_iter().collect() };
     let pushed = (union(&old.pushed.0, &new.pushed.0), union(&old.pushed.1, &new.pushed.1));
     let reserved = (union(&old.reserved.0, &new.reserved.0), union(&old.reserved.1, &new.reserved.1));
-    Some(Corr { pairs, written: old.written.union(&new.written).copied().collect(), sp: old.sp, pushed, reserved, esc: old.esc, fpu: old.fpu })
+    // a value known on every path into the block
+    let both = |x: &BTreeMap<Loc, E>, y: &BTreeMap<Loc, E>| -> BTreeMap<Loc, E> { x.iter().filter(|(l, v)| y.get(l) == Some(v)).map(|(l, v)| (*l, *v)).collect() };
+    let known = (both(&old.known.0, &new.known.0), both(&old.known.1, &new.known.1));
+    Some(Corr { pairs, written: old.written.union(&new.written).copied().collect(), sp: old.sp, pushed, reserved, esc: old.esc, fpu: old.fpu, known })
 }
 
 /// Proves our function (its code at `va`, our relocated fields already bound: bind) the same as the original's.
@@ -1654,7 +1699,8 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
     }
     let mut ar = Arena::new();
     let all: Vec<(Loc, Loc)> = (0..8u8).filter(|&g| g != ESP).map(|g| (Loc::Reg(g), Loc::Reg(g))).collect();
-    let c0 = Corr { pairs: all, written: BTreeSet::new(), sp: (0, 0), pushed: (vec![], vec![]), reserved: (vec![], vec![]), esc: esc0, fpu: (0, 0) };
+    let c0 = Corr { pairs: all, written: BTreeSet::new(), sp: (0, 0), pushed: (vec![], vec![]), reserved: (vec![], vec![]), esc: esc0, fpu: (0, 0),
+                   known: (BTreeMap::new(), BTreeMap::new()) };
     let mut ids: HashMap<(u32, u32), u32> = HashMap::new();
     let mut seen: HashMap<(u32, u32), Corr> = HashMap::new();
     let mut work = vec![(ca.entry, cb.entry, c0)];
@@ -1713,7 +1759,7 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
             return unknown("the FPU stacks differ in depth".into(), a, b);
         }
         let written: BTreeSet<i32> = ra.written.union(&rb.written).copied().collect();
-        let next = exit_corr(&ra, &rb, written);
+        let next = exit_corr(&ar, &ra, &rb, written);
         if std::env::var_os("DCP_EQUIV_TRACE").is_some() {
             eprintln!("trace: pair {pair} {a:#x}/{b:#x} sp {:?} in {} out {} eax {} | {}", corr.sp, corr.pairs.len(), next.pairs.len(),
                       ar.show(ra.eax), ar.show(rb.eax));
