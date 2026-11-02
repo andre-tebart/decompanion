@@ -39,12 +39,16 @@ enum Var {
     Undef(i32),
     /// the arguments' part of the frame when an argument's address escapes (addressed by their own offsets)
     ArgBase,
+    /// the float a call returns (st0 after the k-th effect of pair p)
+    FRet(u32, u32),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 enum Loc {
     Reg(u8),
     Slot(i32),
+    /// an x87 register, counted from the bottom of the FPU stack
+    Fpu(u8),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -70,6 +74,29 @@ enum Opc {
     IDiv,
     IRem,
     SxHi,
+    /// floats: a 4- / 8-byte memory value read as a float, a float written as 4 / 8 bytes, an integer read as a
+    /// float, a float to an integer (fistp), the arithmetic, a constant (its f64 bits, two halves)
+    F32,
+    F64,
+    ToF32,
+    ToF64,
+    FInt,
+    FToInt,
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
+    FChs,
+    FAbs,
+    FSqrt,
+    FUnary(u16),
+    FConst,
+    /// an FPU compare's condition codes (fcom: st0 against the operand), as fnstsw reads them
+    FCmp,
+    /// the low / high half of an 8-byte value (a double stored to the stack), and the two halves joined
+    Lo32,
+    Hi32,
+    Join64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -87,6 +114,9 @@ enum Cc {
     /// the sign of a result (js / jns): only while reading flags, a condition holds it as L / Ge against 0
     S,
     Ns,
+    /// the parity of a result's low byte (jp / jnp: after an FPU compare's `test ah, mask`)
+    P,
+    Np,
 }
 
 impl Cc {
@@ -104,6 +134,8 @@ impl Cc {
             "a" => Cc::A,
             "s" => Cc::S,
             "ns" => Cc::Ns,
+            "p" => Cc::P,
+            "np" => Cc::Np,
             _ => return None,
         })
     }
@@ -135,6 +167,8 @@ impl Cc {
             Cc::A => Cc::Be,
             Cc::S => Cc::Ns,
             Cc::Ns => Cc::S,
+            Cc::P => Cc::Np,
+            Cc::Np => Cc::P,
         }
     }
 }
@@ -319,6 +353,9 @@ impl Arena {
                 (Ins8Hi, [x, y]) => (x & !0xff00) | ((y & 0xff) << 8),
                 (Ins16, [x, y]) => (x & !0xffff) | (y & 0xffff),
                 (SxHi, [x]) => if (*x as i32) < 0 { u32::MAX } else { 0 },
+                (F32 | F64 | ToF32 | ToF64 | FInt | FToInt | FAdd | FSub | FMul | FDiv | FChs | FAbs | FSqrt | FUnary(_) | FConst | FCmp | Lo32 | Hi32 | Join64, _) => {
+                    return self.mk(Node::Op(o, a));
+                }
                 _ => return self.mk(Node::Op(o, a)),
             };
             return self.c(v);
@@ -344,6 +381,21 @@ impl Arena {
                     }
                     (Mul, Some(k)) => return self.mul_k(other, k),
                     _ => {}
+                }
+            }
+            ToF32 | ToF64 => {
+                if let Node::Op(f, v) = self.nodes[a[0] as usize].clone() {
+                    if (o == ToF32 && f == F32) || (o == ToF64 && f == F64) {
+                        return v[0];
+                    }
+                }
+            }
+            FAdd | FMul => a.sort(),
+            Join64 => {
+                if let (Node::Op(Lo32, x), Node::Op(Hi32, y)) = (self.nodes[a[0] as usize].clone(), self.nodes[a[1] as usize].clone()) {
+                    if x == y {
+                        return x[0];
+                    }
                 }
             }
             Shl => {
@@ -552,6 +604,8 @@ enum Flags {
     Cmp(E, E, u8),
     Test(E, E, u8),
     Res(E, u8),
+    /// sahf: the flags from ah (an FPU compare's condition codes)
+    Sahf(E),
 }
 
 /// The correspondence at a pair's entry: the paired locations, whether the argument slots not yet written are
@@ -563,7 +617,11 @@ struct Corr {
     written: BTreeSet<i32>,
     sp: (i32, i32),
     pushed: (Vec<i32>, Vec<i32>),
+    /// the cells a `sub esp` outside the prologue reserved for a call's arguments, not written yet
+    reserved: (Vec<i32>, Vec<i32>),
     esc: (Esc, Esc),
+    /// the FPU stack's depth on each side
+    fpu: (u8, u8),
 }
 
 /// The escaped parts of one side's frame: the locals from `local.1` up to the return address (addressed from the
@@ -592,6 +650,7 @@ struct Exec<'a> {
     sp: i32,
     /// the offsets pushed since the last call (its arguments), saves of callee-saved registers left out
     pushed: Vec<i32>,
+    reserved: Vec<i32>,
     /// the escaped parts of the frame: memory from there on
     esc: Esc,
     flags: Option<Flags>,
@@ -601,6 +660,15 @@ struct Exec<'a> {
     saves: Vec<E>,
     /// the instruction after the one being run is `add esp, N` (a call's caller cleans up)
     cleans_up: bool,
+    /// still in the entry block's prologue (push ebp / mov ebp, esp / sub esp / saves): a `sub esp` there
+    /// allocates the locals, after it the space of a call's arguments
+    prologue: bool,
+    /// the FPU stack, bottom first
+    fpu: Vec<E>,
+    /// the last FPU compare's condition codes
+    fstatus: Option<E>,
+    /// the float the last call returns, when the code reads st0 below the stack's bottom
+    fret: Option<E>,
 }
 
 const ESP: u8 = 4;
@@ -608,12 +676,226 @@ const ESP: u8 = 4;
 impl Exec<'_> {
     fn new<'a>(ar: &'a mut Arena, pair: u32, side: u8, corr: &'a Corr) -> Exec<'a> {
         let (sp, pushed, esc) = if side == 0 { (corr.sp.0, corr.pushed.0.clone(), corr.esc.0) } else { (corr.sp.1, corr.pushed.1.clone(), corr.esc.1) };
+        let reserved = if side == 0 { corr.reserved.0.clone() } else { corr.reserved.1.clone() };
         // the entry pair's registers are In(0, k), k in the order of prove's first correspondence (eax .. edi
         // without esp): ebx 3, ebp 4, esi 5, edi 6
         let saves = (3..7).map(|k| ar.var(Var::In(0, k))).collect();
-        Exec { ar, pair, side, corr, regs: [None; 8], slots: BTreeMap::new(), read: BTreeSet::new(), sp, pushed, esc, flags: None,
-               effects: vec![], written: corr.written.clone(), saves, cleans_up: false }
+        Exec { ar, pair, side, corr, regs: [None; 8], slots: BTreeMap::new(), read: BTreeSet::new(), sp, pushed, reserved, esc, flags: None,
+               effects: vec![], written: corr.written.clone(), saves, cleans_up: false, fpu: vec![], fstatus: None, fret: None,
+               prologue: pair == 0 && corr.sp == (0, 0) }
+            .with_fpu(if side == 0 { corr.fpu.0 } else { corr.fpu.1 })
     }
+
+    fn with_fpu(mut self, depth: u8) -> Self {
+        self.fpu = (0..depth).map(|k| self.input(Loc::Fpu(k))).collect();
+        self
+    }
+
+    // ---- the FPU
+
+    /// st(i), reading the last call's float return below the stack's bottom.
+    fn st(&mut self, i: usize) -> Result<E, String> {
+        if self.fpu.len() <= i {
+            match self.fret.take() {
+                Some(r) if i == 0 && self.fpu.is_empty() => self.fpu.push(r),
+                _ => return Err("an FPU register below the stack's bottom".into()),
+            }
+        }
+        Ok(self.fpu[self.fpu.len() - 1 - i])
+    }
+
+    fn set_st(&mut self, i: usize, v: E) -> Result<(), String> {
+        self.st(i)?;
+        let n = self.fpu.len();
+        self.fpu[n - 1 - i] = v;
+        Ok(())
+    }
+
+    fn fpush(&mut self, v: E) -> Result<(), String> {
+        if self.fpu.len() >= 8 {
+            return Err("the FPU stack overflows".into());
+        }
+        self.fret = None;
+        self.fpu.push(v);
+        Ok(())
+    }
+
+    fn fpop(&mut self) -> Result<E, String> {
+        self.st(0)?;
+        Ok(self.fpu.pop().unwrap())
+    }
+
+    fn st_index(r: Reg) -> Option<usize> {
+        let k = r as u32;
+        (Reg::ST0 as u32..=Reg::ST7 as u32).contains(&k).then(|| (k - Reg::ST0 as u32) as usize)
+    }
+
+    /// A float operand: st(i), or a float in memory (4 / 8 bytes), or with `int` an integer in memory.
+    fn fval(&mut self, op: &dis::Op, int: bool) -> Result<E, String> {
+        match op.typ {
+            OpType::Reg => self.st(Self::st_index(op.reg).ok_or("an FPU operand that is no FPU register")?),
+            OpType::Mem => {
+                let a = self.addr(op)?;
+                let v = self.load(a, op.size)?;
+                Ok(match (int, op.size) {
+                    (true, 2) => {
+                        let x = self.ar.op(Opc::Sx16, vec![v]);
+                        self.ar.op(Opc::FInt, vec![x])
+                    }
+                    (true, 4) => self.ar.op(Opc::FInt, vec![v]),
+                    (false, 4) => self.ar.op(Opc::F32, vec![v]),
+                    (false, 8) => self.ar.op(Opc::F64, vec![v]),
+                    (_, w) => return Err(format!("a {w}-byte FPU memory operand")),
+                })
+            }
+            OpType::Imm => Err("an FPU immediate".into()),
+        }
+    }
+
+    fn fconst(&mut self, v: f64) -> E {
+        let b = v.to_bits();
+        let (lo, hi) = (self.ar.c(b as u32), self.ar.c((b >> 32) as u32));
+        self.ar.op(Opc::FConst, vec![lo, hi])
+    }
+
+    /// One x87 instruction; Ok(false) when it is not one.
+    fn fstep(&mut self, i: &Ins) -> Result<bool, String> {
+        let mn = i.mn;
+        if !mn.starts_with('f') && mn != "sahf" {
+            return Ok(false);
+        }
+        let ops = &i.ops;
+        // the arithmetic: fadd / fsub / fsubr / fmul / fdiv / fdivr, popping with p, from an integer with fi
+        let arith = |m: &str| -> Option<(Opc, bool, bool, bool)> {
+            let (int, m) = match m.strip_prefix("fi") { Some(r) => (true, r), None => (false, m.strip_prefix('f')?) };
+            let (pop, m) = match m.strip_suffix('p') { Some(r) => (true, r), None => (false, m) };
+            let (rev, m) = match m.strip_suffix('r') { Some(r) if r == "sub" || r == "div" => (true, r), _ => (false, m) };
+            let o = match m {
+                "add" => Opc::FAdd,
+                "sub" => Opc::FSub,
+                "mul" => Opc::FMul,
+                "div" => Opc::FDiv,
+                _ => return None,
+            };
+            Some((o, rev, pop, int))
+        };
+        match mn {
+            "fld" | "fild" => {
+                let v = self.fval(&ops[ops.len() - 1], mn == "fild")?;
+                self.fpush(v)?;
+            }
+            "fld1" | "fldz" => {
+                let v = self.fconst(if mn == "fld1" { 1.0 } else { 0.0 });
+                self.fpush(v)?;
+            }
+            "fst" | "fstp" | "fist" | "fistp" => {
+                let v = self.st(0)?;
+                let dst = &ops[0];
+                match dst.typ {
+                    OpType::Reg => {
+                        let k = Self::st_index(dst.reg).ok_or("an FPU store to a register")?;
+                        self.set_st(k, v)?;
+                    }
+                    OpType::Mem => {
+                        let w = dst.size;
+                        let x = match (mn.starts_with("fi"), w) {
+                            (true, 2 | 4) => self.ar.op(Opc::FToInt, vec![v]),
+                            (false, 4) => self.ar.op(Opc::ToF32, vec![v]),
+                            (false, 8) => self.ar.op(Opc::ToF64, vec![v]),
+                            (_, w) => return Err(format!("a {w}-byte FPU store")),
+                        };
+                        let a = self.addr(dst)?;
+                        self.store(a, w, x)?;
+                    }
+                    _ => return Err("an FPU store to an immediate".into()),
+                }
+                if mn.ends_with('p') {
+                    self.fpop()?;
+                }
+            }
+            "fxch" => {
+                let k = ops.iter().filter_map(|o| (o.typ == OpType::Reg).then(|| Self::st_index(o.reg)).flatten()).max().unwrap_or(1);
+                let (a, b) = (self.st(0)?, self.st(k)?);
+                self.set_st(0, b)?;
+                self.set_st(k, a)?;
+            }
+            "fchs" | "fabs" | "fsqrt" | "fsin" | "fcos" | "frndint" | "f2xm1" => {
+                let v = self.st(0)?;
+                let o = match mn {
+                    "fchs" => Opc::FChs,
+                    "fabs" => Opc::FAbs,
+                    "fsqrt" => Opc::FSqrt,
+                    _ => Opc::FUnary(i.mnemonic as u16),
+                };
+                let r = self.ar.op(o, vec![v]);
+                self.set_st(0, r)?;
+            }
+            "fcom" | "fcomp" | "fcompp" | "fucom" | "fucomp" | "fucompp" | "ficom" | "ficomp" | "ftst" => {
+                let a = self.st(0)?;
+                let b = match (mn, ops.len()) {
+                    ("ftst", _) => self.fconst(0.0),
+                    (_, 0) | (_, 1) if ops.iter().all(|o| o.typ == OpType::Reg && o.reg == Reg::ST0) => self.st(1)?,
+                    _ => {
+                        let o = ops.iter().rfind(|o| !(o.typ == OpType::Reg && o.reg == Reg::ST0)).copied();
+                        match o {
+                            Some(o) => self.fval(&o, mn.starts_with("fi"))?,
+                            None => self.st(1)?,
+                        }
+                    }
+                };
+                self.fstatus = Some(self.ar.op(Opc::FCmp, vec![a, b]));
+                let pops = if mn.ends_with("pp") { 2 } else if mn.ends_with('p') { 1 } else { 0 };
+                for _ in 0..pops {
+                    self.fpop()?;
+                }
+            }
+            "fnstsw" | "fstsw" => {
+                let st = self.fstatus.ok_or("fnstsw without an FPU compare in the block")?;
+                match ops.first() {
+                    Some(o) if o.typ == OpType::Reg => self.set_reg(o.reg, st)?,
+                    Some(o) => {
+                        let a = self.addr(o)?;
+                        self.store(a, 2, st)?;
+                    }
+                    None => return Err("fnstsw without an operand".into()),
+                }
+            }
+            "sahf" => {
+                // CF, PF, ZF from ah: the conditions on them are conditions on ah
+                let ah = self.get_reg(Reg::AH)?;
+                self.flags = Some(Flags::Sahf(ah));
+            }
+            "fnstcw" | "fstcw" => {
+                let cw = self.ar.op(Opc::FUnary(0xffff), vec![]);
+                let a = self.addr(&ops[0])?;
+                self.store(a, 2, cw)?;
+            }
+            "fwait" | "fnop" => {}
+            m => {
+                let Some((o, rev, pop, int)) = arith(m) else { return Err(format!("{m} (the prover does not model it yet)")) };
+                // the destination and the source: (st0, mem), (st0, st(i)), (st(i), st0), or the popping form's
+                // st(1), st0 without operands
+                let (dk, src) = match ops.as_slice() {
+                    [] => (1, self.st(0)?),
+                    [d, sop] if d.typ == OpType::Reg => {
+                        let dk = Self::st_index(d.reg).ok_or("an FPU destination that is no FPU register")?;
+                        (dk, self.fval(sop, int)?)
+                    }
+                    [sop] => (0, self.fval(sop, int)?),
+                    _ => return Err(format!("{m} with these operands")),
+                };
+                let d = self.st(dk)?;
+                let (x, y) = if rev { (src, d) } else { (d, src) };
+                let r = self.ar.op(o, vec![x, y]);
+                self.set_st(dk, r)?;
+                if pop {
+                    self.fpop()?;
+                }
+            }
+        }
+        Ok(true)
+    }
+
 
     fn input(&mut self, l: Loc) -> E {
         self.read.insert(l);
@@ -664,6 +946,7 @@ impl Exec<'_> {
     fn set_sp(&mut self, off: i32) {
         self.sp = off;
         self.pushed.retain(|&o| o >= off);
+        self.reserved.retain(|&o| o >= off);
     }
 
     fn set_reg(&mut self, r: Reg, v: E) -> Result<(), String> {
@@ -702,6 +985,11 @@ impl Exec<'_> {
     fn set_slot(&mut self, o: i32, v: E) {
         if o > 0 {
             self.written.insert(o);
+        }
+        // a cell reserved for a call's arguments, written: an argument
+        if let Some(k) = self.reserved.iter().position(|&r| r == o) {
+            self.reserved.remove(k);
+            self.pushed.push(o);
         }
         self.slots.insert(o, v);
     }
@@ -825,6 +1113,10 @@ impl Exec<'_> {
     }
 
     fn slot_load(&mut self, o: i32, w: u8) -> Result<E, String> {
+        if w == 8 && o % 4 == 0 {
+            let (lo, hi) = (self.slot(o), self.slot(o + 4));
+            return Ok(self.ar.op(Opc::Join64, vec![lo, hi]));
+        }
         let cell = o.div_euclid(4) * 4;
         let v = self.slot(cell);
         match (w, o - cell) {
@@ -842,6 +1134,12 @@ impl Exec<'_> {
 
     fn store(&mut self, a: E, w: u8, v: E) -> Result<(), String> {
         match self.place(a)? {
+            Place::Slot(o) if w == 8 && o % 4 == 0 => {
+                let lo = self.ar.op(Opc::Lo32, vec![v]);
+                let hi = self.ar.op(Opc::Hi32, vec![v]);
+                self.set_slot(o, lo);
+                self.set_slot(o + 4, hi);
+            }
             Place::Slot(o) => {
                 let cell = o.div_euclid(4) * 4;
                 let old = self.slot(cell);
@@ -895,7 +1193,8 @@ impl Exec<'_> {
     fn push(&mut self, v: E) -> Result<(), String> {
         let sp = self.sp - 4;
         self.sp = sp;
-        let save = self.saves.contains(&v);
+        // a save of a callee-saved register, or a push in the entry prologue (`push ecx`: VC6 allocating a local)
+        let save = self.saves.contains(&v) || self.prologue;
         let a = self.reg32(ESP);
         self.store(a, 4, v)?;
         if !save {
@@ -906,6 +1205,20 @@ impl Exec<'_> {
 
     fn step(&mut self, i: &Ins) -> Result<(), String> {
         let ops = &i.ops;
+        let reg0 = ops.first().filter(|o| o.typ == OpType::Reg).map(|o| o.reg);
+        let prologue = matches!((i.mn, reg0), ("push", Some(_)) | ("sub", Some(Reg::ESP)))
+            || (i.mn == "mov" && reg0 == Some(Reg::EBP) && ops.get(1).is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::ESP));
+        self.prologue &= prologue;
+        if i.mn == "sub" && reg0 == Some(Reg::ESP) && !self.prologue {
+            // the space of a call's arguments (`sub esp, 8; fstp qword ptr [esp]`): its slots are arguments
+            if let Some(n) = ops.get(1).filter(|o| o.typ == OpType::Imm).map(|o| o.imm as i32) {
+                let top = self.sp;
+                self.reserved.extend((1..=n / 4).map(|k| top - 4 * k));
+            }
+        }
+        if self.fstep(i)? {
+            return Ok(());
+        }
         let w0 = ops.first().map(Self::width_of).unwrap_or(4);
         match (i.mn, ops.len()) {
             ("nop", _) => {}
@@ -947,6 +1260,20 @@ impl Exec<'_> {
                     "and" => Flags::Test(a, b, w0),
                     _ => Flags::Res(r, w0),
                 });
+                self.set(&ops[0], r)?;
+            }
+            ("sbb" | "adc", 2) => {
+                let (a, b) = (self.get(&ops[0])?, self.get(&ops[1])?);
+                let cf = self.carry()?;
+                let r = if i.mn == "sbb" {
+                    let d = self.ar.sub(a, b);
+                    self.ar.sub(d, cf)
+                } else {
+                    let d = self.ar.add(a, b);
+                    self.ar.add(d, cf)
+                };
+                let r = self.ar.width(r, w0);
+                self.flags = Some(Flags::Res(r, w0));
                 self.set(&ops[0], r)?;
             }
             ("cmp", 2) => {
@@ -1077,6 +1404,9 @@ impl Exec<'_> {
                     args.push(self.launder(v)?);
                 }
                 let n = args.len() as i32;
+                // the FPU stack goes to the callee (_ftol's argument); it is empty after the call, and a float the
+                // callee returns is read as st0 below the bottom
+                args.extend(std::mem::take(&mut self.fpu));
                 self.effects.push(Effect::Call(t, args));
                 if ops[0].typ != OpType::Imm && !self.cleans_up {
                     // through memory or a register and the caller does not clean up (no `add esp` after it): the
@@ -1086,11 +1416,13 @@ impl Exec<'_> {
                     self.set_sp(sp);
                 }
                 let k = self.effects.len() as u32;
+                self.fret = Some(self.ar.var(Var::FRet(self.pair, k)));
                 for g in [0u8, 1, 2] {
                     let v = self.ar.var(Var::Ret(self.pair, k, g));
                     self.regs[g as usize] = Some(v);
                 }
                 self.pushed.clear();
+                self.reserved.clear();
                 self.flags = None;
             }
             (m, _) => {
@@ -1100,15 +1432,40 @@ impl Exec<'_> {
         Ok(())
     }
 
+    /// The carry flag as a value (1 / 0): a compare's or sub's `a <u b`, neg's `x != 0`, a logic operation's 0.
+    fn carry(&mut self) -> Result<E, String> {
+        match self.flags.ok_or("a carry set in another block")? {
+            Flags::Cmp(..) => self.condition(Cc::B),
+            Flags::Test(..) => Ok(self.ar.c(0)),
+            _ => Err("a carry from an addition or a shift".into()),
+        }
+    }
+
     fn condition(&mut self, cc: Cc) -> Result<E, String> {
         let zero = self.ar.c(0);
         let flags = self.flags.ok_or("a condition on flags set in another block")?;
+        if let Flags::Sahf(ah) = flags {
+            // a condition on ah's bits as the flags (0xfe: sahf's own width, never another compare's)
+            return Ok(self.ar.mk(Node::Cond(cc, ah, zero, 0xfe)));
+        }
+        if matches!(cc, Cc::P | Cc::Np) {
+            // the parity of the result's low byte: the condition on that byte as it is
+            let x = match flags {
+                Flags::Cmp(a, b, _) => self.ar.sub(a, b),
+                Flags::Test(a, b, _) => self.ar.op(Opc::And, vec![a, b]),
+                Flags::Res(r, _) => r,
+                Flags::Sahf(_) => unreachable!(),
+            };
+            let x = self.ar.op(Opc::Zx8, vec![x]);
+            return Ok(self.ar.mk(Node::Cond(cc, x, zero, 1)));
+        }
         if matches!(cc, Cc::S | Cc::Ns) {
             // the sign of the result: a compare's difference, a test's and, an operation's value; x < 0 / x >= 0
             let (x, w) = match flags {
                 Flags::Cmp(a, b, w) => (self.ar.sub(a, b), w),
                 Flags::Test(a, b, w) => (self.ar.op(Opc::And, vec![a, b]), w),
                 Flags::Res(r, w) => (r, w),
+                Flags::Sahf(_) => unreachable!(),
             };
             let x = match w {
                 1 => self.ar.op(Opc::Sx8, vec![x]),
@@ -1131,6 +1488,7 @@ impl Exec<'_> {
                 Cc::E | Cc::Ne => Ok(self.ar.cond(cc, r, zero, w)),
                 _ => Err("an order on an arithmetic result (carry / overflow)".into()),
             },
+            Flags::Sahf(_) => unreachable!(),
         }
     }
 }
@@ -1164,9 +1522,11 @@ struct Run {
     written: BTreeSet<i32>,
     sp: i32,
     pushed: Vec<i32>,
+    reserved: Vec<i32>,
     esc: Esc,
     flags: Option<Flags>,
     eax: E,
+    fpu: Vec<E>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1202,8 +1562,11 @@ fn run(ar: &mut Arena, b: &Block, pair: u32, side: u8, corr: &Corr) -> Result<Ru
         let v = x.slot(o);
         exit.push((Loc::Slot(o), v));
     }
+    for k in 0..x.fpu.len() {
+        exit.push((Loc::Fpu(k as u8), x.fpu[k]));
+    }
     let eax = x.reg32(0);
-    Ok(Run { effects: x.effects, exit, written: x.written, sp: x.sp, pushed: x.pushed, esc: x.esc, flags: x.flags, eax })
+    Ok(Run { effects: x.effects, exit, written: x.written, sp: x.sp, pushed: x.pushed, reserved: x.reserved, esc: x.esc, flags: x.flags, eax, fpu: x.fpu })
 }
 
 /// The correspondence at the successors: our locations and theirs that hold the same value at the end, one to one
@@ -1223,11 +1586,12 @@ fn exit_corr(ra: &Run, rb: &Run, written: BTreeSet<i32>) -> Corr {
             }
         }
     }
-    Corr { pairs, written, sp: (ra.sp, rb.sp), pushed: (ra.pushed.clone(), rb.pushed.clone()), esc: (ra.esc, rb.esc) }
+    Corr { pairs, written, sp: (ra.sp, rb.sp), pushed: (ra.pushed.clone(), rb.pushed.clone()),
+           reserved: (ra.reserved.clone(), rb.reserved.clone()), esc: (ra.esc, rb.esc), fpu: (ra.fpu.len() as u8, rb.fpu.len() as u8) }
 }
 
 fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
-    if old.sp != new.sp || old.esc != new.esc {
+    if old.sp != new.sp || old.esc != new.esc || old.fpu != new.fpu {
         return None;
     }
     // an argument slot one path wrote and the other did not: on the other, it is still the argument (an implicit
@@ -1246,7 +1610,8 @@ fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
     // arguments pushed on either path are compared (more is safe)
     let union = |a: &Vec<i32>, b: &Vec<i32>| -> Vec<i32> { a.iter().chain(b).copied().collect::<BTreeSet<_>>().into_iter().collect() };
     let pushed = (union(&old.pushed.0, &new.pushed.0), union(&old.pushed.1, &new.pushed.1));
-    Some(Corr { pairs, written: old.written.union(&new.written).copied().collect(), sp: old.sp, pushed, esc: old.esc })
+    let reserved = (union(&old.reserved.0, &new.reserved.0), union(&old.reserved.1, &new.reserved.1));
+    Some(Corr { pairs, written: old.written.union(&new.written).copied().collect(), sp: old.sp, pushed, reserved, esc: old.esc, fpu: old.fpu })
 }
 
 /// Proves our function (its code at `va`, our relocated fields already bound: bind) the same as the original's.
@@ -1286,7 +1651,7 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
     }
     let mut ar = Arena::new();
     let all: Vec<(Loc, Loc)> = (0..8u8).filter(|&g| g != ESP).map(|g| (Loc::Reg(g), Loc::Reg(g))).collect();
-    let c0 = Corr { pairs: all, written: BTreeSet::new(), sp: (0, 0), pushed: (vec![], vec![]), esc: esc0 };
+    let c0 = Corr { pairs: all, written: BTreeSet::new(), sp: (0, 0), pushed: (vec![], vec![]), reserved: (vec![], vec![]), esc: esc0, fpu: (0, 0) };
     let mut ids: HashMap<(u32, u32), u32> = HashMap::new();
     let mut seen: HashMap<(u32, u32), Corr> = HashMap::new();
     let mut work = vec![(ca.entry, cb.entry, c0)];
@@ -1341,6 +1706,9 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
             };
             return unknown(what.into(), a, b);
         }
+        if ra.fpu.len() != rb.fpu.len() {
+            return unknown("the FPU stacks differ in depth".into(), a, b);
+        }
         let written: BTreeSet<i32> = ra.written.union(&rb.written).copied().collect();
         let next = exit_corr(&ra, &rb, written);
         match (&ba.term, &bb.term) {
@@ -1348,7 +1716,10 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
                 if pa != pb {
                     return unknown("the returns pop different sizes".into(), a, b);
                 }
-                if ra.eax != rb.eax {
+                if ra.fpu.last() != rb.fpu.last() {
+                    return unknown("st0 differs at the return (a float the function returns)".into(), a, b);
+                }
+                if ra.eax != rb.eax && ra.fpu.is_empty() {
                     return unknown("eax differs at the return (the same if the function returns nothing)".into(), a, b);
                 }
             }
@@ -1548,6 +1919,47 @@ mod tests {
         let a = [0x8b, 0x44, 0x24, 0x04, 0x85, 0xc0, 0x78, 0x06, 0xb8, 0x01, 0, 0, 0, 0xc3, 0x33, 0xc0, 0xc3];
         let b = [0x8b, 0x44, 0x24, 0x04, 0x83, 0xf8, 0x00, 0x7c, 0x06, 0xb8, 0x01, 0, 0, 0, 0xc3, 0x33, 0xc0, 0xc3];
         assert!(matches!(p(&a, &b), Outcome::Equal { .. }), "{:?}", p(&a, &b));
+    }
+
+    #[test]
+    fn floats() {
+        // fld [esp+4]; fadd [esp+8]; ret  against the operands the other way round (an add commutes)
+        let a = [0xd9, 0x44, 0x24, 0x04, 0xd8, 0x44, 0x24, 0x08, 0xc3];
+        let b = [0xd9, 0x44, 0x24, 0x08, 0xd8, 0x44, 0x24, 0x04, 0xc3];
+        assert!(matches!(p(&a, &b), Outcome::Equal { .. }), "{:?}", p(&a, &b));
+        // a subtraction does not
+        let c = [0xd9, 0x44, 0x24, 0x04, 0xd8, 0x64, 0x24, 0x08, 0xc3];
+        let d = [0xd9, 0x44, 0x24, 0x08, 0xd8, 0x64, 0x24, 0x04, 0xc3];
+        assert!(matches!(p(&c, &d), Outcome::Unknown(s) if s.why.contains("st0")), "{:?}", p(&c, &d));
+        // fsubr against fsub with the operands exchanged: the same
+        let e = [0xd9, 0x44, 0x24, 0x08, 0xd8, 0x6c, 0x24, 0x04, 0xc3]; // fld [esp+8]; fsubr [esp+4]
+        assert!(matches!(p(&c, &e), Outcome::Equal { .. }), "{:?}", p(&c, &e));
+    }
+
+    #[test]
+    fn a_float_compare() {
+        // fld [esp+4]; fcomp [esp+8]; fnstsw ax; test ah,0x41; jne L; mov eax,1; ret; L: xor eax,eax; ret
+        let a = [0xd9, 0x44, 0x24, 0x04, 0xd8, 0x5c, 0x24, 0x08, 0xdf, 0xe0, 0xf6, 0xc4, 0x41, 0x75, 0x06, 0xb8, 0x01, 0, 0, 0, 0xc3,
+                 0x33, 0xc0, 0xc3];
+        // the same with the branch inverted: je to the 1, the 0 inline
+        let b = [0xd9, 0x44, 0x24, 0x04, 0xd8, 0x5c, 0x24, 0x08, 0xdf, 0xe0, 0xf6, 0xc4, 0x41, 0x74, 0x03, 0x33, 0xc0, 0xc3,
+                 0xb8, 0x01, 0, 0, 0, 0xc3];
+        assert!(matches!(p(&a, &b), Outcome::Equal { .. }), "{:?}", p(&a, &b));
+        // another mask is another condition
+        let mut c = b;
+        c[12] = 0x01;
+        assert!(matches!(p(&a, &c), Outcome::Unknown(_)), "{:?}", p(&a, &c));
+    }
+
+    #[test]
+    fn a_double_passed_through_the_stack() {
+        // fld [esp+4]; sub esp,8; fstp qword [esp]; call F; add esp,8; ret
+        let a = [0xd9, 0x44, 0x24, 0x04, 0x83, 0xec, 0x08, 0xdd, 0x1c, 0x24, 0xe8, 0xf1, 0x0f, 0, 0, 0x83, 0xc4, 0x08, 0xc3];
+        assert!(matches!(p(&a, &a), Outcome::Equal { .. }), "{:?}", p(&a, &a));
+        // another value passed: the call's argument differs
+        let mut b = a;
+        b[3] = 0x08;
+        assert!(matches!(p(&a, &b), Outcome::Unknown(s) if s.why.contains("call")), "{:?}", p(&a, &b));
     }
 
     #[test]

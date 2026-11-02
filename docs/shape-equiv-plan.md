@@ -67,11 +67,14 @@ mirror and complement), blocks paired in lockstep with a location correspondence
 may pair with several), our relocations bound through aligned sites (equiv::bind), calls compared by target and
 the slots pushed since the last call (saves of callee-saved registers left out; through memory without `add esp`
 after: stdcall), an escaped frame (an address passed on, an indexed access, rep stos / movs) compared as memory
-from the escaped address (locals) or by offset (arguments). Not yet: the FPU, parity conditions, switch tables,
-sbb / adc, flags across blocks, return liveness (eax always compared). gildegold af0cd2c: equal for 216 of 317
-byte functions sampled (the rest unknown; one, ch_AttachMotion, wrongly reports a store that differs: a gap
-of the prover, open), 62 of 259 shape, 37 of 1557 draft;
-ai_SaveNetworkGame and ch_AnimDone come out not equal (an extra store, eax at the return).
+from the escaped address (locals) or by offset (arguments); the x87 stack as locations with its depth (loads and
+stores by width, fild / fistp, the arithmetic with its reversed and popping forms, compares through fnstsw / sahf /
+test ah with the parity conditions, the stack as a call's arguments and st0 as its float return), 8-byte stack
+values, sbb / adc on a compare's carry, the space a `sub esp` reserves outside the prologue as a call's arguments
+once written. Not yet: switch tables, flags across blocks, string scans (repne scasb), return liveness (eax always
+compared). gildegold af0cd2c: equal for 255 of 317 byte functions sampled (the rest unknown; three wrongly report
+a difference: ch_AttachMotion, ts_GetHiColTab, ai_PickDislikedColumn, gaps of the prover, open), 86 of 259 shape,
+49 of 1557 draft; ai_SaveNetworkGame and ch_AnimDone come out not equal (an extra store, eax at the return).
 
 New flat modules in native/dcp_core/src:
 - **`equiv_lift.rs`**: `dis::Ins` → micro-ops. dis.rs (iced-x86) already gives the mnemonic id, typed operands
