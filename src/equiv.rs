@@ -27,7 +27,8 @@ enum Var {
     Sp0,
     /// an argument slot (above the return address) not written since entry, by its offset
     Arg(i32),
-    /// the k-th paired location at the entry of pair p (both sides)
+    /// the value of class k at the entry of pair p (Corr::pairs: every location of the class reads it plus its
+    /// offset)
     In(u32, u32),
     /// a location of one side only at the entry of pair p (side, location)
     Own(u32, u8, Loc),
@@ -696,7 +697,11 @@ enum Flags {
 /// last call (a call's arguments), where the escaped part of each frame begins.
 #[derive(Clone, PartialEq, Debug)]
 struct Corr {
-    pairs: Vec<(Loc, Loc)>,
+    /// the locations of both sides in classes: (side, location, class, offset): every location of a class holds
+    /// the class's value plus its offset (the same value: a copy, the two sides' corresponding locations; another
+    /// offset: a pointer advanced before the loads on one side, after them on the other). A join keeps what every
+    /// path agrees on
+    pairs: Vec<(u8, Loc, u32, u32)>,
     /// the slots written on the paths so far, on each side
     written: (BTreeSet<i32>, BTreeSet<i32>),
     /// the memory state at the entry, where every path agrees (a pair and the effects before it there): a load in
@@ -769,9 +774,8 @@ impl Exec<'_> {
     fn new<'a>(ar: &'a mut Arena, pair: u32, side: u8, corr: &'a Corr) -> Exec<'a> {
         let (sp, pushed, esc) = if side == 0 { (corr.sp.0, corr.pushed.0.clone(), corr.esc.0) } else { (corr.sp.1, corr.pushed.1.clone(), corr.esc.1) };
         let reserved = if side == 0 { corr.reserved.0.clone() } else { corr.reserved.1.clone() };
-        // the entry pair's registers are In(0, k), k in the order of prove's first correspondence (eax .. edi
-        // without esp): ebx 3, ebp 4, esi 5, edi 6
-        let saves = (3..7).map(|k| ar.var(Var::In(0, k))).collect();
+        // the callee-saved registers' values at the entry pair (class g: register g)
+        let saves = [3u32, 5, 6, 7].iter().map(|&g| ar.var(Var::In(0, g))).collect();
         Exec { ar, pair, side, corr, regs: [None; 8], slots: BTreeMap::new(), read: BTreeSet::new(), sp, pushed, reserved, esc, flags: None,
                effects: vec![], written: if side == 0 { corr.written.0.clone() } else { corr.written.1.clone() }, saves, cleans_up: false, mem_in: corr.mem.unwrap_or((pair, 0)), fpu: vec![], fstatus: None, fret: None,
                prologue: pair == 0 && corr.sp == (0, 0) }
@@ -994,9 +998,10 @@ impl Exec<'_> {
         if let Some(&v) = if self.side == 0 { self.corr.known.0.get(&l) } else { self.corr.known.1.get(&l) } {
             return v;
         }
-        let k = self.corr.pairs.iter().position(|p| if self.side == 0 { p.0 == l } else { p.1 == l });
-        if let Some(k) = k {
-            return self.ar.var(Var::In(self.pair, k as u32));
+        if let Some(&(_, _, class, c)) = self.corr.pairs.iter().find(|p| p.0 == self.side && p.1 == l) {
+            let v = self.ar.var(Var::In(self.pair, class));
+            let c = self.ar.c(c);
+            return self.ar.add(v, c);
         }
         if let Loc::Slot(o) = l {
             let written = if self.side == 0 { &self.corr.written.0 } else { &self.corr.written.1 };
@@ -1120,8 +1125,8 @@ impl Exec<'_> {
             }
         };
         let mut offs: BTreeSet<i32> = self.slots.keys().copied().filter(|&o| c <= o && o < top).collect();
-        for p in &self.corr.pairs {
-            if let Loc::Slot(o) = if self.side == 0 { p.0 } else { p.1 } {
+        for p in self.corr.pairs.iter().filter(|p| p.0 == self.side) {
+            if let Loc::Slot(o) = p.1 {
                 if c <= o && o < top {
                     offs.insert(o);
                 }
@@ -1660,8 +1665,8 @@ fn run(ar: &mut Arena, b: &Block, pair: u32, side: u8, corr: &Corr) -> Result<Ru
         exit.push((Loc::Reg(g), v));
     }
     let mut slots: BTreeSet<i32> = x.slots.keys().copied().collect();
-    for p in &corr.pairs {
-        if let Loc::Slot(o) = if side == 0 { p.0 } else { p.1 } {
+    for p in corr.pairs.iter().filter(|p| p.0 == side) {
+        if let Loc::Slot(o) = p.1 {
             slots.insert(o);
         }
     }
@@ -1691,22 +1696,35 @@ fn exit_corr(ar: &Arena, ra: &Run, rb: &Run) -> Corr {
     let written = (ra.written.clone(), rb.written.clone());
     let known = |r: &Run| -> BTreeMap<Loc, E> { r.exit.iter().filter(|(_, v)| ar.global(*v)).copied().collect() };
     let known = (known(ra), known(rb));
-    let mut by: HashMap<E, Vec<Loc>> = HashMap::new();
-    for (l, v) in &rb.exit {
-        by.entry(*v).or_default().push(*l);
-    }
+    // the classes: the values' terms (all constants one class, their values the offsets)
+    let mut classes: HashMap<Vec<(E, u32)>, u32> = HashMap::new();
     let mut pairs = vec![];
-    // the same location first, then the others in order
-    for (l, v) in &ra.exit {
-        if let Some(ls) = by.get_mut(v) {
-            let k = ls.iter().position(|x| x == l).unwrap_or(0);
-            if !ls.is_empty() {
-                pairs.push((*l, ls.remove(k)));
-            }
+    for (side, r) in [(0u8, ra), (1u8, rb)] {
+        for (l, v) in &r.exit {
+            let (c, t) = ar.lin(*v);
+            let n = classes.len() as u32;
+            let k = *classes.entry(t).or_insert(n);
+            pairs.push((side, *l, k, c));
         }
     }
+    // a class one side alone holds says nothing about the other
+    let pairs = canon(pairs);
     Corr { pairs, written, mem: Some(ra.mem), sp: (ra.sp, rb.sp), pushed: (ra.pushed.clone(), rb.pushed.clone()),
            reserved: (ra.reserved.clone(), rb.reserved.clone()), esc: (ra.esc, rb.esc), known, fpu: (ra.fpu.len() as u8, rb.fpu.len() as u8) }
+}
+
+/// The classes in a canonical form: those both sides hold, numbered in the order of the locations (the same
+/// partition is the same list, whatever order it was built in).
+fn canon(mut pairs: Vec<(u8, Loc, u32, u32)>) -> Vec<(u8, Loc, u32, u32)> {
+    let both: BTreeSet<u32> = pairs.iter().filter(|p| p.0 == 0).map(|p| p.2).filter(|k| pairs.iter().any(|q| q.0 == 1 && q.2 == *k)).collect();
+    pairs.retain(|p| both.contains(&p.2));
+    pairs.sort_by_key(|p| (p.0, p.1));
+    let mut ids: HashMap<u32, u32> = HashMap::new();
+    for p in pairs.iter_mut() {
+        let n = ids.len() as u32;
+        p.2 = *ids.entry(p.2).or_insert(n);
+    }
+    pairs
 }
 
 fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
@@ -1715,19 +1733,32 @@ fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
     }
     // an argument slot one path wrote and the other did not: on the other, it is still the argument (an implicit
     // pair of the slot with itself), made explicit before the two meet
-    let explicit = |c: &Corr, other: &Corr| -> Vec<(Loc, Loc)> {
+    // (a class of its own per argument: 0x8000_0000 + offset)
+    let explicit = |c: &Corr, other: &Corr| -> Vec<(u8, Loc, u32, u32)> {
         let mut p = c.pairs.clone();
-        let wc: BTreeSet<i32> = c.written.0.union(&c.written.1).copied().collect();
-        let wo: BTreeSet<i32> = other.written.0.union(&other.written.1).copied().collect();
-        for &o in wo.difference(&wc).filter(|&&o| o > 0) {
-            if !p.iter().any(|x| x.0 == Loc::Slot(o) || x.1 == Loc::Slot(o)) {
-                p.push((Loc::Slot(o), Loc::Slot(o)));
+        for side in 0..2u8 {
+            let (wc, wo) = if side == 0 { (&c.written.0, &other.written.0) } else { (&c.written.1, &other.written.1) };
+            for &o in wo.difference(wc).filter(|&&o| o > 0) {
+                if !p.iter().any(|x| x.0 == side && x.1 == Loc::Slot(o)) {
+                    p.push((side, Loc::Slot(o), 0x8000_0000 + o as u32, 0));
+                }
             }
         }
         p
     };
     let (po, pn) = (explicit(old, new), explicit(new, old));
-    let pairs = po.iter().filter(|p| pn.contains(p)).copied().collect();
+    // the common refinement: two locations stay in one class when they were in one class on both paths with the
+    // same offsets relative to each other
+    let mut refined: HashMap<(u32, u32, u32), u32> = HashMap::new();
+    let mut pairs = vec![];
+    for &(side, l, ko, co) in &po {
+        if let Some(&(_, _, kn, cn)) = pn.iter().find(|q| q.0 == side && q.1 == l) {
+            let n = refined.len() as u32;
+            let k = *refined.entry((ko, kn, co.wrapping_sub(cn))).or_insert(n);
+            pairs.push((side, l, k, co));
+        }
+    }
+    let pairs = canon(pairs);
     // arguments pushed on either path are compared (more is safe)
     let union = |a: &Vec<i32>, b: &Vec<i32>| -> Vec<i32> { a.iter().chain(b).copied().collect::<BTreeSet<_>>().into_iter().collect() };
     let pushed = (union(&old.pushed.0, &new.pushed.0), union(&old.pushed.1, &new.pushed.1));
@@ -1775,7 +1806,8 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
         }
     }
     let mut ar = Arena::new();
-    let all: Vec<(Loc, Loc)> = (0..8u8).filter(|&g| g != ESP).map(|g| (Loc::Reg(g), Loc::Reg(g))).collect();
+    // class g: register g (not canonical: the saves look for In(0, g))
+    let all: Vec<(u8, Loc, u32, u32)> = (0..8u8).filter(|&g| g != ESP).flat_map(|g| [(0, Loc::Reg(g), g as u32, 0), (1, Loc::Reg(g), g as u32, 0)]).collect();
     let c0 = Corr { pairs: all, written: (BTreeSet::new(), BTreeSet::new()), mem: None, sp: (0, 0), pushed: (vec![], vec![]), reserved: (vec![], vec![]), esc: esc0, fpu: (0, 0),
                    known: (BTreeMap::new(), BTreeMap::new()) };
     let mut ids: HashMap<(u32, u32), u32> = HashMap::new();
@@ -1856,7 +1888,12 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
                 if ta != tb || *ta == 0 {
                     return unknown(if *ta == 0 || *tb == 0 { "a switch table's jump (not followed yet)" } else { "a jump out of the function to another place" }.into(), a, b);
                 }
-                if next.pairs.iter().filter(|p| p.0 == p.1).count() < 7 || ra.sp != rb.sp {
+                // every register the same on both sides
+                let same = |g: u8| {
+                    let at = |side: u8| next.pairs.iter().find(|p| p.0 == side && p.1 == Loc::Reg(g)).map(|p| (p.2, p.3));
+                    at(0).is_some() && at(0) == at(1)
+                };
+                if !(0..8u8).filter(|&g| g != ESP).all(same) || ra.sp != rb.sp {
                     return unknown("a jump out of the function with other registers or stack".into(), a, b);
                 }
             }
