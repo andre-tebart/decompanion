@@ -718,7 +718,13 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
         if level == "deep" && s("code") != "byte" {
             // a function without an object (no reading) has no size to judge
             if let Ok(rd) = crate::asmcmd::reading(p, r.clone(), None)? {
-                let (ours, orig) = (rd.la.len() as i64, rd.lb.len() as i64);
+                // a block one side shares by a jump and the other has inline (a tail hunk) is the same code: the
+                // instructions it adds to one side are explained
+                let tails: i64 = rd.hunks.iter().filter(|h| h.4 == "tail").map(|h| (h.1 - h.0) as i64 - (h.3 - h.2) as i64).sum();
+                let (ours, orig) = (rd.la.len() as i64 - tails, rd.lb.len() as i64);
+                if tails != 0 {
+                    why = format!("{why} (size: {} of the instruction difference are shared / inline tails)", tails.abs());
+                }
                 if let Some((o, t, allow)) = size_unexplained(ours, orig) {
                     match size_explained.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         None => return Ok((vec![], Some(format!(

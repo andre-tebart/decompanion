@@ -521,6 +521,12 @@ fn st_masked(s: &Shape) -> Shape {
     })
 }
 
+/// Whether two runs of lines are the same code but for a renaming of registers (diffclass's tail class: a block
+/// one side shares by a jump and the other has inline).
+pub fn same_code(a: &[Shape], b: &[Shape], context: &[Shape]) -> bool {
+    a == b || Unify::renewing(allowed_for(context), Slots::None).all(a, b)
+}
+
 /// X86.explain: (class, note) of one differing hunk, None when nothing explains it.
 pub fn explain(xa: &[Shape], xb: &[Shape], context: &[Shape]) -> Option<(String, String)> {
     let allowed = allowed_for(context);

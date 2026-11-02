@@ -113,6 +113,8 @@ impl Keys<'_> {
         }
         let (sa, sb): (HashSet<&Shape>, HashSet<&Shape>) = (la[i1..i2].iter().map(|l| &l.shape).collect(), lb[j1..j2].iter().map(|l| &l.shape).collect());
         sa.symmetric_difference(&sb).all(|t| t.fpu()) || la[i1..i2].iter().chain(&lb[j1..j2]).all(|l| l.fill)
+            // a jump may go to a block the other side has inline (tail)
+            || la[i1..i2].iter().chain(&lb[j1..j2]).any(|l| l.shape.mn == "jmp")
     }
 }
 
@@ -167,7 +169,61 @@ fn classify(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: us
     if multiset_eq(&a, &b) {
         return ("order".into(), "same instructions, other order".into());
     }
-    shape::explain(&a, &b, at).unwrap_or(("code".into(), String::new()))
+    shape::explain(&a, &b, at).or_else(|| tail(la, lb, at, i1, i2, j1, j2)).unwrap_or(("code".into(), String::new()))
+}
+
+/// The block a jump goes to: from line t to its first ret or jmp (at most 16 lines), None when it runs on.
+fn jump_block(l: &[Line], t: usize) -> Option<std::ops::Range<usize>> {
+    let end = (t..l.len().min(t + 16)).find(|&k| matches!(l[k].shape.mn, "ret" | "jmp"))?;
+    Some(t..end + 1)
+}
+
+/// The tail class: the hunk differs by blocks one side reaches by a jump and the other has inline (VC6 merges
+/// identical return tails and call sequences into one and jumps to it, or keeps a copy per path: the same code
+/// either way). Each `jmp` of one side's lines whose target block (jump_block) is a run of the other side's lines, the
+/// same but for a renaming, is taken out with that run; the hunk is a tail when something was taken out and
+/// what is left is the same on both sides (in another order or under a renaming: explain).
+#[allow(clippy::too_many_arguments)]
+fn tail(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: usize, j2: usize) -> Option<(String, String)> {
+    let base = la.first()?.addr as i64;
+    let (mut ra, mut rb): (Vec<usize>, Vec<usize>) = ((i1..i2).collect(), (j1..j2).collect());
+    let mut notes = vec![];
+    // side 0: ours jumps, the original has the block inline; side 1 the other way round
+    for side in 0..2 {
+        let (jl, il) = if side == 0 { (la, lb) } else { (lb, la) };
+        let mut k = 0;
+        while k < if side == 0 { ra.len() } else { rb.len() } {
+            let x = if side == 0 { ra[k] } else { rb[k] };
+            let jumps_to = (jl[x].shape.mn == "jmp").then_some(jl[x].target).flatten();
+            let found = jumps_to.and_then(|t| jl.iter().position(|l| l.addr as i64 == t)).and_then(|t| jump_block(jl, t)).and_then(|blk| {
+                let want = shapes(&jl[blk.clone()]);
+                let inline = if side == 0 { &rb } else { &ra };
+                // a run of consecutive lines of the other side's hunk that is the block
+                (0..inline.len()).find(|&q| {
+                    q + want.len() <= inline.len() && (0..want.len()).all(|d| inline[q + d] == inline[q] + d)
+                        && shape::same_code(&want, &shapes(&il[inline[q]..inline[q] + want.len()]), at)
+                }).map(|q| (q, want.len(), jl[blk.start].addr))
+            });
+            match found {
+                Some((q, n, at_addr)) => {
+                    let inline = if side == 0 { &mut rb } else { &mut ra };
+                    let from = il[inline[q]].addr;
+                    inline.drain(q..q + n);
+                    if side == 0 { ra.remove(k) } else { rb.remove(k) };
+                    let (who, other) = if side == 0 { ("ours", "the original") } else { ("the original", "ours") };
+                    notes.push(format!("{who} jumps to a shared block at +{} ({n} instructions) {other} has inline at +{}",
+                                       py_hex(at_addr as i64 - base), py_hex(from as i64 - base)));
+                }
+                None => k += 1,
+            }
+        }
+    }
+    if notes.is_empty() {
+        return None;
+    }
+    let (a, b): (Vec<Shape>, Vec<Shape>) = (ra.iter().map(|&k| la[k].shape.clone()).collect(), rb.iter().map(|&k| lb[k].shape.clone()).collect());
+    let rest_same = multiset_eq(&a, &b) || shape::explain(&a, &b, at).is_some();
+    rest_same.then(|| ("tail".to_string(), notes.join("; ")))
 }
 
 fn classify_hunks(la: &[Line], lb: &[Line]) -> Vec<Hunk> {
@@ -879,6 +935,28 @@ mod tests {
         c[13] = "push ebx".into();
         let hs = classify_hunks(&a, &to_lines(c));
         assert!(hs.iter().any(|h| h.4 == "code") && hs.iter().any(|h| h.4 == "regs"), "{hs:?}");
+    }
+
+    #[test]
+    fn shared_and_inline_tails() {
+        // gildegold rd_BuildRoad: ours merges two identical fail tails into one and jumps to it, the original keeps
+        // a copy per path
+        let ours = jumps(&[("cmp eax, 1", None), ("jne X", Some(4)), ("push edx", None), ("jmp X", Some(5)), ("push ecx", None),
+                           ("call X", None), ("add esp, 4", None), ("mov eax, -1", None), ("ret", None)]);
+        let theirs = jumps(&[("cmp eax, 1", None), ("jne X", Some(7)), ("push edx", None), ("call X", None), ("add esp, 4", None),
+                             ("mov eax, -1", None), ("ret", None), ("push ecx", None), ("call X", None), ("add esp, 4", None),
+                             ("mov eax, -1", None), ("ret", None)]);
+        let (hs, v) = analyse(&ours, &theirs, None);
+        assert_eq!(hs.iter().map(|h| h.4.as_str()).collect::<Vec<_>>(), ["tail"], "{hs:?}");
+        assert!(hs[0].5.contains("ours jumps to a shared block at +0x5 (4 instructions) the original has inline at +0x3"), "{hs:?}");
+        assert!(v.shape, "{}", v.summary());
+        // the other way round
+        let (hs, _) = analyse(&theirs, &ours, None);
+        assert!(hs[0].4 == "tail" && hs[0].5.starts_with("the original jumps to a shared block"), "{hs:?}");
+        // a block that differs is no tail
+        let mut other = theirs.clone();
+        other[5] = Line::of(other[5].addr, "mov eax, -2", false, None);
+        assert_eq!(analyse(&ours, &other, None).0[0].4, "code");
     }
 
     #[test]

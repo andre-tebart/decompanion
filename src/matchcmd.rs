@@ -309,6 +309,11 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     if let Some((fa, fb)) = frame {
         head += &format!("  {}", record(&[("frame", s(format!("{fa:#x}/{fb:#x}")))]));
     }
+    // the returns of each side, when they differ: tails merged or duplicated (diffclass's tail class)
+    let rets = |l: &[crate::x86::Line]| l.iter().filter(|x| x.shape.mn == "ret").count();
+    if rets(&r.la) != rets(&r.lb) {
+        head += &format!("  {}", record(&[("returns", s(format!("{}/{}", rets(&r.la), rets(&r.lb))))]));
+    }
     if let Some(t) = &r.tables {
         head += &format!("  {}", tables_tokens(t));
     }
