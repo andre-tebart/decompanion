@@ -399,6 +399,26 @@ impl Arena {
                         return self.sub(m, other);
                     }
                     (Mul, Some(k)) => return self.mul_k(other, k),
+                    // a mask of the low bits: what the bits above them do not touch
+                    (And, Some(m)) if m & m.wrapping_add(1) == 0 => {
+                        if self.max_of(other) <= m {
+                            return other;
+                        }
+                        let y = self.below(other, m.count_ones());
+                        if y != other {
+                            let m = self.c(m);
+                            return self.op(And, vec![y, m]);
+                        }
+                    }
+                    // a constant factor of an operand: out of the product (2*Mul(a, b) = Mul(a, 2*b))
+                    (Mul, None) => {
+                        let (x, kx) = self.factor(x);
+                        let (y, ky) = self.factor(y);
+                        if kx.wrapping_mul(ky) != 1 {
+                            let m = self.op(Mul, vec![x, y]);
+                            return self.mul_k(m, kx.wrapping_mul(ky));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -421,6 +441,11 @@ impl Arena {
                 if let Some(k) = self.konst(a[1]) {
                     return self.mul_k(a[0], 1u32.wrapping_shl(k & 31));
                 }
+            }
+            Zx8 | Zx16 if self.max_of(a[0]) <= if o == Zx8 { 0xff } else { 0xffff } => return a[0],
+            Zx8 | Zx16 if self.low(a[0], if o == Zx8 { 1 } else { 2 }) != a[0] => {
+                let l = self.low(a[0], if o == Zx8 { 1 } else { 2 });
+                return self.op(o, vec![l]);
             }
             Zx8 => match self.nodes[a[0] as usize].clone() {
                 Node::Op(Zx8, _) => return a[0],
@@ -458,11 +483,85 @@ impl Arena {
                 if self.konst(a[0]).is_some_and(|k| k & !0xffff == 0) {
                     return v;
                 }
+                if let Node::Op(Ins16 | Ins8Lo, w) = self.nodes[a[0] as usize].clone() {
+                    a[0] = w[0];
+                }
                 a[1] = v;
             }
             _ => {}
         }
         self.mk(Node::Op(o, a))
+    }
+
+    /// An upper bound of a value (unsigned).
+    fn max_of(&self, e: E) -> u32 {
+        match &self.nodes[e as usize] {
+            Node::Const(k) => *k,
+            Node::Cond(..) => 1,
+            Node::Load(_, 1, ..) => 0xff,
+            Node::Load(_, 2, ..) => 0xffff,
+            Node::Op(Opc::Zx8, a) => self.max_of(a[0]).min(0xff),
+            Node::Op(Opc::Zx16, a) => self.max_of(a[0]).min(0xffff),
+            Node::Op(Opc::Shr, a) => self.konst(a[1]).map_or(u32::MAX, |k| self.max_of(a[0]) >> (k & 31)),
+            Node::Op(Opc::And, a) => self.max_of(a[0]).min(self.max_of(a[1])),
+            _ => u32::MAX,
+        }
+    }
+
+    /// A value with the same low w bytes (w 1 or 2): the inserts, extensions and sums above them left out (the
+    /// junk upper half of a register that a word's arithmetic carried).
+    fn low(&mut self, e: E, w: u8) -> E {
+        use Opc::*;
+        match self.nodes[e as usize].clone() {
+            Node::Op(Ins16, a) => self.low(a[1], w),
+            Node::Op(Ins8Lo, a) if w == 1 => self.low(a[1], 1),
+            Node::Op(Ins8Lo, a) => {
+                let x = self.low(a[0], 2);
+                if self.konst(x).is_some_and(|k| k & 0xff00 == 0) {
+                    self.op(Zx8, vec![a[1]])
+                } else {
+                    self.op(Ins8Lo, vec![x, a[1]])
+                }
+            }
+            Node::Op(Ins8Hi, a) if w == 1 => self.low(a[0], 1),
+            Node::Op(Zx16 | Sx16, a) => self.low(a[0], w),
+            Node::Op(Zx8 | Sx8, a) if w == 1 => self.low(a[0], 1),
+            Node::Lin(c, t) => {
+                let t = t.into_iter().map(|(x, k)| (self.low(x, w), k)).collect();
+                self.from_lin(c, t)
+            }
+            Node::Op(o @ (And | Or | Xor | Mul), a) => {
+                let (x, y) = (self.low(a[0], w), self.low(a[1], w));
+                self.op(o, vec![x, y])
+            }
+            _ => e,
+        }
+    }
+
+    /// A value with the same low n bits: a sum's terms that are multiples of 2^n left out (the stack pointer at the
+    /// entry is a multiple of 4), the words' and bytes' upper parts left out.
+    fn below(&mut self, e: E, n: u32) -> E {
+        let e = if n <= 8 { self.low(e, 1) } else if n <= 16 { self.low(e, 2) } else { e };
+        let Node::Lin(c, t) = self.nodes[e as usize].clone() else { return e };
+        let zero = |k: u32| n < 32 && k.trailing_zeros() >= n;
+        let t: Vec<(E, u32)> = t.into_iter().filter(|&(x, k)| !zero(k) && !(x == SP0_KEY && n <= 2 + k.trailing_zeros())).collect();
+        self.from_lin(c, t)
+    }
+
+    /// A sum as a constant times a sum (the coefficients' common divisor, signed, the first term's sign out).
+    fn factor(&mut self, e: E) -> (E, u32) {
+        let Node::Lin(c, t) = self.nodes[e as usize].clone() else { return (e, 1) };
+        fn gcd(a: i64, b: i64) -> i64 {
+            if b == 0 { a.abs() } else { gcd(b, a % b) }
+        }
+        let g = t.iter().fold(c as i32 as i64, |g, x| gcd(g, x.1 as i32 as i64));
+        let g = if (t[0].1 as i32) < 0 { -g } else { g };
+        if g == 1 || g == 0 {
+            return (e, 1);
+        }
+        let d = |k: u32| ((k as i32 as i64) / g) as u32;
+        let t = t.iter().map(|&(x, k)| (x, d(k))).collect();
+        (self.from_lin(d(c), t), g as u32)
     }
 
     /// The bytes [p, p + w) of a 4-byte value, zero-extended: through the inserts at other positions to the value
@@ -520,6 +619,24 @@ impl Arena {
             b = self.op(sx, vec![b]);
         }
         let w = 4;
+        // a constant on the right, an order against it not strict (x < 1 is x <= 0), x <= 0 unsigned is x == 0
+        let (mut cc, a, mut b) = if self.konst(a).is_some() && self.konst(b).is_none() { (cc.mirror(), b, a) } else { (cc, a, b) };
+        if let Some(k) = self.konst(b) {
+            let (c2, k2) = match (cc, k) {
+                (Cc::L, k) if k != 0x8000_0000 => (Cc::Le, k.wrapping_sub(1)),
+                (Cc::G, k) if k != 0x7fff_ffff => (Cc::Ge, k.wrapping_add(1)),
+                (Cc::B, k) if k != 0 => (Cc::Be, k - 1),
+                (Cc::A, k) if k != u32::MAX => (Cc::Ae, k + 1),
+                x => x,
+            };
+            let (c2, k2) = match (c2, k2) {
+                (Cc::Be, 0) => (Cc::E, 0),
+                (Cc::Ae, 1) => (Cc::Ne, 0),
+                x => x,
+            };
+            cc = c2;
+            b = self.c(k2);
+        }
         if a > b { self.mk(Node::Cond(cc.mirror(), b, a, w)) } else { self.mk(Node::Cond(cc, a, b, w)) }
     }
 
@@ -539,6 +656,7 @@ impl Arena {
 
     fn not_cond(&mut self, e: E) -> Option<E> {
         match self.nodes[e as usize] {
+            Node::Cond(cc, a, b, 4) => Some(self.cond(cc.not(), a, b, 4)),
             Node::Cond(cc, a, b, w) => Some(self.mk(Node::Cond(cc.not(), a, b, w))),
             _ => None,
         }
@@ -1590,13 +1708,11 @@ impl Exec<'_> {
         match flags {
             Flags::Cmp(a, b, w) => Ok(self.ar.cond(cc, a, b, w)),
             Flags::Test(a, b, w) if a == b => Ok(self.ar.cond(cc, a, zero, w)),
-            Flags::Test(a, b, w) => match cc {
-                Cc::E | Cc::Ne => {
-                    let x = self.ar.op(Opc::And, vec![a, b]);
-                    Ok(self.ar.cond(cc, x, zero, w))
-                }
-                _ => Err("a test of two values by an order".into()),
-            },
+            // test clears the carry and the overflow as `cmp x, 0` does: any condition is one on a & b against 0
+            Flags::Test(a, b, w) => {
+                let x = self.ar.op(Opc::And, vec![a, b]);
+                Ok(self.ar.cond(cc, x, zero, w))
+            }
             Flags::Res(r, w) => match cc {
                 Cc::E | Cc::Ne => Ok(self.ar.cond(cc, r, zero, w)),
                 _ => Err("an order on an arithmetic result (carry / overflow)".into()),
@@ -2030,6 +2146,47 @@ mod tests {
 
     fn p(a: &[u8], b: &[u8]) -> Outcome {
         prove(a, b, 0x401000)
+    }
+
+    #[test]
+    fn normal_forms() {
+        let mut ar = Arena::new();
+        let (x, y) = (ar.var(Var::Arg(4)), ar.var(Var::Arg(8)));
+        let (c0, c1, c2, c3) = (ar.c(0), ar.c(1), ar.c(2), ar.c(3));
+        // x < 1 is 0 >= x; unsigned x < 1 and 0 >= x are x == 0; x < 2 is not x <= 0
+        assert_eq!(ar.cond(Cc::L, x, c1, 4), ar.cond(Cc::Ge, c0, x, 4));
+        assert_eq!(ar.cond(Cc::B, x, c1, 4), ar.cond(Cc::E, x, c0, 4));
+        assert_eq!(ar.cond(Cc::Ae, c0, x, 4), ar.cond(Cc::E, c0, x, 4));
+        assert_ne!(ar.cond(Cc::L, x, c2, 4), ar.cond(Cc::Le, x, c0, 4));
+        let lt = ar.cond(Cc::L, x, c1, 4);
+        let ge = ar.cond(Cc::Ge, x, c1, 4);
+        assert_eq!(ar.not_cond(lt), Some(ge));
+        // a mask of what is in range already
+        let k31 = ar.c(31);
+        let sign = ar.op(Opc::Shr, vec![x, k31]);
+        let sign = ar.op(Opc::Zx8, vec![sign]);
+        assert_eq!(ar.op(Opc::And, vec![sign, c1]), sign);
+        // the stack pointer at the entry is a multiple of 4: 3*esp + 0x10 & 3 is 0, & 7 is not
+        let sp = ar.var(Var::Sp0);
+        let s3 = ar.mul_k(sp, 3);
+        let k10 = ar.c(0x10);
+        let s3 = ar.add(s3, k10);
+        assert_eq!(ar.op(Opc::And, vec![s3, c3]), c0);
+        let k7 = ar.c(7);
+        assert_ne!(ar.op(Opc::And, vec![s3, k7]), c0);
+        // a word's sum: the junk upper half of a register left out
+        let ins = ar.op(Opc::Ins16, vec![y, x]);
+        let sum = ar.add(ins, x);
+        let sum = ar.op(Opc::Zx16, vec![sum]);
+        let plain = ar.mul_k(x, 2);
+        assert_eq!(sum, ar.op(Opc::Zx16, vec![plain]));
+        // a constant factor out of a product: Mul(y, 2x - 2) = 2 * Mul(y, x - 1)
+        let m1 = ar.c(u32::MAX);
+        let xm1 = ar.add(x, m1);
+        let two = ar.mul_k(xm1, 2);
+        let a = ar.op(Opc::Mul, vec![y, two]);
+        let b = ar.op(Opc::Mul, vec![y, xm1]);
+        assert_eq!(a, ar.mul_k(b, 2));
     }
 
     #[test]
