@@ -1902,6 +1902,17 @@ pub fn prove(ours: &[u8], theirs: &[u8], va: u32) -> Outcome {
     }
 }
 
+/// Writes one function's prover inputs to `dir/name.eq` (DCP_EQUIV_DUMP): a line `name grade va unbound`, our code's
+/// length (4 bytes), our code, the original's bytes. The corpus test proves them all in one process.
+pub fn dump(dir: &std::path::Path, name: &str, grade: &str, va: u32, ours: &[u8], theirs: &[u8], unbound: usize) {
+    let mut b = format!("{name} {grade} {va} {unbound}\n").into_bytes();
+    b.extend((ours.len() as u32).to_le_bytes());
+    b.extend(ours);
+    b.extend(theirs);
+    let _ = std::fs::create_dir_all(dir);
+    let _ = std::fs::write(dir.join(format!("{name}.eq")), b);
+}
+
 /// One proof from the entry with the frames escaped as `esc0`; Err: prove again with the frames escaped from the
 /// entry as given.
 fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> {
@@ -2146,6 +2157,48 @@ mod tests {
 
     fn p(a: &[u8], b: &[u8]) -> Outcome {
         prove(a, b, 0x401000)
+    }
+
+    /// Proves every function dumped to DCP_EQUIV_CORPUS (DCP_EQUIV_DUMP) and writes `name, grade, proof` lines to
+    /// DCP_EQUIV_OUT: the prover's measurement without a project.
+    /// `cargo test --profile iter --lib equiv::tests::corpus -- --ignored`
+    #[test]
+    #[ignore]
+    fn corpus() {
+        let dir = std::env::var("DCP_EQUIV_CORPUS").expect("DCP_EQUIV_CORPUS");
+        // DCP_EQUIV_ONLY: these functions only (with DCP_EQUIV_DEBUG: their debug output)
+        let only: Option<Vec<String>> = std::env::var("DCP_EQUIV_ONLY").ok().map(|v| v.split(',').map(|x| format!("{x}.eq")).collect());
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
+            .filter(|f| only.as_ref().is_none_or(|o| o.iter().any(|x| f.ends_with(x)))).collect();
+        let t = std::time::Instant::now();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let rows = std::sync::Mutex::new(vec![]);
+        std::thread::scope(|sc| {
+            for _ in 0..std::thread::available_parallelism().map_or(4, |n| n.get()) {
+                sc.spawn(|| loop {
+                    let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(f) = files.get(k) else { break };
+                    let b = std::fs::read(f).unwrap();
+                    let nl = b.iter().position(|&c| c == b'\n').unwrap();
+                    let head = String::from_utf8_lossy(&b[..nl]).to_string();
+                    let h: Vec<&str> = head.split(' ').collect();
+                    let (va, unbound): (u32, usize) = (h[2].parse().unwrap(), h[3].parse().unwrap());
+                    let n = u32::from_le_bytes(b[nl + 1..nl + 5].try_into().unwrap()) as usize;
+                    let (ours, theirs) = (&b[nl + 5..nl + 5 + n], &b[nl + 5 + n..]);
+                    let p = prove(ours, theirs, va).summary(va);
+                    let p = if unbound > 0 { format!("{p}; {unbound} of our relocations without a site that lines up") } else { p };
+                    rows.lock().unwrap().push(format!("{}\t{}\t{p}\n", h[0], h[1]));
+                });
+            }
+        });
+        let mut rows = rows.into_inner().unwrap();
+        rows.sort();
+        if only.is_some() {
+            rows.iter().for_each(|r| eprint!("{r}"));
+            return;
+        }
+        std::fs::write(std::env::var("DCP_EQUIV_OUT").unwrap_or_else(|_| format!("{dir}.tsv")), rows.concat()).unwrap();
+        eprintln!("corpus: {} functions in {:?}", rows.len(), t.elapsed());
     }
 
     #[test]

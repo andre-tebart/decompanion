@@ -41,3 +41,10 @@ opt-level = 1
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# a quick optimized build for iterating on the core (measurements on a parity clone): incremental, no LTO
+[profile.iter]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

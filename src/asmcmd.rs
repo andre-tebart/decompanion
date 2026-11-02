@@ -302,15 +302,15 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
     let unit = row["unit"].as_str().unwrap_or("").to_string();
     let name = row["name"].as_str().unwrap_or("").to_string();
     let a = row["addr"].as_i64().unwrap_or(0);
-    let tus = crate::compile::tu_rows(&db)?;
+    let tus = crate::timing::phase("r.tus", || crate::compile::tu_rows(&db))?;
     let Some(t) = tus.get(&unit).filter(|t| t.ok) else { return Ok(Err(format!("unit {unit} has no object (dcp build)"))) };
     let root = p.root.to_string_lossy().into_owned();
-    let obj = std::fs::read(crate::compile::obj_path(&root, &t.obj_hash)).ok().and_then(|d| crate::coff::Obj::parse(&d).ok());
+    let obj = crate::timing::phase("r.obj", || std::fs::read(crate::compile::obj_path(&root, &t.obj_hash)).ok().and_then(|d| crate::coff::Obj::parse(&d).ok()));
     let Some((obj, k)) = obj.and_then(|o| o.function_index().get(&name).copied().map(|k| (o, k))) else {
         return Ok(Err(format!("the object of unit {unit} defines no {name}")));
     };
     let code = obj.function_code(k);
-    let img = crate::image(&p.target(None).map_err(Error::runtime)?.path)?;
+    let img = crate::timing::phase("r.img", || crate::image(&p.target(None).map_err(Error::runtime)?.path))?;
     let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| Error::runtime("no toolchain"))?;
     let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
     let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
@@ -330,14 +330,14 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
                     diffclass::code_size(&env, cd, cm, a as u32)
                 }
             };
-            let st = all_starts(&db, &img)?;
+            let st = crate::timing::phase("r.starts", || all_starts(&db, &img))?;
             let nxt = st.get(st.partition_point(|&x| x <= a)).copied().unwrap_or(img.end() as i64);
             (extent, extent.max(nxt - a))
         }
     };
     let o = diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64);
     let data = img.read(a as u32, o.code.max(0) as usize);
-    let fc = FunctionCompare::new(&env, &obj, &code, a as u32, &o);
+    let fc = crate::timing::phase("r.compare", || FunctionCompare::new(&env, &obj, &code, a as u32, &o));
     let (cd, cm) = code.code();
     let (la, lb) = (&fc.la, &fc.lb);
     let (named, values) = match names {
@@ -423,7 +423,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
              Some(values))
         }
     };
-    let proof = {
+    let proof = crate::timing::phase("r.proof", || -> Result<_, Error> { Ok({
         let (mut ours, mut unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb, None);
         if unbound > 0 {
             // relocations no aligned site binds: through the ledger's names (built only for them)
@@ -443,8 +443,13 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
                 (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb, Some(&f));
             }
         }
-        (crate::equiv::prove(&ours, &data, a as u32), unbound)
-    };
+        if let Some(dir) = std::env::var_os("DCP_EQUIV_DUMP") {
+            // the prover's inputs, for its corpus test (equiv::tests::corpus)
+            let grade = row["grade"].as_str().or(row["outcome"].as_str()).unwrap_or("?");
+            crate::equiv::dump(std::path::Path::new(&dir), &name, grade, a as u32, &ours, &data, unbound);
+        }
+        (crate::timing::phase("r.prove", || crate::equiv::prove(&ours, &data, a as u32)), unbound)
+    }) })?;
     Ok(Ok(Reading { row, fc, named, values, proof }))
 }
 
