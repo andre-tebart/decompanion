@@ -500,7 +500,7 @@ mod win {
         pub fn CloseHandle(h: Handle) -> i32;
         pub fn GetLastError() -> u32;
         pub fn LoadLibraryW(name: *const u16) -> *mut c_void;
-        pub fn GetProcAddress(module: *mut c_void, name: *const std::ffi::c_char) -> *mut c_void;
+        pub fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
     }
 
     pub fn wide(s: &str) -> Vec<u16> {
@@ -562,7 +562,7 @@ mod win {
         if lib.is_null() {
             return Err("dbghelp.dll not found".into());
         }
-        let f = unsafe { GetProcAddress(lib, c"MiniDumpWriteDump".as_ptr()) };
+        let f = unsafe { GetProcAddress(lib, c"MiniDumpWriteDump".as_ptr().cast()) };
         if f.is_null() {
             return Err("dbghelp.dll has no MiniDumpWriteDump".into());
         }
