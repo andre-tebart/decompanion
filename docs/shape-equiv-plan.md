@@ -123,6 +123,23 @@ Integration:
 
 ## Phase 3 — escalate gate (`queues.rs:level_command`)
 
+Status (2026-11-02, done): the prover's stops are not differences (it stops on 101 of the 156 shape functions it
+does not prove with "a store differs", "a call differs" ...: order, slots it does not follow), so the gate uses a
+separate, narrow witness (equiv::witness): a call (direct, through an absolute address, a jump out) or a store to
+an absolute address that one side reaches from its entry and the other never refers to (a callee anywhere in its
+operands; a store within 0x1000 of an address it names: a field through a register holding the object's
+start). The original's side counts only when every one of our relocations is bound. On the corpus (2020
+functions of gildegold af0cd2c): no witness on any of the 560 byte and shape functions, 178 of 1460 drafts
+(157 a call of the original's, 17 a call of ours, 4 a store of the original's); every sample read was real
+(`_ftol` where the original passes the float, `d2_ClickedId = -1` missing). `dcp escalate` refuses it
+(`--divergence-explained "why"`, kept in the reason); an equal proof lifts the size refusal; `dcp diffclass`
+prints it (`differs:`).
+
+The control found two binding faults (`bind`), fixed: an aligned site pairing two reordered calls bound one
+symbol to the other's address (two names at one address: neither site binding is trusted, the ledger's name
+wins), and a literal bound where the original holds other bytes (`_real@bf800000` -1.0 at the original's 1.0,
+`"d2_fadeinfo"` at `"d2:fadeinfo"`): the prover had shown those functions equal. G.grade version 10.
+
 After the size check: a concrete `Diverge` refuses deep escalation and prints the evidence; `--divergence-explained
 "why"` as safety valve (recorded in the reason). An Equal proof skips `size_unexplained`. Enabled only after the
 negative control shows zero concrete divergences. Update docs/match.md (B2, ladder) and

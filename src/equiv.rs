@@ -1899,6 +1899,98 @@ fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
     Some(Corr { pairs, written, mem: if old.mem == new.mem { old.mem } else { None }, sp: old.sp, pushed, reserved, esc: old.esc, fpu: old.fpu, known })
 }
 
+/// What one side does that no allocation, layout or order explains: a call (direct, through an absolute address,
+/// a jump out of the function) or a store to an absolute address the other side never refers to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Witness {
+    /// true: ours does it and the original does not
+    pub ours: bool,
+    /// the instruction's address
+    pub at: u32,
+    /// "calls" or "stores to"
+    pub what: &'static str,
+    /// the callee's or the store's address
+    pub addr: u32,
+}
+
+/// How near an address the other side must refer to for a store to count as explained: an address kept in a
+/// register (`mov eax, offset G` ... `mov [eax + 8], ecx`) refers to the object's start, not the field's.
+const NEAR: u32 = 0x1000;
+
+/// The calls and absolute stores one side reaches (from its entry; a switch's cases are not followed: fewer
+/// witnesses, never false ones), and every address it refers to anywhere (each instruction of the linear
+/// decode: an immediate, a displacement, a branch target).
+fn acts(code: &[u8], va: u32) -> (Vec<(u32, &'static str, u32)>, BTreeSet<u32>) {
+    const WRITES: &[&str] = &["mov", "add", "sub", "adc", "sbb", "and", "or", "xor", "inc", "dec", "neg", "not", "shl", "shr", "sar", "rol",
+                              "ror", "xchg", "fst", "fstp", "fist", "fistp", "pop", "seta", "setae", "setb", "setbe",
+                              "sete", "setne", "setg", "setge", "setl", "setle", "sets", "setns"];
+    let ins = dis::decode(code, va);
+    let end = va + code.len() as u32;
+    let mut refs = BTreeSet::new();
+    for i in &ins {
+        refs.extend(i.target);
+        for o in &i.ops {
+            match o.typ {
+                dis::OpType::Imm if o.size == 4 => { refs.insert(o.imm as u32); }
+                dis::OpType::Mem => { refs.insert(o.disp as u32); }
+                _ => {}
+            }
+        }
+    }
+    let at: HashMap<u32, usize> = ins.iter().enumerate().map(|(k, i)| (i.addr, k)).collect();
+    let mut seen = BTreeSet::new();
+    let mut todo = vec![va];
+    let mut out = vec![];
+    while let Some(a) = todo.pop() {
+        let Some(&k) = at.get(&a) else { continue };
+        if !seen.insert(a) {
+            continue;
+        }
+        let i = &ins[k];
+        let abs = i.ops.first().filter(|o| o.typ == dis::OpType::Mem && o.base == dis::Reg::None && o.index == dis::Reg::None)
+                   .map(|o| o.disp as u32);
+        let next = i.addr + i.size;
+        match i.flow {
+            Flow::Call => {
+                if let Some(t) = i.target.or(abs) {
+                    out.push((i.addr, "calls", t));
+                }
+                todo.push(next);
+            }
+            Flow::Jump => match i.target {
+                Some(t) if va <= t && t < end => todo.push(t),
+                Some(t) => out.push((i.addr, "calls", t)),
+                None => {}
+            },
+            Flow::CondJump => todo.extend(i.target.into_iter().chain([next])),
+            Flow::Next => {
+                // the destination of a writing instruction
+                if let Some(d) = abs.filter(|_| WRITES.contains(&i.mn)) {
+                    out.push((i.addr, "stores to", d));
+                }
+                todo.push(next);
+            }
+            Flow::IndirectJump if abs.is_some() => out.push((i.addr, "calls", abs.unwrap())),
+            _ => {}
+        }
+    }
+    out.sort();
+    (out, refs)
+}
+
+/// A concrete difference between our function (bound: bind) and the original's: a callee or a stored global
+/// address one side has and the other never refers to (for a store: within NEAR). The original's side is
+/// checked only when every one of our relocations is bound (an unbound one could be the address it names).
+pub fn witness(ours: &[u8], theirs: &[u8], va: u32, unbound: usize) -> Option<Witness> {
+    let (aa, ra) = acts(ours, va);
+    let (ab, rb) = acts(theirs, va);
+    let near = |r: &BTreeSet<u32>, what: &str, x: u32| if what == "calls" { r.contains(&x) } else { r.range(x.saturating_sub(NEAR)..=x.saturating_add(NEAR)).next().is_some() };
+    let ours_only = aa.iter().find(|&&(_, what, x)| x < 0xf000_0000 && !near(&rb, what, x));
+    let theirs_only = ab.iter().find(|&&(_, what, x)| unbound == 0 && !near(&ra, what, x));
+    ours_only.map(|&(at, what, addr)| Witness { ours: true, at, what, addr })
+             .or(theirs_only.map(|&(at, what, addr)| Witness { ours: false, at, what, addr }))
+}
+
 /// Proves our function (its code at `va`, our relocated fields already bound: bind) the same as the original's.
 /// A block reached both with and without an escaped frame (a loop that passes a local's address on) is proved
 /// again with the frame escaped from the entry, from the lowest address that escaped on each side.
@@ -2106,6 +2198,25 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
 
 // ------------------------------------------------------------------------------------------------ our relocations
 
+/// The bytes of a literal symbol: a floating constant's (`__real@3f800000`, little-endian) or a string's up to
+/// its zero; None for any other symbol.
+fn literal(obj: &crate::coff::Obj, s: u32) -> Option<Vec<u8>> {
+    let sym = obj.symbol_at(s)?;
+    match sym.constant()? {
+        "float" => {
+            let hex = sym.name.rsplit('@').next()?;
+            let n = hex.len() / 2;
+            (n == 4 || n == 8).then_some(())?;
+            Some(u64::from_str_radix(hex, 16).ok()?.to_le_bytes()[..n].to_vec())
+        }
+        _ => {
+            let d = obj.sections.get(sym.secnum as usize)?.data.as_ref()?;
+            let lit = d.get(sym.value as usize..)?;
+            Some(lit[..lit.iter().position(|&c| c == 0).map(|z| z + 1).unwrap_or(lit.len())].to_vec())
+        }
+    }
+}
+
 /// Our function's code with each relocated field holding the address the original's field holds where the two
 /// instructions line up (the listings' equal lines and same-shape lines of equal-length hunks): a symbol's
 /// address is learned at its aligned sites, and the same symbol must get the same address at every one; a symbol
@@ -2149,12 +2260,31 @@ pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crat
             let site = ib + f.at as u32;
             let addend = obj.addend(code.secnum, r);
             let Some(s) = r.resolve(site, &img.bytes(site, 4), addend) else { continue };
+            // a literal binds only where the original holds its bytes (else the two loads differ in value)
+            let ok = literal(obj, r.symbol_index).is_none_or(|b| img.in_image(s) && *img.bytes(s, b.len()) == *b);
             let e = bound.entry(r.symbol_index).or_insert(Some(s));
-            if *e != Some(s) {
+            if *e != Some(s) || !ok {
                 *e = None; // two addresses for one symbol: no binding
             }
         }
     }
+    // two symbols at one address: an aligned site paired a call or a load with another one (reordered calls);
+    // neither binding is trusted (an alias, two names of one address, loses its binding: the proof fails safe)
+    // (a symbol's name: one literal or function may be referenced through two symbol entries)
+    let name = |s: u32| obj.symbol_at(s).map(|x| x.name.clone());
+    let clash = |bound: &HashMap<u32, Option<u32>>| -> BTreeSet<u32> {
+        let mut by: HashMap<u32, Vec<u32>> = HashMap::new();
+        for (&s, a) in bound {
+            if let Some(a) = a {
+                by.entry(*a).or_default().push(s);
+            }
+        }
+        by.into_values().filter(|v| v.iter().map(|&s| name(s)).collect::<BTreeSet<_>>().len() > 1).flatten().collect()
+    };
+    for s in clash(&bound) {
+        bound.insert(s, None);
+    }
+    let mut named: BTreeSet<u32> = BTreeSet::new();
     if let Some(f) = by_name {
         for (_, r) in &code.relocs {
             if matches!(bound.get(&r.symbol_index), Some(Some(_))) {
@@ -2165,6 +2295,13 @@ pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crat
             let cname = crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name));
             if let Some(a) = f(&cname) {
                 bound.insert(r.symbol_index, Some(a));
+                named.insert(r.symbol_index);
+            }
+        }
+        // a name's address held by a symbol only a site bound: the name wins
+        for s in clash(&bound) {
+            if !named.contains(&s) {
+                bound.insert(s, None);
             }
         }
     }
@@ -2229,7 +2366,9 @@ mod tests {
                     let (ours, theirs) = (&b[nl + 5..nl + 5 + n], &b[nl + 5 + n..]);
                     let p = prove(ours, theirs, va).summary(va);
                     let p = if unbound > 0 { format!("{p}; {unbound} of our relocations without a site that lines up") } else { p };
-                    rows.lock().unwrap().push(format!("{}\t{}\t{p}\n", h[0], h[1]));
+                    let w = witness(ours, theirs, va, unbound).map(|w| format!("{} +{:#x} {} {:#x}", if w.ours { "ours" } else { "the original" },
+                                                                                  w.at - va, w.what, w.addr)).unwrap_or_default();
+                    rows.lock().unwrap().push(format!("{}\t{}\t{p}\t{w}\n", h[0], h[1]));
                 });
             }
         });
@@ -2315,6 +2454,29 @@ mod tests {
             eprintln!("mutant equal: {b}");
         }
         eprintln!("mutants: {fns} functions, {tried} mutants, {} proved equal", bad.len());
+    }
+
+    #[test]
+    fn witnesses() {
+        let va = 0x401000;
+        let call = [0xe8, 0xfb, 0xef, 0x0f, 0x00, 0xc3]; // call 0x500000; ret
+        let ret = [0xc3];
+        let w = |ours: bool, what, addr| Some(Witness { ours, at: va, what, addr });
+        assert_eq!(witness(&call, &ret, va, 0), w(true, "calls", 0x500000));
+        assert_eq!(witness(&ret, &call, va, 0), w(false, "calls", 0x500000));
+        // an unbound relocation of ours could be the callee
+        assert_eq!(witness(&ret, &call, va, 1), None);
+        // mov eax, 0x500000; call eax: the callee kept in a register
+        let reg = [0xb8, 0x00, 0x00, 0x50, 0x00, 0xff, 0xd0, 0xc3];
+        assert_eq!((witness(&call, &reg, va, 0), witness(&reg, &call, va, 0)), (None, None));
+        // mov dword ptr [0x600010], 1 against mov eax, 0x600000; mov dword ptr [eax + 0x10], 1: the object's start
+        let store = [0xc7, 0x05, 0x10, 0x00, 0x60, 0x00, 0x01, 0x00, 0x00, 0x00, 0xc3];
+        let field = [0xb8, 0x00, 0x00, 0x60, 0x00, 0xc7, 0x40, 0x10, 0x01, 0x00, 0x00, 0x00, 0xc3];
+        assert_eq!((witness(&store, &field, va, 0), witness(&field, &store, va, 0)), (None, None));
+        assert_eq!(witness(&store, &ret, va, 0), w(true, "stores to", 0x600010));
+        // a load is no store: cmp dword ptr [0x600010], 1
+        let cmp = [0x83, 0x3d, 0x10, 0x00, 0x60, 0x00, 0x01, 0xc3];
+        assert_eq!(witness(&cmp, &ret, va, 0), None);
     }
 
     #[test]

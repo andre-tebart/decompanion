@@ -222,6 +222,10 @@ pub enum Cmd {
         /// (max(12, 1/100 of the original's)): why allocation causes it (kept in the reason)
         #[arg(long, value_name = "WHY")]
         size_explained: Option<String>,
+        /// escalate although a call or a global store of one side is missing on the other (dcp diffclass names
+        /// it): why it is not a meaning difference (kept in the reason)
+        #[arg(long, value_name = "WHY")]
+        divergence_explained: Option<String>,
     },
     /// write `@stuck why` into a function's address comment (--clear removes the tag)
     Stuck {

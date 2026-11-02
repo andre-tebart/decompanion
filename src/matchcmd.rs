@@ -464,6 +464,9 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
     let base = int(&row, "addr") as u32;
     out.push(format!("  proof: {}{}", proof.summary(base),
                      if *unbound > 0 { format!("; {unbound} of our relocations without a site that lines up") } else { String::new() }));
+    if let Some(w) = &r.witness {
+        out.push(format!("  differs: {w} (a meaning difference: dcp escalate refuses it)"));
+    }
     Ok((out, None, 0))
 }
 

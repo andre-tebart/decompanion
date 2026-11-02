@@ -689,10 +689,12 @@ pub fn size_unexplained(ours: i64, orig: i64) -> Option<(i64, i64, i64)> {
 /// `dcp escalate|stuck NAME --why` (`--clear`): (the lines, the error for stderr, the exit status). A deep
 /// escalation of a function below byte is refused while its instruction count differs from the original's beyond
 /// size_unexplained's allowance (missing or wrong statements: base work), unless `size_explained` says why
-/// allocation explains it (recorded in the reason).
+/// allocation explains it (recorded in the reason), or the prover shows its behaviour the same as the
+/// original's. It is refused on a concrete difference (equiv::witness: a call or a global store one side has and
+/// the other never refers to), unless `divergence_explained` says why it is none (recorded in the reason).
 #[allow(clippy::too_many_arguments)]
 pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear: bool, why: Option<String>,
-                     size_explained: Option<String>) -> Result<(Vec<String>, Option<String>, i32)> {
+                     size_explained: Option<String>, divergence_explained: Option<String>) -> Result<(Vec<String>, Option<String>, i32)> {
     let Some(r) = crate::asmcmd::find_function(&p.store_path(), name)? else {
         return Ok((vec![], Some(format!("no graded function {name} (dcp build first)")), 1));
     };
@@ -725,7 +727,18 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
                 if tails != 0 {
                     why = format!("{why} (size: {} of the instruction difference are shared / inline tails)", tails.abs());
                 }
-                if let Some((o, t, allow)) = size_unexplained(ours, orig) {
+                if let Some(w) = &rd.witness {
+                    match divergence_explained.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                        None => return Ok((vec![], Some(format!(
+                            "refused: a concrete difference: {w}; a call or a global store one side lacks is a meaning difference, and \
+                             reconstruction is base work (dcp diffclass {name}; a difference that is none: --divergence-explained \"why\")")), 1)),
+                        Some(x) => why = format!("{why} (difference: {w}, explained: {x})"),
+                    }
+                }
+                let proved = matches!(rd.proof.0, crate::equiv::Outcome::Equal { .. });
+                if let (true, Some((o, t, _))) = (proved, size_unexplained(ours, orig)) {
+                    why = format!("{why} (size: {o} vs {t} instructions, the behaviour proved the same)");
+                } else if let Some((o, t, allow)) = size_unexplained(ours, orig) {
                     match size_explained.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         None => return Ok((vec![], Some(format!(
                             "refused: ours has {o} instructions, the original {t} ({:+}; allocation explains at most {allow}: max({SIZE_INS}, 1/{SIZE_PER} \

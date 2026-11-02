@@ -19,9 +19,12 @@ pub struct Reading {
     /// with `named`, per line the values behind its X fields in text order: ours what each resolves to, the
     /// original's the number (Reading::same_values)
     pub values: Option<(Vec<Vec<Val>>, Vec<Vec<i64>>)>,
-    /// the dataflow-equivalence prover's verdict (equiv.rs: reported, not graded yet), and how many of our
-    /// relocations it could not bind to the original's addresses
+    /// the dataflow-equivalence prover's verdict (equiv.rs), and how many of our relocations it could not bind to
+    /// the original's addresses
     pub proof: (crate::equiv::Outcome, usize),
+    /// a concrete difference (equiv::witness: a call or a global store one side has and the other never refers
+    /// to), said with the ledger's name of its address
+    pub witness: Option<String>,
 }
 
 /// What one of our X fields refers to, for comparing it with the original's number: the addresses its symbol
@@ -423,19 +426,16 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
              Some(values))
         }
     };
+    let mut witness = None;
     let proof = crate::timing::phase("r.proof", || -> Result<_, Error> { Ok({
         let (mut ours, mut unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb, None);
+        // the ledger's names, built only when needed: relocations no aligned site binds, a witness to name
+        let built = std::cell::OnceCell::new();
+        let ledger = || names.or_else(|| {
+            built.get_or_init(|| p.target(None).ok().and_then(|t| crate::names::Names::build(&db, &p.main_uri(), &t.path).ok())).as_ref()
+        });
         if unbound > 0 {
-            // relocations no aligned site binds: through the ledger's names (built only for them)
-            let built;
-            let names = match names {
-                Some(n) => Some(n),
-                None => {
-                    built = crate::names::Names::build(&db, &p.main_uri(), &p.target(None).map_err(Error::runtime)?.path).ok();
-                    built.as_ref()
-                }
-            };
-            if let Some(names) = names {
+            if let Some(names) = ledger() {
                 let f = |n: &str| match names.addrs_of(n) {
                     [one] => Some(*one as u32),
                     _ => None,
@@ -448,9 +448,15 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
             let grade = row["grade"].as_str().or(row["outcome"].as_str()).unwrap_or("?");
             crate::equiv::dump(std::path::Path::new(&dir), &name, grade, a as u32, &ours, &data, unbound);
         }
+        if let Some(w) = crate::equiv::witness(&ours, &data, a as u32, unbound) {
+            let name = ledger().and_then(|n| n.names_at(w.addr as i64).into_iter().next());
+            let (who, other) = if w.ours { ("ours", "the original") } else { ("the original", "ours") };
+            witness = Some(format!("{who} +{:#x} {} {:#x}{}; {other} never refers to it", w.at - a as u32, w.what, w.addr,
+                                   name.map(|n| format!(" ({n})")).unwrap_or_default()));
+        }
         (crate::timing::phase("r.prove", || crate::equiv::prove(&ours, &data, a as u32)), unbound)
     }) })?;
-    Ok(Ok(Reading { row, fc, named, values, proof }))
+    Ok(Ok(Reading { row, fc, named, values, proof, witness }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points

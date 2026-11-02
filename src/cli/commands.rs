@@ -186,8 +186,8 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::matchcmd::diffclass_command(&p, &name, all)?;
             Ok(io.report("diffclass", &l, e.as_deref(), c))
         }
-        Cmd::Escalate { name, why, clear, size_explained } => level(io, sel, "deep", &name, why, clear, size_explained),
-        Cmd::Stuck { name, why, clear } => level(io, sel, "stuck", &name, why, clear, None),
+        Cmd::Escalate { name, why, clear, size_explained, divergence_explained } => level(io, sel, "deep", &name, why, clear, size_explained, divergence_explained),
+        Cmd::Stuck { name, why, clear } => level(io, sel, "stuck", &name, why, clear, None, None),
         Cmd::Promote { accept_falls } => promote(io, sel, accept_falls),
         Cmd::Debt { sub: DebtCmd::Add { name, to, readability, why, waits_for } } => {
             if in_worktree(io, sel, "debt add", "changed")? {
@@ -467,9 +467,11 @@ fn current_lint(io: &mut Io, p: &Project) -> Result<String> {
     Ok(note)
 }
 
-fn level(io: &mut Io, sel: &Sel, lvl: &str, name: &str, why: Option<String>, clear: bool, size_explained: Option<String>) -> Result<i32> {
+#[allow(clippy::too_many_arguments)]
+fn level(io: &mut Io, sel: &Sel, lvl: &str, name: &str, why: Option<String>, clear: bool, size_explained: Option<String>,
+         divergence_explained: Option<String>) -> Result<i32> {
     let p = refreshed(io, sel, None)?;
-    let (lines, error, status) = crate::queues::level_command(&p, lvl, name, clear, why, size_explained)?;
+    let (lines, error, status) = crate::queues::level_command(&p, lvl, name, clear, why, size_explained, divergence_explained)?;
     let label = if error.as_deref().is_some_and(|e| e.starts_with("refused")) { "escalate" } else { lvl };
     Ok(io.report(label, &lines, error.as_deref(), status))
 }

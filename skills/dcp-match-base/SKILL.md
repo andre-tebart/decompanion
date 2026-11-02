@@ -256,7 +256,12 @@ refuses while our instruction count differs from the original's by more than max
 (the `asmdiff` head: `ours=` / `original=`): allocation, slots and frames move a few instructions (no shape
 function on gildegold differs by more than 7), a larger difference is missing or wrong statements. When
 allocation really causes it (extra saved registers, spills you have read in the asmdiff), say how:
-`--size-explained "why"` (kept in the reason). A function you raise to shape + readable that still carries a
+`--size-explained "why"` (kept in the reason); a function whose behaviour the prover shows the same (`proof:
+equal` in `dcp diffclass NAME`) is not held to the size. It refuses too on a concrete difference: a call or a
+store to a global that one side has and the other never refers to (`differs:` in `dcp diffclass NAME`, e.g.
+`the original +0x67 calls 0x5de518 (_ftol); ours never refers to it`). That is a meaning difference (a missing
+call or assignment, a wrong type converted); fix it. Only when you have read that it is none (the call reached
+another way), say why: `--divergence-explained "why"` (kept in the reason). A function you raise to shape + readable that still carries a
 stale `@deep` / `@stuck` tag: `dcp escalate NAME --clear`, build again.
 
 ## 4. When to stop
