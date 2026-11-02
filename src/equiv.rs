@@ -531,7 +531,8 @@ impl Arena {
             Node::Lin(_, t) => t.iter().all(|x| self.global(x.0)),
             Node::Op(_, a) => a.iter().all(|&x| self.global(x)),
             Node::Cond(_, a, b, _) => self.global(*a) && self.global(*b),
-            Node::Load(..) => false,
+            // a value loaded is a value: the same wherever it is read again (the load names the memory state)
+            Node::Load(a, ..) => self.global(*a),
         }
     }
 
@@ -696,7 +697,11 @@ enum Flags {
 #[derive(Clone, PartialEq, Debug)]
 struct Corr {
     pairs: Vec<(Loc, Loc)>,
-    written: BTreeSet<i32>,
+    /// the slots written on the paths so far, on each side
+    written: (BTreeSet<i32>, BTreeSet<i32>),
+    /// the memory state at the entry, where every path agrees (a pair and the effects before it there): a load in
+    /// a block after blocks that did not touch memory reads the same state as one before them
+    mem: Option<(u32, u32)>,
     sp: (i32, i32),
     pushed: (Vec<i32>, Vec<i32>),
     /// the cells a `sub esp` outside the prologue reserved for a call's arguments, not written yet
@@ -745,6 +750,8 @@ struct Exec<'a> {
     saves: Vec<E>,
     /// the instruction after the one being run is `add esp, N` (a call's caller cleans up)
     cleans_up: bool,
+    /// the memory state at the block's entry
+    mem_in: (u32, u32),
     /// still in the entry block's prologue (push ebp / mov ebp, esp / sub esp / saves): a `sub esp` there
     /// allocates the locals, after it the space of a call's arguments
     prologue: bool,
@@ -766,7 +773,7 @@ impl Exec<'_> {
         // without esp): ebx 3, ebp 4, esi 5, edi 6
         let saves = (3..7).map(|k| ar.var(Var::In(0, k))).collect();
         Exec { ar, pair, side, corr, regs: [None; 8], slots: BTreeMap::new(), read: BTreeSet::new(), sp, pushed, reserved, esc, flags: None,
-               effects: vec![], written: corr.written.clone(), saves, cleans_up: false, fpu: vec![], fstatus: None, fret: None,
+               effects: vec![], written: if side == 0 { corr.written.0.clone() } else { corr.written.1.clone() }, saves, cleans_up: false, mem_in: corr.mem.unwrap_or((pair, 0)), fpu: vec![], fstatus: None, fret: None,
                prologue: pair == 0 && corr.sp == (0, 0) }
             .with_fpu(if side == 0 { corr.fpu.0 } else { corr.fpu.1 })
     }
@@ -992,13 +999,14 @@ impl Exec<'_> {
             return self.ar.var(Var::In(self.pair, k as u32));
         }
         if let Loc::Slot(o) = l {
-            if o > 0 && !self.corr.written.contains(&o) {
+            let written = if self.side == 0 { &self.corr.written.0 } else { &self.corr.written.1 };
+            if o > 0 && !written.contains(&o) {
                 return self.ar.var(Var::Arg(o));
             }
             // a local nothing has written on any path so far (an uninitialised variable, the rest of a cell a byte
             // was stored to): stack garbage on both sides, one value (a program that read it would read garbage
             // either way)
-            if o < 0 && !self.corr.written.contains(&o) {
+            if o < 0 && !written.contains(&o) {
                 return self.ar.var(Var::Undef(i32::MIN));
             }
         }
@@ -1202,7 +1210,8 @@ impl Exec<'_> {
                         _ => break,
                     }
                 }
-                Ok(self.ar.mk(Node::Load(m, w, self.pair, k as u32)))
+                let (p, k) = if k == 0 { self.mem_in } else { (self.pair, k as u32) };
+                Ok(self.ar.mk(Node::Load(m, w, p, k)))
             }
         }
     }
@@ -1616,6 +1625,8 @@ impl Outcome {
 }
 
 struct Run {
+    /// the memory state at the block's end
+    mem: (u32, u32),
     effects: Vec<Effect>,
     exit: Vec<(Loc, E)>,
     written: BTreeSet<i32>,
@@ -1670,12 +1681,14 @@ fn run(ar: &mut Arena, b: &Block, pair: u32, side: u8, corr: &Corr) -> Result<Ru
         exit.push((Loc::Fpu(k as u8), x.fpu[k]));
     }
     let eax = x.reg32(0);
-    Ok(Run { effects: x.effects, exit, written: x.written, sp: x.sp, pushed: x.pushed, reserved: x.reserved, esc: x.esc, flags: x.flags, eax, fpu: x.fpu })
+    let mem = if x.effects.is_empty() { x.mem_in } else { (pair, x.effects.len() as u32) };
+    Ok(Run { mem, effects: x.effects, exit, written: x.written, sp: x.sp, pushed: x.pushed, reserved: x.reserved, esc: x.esc, flags: x.flags, eax, fpu: x.fpu })
 }
 
 /// The correspondence at the successors: our locations and theirs that hold the same value at the end, one to one
 /// (a value two locations of a side hold pairs in order).
-fn exit_corr(ar: &Arena, ra: &Run, rb: &Run, written: BTreeSet<i32>) -> Corr {
+fn exit_corr(ar: &Arena, ra: &Run, rb: &Run) -> Corr {
+    let written = (ra.written.clone(), rb.written.clone());
     let known = |r: &Run| -> BTreeMap<Loc, E> { r.exit.iter().filter(|(_, v)| ar.global(*v)).copied().collect() };
     let known = (known(ra), known(rb));
     let mut by: HashMap<E, Vec<Loc>> = HashMap::new();
@@ -1692,7 +1705,7 @@ fn exit_corr(ar: &Arena, ra: &Run, rb: &Run, written: BTreeSet<i32>) -> Corr {
             }
         }
     }
-    Corr { pairs, written, sp: (ra.sp, rb.sp), pushed: (ra.pushed.clone(), rb.pushed.clone()),
+    Corr { pairs, written, mem: Some(ra.mem), sp: (ra.sp, rb.sp), pushed: (ra.pushed.clone(), rb.pushed.clone()),
            reserved: (ra.reserved.clone(), rb.reserved.clone()), esc: (ra.esc, rb.esc), known, fpu: (ra.fpu.len() as u8, rb.fpu.len() as u8) }
 }
 
@@ -1704,7 +1717,9 @@ fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
     // pair of the slot with itself), made explicit before the two meet
     let explicit = |c: &Corr, other: &Corr| -> Vec<(Loc, Loc)> {
         let mut p = c.pairs.clone();
-        for &o in other.written.difference(&c.written).filter(|&&o| o > 0) {
+        let wc: BTreeSet<i32> = c.written.0.union(&c.written.1).copied().collect();
+        let wo: BTreeSet<i32> = other.written.0.union(&other.written.1).copied().collect();
+        for &o in wo.difference(&wc).filter(|&&o| o > 0) {
             if !p.iter().any(|x| x.0 == Loc::Slot(o) || x.1 == Loc::Slot(o)) {
                 p.push((Loc::Slot(o), Loc::Slot(o)));
             }
@@ -1720,7 +1735,8 @@ fn meet(old: &Corr, new: &Corr) -> Option<Corr> {
     // a value known on every path into the block
     let both = |x: &BTreeMap<Loc, E>, y: &BTreeMap<Loc, E>| -> BTreeMap<Loc, E> { x.iter().filter(|(l, v)| y.get(l) == Some(v)).map(|(l, v)| (*l, *v)).collect() };
     let known = (both(&old.known.0, &new.known.0), both(&old.known.1, &new.known.1));
-    Some(Corr { pairs, written: old.written.union(&new.written).copied().collect(), sp: old.sp, pushed, reserved, esc: old.esc, fpu: old.fpu, known })
+    let written = (old.written.0.union(&new.written.0).copied().collect(), old.written.1.union(&new.written.1).copied().collect());
+    Some(Corr { pairs, written, mem: if old.mem == new.mem { old.mem } else { None }, sp: old.sp, pushed, reserved, esc: old.esc, fpu: old.fpu, known })
 }
 
 /// Proves our function (its code at `va`, our relocated fields already bound: bind) the same as the original's.
@@ -1760,7 +1776,7 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
     }
     let mut ar = Arena::new();
     let all: Vec<(Loc, Loc)> = (0..8u8).filter(|&g| g != ESP).map(|g| (Loc::Reg(g), Loc::Reg(g))).collect();
-    let c0 = Corr { pairs: all, written: BTreeSet::new(), sp: (0, 0), pushed: (vec![], vec![]), reserved: (vec![], vec![]), esc: esc0, fpu: (0, 0),
+    let c0 = Corr { pairs: all, written: (BTreeSet::new(), BTreeSet::new()), mem: None, sp: (0, 0), pushed: (vec![], vec![]), reserved: (vec![], vec![]), esc: esc0, fpu: (0, 0),
                    known: (BTreeMap::new(), BTreeMap::new()) };
     let mut ids: HashMap<(u32, u32), u32> = HashMap::new();
     let mut seen: HashMap<(u32, u32), Corr> = HashMap::new();
@@ -1819,8 +1835,7 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
         if ra.fpu.len() != rb.fpu.len() {
             return unknown("the FPU stacks differ in depth".into(), a, b);
         }
-        let written: BTreeSet<i32> = ra.written.union(&rb.written).copied().collect();
-        let next = exit_corr(&ar, &ra, &rb, written);
+        let next = exit_corr(&ar, &ra, &rb);
         if std::env::var_os("DCP_EQUIV_TRACE").is_some() {
             eprintln!("trace: pair {pair} {a:#x}/{b:#x} sp {:?} in {} out {} eax {} | {}", corr.sp, corr.pairs.len(), next.pairs.len(),
                       ar.show(ra.eax), ar.show(rb.eax));
