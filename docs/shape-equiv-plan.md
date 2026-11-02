@@ -61,7 +61,18 @@ regular expressions over the listing text; Phase 2's lift reads the same record.
 
 ## Phase 2 — dataflow-equivalence prover (report first, then grade)
 
-Status (2026-11-02): first slice in equiv.rs, reported by `dcp diffclass` (`proof:`), not graded. One module:
+Status (2026-11-02, graded): G.grade (version 9) raises a function the shape classes leave draft to shape when the
+prover shows it equal (grade.rs `verdict`, computed with the shape verdict on every core and held with it; B2
+names the proof). The negative control is `equiv::tests::mutants`: on the corpus (`DCP_EQUIV_DUMP` from diffclass,
+`equiv::tests::corpus`), 17464 one-place mutants of the 385 functions proved equal; it found five holes (the
+return's esp and callee-saved registers, slots lost at a join leaving an escaping frame, a tail jump's
+arguments, the argument cells of a deferred cleanup), and the 24 mutants still shown equal were each read and
+cannot be seen (dead stores and registers, a mask of a constant). Grading binds our relocations through aligned
+sites only (the ledger's names are not among G.grade's inputs), so diffclass's `proof:` can show a few more.
+gildegold af0cd2c: 97 functions draft to shape; byte unchanged, the must-differ functions draft, cold grade ~0.6 s,
+warm build 34 ms.
+
+Earlier status: first slice in equiv.rs, reported by `dcp diffclass` (`proof:`), not graded. One module:
 the arena (linear normal form, partial registers, loads keyed by the memory state, conditions canonical under
 mirror and complement), blocks paired in lockstep with a location correspondence narrowed to a fixpoint (a block
 may pair with several), our relocations bound through aligned sites (equiv::bind), calls compared by target and

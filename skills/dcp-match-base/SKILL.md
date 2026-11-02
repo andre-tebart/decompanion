@@ -124,6 +124,10 @@ missing or extra statement, a wrong type (signed / unsigned compare, `char` vs `
 wrong offset), a call with the wrong arguments, a loop of another form. Stop when only `fill` / `order` / `regs`
 / `slots` / `sib` / `fpu` / `frame` / `tail` hunks remain: that is shape (B2). Reconstructing missing statements is always base
 work, however long.
+- Shape can also come from a proof: `B2 shape: the same behaviour, proved (N block pairs); the hunks: ...` means
+  the prover showed our code doing what the original does (the same calls, stores, branches and returns) although
+  `code` hunks remain. Such a function is done for the experiment; only readability may be left. `dcp diffclass
+  NAME` prints the prover's `proof:` line on any function (where it stops, when it does not show it).
 - Note `dist` before an edit; after `dcp build`, `dcp grade NAME`: when the distance grew and the
   edit corrected no meaning, revert it (Edit back, or `git checkout -- <file>`). A meaning fix that costs
   distance is kept: say why in the commit message.

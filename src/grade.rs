@@ -64,7 +64,7 @@ struct Held {
     extent: i64,
     slot: i64,
     o: diffclass::Original,
-    verdict: std::cell::OnceCell<Verdict>,
+    verdict: std::cell::OnceCell<(Verdict, Option<usize>)>,
 }
 
 thread_local! {
@@ -101,7 +101,7 @@ struct Task<'a> {
     matched: bool,
 }
 
-type Computed = (i64, i64, i64, diffclass::Original, Option<Verdict>);
+type Computed = (i64, i64, i64, diffclass::Original, Option<(Verdict, Option<usize>)>);
 
 /// A function's code size, extent, slot, original and (no byte match) its verdict.
 fn compute(env: &Env, t: &Task, align: i64) -> Computed {
@@ -110,8 +110,25 @@ fn compute(env: &Env, t: &Task, align: i64) -> Computed {
     let extent = t.whi.map(|h| h - t.lo).unwrap_or(size);
     let slot = extent.max(t.next as i64 - t.lo);
     let o = diffclass::original(env, t.lo as u32, extent, slot, align);
-    let v = if t.matched { None } else { Some(diffclass::FunctionCompare::new(env, t.obj, t.code, t.lo as u32, &o).verdict) };
+    let v = if t.matched { None } else { Some(verdict(env, t.obj, t.code, t.lo as u32, &o)) };
     (size, extent, slot, o, v)
+}
+
+/// A function's shape verdict, and where the shape check leaves it draft, the prover's: the block pairs when it
+/// shows our code's behaviour the same as the original's (equiv: the same effects in the same order, the same
+/// branches, the same returns).
+fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: u32, o: &diffclass::Original) -> (Verdict, Option<usize>) {
+    let fc = diffclass::FunctionCompare::new(env, obj, code, lo, o);
+    if fc.verdict.shape {
+        return (fc.verdict, None);
+    }
+    let data = env.img.read(lo, o.code.max(0) as usize);
+    let (ours, _) = crate::equiv::bind(obj, code, env.img, lo, &fc.la, &fc.lb, None);
+    let proof = match crate::equiv::prove(&ours, &data, lo) {
+        crate::equiv::Outcome::Equal { pairs } => Some(pairs),
+        _ => None,
+    };
+    (fc.verdict, proof)
 }
 
 /// compute over the tasks on every core: (index, result).
@@ -203,11 +220,10 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             why = w;
         } else {
             if h.verdict.get().is_none() {
-                let v = diffclass::FunctionCompare::new(&env, &f.obj.0, &f.code, lo as u32, &h.o).verdict;
-                let _ = h.verdict.set(v);
+                let _ = h.verdict.set(verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o));
             }
-            let v: &Verdict = h.verdict.get().unwrap();
-            g = if v.shape { "shape" } else { "draft" }.to_string();
+            let (v, proof) = h.verdict.get().unwrap();
+            g = if v.shape || proof.is_some() { "shape" } else { "draft" }.to_string();
             hunks = v.hunks_json();
             dist_ins = v.distance;
             let mut w = vec![];
@@ -217,6 +233,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             }
             if g == "draft" {
                 w.push(format!("{}{}", if v.code.is_empty() { "B3 draft: " } else { "B3 draft: unexplained code hunks: " }, v.summary()));
+            } else if let (false, Some(pairs)) = (v.shape, proof) {
+                w.push(format!("B2 shape: the same behaviour, proved ({pairs} block pairs); the hunks: {}", v.summary()));
             } else {
                 w.push(format!("B2 shape: {}", v.summary()));
             }
