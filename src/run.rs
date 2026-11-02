@@ -444,7 +444,7 @@ pub fn variant_build_command(p: &crate::project::Project, variant: &str, force: 
 /// write the launch spec build/run/<name>.json. (lines, error, spec path). The main build is the caller's.
 #[allow(clippy::too_many_arguments)]
 pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seconds: Option<f64>, extra: Vec<String>,
-                   debug: Option<bool>, dump: Option<String>, capstone: String) -> Result<(Vec<String>, Option<String>, Option<String>)> {
+                   debug: Option<bool>, dump: Option<String>) -> Result<(Vec<String>, Option<String>, Option<String>)> {
     let t0 = std::time::Instant::now();
     let c = p.run_cfg().map_err(err)?;
     let Some(r) = c.runs.iter().find(|r| r.name == name) else {
@@ -526,7 +526,7 @@ pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seco
         "run": r.name, "root": root, "dir": s(&dir), "exe": s(&exe), "args": args,
         "env": Value::Object(r.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect()),
         "seconds": seconds.unwrap_or(r.seconds), "steps": setup.steps, "after": setup.after, "hook_env": hook_env,
-        "debug": debug, "dump": dump, "symbols": symbols, "capstone": capstone, "crash_root": py_path(&format!("{root}/build/crash")),
+        "debug": debug, "dump": dump, "symbols": symbols, "crash_root": py_path(&format!("{root}/build/crash")),
     });
     let spec_path = py_path(&format!("{root}/build/run/{name}.json"));
     std::fs::create_dir_all(Path::new(&spec_path).parent().unwrap()).map_err(|e| err(e.to_string()))?;

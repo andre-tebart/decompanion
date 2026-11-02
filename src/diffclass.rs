@@ -509,7 +509,6 @@ pub fn analyse(la: &[Line], lb: &[Line], tables: Option<&Tables>) -> (Vec<Hunk>,
 // ------------------------------------------------------------------------------------------------ sizes, the original
 
 pub struct Env<'a> {
-    pub dll: &'a str,
     pub img: &'a crate::pe::Image,
     pub range: (i64, i64),
     pub fills: &'a HashSet<Vec<u8>>,
@@ -517,12 +516,12 @@ pub struct Env<'a> {
 }
 
 /// diffclass.code_size: the end of our last instruction that is no fill.
-pub fn code_size(env: &Env, code: &[u8], mask: &[u8], addr: u32) -> Result<i64, String> {
-    let lines = x86::strip_fill(x86::listing(env.dll, code, addr, Some(mask), env.range, env.fills)?);
-    Ok(match lines.last() {
+pub fn code_size(env: &Env, code: &[u8], mask: &[u8], addr: u32) -> i64 {
+    let lines = x86::strip_fill(x86::listing(code, addr, Some(mask), env.range, env.fills));
+    match lines.last() {
         Some(l) => (l.addr + l.size) as i64 - addr as i64,
         None => code.len() as i64,
-    })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -553,25 +552,25 @@ impl Walk<'_> {
         }
     }
 
-    fn fill_to(&mut self, a: i64, t: i64) -> Result<bool, String> {
+    fn fill_to(&mut self, a: i64, t: i64) -> bool {
         if t <= a || t % self.align != 0 {
-            return Ok(false);
+            return false;
         }
         let mut cur = a;
         while self.in_code(cur) {
-            let Some(ins) = self.dec.at(cur as u32)?.cloned() else { return Ok(false) };
+            let Some(ins) = self.dec.at(cur as u32) else { return false };
             if ins.addr as i64 >= t {
-                return Ok(ins.addr as i64 == t);
+                return ins.addr as i64 == t;
             }
             if !ins.fill {
-                return Ok(false);
+                return false;
             }
             cur = (ins.addr + ins.size) as i64;
         }
-        Ok(false)
+        false
     }
 
-    fn walk_root(&mut self, root: i64) -> Result<(), String> {
+    fn walk_root(&mut self, root: i64) {
         let lo = self.dec.lo as i64;
         let mut work = vec![root];
         while let Some(start) = work.pop() {
@@ -581,7 +580,7 @@ impl Walk<'_> {
             let mut recent: Vec<x86::WIns> = vec![];
             let mut cur = start;
             while self.in_code(cur) {
-                let Some(ins) = self.dec.at(cur as u32)?.cloned() else { break };
+                let Some(ins) = self.dec.at(cur as u32).cloned() else { break };
                 let ia = ins.addr as i64;
                 if self.kind[(ia - lo) as usize] == 1 {
                     break;
@@ -599,7 +598,7 @@ impl Walk<'_> {
                     x86::RET => break,
                     x86::JUMP | x86::CJUMP => {
                         let t = ins.target.unwrap();
-                        if self.in_code(t) && !(ins.flow == x86::JUMP && self.fill_to(ia + size, t)?) {
+                        if self.in_code(t) && !(ins.flow == x86::JUMP && self.fill_to(ia + size, t)) {
                             work.push(t);
                         }
                         if ins.flow == x86::JUMP {
@@ -617,7 +616,6 @@ impl Walk<'_> {
                 cur = ia + size;
             }
         }
-        Ok(())
     }
 
     fn jump_table(&mut self, tbl: i64, recent: &[x86::WIns], owner: i64, work: &mut Vec<i64>) {
@@ -662,27 +660,27 @@ impl Walk<'_> {
 }
 
 /// diffclass.original: walk the original's slot, cut the extent at its first table inside it.
-pub fn original(env: &Env, addr: u32, extent: i64, slot: i64, align: i64) -> Result<Original, String> {
+pub fn original(env: &Env, addr: u32, extent: i64, slot: i64, align: i64) -> Original {
     let a = addr as i64;
     let hi = a + slot.max(extent);
     let mut tables = vec![];
     if hi > a {
-        let mut w = Walk { dec: x86::Decoder::new(env.dll, env.img, addr, hi as u32, env.fills), kind: vec![0; (hi - a) as usize],
+        let mut w = Walk { dec: x86::Decoder::new(env.img, addr, hi as u32, env.fills), kind: vec![0; (hi - a) as usize],
                            align: align.max(1), tables: vec![] };
-        w.walk_root(a)?;
+        w.walk_root(a);
         let set: HashSet<(i64, i64, String)> = w.tables.into_iter().collect();
         tables = set.into_iter().collect();
         tables.sort();
     }
     let inside: Vec<i64> = tables.iter().map(|t| t.0).filter(|&lo| a < lo && lo < a + extent).collect();
-    let Some(&end) = inside.iter().min() else { return Ok(Original { code: extent, tables }) };
+    let Some(&end) = inside.iter().min() else { return Original { code: extent, tables } };
     let data = env.img.read(addr, (end - a) as usize);
-    let lines = x86::strip_fill(x86::listing(env.dll, &data, addr, None, env.range, env.fills)?);
+    let lines = x86::strip_fill(x86::listing(&data, addr, None, env.range, env.fills));
     let code = match lines.last() {
         Some(l) => (l.addr + l.size) as i64 - a,
         None => end - a,
     };
-    Ok(Original { code, tables })
+    Original { code, tables }
 }
 
 // ------------------------------------------------------------------------------------------------ the tables, the compare
@@ -782,14 +780,13 @@ pub fn compare_tables(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::Fun
 }
 
 /// diffclass.compare_function + verdict: our function against the original at addr, given the Original.
-pub fn function_verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, addr: u32, o: &Original)
-                        -> Result<Verdict, String> {
+pub fn function_verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, addr: u32, o: &Original) -> Verdict {
     let (cd, cm) = code.code();
-    let la = x86::strip_fill(x86::listing(env.dll, cd, addr, Some(cm), env.range, env.fills)?);
+    let la = x86::strip_fill(x86::listing(cd, addr, Some(cm), env.range, env.fills));
     let data = env.img.read(addr, o.code.max(0) as usize);
-    let lb = x86::strip_fill(x86::listing(env.dll, &data, addr, None, env.range, env.fills)?);
+    let lb = x86::strip_fill(x86::listing(&data, addr, None, env.range, env.fills));
     let t = compare_tables(env, obj, code, addr, &la, &lb, &o.tables);
-    Ok(verdict(&la, &lb, t.as_ref()))
+    verdict(&la, &lb, t.as_ref())
 }
 
 #[cfg(test)]
@@ -970,23 +967,22 @@ mod tests {
 
     #[test]
     fn switch_tables_are_data_and_listings_mask_relocations() {
-        let dll = crate::walk::tests::capstone();
         let addr = BASE + TEXT;
         let fills: HashSet<Vec<u8>> = [vec![0x90u8], vec![0xcc]].into_iter().collect();
         let forms = vec![vec![0x90u8], vec![0xcc]];
         let check = |entries: [u32; 3]| {
             let img = crate::pe::Image::parse(build_with(None, Some(&switch_fn(addr, entries)))).unwrap();
-            let env = Env { dll: &dll, img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
-            let o = original(&env, addr, 0x34, 0x40, 16).unwrap();
+            let env = Env { img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
+            let o = original(&env, addr, 0x34, 0x40, 16);
             assert_eq!(o.code, 0x25);
             assert_eq!(o.tables, vec![(addr as i64 + 0x28, addr as i64 + 0x34, "jumptable".to_string())]);
-            assert_eq!(original(&env, addr, 0x25, 0x40, 16).unwrap().code, 0x25);
+            assert_eq!(original(&env, addr, 0x25, 0x40, 16).code, 0x25);
             let (obj, k) = switch_ours();
             let code = obj.function_code(k);
             assert_eq!(code.code_len, Some(0x28));
             let (cd, cm) = code.code();
-            let la = x86::strip_fill(x86::listing(env.dll, cd, addr, Some(cm), env.range, env.fills).unwrap());
-            let lb = x86::strip_fill(x86::listing(env.dll, &img.read(addr, o.code as usize), addr, None, env.range, env.fills).unwrap());
+            let la = x86::strip_fill(x86::listing(cd, addr, Some(cm), env.range, env.fills));
+            let lb = x86::strip_fill(x86::listing(&img.read(addr, o.code as usize), addr, None, env.range, env.fills));
             assert_eq!(texts(&la), texts(&lb));
             let t = compare_tables(&env, &obj, &code, addr, &la, &lb, &o.tables).unwrap();
             let v = verdict(&la, &lb, Some(&t));
@@ -1003,16 +999,16 @@ mod tests {
         let code = [0xa1u8, 0, 0, 0, 0, 0xe8, 0, 0, 0, 0, 0xc3];
         let mask = [0u8, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0];
         let range = (0x1000_0000i64, 0x1001_0000i64);
-        let ours = x86::listing(&dll, &code, 0x1000_1000, Some(&mask), range, &fills).unwrap();
-        let orig = x86::listing(&dll, &[0xa1, 0x00, 0x20, 0x00, 0x10, 0xe8, 0x10, 0, 0, 0, 0xc3], 0x1000_1000, None, range, &fills).unwrap();
+        let ours = x86::listing(&code, 0x1000_1000, Some(&mask), range, &fills);
+        let orig = x86::listing(&[0xa1, 0x00, 0x20, 0x00, 0x10, 0xe8, 0x10, 0, 0, 0, 0xc3], 0x1000_1000, None, range, &fills);
         assert_eq!(texts(&ours), texts(&orig));
         assert_eq!(texts(&ours), ["mov eax, dword ptr [X]", "call X", "ret"]);
         // asmdiff --symbols: the same listing, each X spelled by the namer (the k-th masked field, an image number)
-        let named = x86::listing_named(&dll, &code, 0x1000_1000, Some(&mask), range, &fills,
-                                       &|ins, k, _| Some(format!("f{:x}k{}", ins & 0xff, k.map(|k| k as i64).unwrap_or(-1)))).unwrap();
+        let named = x86::listing_named(&code, 0x1000_1000, Some(&mask), range, &fills,
+                                       &|ins, k, _| Some(format!("f{:x}k{}", ins & 0xff, k.map(|k| k as i64).unwrap_or(-1))));
         assert_eq!(texts(&named), ["mov eax, dword ptr [f0k0]", "call f5k0", "ret"]);
-        let named = x86::listing_named(&dll, &[0xa1, 0x00, 0x20, 0x00, 0x10, 0xc3], 0x1000_1000, None, range, &fills,
-                                       &|_, k, v| k.is_none().then(|| format!("{v:#x}"))).unwrap();
+        let named = x86::listing_named(&[0xa1, 0x00, 0x20, 0x00, 0x10, 0xc3], 0x1000_1000, None, range, &fills,
+                                       &|_, k, v| k.is_none().then(|| format!("{v:#x}")));
         assert_eq!(texts(&named), ["mov eax, dword ptr [0x10002000]", "ret"]);
     }
 }

@@ -60,7 +60,7 @@ pub fn refresh(io: &mut Io, p: &Project, verbose: bool, force: bool) -> Result<V
     for name in ["src", "decl"] {
         p.forget_input(name); // a command may have written either since its last refresh; the file memo keeps the rehash cheap
     }
-    let res = crate::timing::phase("refresh", || crate::engine::engine_run(p, &crate::cs::library(""), None, force))?;
+    let res = crate::timing::phase("refresh", || crate::engine::engine_run(p, None, force))?;
     for r in &res {
         if r.ran && r.waiting.is_empty() {
             crate::timing::add("refresh.rules", r.ms as f64);

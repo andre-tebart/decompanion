@@ -142,12 +142,11 @@ struct Reader<'a> {
     db: String,
     img: Rc<crate::pe::Image>,
     names: Names,
-    capstone: String,
     fills: Vec<Vec<u8>>,
 }
 
 impl<'a> Reader<'a> {
-    fn open(p: &'a Project, capstone: &str) -> Result<Reader<'a>> {
+    fn open(p: &'a Project) -> Result<Reader<'a>> {
         let db = p.store_path();
         let main = p.main_uri();
         crate::storedb::st_open(&db, &main)?;
@@ -155,7 +154,7 @@ impl<'a> Reader<'a> {
         let img = crate::image(&path)?;
         let names = Names::build(&db, &main, &path)?;
         let fills = crate::toolchain::of(&p.toolchain_key()).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default();
-        Ok(Reader { p, db, img, names, capstone: capstone.into(), fills })
+        Ok(Reader { p, db, img, names, fills })
     }
 
     fn facts(&self, kind: &str) -> Result<Vec<Rc<Claim>>> {
@@ -190,7 +189,7 @@ impl<'a> Reader<'a> {
     }
 
     fn disasm(&self, code: &[u8], va: i64) -> Result<Vec<(u32, u32, String, bool)>> {
-        crate::x86::x86_disasm(&self.capstone, code, va as u32, self.fills.clone())
+        Ok(crate::x86::x86_disasm(code, va as u32, self.fills.clone()))
     }
 
     fn name(&self, a: i64) -> Option<String> {
@@ -755,8 +754,8 @@ fn skeleton(r: &Reader, a: i64) -> Result<Out> {
 
 /// One reading command: (the lines it prints, the error it prints instead when there is nothing to show).
 /// `cmd`: disasm | disasm-ours | dump | refs | literals | fptrs | starts; `args`: its arguments by name.
-pub fn read_command(p: &crate::project::Project, capstone: &str, cmd: &str, args: HashMap<String, Option<String>>) -> Result<Out> {
-    let r = Reader::open(p, capstone)?;
+pub fn read_command(p: &crate::project::Project, cmd: &str, args: HashMap<String, Option<String>>) -> Result<Out> {
+    let r = Reader::open(p)?;
     let arg = |k: &str| args.get(k).cloned().flatten();
     let flag = |k: &str| arg(k).is_some_and(|v| v == "1");
     let view = || View::load(&r.db, &r.p.main_uri(), &r.p.target(None).map(|t| t.path.clone()).unwrap_or_default());
@@ -775,12 +774,12 @@ pub fn read_command(p: &crate::project::Project, capstone: &str, cmd: &str, args
 
 /// An address from `0xADDR`, a name the ledger knows, or a placeholder spelling one; None when it is none of them.
 pub fn resolve_key(p: &Project, key: &str) -> Result<Option<i64>> {
-    Reader::open(p, "")?.resolve(key).map_err(Error::value)
+    Reader::open(p)?.resolve(key).map_err(Error::value)
 }
 
 /// The body comment of a draft skeleton at a (the disassembly of the walk's extent).
-pub fn skeleton_lines(p: &Project, capstone: &str, a: i64) -> Result<Vec<String>> {
-    Ok(skeleton(&Reader::open(p, capstone)?, a)?.0)
+pub fn skeleton_lines(p: &Project, a: i64) -> Result<Vec<String>> {
+    Ok(skeleton(&Reader::open(p)?, a)?.0)
 }
 
 #[cfg(test)]

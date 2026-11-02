@@ -95,7 +95,6 @@ struct Ctx<'a> {
     tc: Box<dyn Toolchain>,
     entries: BTreeMap<i64, Entry>,
     labels: BTreeMap<String, i64>,
-    capstone: String,
 }
 
 impl Ctx<'_> {
@@ -305,7 +304,7 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
         }
         None => {
             let sig = x.skeleton_signature(&name);
-            let body = crate::cliread::skeleton_lines(x.p, &x.capstone, a)?;
+            let body = crate::cliread::skeleton_lines(x.p, a)?;
             let block = format!("/* {tag}, {name} @rough */\n{sig}\n{{\n{}\n     */\n}}\n", body.join("\n"));
             (sig, None, block)
         }
@@ -436,7 +435,7 @@ fn declare_uses(x: &Ctx, head: &str, rel: &str, unit: &str, uses: &BTreeMap<Stri
     Ok(())
 }
 
-fn open<'a>(p: &'a Project, capstone: &str) -> Result<Ctx<'a>> {
+fn open<'a>(p: &'a Project) -> Result<Ctx<'a>> {
     let db = p.store_path();
     let main = p.main_uri();
     crate::storedb::st_open(&db, &main)?;
@@ -447,14 +446,14 @@ fn open<'a>(p: &'a Project, capstone: &str) -> Result<Ctx<'a>> {
     let all = crate::with_db(&db, |c| crate::names::draft_values(c, &main))?;
     let entries: BTreeMap<i64, Entry> = all.iter().map(|v| (v["start"].as_i64().unwrap_or(0), entry_of(v))).collect();
     let labels: BTreeMap<String, i64> = entries.values().filter(|e| !e.name.is_empty()).map(|e| (e.name.clone(), e.start)).collect();
-    Ok(Ctx { p, root: p.root.to_string_lossy().into_owned(), v, names, tc, entries, labels, capstone: capstone.to_string() })
+    Ok(Ctx { p, root: p.root.to_string_lossy().into_owned(), v, names, tc, entries, labels })
 }
 
 /// `dcp draft [ADDR|--next] [--unit U]` and `--show`: (the lines, the error for stderr, the exit status).
 #[allow(clippy::too_many_arguments)]
-pub fn draft_command(p: &crate::project::Project, capstone: &str, addr: Option<String>, next: bool, show: bool, unit: Option<String>, analyzer: &str)
+pub fn draft_command(p: &crate::project::Project, addr: Option<String>, next: bool, show: bool, unit: Option<String>, analyzer: &str)
     -> Result<(Vec<String>, Option<String>, i32)> {
-    let x = open(p, capstone)?;
+    let x = open(p)?;
     let resolve = |s: &str| crate::cliread::resolve_key(p, s);
     if show {
         let Some(addr) = addr else { return Ok((vec![], Some("--show needs ADDR".into()), 1)) };

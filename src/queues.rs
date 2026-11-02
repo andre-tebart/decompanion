@@ -692,7 +692,7 @@ pub fn size_unexplained(ours: i64, orig: i64) -> Option<(i64, i64, i64)> {
 /// allocation explains it (recorded in the reason).
 #[allow(clippy::too_many_arguments)]
 pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear: bool, why: Option<String>,
-                     capstone: Option<String>, size_explained: Option<String>) -> Result<(Vec<String>, Option<String>, i32)> {
+                     size_explained: Option<String>) -> Result<(Vec<String>, Option<String>, i32)> {
     let Some(r) = crate::asmcmd::find_function(&p.store_path(), name)? else {
         return Ok((vec![], Some(format!("no graded function {name} (dcp build first)")), 1));
     };
@@ -715,9 +715,9 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
                                              whole function is base work: finish it, then escalate what is left")), 1));
         }
         let mut why = why;
-        if let (true, Some(cap)) = (level == "deep" && s("code") != "byte", capstone.as_deref()) {
+        if level == "deep" && s("code") != "byte" {
             // a function without an object (no reading) has no size to judge
-            if let Ok(rd) = crate::asmcmd::reading(p, cap, r.clone(), None)? {
+            if let Ok(rd) = crate::asmcmd::reading(p, r.clone(), None)? {
                 let (ours, orig) = (rd.la.len() as i64, rd.lb.len() as i64);
                 if let Some((o, t, allow)) = size_unexplained(ours, orig) {
                     match size_explained.as_deref().map(str::trim).filter(|x| !x.is_empty()) {

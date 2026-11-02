@@ -142,14 +142,13 @@ pub struct Engine<'a> {
     pub db: String,
     pub main: String,
     pub core_hash: String,
-    pub capstone: String,
     base: Option<Rc<Inputs>>,
     scans: Vec<Rc<crate::frontend::Scan>>, // the scans whose pieces the rules of this run read
 }
 
 impl<'a> Engine<'a> {
-    pub fn new(project: &'a Project, core_hash: &str, capstone: &str) -> Engine<'a> {
-        Engine { project, db: project.store_path(), main: project.main_uri(), core_hash: core_hash.into(), capstone: capstone.into(), base: None, scans: vec![] }
+    pub fn new(project: &'a Project, core_hash: &str) -> Engine<'a> {
+        Engine { project, db: project.store_path(), main: project.main_uri(), core_hash: core_hash.into(), base: None, scans: vec![] }
     }
 
     pub fn code_hash(&self, r: &RuleDef) -> Result<String> {
@@ -291,7 +290,7 @@ impl<'a> Engine<'a> {
                 needed: needed.iter().map(|s| s.to_string()).collect(), root: self.project.root.to_string_lossy().into_owned(),
                 image: self.project.target(None).map_err(Error::config)?.path.clone(),
                 fill_forms: crate::toolchain::of(&inputs.toolchain).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default(),
-                capstone: self.capstone.clone(), record: true,
+                record: true,
                 shortcuts: std::env::var_os("DCP_NO_SHORTCUTS").is_none_or(|v| v.is_empty()), inputs,
             };
             let (nf, nc, _, ms_run, ms_rec) = run_native(r, &ctx)?;
@@ -304,8 +303,8 @@ impl<'a> Engine<'a> {
 
 /// Refresh the rules (all, or `ids` and what they need) of a project's current target: [(rule, ran, ms, facts,
 /// conflicts, waiting, ms computing, ms recording)].
-pub fn engine_run(p: &crate::project::Project, capstone: &str, ids: Option<&[String]>, force: bool) -> Result<Vec<Result_>> {
-    Engine::new(p, &p.core_hash, capstone).run(ids, force)
+pub fn engine_run(p: &crate::project::Project, ids: Option<&[String]>, force: bool) -> Result<Vec<Result_>> {
+    Engine::new(p, &p.core_hash).run(ids, force)
 }
 
 #[cfg(test)]
@@ -342,13 +341,13 @@ mod tests {
         std::fs::write(d.join("net.dll"), crate::pe::testpe::build(None)).unwrap();
         std::fs::write(d.join("decompanion.toml"), "[[target]]\nname = \"net\"\npath = \"net.dll\"\n").unwrap();
         let p = Project::open(&d, None, "core").unwrap();
-        let mut e = Engine::new(&p, "core", "");
+        let mut e = Engine::new(&p, "core");
         let ids = ["S.sections".to_string()];
         let ran = |res: Vec<Result_>| res.iter().filter(|r| r.ran).map(|r| r.rule).collect::<Vec<_>>();
         assert_eq!(ran(e.run(Some(&ids), false).unwrap()), ["S.sections"]);
         assert!(ran(e.run(Some(&ids), false).unwrap()).is_empty()); // the same inputs: made current, not run
         assert_eq!(ran(e.run(Some(&ids), true).unwrap()), ["S.sections"]);
-        let mut e2 = Engine::new(&p, "core2", ""); // another core: another code hash, another key
+        let mut e2 = Engine::new(&p, "core2"); // another core: another code hash, another key
         assert_eq!(ran(e2.run(Some(&ids), false).unwrap()), ["S.sections"]);
         let path = p.store_path();
         let n = with_db(&path, |db| crate::store::claims_of(db, &path, "section", None, |_| true)).unwrap().len();

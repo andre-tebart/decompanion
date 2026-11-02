@@ -157,7 +157,7 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         },
         Cmd::Headers { sub: HeadersCmd::Conflicts { unit, headers, write, trial, at } } => {
             let p = refreshed(io, sel, None)?;
-            let (lines, status) = crate::headers::headers_conflicts(&p, &crate::cs::library(""), &unit, headers, write, at, trial)?;
+            let (lines, status) = crate::headers::headers_conflicts(&p, &unit, headers, write, at, trial)?;
             io.say(&lines.join("\n"));
             Ok(status)
         }
@@ -177,12 +177,12 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         }
         Cmd::Asmdiff { name, regs, all, symbols, plain } => {
             let (p, _) = build_target(io, sel, None, true, false)?;
-            let (l, e, c) = crate::matchcmd::asmdiff_command(&p, &crate::cs::library(""), &name, regs, all, symbols, plain)?;
+            let (l, e, c) = crate::matchcmd::asmdiff_command(&p, &name, regs, all, symbols, plain)?;
             Ok(io.report("asmdiff", &l, e.as_deref(), c))
         }
         Cmd::Diffclass { name, all } => {
             let (p, _) = build_target(io, sel, None, true, false)?;
-            let (l, e, c) = crate::matchcmd::diffclass_command(&p, &crate::cs::library(""), &name, all)?;
+            let (l, e, c) = crate::matchcmd::diffclass_command(&p, &name, all)?;
             Ok(io.report("diffclass", &l, e.as_deref(), c))
         }
         Cmd::Escalate { name, why, clear, size_explained } => level(io, sel, "deep", &name, why, clear, size_explained),
@@ -282,7 +282,7 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         Cmd::Draft { addr, next, show, unit } => {
             let p = refreshed(io, sel, None)?;
             let key = p.analyzer_key()?;
-            let (l, e, c) = crate::draft::draft_command(&p, &crate::cs::library(""), addr, next, show, unit, &key)?;
+            let (l, e, c) = crate::draft::draft_command(&p, addr, next, show, unit, &key)?;
             Ok(draft_report(io, "draft", l, e, c))
         }
         Cmd::Rename { pairs, from_file, why } => rename(io, sel, pairs, from_file, why),
@@ -468,7 +468,7 @@ fn current_lint(io: &mut Io, p: &Project) -> Result<String> {
 
 fn level(io: &mut Io, sel: &Sel, lvl: &str, name: &str, why: Option<String>, clear: bool, size_explained: Option<String>) -> Result<i32> {
     let p = refreshed(io, sel, None)?;
-    let (lines, error, status) = crate::queues::level_command(&p, lvl, name, clear, why, Some(crate::cs::library("")), size_explained)?;
+    let (lines, error, status) = crate::queues::level_command(&p, lvl, name, clear, why, size_explained)?;
     let label = if error.as_deref().is_some_and(|e| e.starts_with("refused")) { "escalate" } else { lvl };
     Ok(io.report(label, &lines, error.as_deref(), status))
 }
@@ -573,7 +573,7 @@ fn propose(io: &mut Io, sel: &Sel, a: ProposeArgs) -> Result<i32> {
 fn read(io: &mut Io, sel: &Sel, title: &str, cmd: &str, args: &[(&str, Option<String>)]) -> Result<i32> {
     let p = refreshed(io, sel, None)?;
     let vals: HashMap<String, Option<String>> = args.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-    let (lines, error) = crate::cliread::read_command(&p, &crate::cs::library(""), cmd, vals)?;
+    let (lines, error) = crate::cliread::read_command(&p, cmd, vals)?;
     if !lines.is_empty() {
         io.say(&lines.join("\n"));
     }
@@ -766,12 +766,12 @@ fn run(io: &mut Io, sel: &Sel, a: RunArgs) -> Result<i32> {
         return Ok(io.report("run", &l, None, 0));
     };
     let Some(target) = crate::run::run_target(&p, &name)? else {
-        let (l, e, _) = crate::run::run_prepare(&p, &name, false, None, vec![], None, None, String::new())?;
+        let (l, e, _) = crate::run::run_prepare(&p, &name, false, None, vec![], None, None)?;
         return Ok(io.report("run", &l, e.as_deref(), 2));
     };
     let p = if a.no_build { open(sel, Some(&target))? } else { build_target(io, sel, Some(&target), true, false)?.0 };
     let debug = if a.debug { Some(true) } else if a.no_debug { Some(false) } else { None };
-    let (lines, error, spec) = crate::run::run_prepare(&p, &name, a.no_build, a.seconds, a.extra.clone(), debug, a.dump.clone(), crate::cs::library(""))?;
+    let (lines, error, spec) = crate::run::run_prepare(&p, &name, a.no_build, a.seconds, a.extra.clone(), debug, a.dump.clone())?;
     io.report("run", &lines, error.as_deref(), 0);
     let Some(spec) = spec.filter(|_| error.is_none()) else { return Ok(1) };
     if a.prepare_only || crate::launch::handoff(&spec) {

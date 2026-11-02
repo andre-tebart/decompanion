@@ -22,7 +22,6 @@ pub struct Ctx {
     pub root: String,
     pub image: String,
     pub fill_forms: Vec<Vec<u8>>,
-    pub capstone: String,                           // the capstone library the Python package loaded
     pub record: bool,
     pub shortcuts: bool,
     pub inputs: Rc<Inputs>,
@@ -238,7 +237,7 @@ fn m_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 /// The end of the last instruction of a matched function's code that is no fill form (0 when every one is fill),
 /// as isa.listing gives it: the code decoded with each relocated field holding the image base (the base's bytes
 /// repeated over a masked run), each instruction's fill test on its own bytes.
-fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms: &[Vec<u8>]) -> Result<u32> {
+fn last_code_end(base: u32, code: &[u8], mask: &[u8], va: u32, forms: &[Vec<u8>]) -> u32 {
     let dummy = base.to_le_bytes();
     let mut data = code.to_vec();
     let mut k = 0;
@@ -256,7 +255,7 @@ fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms:
             k += 1;
         }
     }
-    let lines = crate::cs::lengths(&ctx.capstone, &data, va).map_err(Error::runtime)?;
+    let lines = crate::dis::lengths(&data, va);
     let fill = |&(addr, size): &(u32, u32)| {
         let o = (addr - va) as usize;
         let b = &code[o..(o + size as usize).min(code.len())];
@@ -266,7 +265,7 @@ fn last_code_end(ctx: &Ctx, base: u32, code: &[u8], mask: &[u8], va: u32, forms:
     while n > 0 && fill(&lines[n - 1]) {
         n -= 1;
     }
-    Ok(if n == 0 { 0 } else { lines[n - 1].0 + lines[n - 1].1 })
+    if n == 0 { 0 } else { lines[n - 1].0 + lines[n - 1].1 }
 }
 
 /// M.match (R1): a sourced function whose compiled function is a byte match owns its bytes: a `symbol` func to
@@ -291,7 +290,7 @@ fn m_match(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let end = a + x.c.size as i64;
         let mut code_end = tables.iter().find(|(lo, f)| *f == Some(a) && a < *lo && *lo < end).map(|t| t.0).unwrap_or(end);
         let n = (code_end - a) as usize;
-        let last = last_code_end(ctx, img.base, &x.code.data[..n], &x.code.mask[..n.min(x.code.mask.len())], a as u32, &forms)?;
+        let last = last_code_end(img.base, &x.code.data[..n], &x.code.mask[..n.min(x.code.mask.len())], a as u32, &forms);
         if last != 0 {
             code_end = code_end.min(last as i64);
         }
@@ -339,13 +338,13 @@ fn latin1(b: &[u8]) -> String {
 /// compare.aligned_sites: the offsets of `sites` ((offset, width) of our relocated fields) whose instruction
 /// starts at the same offset with the same size on both sides and agrees in every unmasked byte (all of them for
 /// a match).
-pub fn aligned_sites(dll: &str, ours: &[u8], mask: &[u8], orig: &[u8], va: u32, matched: bool, sites: &[(u32, u32)])
-    -> Result<std::collections::HashSet<u32>, String> {
+pub fn aligned_sites(ours: &[u8], mask: &[u8], orig: &[u8], va: u32, matched: bool, sites: &[(u32, u32)])
+    -> std::collections::HashSet<u32> {
     if matched {
-        return Ok(sites.iter().map(|s| s.0).collect());
+        return sites.iter().map(|s| s.0).collect();
     }
-    let lines = crate::cs::lengths(dll, ours, va)?;
-    let theirs: HashMap<u32, u32> = crate::cs::lengths(dll, orig, va)?.into_iter().map(|(a, n)| (a - va, n)).collect();
+    let lines = crate::dis::lengths(ours, va);
+    let theirs: HashMap<u32, u32> = crate::dis::lengths(orig, va).into_iter().map(|(a, n)| (a - va, n)).collect();
     let starts: Vec<u32> = lines.iter().map(|l| l.0 - va).collect();
     let mut out = std::collections::HashSet::new();
     for &(off, width) in sites {
@@ -364,7 +363,7 @@ pub fn aligned_sites(dll: &str, ours: &[u8], mask: &[u8], orig: &[u8], va: u32, 
             out.insert(off);
         }
     }
-    Ok(out)
+    out
 }
 
 /// M9 / M10: the string literals and floating constants a compiled function references at its `aligned` sites
@@ -468,8 +467,7 @@ fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let va = x.src.lo as u32;
         let orig = img.bytes(va, x.code.data.len());
         let sites: Vec<(u32, u32)> = x.code.relocs.iter().map(|(off, r)| (*off, r.kind_width().1)).collect();
-        let aligned = aligned_sites(&ctx.capstone, &x.code.data, &x.code.mask, &orig, va, x.c.matched(), &sites)
-            .map_err(Error::runtime)?;
+        let aligned = aligned_sites(&x.code.data, &x.code.mask, &orig, va, x.c.matched(), &sites);
         for (site, width, rule, msg) in constant_mismatches(&img, x, &aligned) {
             out.finding("error", rule, site as i64, (site + width) as i64, msg, &x.src.by);
         }
@@ -1244,7 +1242,7 @@ pub(crate) mod testkit {
             Ctx { rule: rule.into(), version: "1".into(), code_hash: "test".into(), input_hash: format!("test:{rule}"), db: self.db.clone(),
                   main: String::new(), needed: needed.iter().map(|s| s.to_string()).collect(), root: self.dir.to_string_lossy().into_owned(),
                   image: self.image.clone(), fill_forms: vec![vec![0x90], vec![0xcc], vec![0x8b, 0xff], vec![0x8d, 0x49, 0x00]],
-                  capstone: String::new(), record: true, shortcuts: true, inputs: Rc::new(Inputs::of(extra)) }
+                  record: true, shortcuts: true, inputs: Rc::new(Inputs::of(extra)) }
         }
 
         /// A rule's output, sorted as recorded.
@@ -1300,12 +1298,11 @@ mod tests_aligned {
     /// M8.reloc's line-up of a relocation site of ours with the original's code.
     #[test]
     fn aligned_sites() {
-        let dll = crate::cs::library("");
         let ours = b"\x55\x8b\xec\xe8\x00\x00\x00\x00\x5d\xc3"; // push ebp; mov ebp,esp; call f; pop ebp; ret
         let mask = [0u8, 0, 0, 0, 1, 1, 1, 1, 0, 0];
         let aligned = |orig: &[u8]| -> Vec<u32> {
             let matched = (0..ours.len()).all(|k| mask[k] != 0 || ours[k] == orig[k]);
-            let mut v: Vec<u32> = super::aligned_sites(&dll, ours, &mask, orig, 0x1000, matched, &[(4, 4)]).unwrap().into_iter().collect();
+            let mut v: Vec<u32> = super::aligned_sites(ours, &mask, orig, 0x1000, matched, &[(4, 4)]).into_iter().collect();
             v.sort();
             v
         };

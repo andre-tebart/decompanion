@@ -33,7 +33,7 @@ mod datafix;
 mod decide;
 mod compare;
 mod compile;
-mod cs;
+mod dis;
 mod diffclass;
 mod edit;
 mod difflib;

@@ -122,7 +122,7 @@ pub fn findings_of(root: &Path, target: Option<&str>, check: &str) -> Vec<Findin
 pub fn engine_ran(root: &Path, target: Option<&str>) -> bool {
     let p = project(root, target);
     storedb::st_open(&p.store_path(), &p.main_uri()).unwrap();
-    crate::engine::engine_run(&p, "", None, false).unwrap().iter().any(|r| r.ran)
+    crate::engine::engine_run(&p, None, false).unwrap().iter().any(|r| r.ran)
 }
 
 /// Switch the project's analyzer to Ghidra: a stand-in installation beside the project whose analyzeHeadless copies

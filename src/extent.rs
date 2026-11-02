@@ -20,7 +20,7 @@
 //! (derived: it rests on the walk); D.data's D8 holds them against the declarations.
 
 use crate::error::{Error, Result};
-use crate::cs::{OP_IMM, OP_MEM, OP_REG};
+use crate::dis::{OpType, Reg};
 use crate::rules::Ctx;
 use crate::store::{Out, DERIVED};
 use crate::x86::{Decoder, WIns, CALL, CJUMP, IJUMP, JUMP, RET};
@@ -67,27 +67,9 @@ fn widen_v(a: V) -> V {
     }
 }
 
-/// capstone's x86 register id -> (index of the 32-bit register, whether it is the whole register).
-fn reg(r: u32) -> Option<(usize, bool)> {
-    Some(match r {
-        19 => (0, true),
-        1..=3 => (0, false),
-        22 => (1, true),
-        9 | 10 | 12 => (1, false),
-        24 => (2, true),
-        13 | 16 | 18 => (2, false),
-        21 => (3, true),
-        4 | 5 | 8 => (3, false),
-        30 => (4, true),
-        47 => (4, false),
-        20 => (5, true),
-        6 => (5, false),
-        29 => (6, true),
-        45 => (6, false),
-        23 => (7, true),
-        14 => (7, false),
-        _ => return None,
-    })
+/// A register -> (index of its 32-bit general register, whether it is the whole register).
+fn reg(r: Reg) -> Option<(usize, bool)> {
+    crate::dis::gpr(r).map(|i| (i as usize, r.size() == 4))
 }
 
 #[derive(Clone, PartialEq)]
@@ -216,9 +198,9 @@ fn reads_only(mn: &str) -> bool {
 /// The registers an instruction may write (a bit per register).
 fn written(ins: &WIns) -> u8 {
     let mut m = 0u8;
-    let mn = ins.mn.as_str();
+    let mn = ins.mn;
     if let Some(o) = ins.ops.first() {
-        if o.typ == OP_REG && !reads_only(mn) {
+        if o.typ == OpType::Reg && !reads_only(mn) {
             if let Some((i, _)) = reg(o.reg) {
                 m |= 1 << i;
             }
@@ -226,7 +208,7 @@ fn written(ins: &WIns) -> u8 {
     }
     if mn == "xchg" {
         for o in &ins.ops {
-            if let Some((i, _)) = reg(o.reg).filter(|_| o.typ == OP_REG) {
+            if let Some((i, _)) = reg(o.reg).filter(|_| o.typ == OpType::Reg) {
                 m |= 1 << i;
             }
         }
@@ -273,20 +255,20 @@ impl Fx<'_> {
 }
 
 /// The value of an operand (a register or an immediate), or None for memory.
-fn val(st: &St, o: &crate::cs::Op, data: &dyn Fn(i64) -> bool) -> Option<V> {
+fn val(st: &St, o: &crate::dis::Op, data: &dyn Fn(i64) -> bool) -> Option<V> {
     match o.typ {
-        OP_REG => Some(match reg(o.reg) {
+        OpType::Reg => Some(match reg(o.reg) {
             Some((i, true)) => st.r[i],
             _ => V::Unk,
         }),
-        OP_IMM => Some(if data(o.imm) { V::Addr(o.imm as u32, 0) } else { V::Const(o.imm) }),
+        OpType::Imm => Some(if data(o.imm) { V::Addr(o.imm as u32, 0) } else { V::Const(o.imm) }),
         _ => None,
     }
 }
 
 /// The stack depth a memory operand addresses (esp- or frame-relative, no index).
-fn depth_of(st: &St, o: &crate::cs::Op) -> Option<i64> {
-    if o.typ != OP_MEM || o.index != 0 {
+fn depth_of(st: &St, o: &crate::dis::Op) -> Option<i64> {
+    if o.typ != OpType::Mem || o.index != Reg::None {
         return None;
     }
     match reg(o.base) {
@@ -301,8 +283,8 @@ fn depth_of(st: &St, o: &crate::cs::Op) -> Option<i64> {
 
 /// The address a memory operand computes, as a value: (base value + disp [+ const index]); `exact` false when an
 /// index of unknown value (taken as >= 0) is added.
-fn addr_of(st: &St, o: &crate::cs::Op, data: &dyn Fn(i64) -> bool) -> Option<(V, bool)> {
-    let idx = if o.index != 0 {
+fn addr_of(st: &St, o: &crate::dis::Op, data: &dyn Fn(i64) -> bool) -> Option<(V, bool)> {
+    let idx = if o.index != Reg::None {
         match reg(o.index) {
             Some((i, true)) => match st.r[i] {
                 V::Const(c) => Some(c * o.scale as i64),
@@ -313,7 +295,7 @@ fn addr_of(st: &St, o: &crate::cs::Op, data: &dyn Fn(i64) -> bool) -> Option<(V,
     } else {
         Some(0)
     };
-    let base = if o.base == 0 {
+    let base = if o.base == Reg::None {
         if data(o.disp) { V::Addr(o.disp as u32, 0) } else { return None }
     } else {
         match reg(o.base) {
@@ -325,7 +307,7 @@ fn addr_of(st: &St, o: &crate::cs::Op, data: &dyn Fn(i64) -> bool) -> Option<(V,
             _ => return None,
         }
     };
-    let disp = if o.base == 0 { 0 } else { o.disp };
+    let disp = if o.base == Reg::None { 0 } else { o.disp };
     let add = |v: V, k: i64| match v {
         V::Addr(b, x) => V::Addr(b, x + k),
         V::Arg(a, x) => V::Arg(a, x + k),
@@ -347,7 +329,7 @@ fn addr_of(st: &St, o: &crate::cs::Op, data: &dyn Fn(i64) -> bool) -> Option<(V,
 fn analyse(ins: &[&WIns], lo: u32, hi: u32, fx: &mut Fx) {
     let data = fx.data;
     let ebp_frame = ins.len() > 1 && ins[0].mn == "push" && ins[1].mn == "mov"
-        && ins[0].ops.first().is_some_and(|o| o.typ == OP_REG && reg(o.reg) == Some((EBP, true)))
+        && ins[0].ops.first().is_some_and(|o| o.typ == OpType::Reg && reg(o.reg) == Some((EBP, true)))
         && ins[1].ops.len() == 2 && reg(ins[1].ops[0].reg) == Some((EBP, true)) && reg(ins[1].ops[1].reg) == Some((ESP, true));
     // loops: head .. the last jump back to it; what the body writes, how it steps its registers
     let mut back: HashMap<u32, u32> = HashMap::new();
@@ -368,7 +350,7 @@ fn analyse(ins: &[&WIns], lo: u32, hi: u32, fx: &mut Fx) {
         let body: Vec<&WIns> = ins.iter().copied().filter(|i| h <= i.addr && i.addr <= j).collect();
         for i in &body {
             m |= written(i);
-            stores |= i.ops.first().is_some_and(|o| o.typ == OP_MEM && matches!(reg(o.base), Some((ESP, true)) | Some((EBP, true))));
+            stores |= i.ops.first().is_some_and(|o| o.typ == OpType::Mem && matches!(reg(o.base), Some((ESP, true)) | Some((EBP, true))));
         }
         loops.push((h, j, steps(&body, ins), m, stores));
     }
@@ -488,11 +470,11 @@ fn guards(body: &[&WIns], all: &[&WIns]) -> Vec<(usize, u32, u32, u32, i64, bool
     let mut gs = vec![];
     for w in body.windows(2) {
         let (c, j) = (w[0], w[1]);
-        if c.mn != "cmp" || c.ops.len() != 2 || c.ops[1].typ != OP_IMM || c.ops[0].typ != OP_REG || j.flow != CJUMP {
+        if c.mn != "cmp" || c.ops.len() != 2 || c.ops[1].typ != OpType::Imm || c.ops[0].typ != OpType::Reg || j.flow != CJUMP {
             continue;
         }
         let Some((r, true)) = reg(c.ops[0].reg) else { continue };
-        let incl = match j.mn.as_str() {
+        let incl = match j.mn {
             "jge" | "jae" | "jnl" | "jnb" | "jnc" => false,
             "jg" | "ja" | "jnle" | "jnbe" => true,
             _ => continue,
@@ -532,13 +514,13 @@ fn steps(body: &[&WIns], all: &[&WIns]) -> Steps {
             }
         }
         let ops = &i.ops;
-        let own = |o: &crate::cs::Op| if o.typ == OP_REG { reg(o.reg).filter(|r| r.1).map(|r| r.0) } else { None };
-        let konst = match (i.mn.as_str(), ops.len()) {
-            ("add", 2) if ops[1].typ == OP_IMM => own(&ops[0]).map(|r| (r, ops[1].imm)),
-            ("sub", 2) if ops[1].typ == OP_IMM => own(&ops[0]).map(|r| (r, -ops[1].imm)),
+        let own = |o: &crate::dis::Op| if o.typ == OpType::Reg { reg(o.reg).filter(|r| r.1).map(|r| r.0) } else { None };
+        let konst = match (i.mn, ops.len()) {
+            ("add", 2) if ops[1].typ == OpType::Imm => own(&ops[0]).map(|r| (r, ops[1].imm)),
+            ("sub", 2) if ops[1].typ == OpType::Imm => own(&ops[0]).map(|r| (r, -ops[1].imm)),
             ("inc", 1) => own(&ops[0]).map(|r| (r, 1)),
             ("dec", 1) => own(&ops[0]).map(|r| (r, -1)),
-            ("lea", 2) if ops[1].index == 0 && own(&ops[0]).is_some() && reg(ops[1].base) == own(&ops[0]).map(|r| (r, true)) => {
+            ("lea", 2) if ops[1].index == Reg::None && own(&ops[0]).is_some() && reg(ops[1].base) == own(&ops[0]).map(|r| (r, true)) => {
                 own(&ops[0]).map(|r| (r, ops[1].disp))
             }
             _ => None,
@@ -546,7 +528,7 @@ fn steps(body: &[&WIns], all: &[&WIns]) -> Steps {
         // only the accesses at the register itself: one register of a strength-reduced loop also reaches parallel
         // arrays through displacements ([esi - 0x60], [esi + 0x68]), which says nothing of the register's own one
         if i.mn != "lea" {
-            for o in ops.iter().filter(|o| o.typ == OP_MEM && o.index == 0 && o.disp == 0) {
+            for o in ops.iter().filter(|o| o.typ == OpType::Mem && o.index == Reg::None && o.disp == 0) {
                 if let Some((r, true)) = reg(o.base) {
                     if let Some(cur) = step[r] {
                         let (lo, hi) = (cur + o.disp, cur + o.disp + o.size.max(1) as i64);
@@ -587,11 +569,11 @@ fn steps(body: &[&WIns], all: &[&WIns]) -> Steps {
 
 /// One instruction's effect on the state, and its evidence.
 fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut Fx, data: &dyn Fn(i64) -> bool) {
-    let mn = x.mn.as_str();
+    let mn = x.mn;
     let ops = &x.ops;
     // the accesses: every memory operand of a register base
     if mn != "lea" {
-        for o in ops.iter().filter(|o| o.typ == OP_MEM && o.base != 0 && depth_of(st, o).is_none()) {
+        for o in ops.iter().filter(|o| o.typ == OpType::Mem && o.base != Reg::None && depth_of(st, o).is_none()) {
             if let Some((v, _)) = addr_of(st, o, data) {
                 let size = o.size.max(1) as i64;
                 match v {
@@ -603,8 +585,8 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
             }
         }
     }
-    let set = |st: &mut St, o: &crate::cs::Op, v: V| {
-        if o.typ == OP_REG {
+    let set = |st: &mut St, o: &crate::dis::Op, v: V| {
+        if o.typ == OpType::Reg {
             if let Some((i, full)) = reg(o.reg) {
                 st.r[i] = if full { v } else { V::Unk };
                 if i == ESP {
@@ -615,7 +597,7 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
             st.store(dp, if o.size == 4 { v } else { V::Unk });
         }
     };
-    let get = |st: &St, o: &crate::cs::Op| -> V {
+    let get = |st: &St, o: &crate::dis::Op| -> V {
         if let Some(v) = val(st, o, data) {
             return v;
         }
@@ -646,17 +628,17 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
             let v = st.d.map(|d| st.slot(d)).unwrap_or(V::Unk);
             st.d = st.d.map(|d| d - 4);
             if let Some(o) = ops.first() {
-                if o.typ == OP_REG && reg(o.reg).is_some_and(|r| r.0 == ESP) {
+                if o.typ == OpType::Reg && reg(o.reg).is_some_and(|r| r.0 == ESP) {
                     st.d = None;
                 } else {
                     set(st, o, v);
                 }
             }
         }
-        "xor" | "sub" if ops.len() == 2 && ops[0].typ == OP_REG && ops[1].typ == OP_REG && ops[0].reg == ops[1].reg => {
+        "xor" | "sub" if ops.len() == 2 && ops[0].typ == OpType::Reg && ops[1].typ == OpType::Reg && ops[0].reg == ops[1].reg => {
             set(st, &ops[0], V::Const(0));
         }
-        "add" | "sub" if ops.len() == 2 && ops[0].typ == OP_REG => {
+        "add" | "sub" if ops.len() == 2 && ops[0].typ == OpType::Reg => {
             let Some((i, full)) = reg(ops[0].reg) else { return };
             let k = get(st, &ops[1]);
             let sign = if mn == "add" { 1 } else { -1 };
@@ -679,7 +661,7 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
                 _ => V::Unk,
             };
         }
-        "inc" | "dec" if ops.len() == 1 && ops[0].typ == OP_REG => {
+        "inc" | "dec" if ops.len() == 1 && ops[0].typ == OpType::Reg => {
             let Some((i, full)) = reg(ops[0].reg) else { return };
             let c = if mn == "inc" { 1 } else { -1 };
             st.r[i] = match (st.r[i], full) {
@@ -691,10 +673,10 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
         }
         "cmp" if ops.len() == 2 => {
             // B walking up compared with END before an ordering jump: B .. END is one array
-            let ordered = next.is_some_and(|n| n.flow == CJUMP && !matches!(n.mn.as_str(), "je" | "jne" | "jz" | "jnz" | "js" | "jns" | "jo" | "jno" | "jp" | "jnp"));
+            let ordered = next.is_some_and(|n| n.flow == CJUMP && !matches!(n.mn, "je" | "jne" | "jz" | "jnz" | "js" | "jns" | "jo" | "jno" | "jp" | "jnp"));
             // the last pass has the register at END - step: its accesses there are the array's last bytes (a
             // pointer to a field of each record ends one record past the field, not past the array)
-            if ordered && ops[0].typ == OP_REG {
+            if ordered && ops[0].typ == OpType::Reg {
                 let (a, b) = (get(st, &ops[0]), get(st, &ops[1]));
                 let walk = reg(ops[0].reg).filter(|r| r.1).and_then(|r| lp.and_then(|l| l.get(&r.0)));
                 if let (V::Walk(base), V::Addr(end, 0), Some((s, acc, at, guarded))) = (a, b, walk) {
@@ -736,7 +718,7 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
             st.d = st.d.map(|d| d - 4);
         }
         "ret" => {
-            if let Some(o) = ops.first().filter(|o| o.typ == OP_IMM) {
+            if let Some(o) = ops.first().filter(|o| o.typ == OpType::Imm) {
                 fx.pops = fx.pops.max(o.imm);
             }
         }
@@ -746,7 +728,7 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
                 Some(b'w') => 2,
                 _ => 4,
             };
-            let n = if mn.starts_with("rep ") {
+            let n = if x.rep {
                 match st.r[ECX] {
                     V::Const(c) if c >= 0 => Some(c),
                     _ => None,
@@ -768,7 +750,7 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
                     _ => V::Unk,
                 };
             }
-            if mn.starts_with("rep ") {
+            if x.rep {
                 st.r[ECX] = V::Const(0);
             }
         }
@@ -782,7 +764,7 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
                     st.r[i] = V::Unk;
                 }
             }
-            if ops.first().is_some_and(|o| o.typ == OP_MEM) && !reads_only(mn) {
+            if ops.first().is_some_and(|o| o.typ == OpType::Mem) && !reads_only(mn) {
                 if let Some(dp) = depth_of(st, &ops[0]) {
                     st.store(dp, V::Unk);
                 }
@@ -876,13 +858,12 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             seeds.entry(d.lo as u32).or_default().add(k as usize, t);
         }
     }
-    // decode every function once: contiguous chunks of them, each on a thread of its own (capstone's engine is
-    // per thread)
+    // decode every function once: contiguous chunks of them, each on a thread of its own (a decoder per thread)
     let fills: HashSet<Vec<u8>> = ctx.fill_forms.iter().cloned().collect();
     let chunks: Vec<std::sync::Mutex<(Decoder, &[(u32, u32)])>> = funcs.chunks(funcs.len().div_ceil(64).max(1))
         .map(|fs| {
             let (lo, hi) = (fs[0].0.max(clo), fs.iter().map(|f| f.1).max().unwrap().min(chi));
-            std::sync::Mutex::new((Decoder::new(&ctx.capstone, &img, lo, hi, &fills), fs))
+            std::sync::Mutex::new((Decoder::new(&img, lo, hi, &fills), fs))
         })
         .collect();
     let decoded = crate::compile_threads(&chunks, |m| -> Result<Vec<Vec<WIns>>, String> {
@@ -900,7 +881,7 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                     a = tables[ti].1;
                     continue;
                 }
-                match dec.at(a)? {
+                match dec.at(a) {
                     Some(i) => {
                         a += i.size;
                         l.push(i.clone());
@@ -985,7 +966,7 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 mod tests {
     use crate::pe::testpe::{build_with, BASE, DATA, TEXT};
     use crate::rules::testkit::{of, Kit};
-    use crate::rules::{dispatch, Ctx};
+    use crate::rules::dispatch;
     use crate::store::DERIVED;
     use serde_json::json;
 
@@ -1036,7 +1017,7 @@ mod tests {
         k.put("S.codewalk", &syms);
         std::fs::create_dir_all(k.dir.join("decl")).unwrap();
         std::fs::write(k.dir.join("decl/text.dcl"), format!("{:#010x} writes ptr=a0 size=a1*a2 -- a reader\n", t + 0x90)).unwrap();
-        let ctx = Ctx { capstone: crate::walk::tests::capstone(), ..k.ctx("S.extent", &["S.codewalk"], r#"{"toolchain": "vc6"}"#) };
+        let ctx = k.ctx("S.extent", &["S.codewalk"], r#"{"toolchain": "vc6"}"#);
         let (rows, conflicts) = dispatch(&ctx).unwrap().sorted();
         assert!(conflicts.is_empty());
         let d = (BASE + DATA) as i64;

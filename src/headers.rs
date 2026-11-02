@@ -678,7 +678,7 @@ struct Analysis {
     added: usize,
 }
 
-fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i64>) -> Result<Result<Analysis, String>> {
+fn analyse(x: &Ctx, unit: &str, headers: &[String], at: Option<i64>) -> Result<Result<Analysis, String>> {
     let t = match trial(x, unit, headers, &BTreeMap::new(), at) {
         Ok(t) => t,
         Err(e) if e.starts_with("LookupError: ") => return Ok(Err(e["LookupError: ".len()..].to_string())),
@@ -741,7 +741,7 @@ fn analyse(x: &Ctx, capstone: &str, unit: &str, headers: &[String], at: Option<i
             let note = g[1..].iter().find(|x| x.msg.contains("declared here"));
             let callee = note.and_then(|n| n.name.clone()).or(name);
             let func = fn_at(d);
-            let evidence = call_evidence(x, capstone, &names, func, callee.as_deref())?;
+            let evidence = call_evidence(x, &names, func, callee.as_deref())?;
             items.push(Item { kind: "call", name: callee, at: fix(d), other: note.map(fix), msg: d.msg.clone(), ours: rd.line(&fix(d)),
                               theirs: note.map(|n| rd.line(&fix(n))).unwrap_or_default(), func, evidence, exempt, ..Default::default() });
             continue;
@@ -975,7 +975,7 @@ fn call_class(text: Option<&str>, line: i64, callee: &str, decl: Option<&crate::
 
 /// Per call of `callee` inside the original's function `func`: its site, the pushes since the previous call (or
 /// the start) and the `add esp, N` right after it.
-fn call_evidence(x: &Ctx, capstone: &str, names: &crate::names::Names, func: Option<i64>, callee: Option<&str>) -> Result<Vec<String>> {
+fn call_evidence(x: &Ctx, names: &crate::names::Names, func: Option<i64>, callee: Option<&str>) -> Result<Vec<String>> {
     let (Some(func), Some(callee)) = (func, callee) else { return Ok(vec![]) };
     let Some(to) = names.addrs_of(callee).first().copied() else {
         return Ok(vec![format!("{callee}: no address known")]);
@@ -985,7 +985,7 @@ fn call_evidence(x: &Ctx, capstone: &str, names: &crate::names::Names, func: Opt
     let Some(sym) = syms.iter().next() else { return Ok(vec![]) };
     let img = crate::image(&x.p.target(None).map_err(err)?.path)?;
     let fills = crate::toolchain::of(&x.p.toolchain_key()).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default();
-    let lines = crate::x86::x86_disasm(capstone, &img.read(sym.lo as u32, (sym.hi - sym.lo).max(0) as usize), sym.lo as u32, fills)?;
+    let lines = crate::x86::x86_disasm(&img.read(sym.lo as u32, (sym.hi - sym.lo).max(0) as usize), sym.lo as u32, fills);
     let (mut out, mut pushes) = (vec![], 0);
     for (i, (addr, _, text, _)) in lines.iter().enumerate() {
         let op = text.split_whitespace().next().unwrap_or("");
@@ -1028,7 +1028,7 @@ fn resolve_header(root: &str, h: &str) -> Option<String> {
 /// instruction diff over the extent and slot its grade row read. (address, name, code grade now, in the trial), or
 /// the compiler's first error.
 #[allow(clippy::type_complexity)]
-fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str) -> Result<Result<Vec<(i64, String, String, String)>, String>> {
+fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Result<Vec<(i64, String, String, String)>, String>> {
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
     let tools = crate::vc6::Tools::of(p);
@@ -1061,7 +1061,7 @@ fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str)
     let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
     let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
     let forms = crate::compare::fill_order(&fill_forms);
-    let env = crate::diffclass::Env { dll: capstone, img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
+    let env = crate::diffclass::Env { img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
     let starts = crate::asmcmd::all_starts(&db, &img)?;
     let relocs: Option<Vec<u32>> = if img.relocations().is_empty() {
         None
@@ -1085,11 +1085,11 @@ fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str)
         } else {
             let d = &r["dist"];
             let (cd, cm) = code.code();
-            let size = crate::diffclass::code_size(&env, cd, cm, a as u32).map_err(err)?;
+            let size = crate::diffclass::code_size(&env, cd, cm, a as u32);
             let extent = d.get("extent").and_then(|v| v.as_i64()).unwrap_or(size);
             let slot = d.get("slot").and_then(|v| v.as_i64()).unwrap_or(extent.max(next as i64 - a));
-            let orig = crate::diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64).map_err(err)?;
-            if crate::diffclass::function_verdict(&env, &o, &code, a as u32, &orig).map_err(err)?.shape { "shape" } else { "draft" }
+            let orig = crate::diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64);
+            if crate::diffclass::function_verdict(&env, &o, &code, a as u32, &orig).shape { "shape" } else { "draft" }
         };
         out.push((a, name, now, grade.to_string()));
     }
@@ -1098,7 +1098,7 @@ fn trial_grades(p: &Project, capstone: &str, unit: &crate::plan::Tu, text: &str)
 }
 
 /// `dcp headers conflicts UNIT HEADER.. [--write] [--trial] [--at LINE]`: (the lines, the exit status).
-pub fn headers_conflicts(p: &crate::project::Project, capstone: &str, unit: &str, headers: Vec<String>, write: bool, at: Option<i64>,
+pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<String>, write: bool, at: Option<i64>,
                          try_grades: bool) -> Result<(Vec<String>, i32)> {
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];
@@ -1119,7 +1119,7 @@ pub fn headers_conflicts(p: &crate::project::Project, capstone: &str, unit: &str
     crate::storedb::st_open(&p.store_path(), &p.main_uri())?;
     let scan = frontend::scan(&root, p.input_hash("src").map_err(err)?.as_deref()).map_err(err)?;
     let x = Ctx { p, t: Texts { root: root.clone(), front: Front::of(&root).map_err(err)?, scan: Some(scan.clone()) }, scan };
-    let an = match analyse(&x, capstone, unit, &hdrs, at)? {
+    let an = match analyse(&x, unit, &hdrs, at)? {
         Ok(a) => a,
         Err(e) => {
             out.push(record(&[("unit", s(unit)), ("error", s(e))]));
@@ -1205,7 +1205,7 @@ pub fn headers_conflicts(p: &crate::project::Project, capstone: &str, unit: &str
     if try_grades {
         // the declaration set's effect itself: the unit compiled as --write would leave it, every function graded
         let t = trial(&x, unit, &hdrs, &drop, at).map_err(err)?;
-        match trial_grades(p, capstone, &t.unit, &t.new.replace(TRIAL_MARK, ""))? {
+        match trial_grades(p, &t.unit, &t.new.replace(TRIAL_MARK, ""))? {
             Err(e) => {
                 out.push(record(&[("trial", s("failed")), ("why", s(e))]));
                 falls = 1;

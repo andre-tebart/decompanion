@@ -240,7 +240,7 @@ pub fn call_below(b: &[u8; 6], ret: u32) -> Option<(&'static str, Option<u32>)> 
     None
 }
 
-/// The memory operand of an instruction text (capstone's Intel syntax) resolved through the registers:
+/// The memory operand of an instruction text (the decoder's, dis.rs) resolved through the registers:
 /// (`[ecx + 0x40]`, effective address).
 pub fn mem_operand(op_str: &str, regs: &Regs) -> Option<(String, u32)> {
     let a = op_str.find('[')?;
@@ -499,8 +499,9 @@ mod win {
         pub fn Module32NextW(snap: Handle, me: *mut ModuleEntry32W) -> i32;
         pub fn CloseHandle(h: Handle) -> i32;
         pub fn GetLastError() -> u32;
+        pub fn LoadLibraryW(name: *const u16) -> *mut c_void;
+        pub fn GetProcAddress(module: *mut c_void, name: *const std::ffi::c_char) -> *mut c_void;
     }
-    use crate::cs::{GetProcAddress, LoadLibraryW};
 
     pub fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -588,7 +589,6 @@ pub struct Debuggee<'a> {
     pub env: &'a [(String, String)],
     pub seconds: f64,
     pub symbols: &'a str,
-    pub capstone: &'a str,
     pub crash_root: &'a str,
     pub dump: &'a str, // full | state | normal | none
     pub spec: &'a str,
@@ -700,8 +700,7 @@ pub fn debug_run(d: &Debuggee, interrupted: &mut dyn FnMut() -> bool) -> Result<
                 Err(e) => format!("crash.dmp not written: {e}"),
             },
         };
-        let insn = (!c.code_bytes.is_empty() && !d.capstone.is_empty()).then(|| crate::cs::disasm(d.capstone, &c.code_bytes, c.address).ok())
-            .flatten().and_then(|v| v.into_iter().next()).map(|i| format!("{} {}", i.mnemonic, i.op_str).trim().to_string());
+        let insn = crate::dis::disasm(&c.code_bytes, c.address).into_iter().next().map(|i| i.line());
         let sha = crate::fsmemo::sha256(d.exe).unwrap_or_default();
         let m = Meta { run: d.run.into(), exe: d.exe.into(), sha256: sha, seconds: t0.elapsed().as_secs_f64(), exit_code, dump: note };
         std::fs::write(dir.join("crash.txt"), report(c, &syms, &m, insn.as_deref())).map_err(|e| e.to_string())?;
@@ -790,8 +789,8 @@ pub static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// `dcp run --debug`: run the program under the debugger. (exit code, stopped, crash dir).
 #[allow(clippy::too_many_arguments)]
 pub fn debug_launch(run: &str, exe: &str, cmdline: &str, dir: &str, env: Vec<(String, String)>, seconds: f64, symbols: &str,
-                    capstone: &str, crash_root: &str, dump: &str, spec: &str) -> Result<(Option<u32>, String, Option<String>)> {
-    let d = Debuggee { run, exe, cmdline, dir, env: &env, seconds, symbols, capstone, crash_root, dump, spec };
+                    crash_root: &str, dump: &str, spec: &str) -> Result<(Option<u32>, String, Option<String>)> {
+    let d = Debuggee { run, exe, cmdline, dir, env: &env, seconds, symbols, crash_root, dump, spec };
     let mut interrupted = || INTERRUPTED.load(std::sync::atomic::Ordering::Relaxed);
     let e = debug_run(&d, &mut interrupted).map_err(Error::runtime)?;
     Ok((e.exit_code, e.stopped, e.crash))
@@ -873,9 +872,8 @@ mod tests {
         std::fs::write(&spec, "{}").unwrap();
         let env: Vec<(String, String)> = std::env::vars().collect();
         let dirs = dir.to_string_lossy().into_owned();
-        let cs = crate::cs::library("");
         let run = |exe: &str, dump: &str| debug_run(&Debuggee { run: "t", exe, cmdline: &format!("\"{exe}\""), dir: &dirs, env: &env, seconds: 20.0, symbols: &syms,
-                                                    capstone: &cs, crash_root: &root, dump, spec: &spec.to_string_lossy() }, &mut || false).unwrap();
+                                                    crash_root: &root, dump, spec: &spec.to_string_lossy() }, &mut || false).unwrap();
         // a program that handles its own access violation: no crash report, its own exit code
         let e = run(&handled, "none");
         assert_eq!((e.exit_code, e.crash.as_deref(), e.stopped.as_str()), (Some(7), None, ""));

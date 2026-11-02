@@ -1,8 +1,7 @@
 //! isa/x86.py's instruction diff side: the normalised listing (Isa.listing), the explanations of a differing
 //! hunk (explain, frame_delta, stack_mask, frame_explain, one_renaming), and the decoder the walk of an
-//! original's slot and S.codewalk read (X86Decoder, from capstone's operand details).
+//! original's slot and S.codewalk read (X86Decoder, over dis.rs's typed instructions).
 
-use crate::error::{Error, Result};
 use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -80,7 +79,7 @@ pub fn shape_keys(lines: &[String]) -> Vec<String> {
     t_both(lines)
 }
 
-/// int(s, 0) of the numbers capstone and the listing write (an optional sign, 0x hex or decimal).
+/// int(s, 0) of the numbers the decoder and the listing write (an optional sign, 0x hex or decimal).
 pub fn py_int0(s: &str) -> i64 {
     let (neg, t) = match s.strip_prefix('-') {
         Some(r) => (true, r),
@@ -100,12 +99,11 @@ pub fn py_hex(v: i64) -> String {
 
 // ------------------------------------------------------------------------------------------------ the listing
 
-/// X86.listing: capstone's Intel text, spaces normalised; masked fields hold the image's first address, every
+/// X86.listing: the decoder's text (dis.rs), spaces normalised; masked fields hold the image's first address, every
 /// number inside the image (and a masked field's value) reads X; a jump with an immediate target outside the
 /// masked fields keeps the target.
-pub fn listing(dll: &str, code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64, i64), fills: &HashSet<Vec<u8>>)
-               -> Result<Vec<Line>, String> {
-    listing_named(dll, code, va, mask, range, fills, &|_, _, _| None)
+pub fn listing(code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64, i64), fills: &HashSet<Vec<u8>>) -> Vec<Line> {
+    listing_named(code, va, mask, range, fills, &|_, _, _| None)
 }
 
 /// How a number that reads X is spelled instead: (instruction address, Some(k): the instruction's k-th masked field
@@ -113,8 +111,7 @@ pub fn listing(dll: &str, code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64
 pub type Namer<'a> = &'a dyn Fn(u32, Option<usize>, i64) -> Option<String>;
 
 /// listing, the numbers that read X spelled by `name` where it gives a text (`dcp asmdiff --symbols`).
-pub fn listing_named(dll: &str, code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64, i64), fills: &HashSet<Vec<u8>>,
-                     name: Namer) -> Result<Vec<Line>, String> {
+pub fn listing_named(code: &[u8], va: u32, mask: Option<&[u8]>, range: (i64, i64), fills: &HashSet<Vec<u8>>, name: Namer) -> Vec<Line> {
     let (lo, hi) = range;
     let mut data = code.to_vec();
     let dummy = (lo as u32).to_le_bytes();
@@ -140,10 +137,9 @@ pub fn listing_named(dll: &str, code: &[u8], va: u32, mask: Option<&[u8]>, range
         }
     }
     let mut out = vec![];
-    for ins in crate::cs::disasm(dll, &data, va)? {
+    for ins in crate::dis::disasm(&data, va) {
         let (a, size) = (ins.addr, ins.size);
-        let raw = if ins.op_str.is_empty() { ins.mnemonic.clone() } else { format!("{} {}", ins.mnemonic, ins.op_str).trim().to_string() };
-        let text = space_re().replace_all(&raw, " ").into_owned();
+        let text = space_re().replace_all(&ins.line(), " ").into_owned();
         let o = (a - va) as usize;
         let mut masked: Vec<u64> = vec![];
         for &(s, e) in &runs {
@@ -174,7 +170,7 @@ pub fn listing_named(dll: &str, code: &[u8], va: u32, mask: Option<&[u8]>, range
         let bytes = &code[o.min(code.len())..(o + size as usize).min(code.len())];
         out.push(Line { addr: a, size, text, fill: fills.contains(bytes), target });
     }
-    Ok(out)
+    out
 }
 
 /// diffclass.strip_fill: the listing without its trailing fill.
@@ -601,36 +597,34 @@ pub const CJUMP: u8 = 3;
 pub const IJUMP: u8 = 4;
 pub const RET: u8 = 5;
 
-/// capstone's Intel text of every instruction of `code` at `va`, unchanged: (address, size, text, fill form?).
-pub fn x86_disasm(dll: &str, code: &[u8], va: u32, fill_forms: Vec<Vec<u8>>) -> Result<Vec<(u32, u32, String, bool)>> {
+/// The decoder's text of every instruction of `code` at `va`, unchanged: (address, size, text, fill form?).
+pub fn x86_disasm(code: &[u8], va: u32, fill_forms: Vec<Vec<u8>>) -> Vec<(u32, u32, String, bool)> {
     let fills: HashSet<Vec<u8>> = fill_forms.into_iter().collect();
-    let ins = crate::cs::disasm(dll, code, va).map_err(Error::runtime)?;
-    Ok(ins.into_iter().map(|i| {
+    crate::dis::disasm(code, va).into_iter().map(|i| {
         let o = (i.addr - va) as usize;
-        let text = if i.op_str.is_empty() { i.mnemonic } else { format!("{} {}", i.mnemonic, i.op_str).trim().to_string() };
-        (i.addr, i.size, text, fills.contains(&code[o..(o + i.size as usize).min(code.len())]))
-    }).collect())
+        (i.addr, i.size, i.line(), fills.contains(&code[o..(o + i.size as usize).min(code.len())]))
+    }).collect()
 }
 
-/// isa/base.Ins: one instruction as the walks read it, from capstone's operand details.
+/// isa/base.Ins: one instruction as the walks read it: the typed instruction (dis.rs) and what the walks ask of
+/// it, computed once.
 #[derive(Clone)]
 pub struct WIns {
     pub addr: u32,
     pub size: u32,
-    pub mn: String,
+    pub mn: &'static str,
     pub flow: u8,
     pub target: Option<i64>,
     pub mem: Vec<(u32, u8)>, // (displacement, operand size) of every memory operand pointing into the image
     pub imms: Vec<i64>,
     pub table: Option<u32>,
     pub fill: bool,
-    pub ops: Vec<crate::cs::Op>,
+    pub rep: bool, // a rep / repe / repne prefix
+    pub ops: Vec<crate::dis::Op>,
 }
 
-/// X86Decoder over [lo, hi) of an image: the instruction at an address, decoded once (capstone with details, in
-/// batches of 0x400 bytes).
+/// X86Decoder over [lo, hi) of an image: the instruction at an address, decoded once (in batches of 0x400 bytes).
 pub struct Decoder<'a> {
-    pub dll: &'a str,
     pub lo: u32,
     pub hi: u32,
     pub code: Vec<u8>,
@@ -641,83 +635,71 @@ pub struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    pub fn new(dll: &'a str, img: &crate::pe::Image, lo: u32, hi: u32, fills: &'a HashSet<Vec<u8>>) -> Decoder<'a> {
-        Decoder { dll, lo, hi, code: img.read(lo, (hi - lo) as usize), fills, ibase: img.base, iend: img.end(), cache: HashMap::new() }
+    pub fn new(img: &crate::pe::Image, lo: u32, hi: u32, fills: &'a HashSet<Vec<u8>>) -> Decoder<'a> {
+        Decoder { lo, hi, code: img.read(lo, (hi - lo) as usize), fills, ibase: img.base, iend: img.end(), cache: HashMap::new() }
     }
 
     fn in_image(&self, v: u32) -> bool {
         self.ibase <= v && v < self.iend
     }
 
-    fn record(&self, d: crate::cs::DIns) -> WIns {
-        use crate::cs::{GRP_CALL, GRP_JUMP, GRP_RET, OP_IMM, OP_MEM};
-        let g = if d.groups.contains(&GRP_CALL) {
-            GRP_CALL
-        } else if d.groups.contains(&GRP_JUMP) {
-            GRP_JUMP
-        } else if d.groups.contains(&GRP_RET) {
-            GRP_RET
-        } else {
-            0
-        };
-        let target = match d.ops.first() {
-            Some(o) if (g == GRP_CALL || g == GRP_JUMP) && o.typ == OP_IMM => Some(o.imm),
-            _ => None,
-        };
-        let flow = match g {
-            GRP_CALL => CALL,
-            GRP_JUMP => match target {
-                None => IJUMP,
-                Some(_) if d.mnemonic == "jmp" => JUMP,
-                Some(_) => CJUMP,
-            },
-            GRP_RET => RET,
-            _ => OTHER,
+    fn record(&self, d: crate::dis::Ins) -> WIns {
+        use crate::dis::{Flow, OpType, Reg};
+        let flow = match d.flow {
+            Flow::Call => CALL,
+            Flow::Jump => JUMP,
+            Flow::CondJump => CJUMP,
+            Flow::IndirectJump => IJUMP,
+            Flow::Ret => RET,
+            Flow::Next | Flow::Trap => OTHER,
         };
         let mem = d.ops.iter()
-            .filter(|o| o.typ == OP_MEM && o.disp != 0 && self.in_image(o.disp as u32))
+            .filter(|o| o.typ == OpType::Mem && o.disp != 0 && self.in_image(o.disp as u32))
             .map(|o| (o.disp as u32, o.size))
             .collect();
-        let imms = d.ops.iter().filter(|o| o.typ == OP_IMM).map(|o| o.imm).collect();
+        let imms = d.ops.iter().filter(|o| o.typ == OpType::Imm).map(|o| o.imm).collect();
         let table = match d.ops.first() {
-            Some(o) if d.mnemonic == "jmp" && o.typ == OP_MEM && o.base == 0 && o.index != 0 && o.scale == 4 => Some(o.disp as u32),
+            Some(o) if flow == IJUMP && d.mn == "jmp" && o.typ == OpType::Mem && o.base == Reg::None && o.index != Reg::None && o.scale == 4 => {
+                Some(o.disp as u32)
+            }
             _ => None,
         };
-        let fill = self.fills.contains(&d.bytes);
-        WIns { addr: d.addr, size: d.size, mn: d.mnemonic, flow, target, mem, imms, table, fill, ops: d.ops }
+        let o = (d.addr - self.lo) as usize;
+        let fill = self.fills.contains(&self.code[o..o + d.size as usize]);
+        WIns { addr: d.addr, size: d.size, mn: d.mn, flow, target: d.target.map(|t| t as i64), mem, imms, table, fill, rep: d.rep, ops: d.ops }
     }
 
     /// The instruction at a (None outside [lo, hi) or where the bytes do not decode).
-    pub fn at(&mut self, a: u32) -> Result<Option<&WIns>, String> {
+    pub fn at(&mut self, a: u32) -> Option<&WIns> {
         if !(self.lo <= a && a < self.hi) {
-            return Ok(None);
+            return None;
         }
         if !self.cache.contains_key(&a) {
             let o = (a - self.lo) as usize;
             let end = (o + 0x400).min(self.code.len());
-            for d in crate::cs::disasm_detail(self.dll, &self.code[o..end], a)? {
+            for d in crate::dis::decode(&self.code[o..end], a) {
                 if !self.cache.contains_key(&d.addr) {
                     let r = self.record(d);
                     self.cache.insert(r.addr, r);
                 }
             }
         }
-        Ok(self.cache.get(&a))
+        self.cache.get(&a)
     }
 
     /// X86Decoder.table_shape: (bound, byte index table) from the instructions before the jump.
     pub fn table_shape(&self, recent: &[WIns]) -> (Option<i64>, Option<u32>) {
-        use crate::cs::{OP_IMM, OP_MEM, OP_REG};
+        use crate::dis::{OpType, Reg};
         let (mut bound, mut byte_tbl) = (None, None);
         for r in recent[..recent.len() - 1].iter().rev() {
-            if !matches!(r.mn.as_str(), "cmp" | "movzx" | "mov") || r.ops.len() != 2 {
+            if !matches!(r.mn, "cmp" | "movzx" | "mov") || r.ops.len() != 2 {
                 continue;
             }
             let (a, b) = (&r.ops[0], &r.ops[1]);
-            if r.mn == "cmp" && b.typ == OP_IMM && a.typ == OP_REG && bound.is_none() && (0..0x400).contains(&b.imm) {
+            if r.mn == "cmp" && b.typ == OpType::Imm && a.typ == OpType::Reg && bound.is_none() && (0..0x400).contains(&b.imm) {
                 bound = Some(b.imm + 1);
             }
-            if r.mn != "cmp" && b.typ == OP_MEM && b.size == 1 && (b.index != 0 || b.base != 0) && byte_tbl.is_none() {
+            if r.mn != "cmp" && b.typ == OpType::Mem && b.size == 1 && (b.index != Reg::None || b.base != Reg::None) && byte_tbl.is_none() {
                 let disp = b.disp as u32;
                 if self.lo <= disp && disp < self.hi {
                     byte_tbl = Some(disp);
@@ -743,20 +725,19 @@ mod tests {
     use super::*;
     use crate::pe::testpe::{build_with, BASE, DATA, TEXT};
 
-    fn decoder<'a>(img: &crate::pe::Image, dll: &'a str, len: u32, fills: &'a HashSet<Vec<u8>>) -> Decoder<'a> {
-        Decoder::new(dll, img, BASE + TEXT, BASE + TEXT + len, fills)
+    fn decoder<'a>(img: &crate::pe::Image, len: u32, fills: &'a HashSet<Vec<u8>>) -> Decoder<'a> {
+        Decoder::new(img, BASE + TEXT, BASE + TEXT + len, fills)
     }
 
     #[test]
     fn decoder_flows_and_table_shape() {
-        let dll = crate::walk::tests::capstone();
         let a = BASE + TEXT;
         let mut code: Vec<u8> = vec![0xe8, 0x0b, 0, 0, 0, 0x74, 0x02, 0xeb, 0xfe, 0xff, 0xe0, 0xc3, 0x90, 0x8b, 0xff, 0xcc, 0xa1];
         code.extend((BASE + DATA).to_le_bytes()); // mov eax, [data]
         let img = crate::pe::Image::parse(build_with(None, Some(&code))).unwrap();
         let fills: HashSet<Vec<u8>> = [vec![0x90u8], vec![0xcc], vec![0x8b, 0xff]].into_iter().collect();
-        let mut dec = decoder(&img, &dll, code.len() as u32, &fills);
-        let at = |dec: &mut Decoder, x: u32| dec.at(a + x).unwrap().unwrap().clone();
+        let mut dec = decoder(&img, code.len() as u32, &fills);
+        let at = |dec: &mut Decoder, x: u32| dec.at(a + x).unwrap().clone();
         let i = at(&mut dec, 0);
         assert_eq!((i.flow, i.target, i.size), (CALL, Some((a + 0x10) as i64), 5));
         let i = at(&mut dec, 5);
@@ -774,7 +755,7 @@ mod tests {
         code.extend((a + 0x10).to_le_bytes());
         code.extend([0u8; 16]);
         let img = crate::pe::Image::parse(build_with(None, Some(&code))).unwrap();
-        let mut dec = decoder(&img, &dll, code.len() as u32, &fills);
+        let mut dec = decoder(&img, code.len() as u32, &fills);
         let recent: Vec<WIns> = [0u32, 3, 5].iter().map(|&x| at(&mut dec, x)).collect();
         assert_eq!((recent[2].flow, recent[2].table), (IJUMP, Some(a + 0x10)));
         assert_eq!(dec.table_shape(&recent), (Some(4), None));

@@ -176,14 +176,14 @@ pub fn next_command(p: &crate::project::Project, which: &str, shard: Option<Stri
 
 /// One graded function's reading, or the lines to stop with: no such function (exit 1), no reading (a
 /// configuration error, as the Python raised it).
-fn reading(p: &Project, capstone: &str, key: &str, cmd: &str, symbols: bool) -> Result<Result<crate::asmcmd::Reading, Out>> {
+fn reading(p: &Project, key: &str, cmd: &str, symbols: bool) -> Result<Result<crate::asmcmd::Reading, Out>> {
     let db = opened(p)?;
     let Some(row) = crate::asmcmd::find_function(&db, key)? else {
         return Ok(Err((vec![], Some(format!("no graded function {key}")), 1)));
     };
     let name = row["name"].as_str().unwrap_or("").to_string();
     let names = if symbols { Some(crate::names::Names::build(&db, &p.main_uri(), &p.target(None).map_err(Error::runtime)?.path)?) } else { None };
-    match crate::asmcmd::reading(p, capstone, row, names.as_ref())? {
+    match crate::asmcmd::reading(p, row, names.as_ref())? {
         Ok(r) => Ok(Ok(r)),
         Err(why) => {
             let _ = cmd;
@@ -274,9 +274,9 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
 /// differ in size (diffclass's frame alignment), the lines are aligned with their stack offsets masked and a line
 /// that differs from the original's only by the frame's shift counts as equal (`~` when printed); `plain`: the
 /// diff of the texts as they are.
-pub fn asmdiff_command(p: &crate::project::Project, capstone: &str, name: &str, regs: Option<String>, all: bool, symbols: bool,
+pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<String>, all: bool, symbols: bool,
                        plain: bool) -> Result<Out> {
-    let r = match reading(p, capstone, name, "asmdiff", symbols)? {
+    let r = match reading(p, name, "asmdiff", symbols)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
     };
@@ -326,8 +326,8 @@ const HUNK_LINES: usize = 8;
 
 /// `dcp diffclass`: the hunks of one function's instruction diff with their classes (diffclass.rs); a `code` hunk
 /// with its lines, the first HUNK_LINES of each side and how many more (`all`: every line).
-pub fn diffclass_command(p: &crate::project::Project, capstone: &str, name: &str, all: bool) -> Result<Out> {
-    let r = match reading(p, capstone, name, "diffclass", false)? {
+pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> Result<Out> {
+    let r = match reading(p, name, "diffclass", false)? {
         Ok(r) => r,
         Err(o) => return Ok(o),
     };

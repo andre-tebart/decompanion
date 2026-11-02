@@ -68,7 +68,7 @@ struct Held {
 }
 
 thread_local! {
-    // the latest run's results by what they are computed from (Key), under the image, the capstone library, the
+    // the latest run's results by what they are computed from (Key), under the image, the
     // fill forms and the alignment they were computed with; each run keeps the ones it used
     static HELD: std::cell::RefCell<(String, HashMap<Key, Rc<Held>>)> = std::cell::RefCell::new((String::new(), HashMap::new()));
 }
@@ -101,17 +101,17 @@ struct Task<'a> {
     matched: bool,
 }
 
-type Computed = Result<(i64, i64, i64, diffclass::Original, Option<Verdict>), String>;
+type Computed = (i64, i64, i64, diffclass::Original, Option<Verdict>);
 
 /// A function's code size, extent, slot, original and (no byte match) its verdict.
 fn compute(env: &Env, t: &Task, align: i64) -> Computed {
     let (cd, cm) = t.code.code();
-    let size = diffclass::code_size(env, cd, cm, t.lo as u32)?;
+    let size = diffclass::code_size(env, cd, cm, t.lo as u32);
     let extent = t.whi.map(|h| h - t.lo).unwrap_or(size);
     let slot = extent.max(t.next as i64 - t.lo);
-    let o = diffclass::original(env, t.lo as u32, extent, slot, align)?;
-    let v = if t.matched { None } else { Some(diffclass::function_verdict(env, t.obj, t.code, t.lo as u32, &o)?) };
-    Ok((size, extent, slot, o, v))
+    let o = diffclass::original(env, t.lo as u32, extent, slot, align);
+    let v = if t.matched { None } else { Some(diffclass::function_verdict(env, t.obj, t.code, t.lo as u32, &o)) };
+    (size, extent, slot, o, v)
 }
 
 /// compute over the tasks on every core: (index, result).
@@ -150,10 +150,9 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let range = (img.base as i64, img.end() as i64);
     let fills: HashSet<Vec<u8>> = ctx.fill_forms.iter().cloned().collect();
     let forms = crate::compare::fill_order(&ctx.fill_forms);
-    let env = Env { dll: &ctx.capstone, img: &img, range, fills: &fills, forms: &forms };
-    let e = |s: String| Error::runtime(s);
+    let env = Env { img: &img, range, fills: &fills, forms: &forms };
     let mut rows: Vec<Row> = vec![];
-    let world = format!("{}|{}|{:?}|{}", ctx.image, ctx.capstone, ctx.fill_forms, x.function_alignment);
+    let world = format!("{}|{:?}|{}", ctx.image, ctx.fill_forms, x.function_alignment);
     let mut held = HELD.with(|h| std::mem::take(&mut *h.borrow_mut()));
     if held.0 != world {
         held = (world, HashMap::new());
@@ -166,7 +165,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }).collect();
     let mut fresh: HashMap<usize, Rc<Held>> = HashMap::new();
     for (i, r) in compute_all(&env, &todo, x.function_alignment) {
-        let (size, extent, slot, o, v) = r.map_err(e)?;
+        let (size, extent, slot, o, v) = r;
         let verdict = std::cell::OnceCell::new();
         if let Some(v) = v {
             let _ = verdict.set(v);
@@ -204,7 +203,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             why = w;
         } else {
             if h.verdict.get().is_none() {
-                let v = diffclass::function_verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o).map_err(e)?;
+                let v = diffclass::function_verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o);
                 let _ = h.verdict.set(v);
             }
             let v: &Verdict = h.verdict.get().unwrap();

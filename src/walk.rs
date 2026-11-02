@@ -23,7 +23,7 @@
 //! start found later. A walk that still runs into bytes another function owns is a conflict (C.walk): one of the
 //! two starts is wrong.
 //!
-//! Instructions come from x86::Decoder (capstone's operand details), fill forms from the toolchain.
+//! Instructions come from x86::Decoder (dis.rs's typed instructions), fill forms from the toolchain.
 //!
 //! How it is computed (none of this changes a result):
 //! - Every instruction is decoded once per rule run (the decoder memoises its records by address).
@@ -98,7 +98,7 @@ impl Walker<'_> {
             return Ok(false);
         }
         let mut cur = a;
-        while let Some(ins) = self.dec.at(cur)? {
+        while let Some(ins) = self.dec.at(cur) {
             if ins.addr >= t {
                 return Ok(ins.addr == t);
             }
@@ -224,7 +224,7 @@ impl Walker<'_> {
                 }
             }
             let mut cur = a;
-            while let Some(ins) = self.dec.at(cur)?.cloned() {
+            while let Some(ins) = self.dec.at(cur).cloned() {
                 cur = ins.addr + ins.size;
                 let ia = ins.addr;
                 let io = (ia - self.lo) as usize;
@@ -444,7 +444,7 @@ pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
     }
     let fills: HashSet<Vec<u8>> = ctx.fill_forms.iter().cloned().collect();
-    let mut first = Some(Decoder::new(&ctx.capstone, &img, lo, hi, &fills));
+    let mut first = Some(Decoder::new(&img, lo, hi, &fills));
     let mut derived: BTreeMap<u32, String> = BTreeMap::new();
     let mut records: HashMap<u32, Record> = HashMap::new();
     let roots_of = |known: &BTreeMap<u32, String>, derived: &BTreeMap<u32, String>| {
@@ -641,11 +641,11 @@ pub fn l_src_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     let reloc_sites: HashSet<u32> = crate::setup::facts(ctx, db, "ref")?.iter().filter(|f| f.s("rkind") == Some("reloc")).map(|f| f.lo as u32).collect();
     let fills: HashSet<Vec<u8>> = ctx.fill_forms.iter().cloned().collect();
-    // contiguous chunks of the functions, each decoded on a thread of its own (capstone's engine is per thread)
+    // contiguous chunks of the functions, each decoded on a thread of its own (one decoder per thread)
     let fns: Vec<(u32, u32)> = todo.into_iter().map(|(f, e)| (f as u32, e as u32)).collect();
     let per = fns.len().div_ceil(64).max(1);
     let chunks: Vec<std::sync::Mutex<(Decoder, &[(u32, u32)])>> = fns.chunks(per)
-        .map(|c| std::sync::Mutex::new((Decoder::new(&ctx.capstone, &img, c[0].0, c[c.len() - 1].1, &fills), c))).collect();
+        .map(|c| std::sync::Mutex::new((Decoder::new(&img, c[0].0, c[c.len() - 1].1, &fills), c))).collect();
     let found = crate::compile_threads(&chunks, |m| -> Result<Vec<Ref>, String> {
         let mut g = m.lock().unwrap();
         let (dec, fs) = &mut *g;
@@ -676,7 +676,7 @@ fn refs_inside(dec: &mut Decoder, f: u32, e: u32, code: (u32, u32), reloc_sites:
     while let Some(start) = work.pop() {
         let mut cur = start;
         while f <= cur && cur < e && seen.insert(cur) {
-            let Some(ins) = dec.at(cur)? else { break };
+            let Some(ins) = dec.at(cur) else { break };
             if ins.fill && cur != start {
                 break;
             }
@@ -737,14 +737,9 @@ fn refs_inside(dec: &mut Decoder, f: u32, e: u32, code: (u32, u32), reloc_sites:
 pub(crate) mod tests {
     use crate::pe::testpe::{build, BASE, DATA, TEXT};
     use crate::rules::testkit::{of, Kit};
-    use crate::rules::{dispatch, Ctx};
+    use crate::rules::dispatch;
     use crate::store::DERIVED;
     use serde_json::json;
-
-    /// The capstone library the core loads (the vendored 5.0.9 build, cs::library).
-    pub(crate) fn capstone() -> String {
-        crate::cs::library("")
-    }
 
     #[test]
     fn walks_calls_operands_and_function_pointers() {
@@ -754,7 +749,7 @@ pub(crate) mod tests {
         let relocs: Vec<(i64, i64, &str, serde_json::Value, crate::store::Support)> = [(t + 0x21, d), (t + 0x31, d + 0x10), (t + 0x36, d + 0x30), (t + 0x51, d + 0x38), (d + 0x40, t + 0x50)]
             .iter().map(|&(s, to)| (s, s + 4, "ref", json!({"rkind": "reloc", "to": to}), DERIVED)).collect();
         k.put("S.relocs", &relocs);
-        let ctx = Ctx { capstone: capstone(), ..k.ctx("S.codewalk", &["S.exports", "S.relocs"], r#"{"toolchain": "vc6"}"#) };
+        let ctx = k.ctx("S.codewalk", &["S.exports", "S.relocs"], r#"{"toolchain": "vc6"}"#);
         let (rows, conflicts) = dispatch(&ctx).unwrap().sorted();
         assert!(conflicts.is_empty());
         let starts: Vec<(i64, String)> = of(&rows, "start").into_iter().map(|(lo, _, v)| (lo - t, v["how"].as_str().unwrap().to_string())).collect();
@@ -776,7 +771,7 @@ pub(crate) mod tests {
         k.put("L.src.extent", &[(t + 0x20, t + 0x26, "symbol", json!({"skind": "func", "extent": "source"}), crate::store::DECLARED)]);
         k.put("M.match", &[(t + 0x30, t + 0x3e, "symbol", json!({"skind": "func", "extent": "matched"}), crate::store::REPRODUCED)]);
         k.put("S.codewalk", &[(t + 0x30, t + 0x3e, "symbol", json!({"skind": "func", "extent": "derived"}), DERIVED)]);
-        let ctx = Ctx { capstone: capstone(), ..k.ctx("L.src.refs", &["L.src.extent", "M.match", "S.codewalk"], r#"{"toolchain": "vc6"}"#) };
+        let ctx = k.ctx("L.src.refs", &["L.src.extent", "M.match", "S.codewalk"], r#"{"toolchain": "vc6"}"#);
         let (rows, _) = dispatch(&ctx).unwrap().sorted();
         let refs: Vec<(i64, i64, serde_json::Value, crate::store::Support)> = rows.iter().filter(|r| r.kind == "ref")
             .map(|r| (r.lo - t, r.hi - t, serde_json::from_str(&r.value).unwrap(), r.support)).collect();

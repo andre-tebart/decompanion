@@ -32,6 +32,10 @@ proof applied. `dcp escalate` (deep) refuses on a concrete meaning divergence.
 
 ## Phase 1 — cheap yield inside diffclass (land first, measure)
 
+Order: items 2–4 are explainers. Build them over the typed instructions (`dis::Ins`, compared structurally: equal
+modulo a register bijection, a stack-slot remap, a push/pop set) on `diffclass::FunctionCompare`, not as more
+regular expressions over the listing text; Phase 2's lift reads the same record.
+
 1. **`ident.rs`** (new): `enum Ident { Addr(u32), Lit{bytes,float}, Sym(String) }` for each of our relocations:
    aligned-site read of the original's operand (reuse the opcodes pairing idea of `diffclass.rs:aligned`), else
    `rules.rs:name_registry` (make `pub(crate)`) via `coff::undecorate` with `__imp_` stripped, literals by content
@@ -49,9 +53,10 @@ proof applied. `dcp escalate` (deep) refuses on a concrete meaning divergence.
 ## Phase 2 — dataflow-equivalence prover (report first, then grade)
 
 New flat modules in native/dcp_core/src:
-- **`equiv_lift.rs`**: `WIns`/`cs::Op` → micro-ops. Needs `cs.rs` to export mem segment, encoding disp/imm
-  offsets and insn id, a register-id table (capstone 5 x86.h), and `x86::Decoder::from_bytes` for our object
-  code. 8 GPRs with partial writes; flags as `Flags(op,a,b,w)`; x87 stack of node ids (fxch permutes, `fnstsw ax`
+- **`equiv_lift.rs`**: `dis::Ins` → micro-ops. dis.rs (iced-x86) already gives the mnemonic id, typed operands
+  (registers as `iced_x86::Register`, memory with segment / base / index / scale / disp / size), the disp / imm /
+  branch field offsets (`Ins::field_at`: the link to a relocation), flow, targets and def-use register sets;
+  `dis::decode` reads our object's bytes as well as the image's. 8 GPRs with partial writes; flags as `Flags(op,a,b,w)`; x87 stack of node ids (fxch permutes, `fnstsw ax`
   inserts FSW into eax); `rep movs`/`repne scas` opaque.
 - **`equiv_expr.rs`**: hash-consed arena; lea→Add/Mul, commutative sort, constant fold, `xor r,r`=0,
   Lo8(Insert8) simplification, Zx/Sx; conditions as outcome masks over the compare (so `test ah,0x41` ≡
@@ -100,7 +105,7 @@ aligned sites, are listed under `assumed`, never make a divergence concrete.
   lea, ebx↔ebp across pop, swapped clamp blocks, tail dup, FPU test forms). Must-diverge: extra store
   (ai_SaveNetworkGame), `mov al` vs zero-extend under int return (ch_AnimDone), swapped call args, store width.
   Traps that must never be Equal: aliasing store between load and reuse, `inc` between cmp/jcc, fsub vs fsubr,
-  stdcall/cdecl cleanup mismatch. One or two byte-level tests via `walk::tests::capstone()` +
+  stdcall/cdecl cleanup mismatch. One or two byte-level tests via `dis::decode` +
   `coff::testlib::code_obj` for relocation identity. No new e2e test; `cargo test` stays fast.
 - gildegold: batch `dcp diffclass` over `dcp next --deep -n 500` before/after each phase and tally verdicts;
   negative control = prover over every byte and shape function, any Divergence is a prover bug (gate for phase 3);

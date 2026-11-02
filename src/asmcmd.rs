@@ -186,7 +186,7 @@ pub fn all_starts(db: &str, img: &crate::pe::Image) -> Result<Vec<i64>> {
 
 /// The reading of a graded function (its object's code against the original), or why there is none; with `names`,
 /// the texts with names for X too.
-pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::names::Names>) -> Result<Result<Reading, String>, Error> {
+pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> Result<Result<Reading, String>, Error> {
     let db = p.store_path();
     let unit = row["unit"].as_str().unwrap_or("").to_string();
     let name = row["name"].as_str().unwrap_or("").to_string();
@@ -204,8 +204,7 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
     let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
     let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
     let forms = crate::compare::fill_order(&fill_forms);
-    let env = Env { dll: capstone, img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
-    let e = |s: String| Error::runtime(s);
+    let env = Env { img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
     let d = &row["dist"];
     let (extent, slot) = match (d.get("extent").and_then(|v| v.as_i64()), d.get("slot").and_then(|v| v.as_i64())) {
         (Some(x), Some(s)) => (x, s),
@@ -217,7 +216,7 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
                 Some(w) => w.hi - w.lo,
                 None => {
                     let (cd, cm) = code.code();
-                    diffclass::code_size(&env, cd, cm, a as u32).map_err(e)?
+                    diffclass::code_size(&env, cd, cm, a as u32)
                 }
             };
             let st = all_starts(&db, &img)?;
@@ -225,11 +224,11 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
             (extent, extent.max(nxt - a))
         }
     };
-    let o = diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64).map_err(e)?;
+    let o = diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64);
     let (cd, cm) = code.code();
-    let la = crate::x86::strip_fill(crate::x86::listing(env.dll, cd, a as u32, Some(cm), env.range, env.fills).map_err(e)?);
+    let la = crate::x86::strip_fill(crate::x86::listing(cd, a as u32, Some(cm), env.range, env.fills));
     let data = img.read(a as u32, o.code.max(0) as usize);
-    let lb = crate::x86::strip_fill(crate::x86::listing(env.dll, &data, a as u32, None, env.range, env.fills).map_err(e)?);
+    let lb = crate::x86::strip_fill(crate::x86::listing(&data, a as u32, None, env.range, env.fills));
     let tables = diffclass::compare_tables(&env, &obj, &code, a as u32, &la, &lb, &o.tables);
     let (hunks, verdict) = diffclass::analyse(&la, &lb, tables.as_ref());
     let (named, values) = match names {
@@ -242,12 +241,12 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
             // the original's image addresses outside its own slot (a compare bound's other reading: Names::end_label)
             let used: Vec<i64> = {
                 let seen: std::cell::RefCell<Vec<i64>> = Default::default();
-                crate::x86::listing_named(env.dll, &data, a as u32, None, env.range, env.fills, &|_, _, v| {
+                crate::x86::listing_named(&data, a as u32, None, env.range, env.fills, &|_, _, v| {
                     if !(own.0 <= v && v < own.1) {
                         seen.borrow_mut().push(v);
                     }
                     None
-                }).map_err(e)?;
+                });
                 seen.into_inner()
             };
             // the values behind the X fields, by instruction address, in text order (Reading::same_values)
@@ -272,8 +271,8 @@ pub fn reading(p: &Project, capstone: &str, row: Value, names: Option<&crate::na
                 vals_b.borrow_mut().entry(ins).or_default().push(v);
                 Some(label(names, &img, own, v, bound(&lb, ins).then_some(used.as_slice())))
             };
-            let na = crate::x86::listing_named(env.dll, cd, a as u32, Some(cm), env.range, env.fills, &ours).map_err(e)?;
-            let nb = crate::x86::listing_named(env.dll, &data, a as u32, None, env.range, env.fills, &theirs).map_err(e)?;
+            let na = crate::x86::listing_named(cd, a as u32, Some(cm), env.range, env.fills, &ours);
+            let nb = crate::x86::listing_named(&data, a as u32, None, env.range, env.fills, &theirs);
             let (va, vb) = (vals_a.into_inner(), vals_b.into_inner());
             let values = (la.iter().map(|l| va.get(&l.addr).cloned().unwrap_or_default()).collect(),
                           lb.iter().map(|l| vb.get(&l.addr).cloned().unwrap_or_default()).collect());

@@ -181,7 +181,7 @@ pub fn launch(io: &mut Io, spec_path: &str) -> i32 {
         env.entry("_NO_DEBUG_HEAP".into()).or_insert_with(|| "1".into());
         let st = |k: &str| spec[k].as_str().unwrap_or("").to_string();
         let dump = spec["dump"].as_str().filter(|d| !d.is_empty()).unwrap_or("full").to_string();
-        match crate::debugger::debug_launch(&run, &exe, &list2cmdline(&argv), &dir, env.into_iter().collect(), seconds, &st("symbols"), &st("capstone"),
+        match crate::debugger::debug_launch(&run, &exe, &list2cmdline(&argv), &dir, env.into_iter().collect(), seconds, &st("symbols"),
                                             &st("crash_root"), &dump, spec_path) {
             Ok((c, s, cr)) => (c.map(|c| c as i64), s, cr),
             Err(e) => {
