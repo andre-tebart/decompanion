@@ -368,7 +368,7 @@ fn mnemonic(t: &str) -> &str {
     t.split(' ').next().unwrap_or("")
 }
 
-fn esp_normalised(lines: &[String]) -> Vec<String> {
+pub fn esp_normalised(lines: &[String]) -> Vec<String> {
     let mut out = vec![];
     let mut delta: i64 = 0;
     for t in lines {

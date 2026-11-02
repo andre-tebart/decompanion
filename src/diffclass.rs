@@ -192,13 +192,29 @@ fn mnemonic(t: &str) -> &str {
 
 type Aligned = (Vec<(usize, usize)>, HashMap<usize, usize>, HashSet<(usize, usize)>);
 
+/// The texts an order hunk's lines pair by (ours, the original's): the renaming its note names ("after ecx->edx
+/// edx->ecx") applied to ours, the esp offsets normalised on both sides when the note says across a push / pop.
+fn order_keys(la: &[Line], lb: &[Line], note: &str) -> (Vec<String>, Vec<String>) {
+    let (mut a, b) = (texts(la), texts(lb));
+    if note.contains("across a push / pop") {
+        return (x86::esp_normalised(&a), x86::esp_normalised(&b));
+    }
+    if let Some((_, m)) = note.rsplit_once(", after ") {
+        let pairs: Vec<(String, String)> = m.split(' ').filter_map(|p| p.split_once("->")).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        if !pairs.is_empty() {
+            a = x86::rename_registers(&a, &pairs);
+        }
+    }
+    (a, b)
+}
+
 fn aligned(la: &[Line], lb: &[Line], hs: &[Hunk]) -> Aligned {
     let (mut jumps, mut m, mut starts) = (vec![], HashMap::new(), HashSet::new());
     let (mut i, mut j) = (0usize, 0usize);
     let mut all: Vec<Hunk> = hs.to_vec();
     all.sort();
     all.push((la.len(), la.len(), lb.len(), lb.len(), String::new(), String::new()));
-    for (i1, i2, j1, j2, cls, _) in all {
+    for (i1, i2, j1, j2, cls, note) in all {
         let (di, dj) = (i1 as i64 - i as i64, j1 as i64 - j as i64);
         if di == dj && dj > 0 {
             for k in i..i1 {
@@ -209,13 +225,18 @@ fn aligned(la: &[Line], lb: &[Line], hs: &[Hunk]) -> Aligned {
             }
         }
         if cls == "order" {
+            // the hunk's lines pair by their text as the class saw it: ours after the hunk's register renaming, both
+            // sides' esp offsets taken at the hunk's start across a push / pop. The raw text pairs a line with
+            // another one the swap made look the same (a match-base report, gv_BuryCharacter: ours' `mov eax, edx`
+            // paired with the original's earlier `mov eax, edx`, and a je to the line counted as other control flow)
+            let (ka, kb) = order_keys(&la[i1..i2], &lb[j1..j2], &note);
             let mut same: HashMap<&str, VecDeque<usize>> = HashMap::new();
             for k in j1..j2 {
-                same.entry(&lb[k].text).or_default().push_back(k);
+                same.entry(&kb[k - j1]).or_default().push_back(k);
             }
             let mut rest = vec![];
             for k in i1..i2 {
-                match same.get_mut(la[k].text.as_str()).and_then(|q| q.pop_front()) {
+                match same.get_mut(ka[k - i1].as_str()).and_then(|q| q.pop_front()) {
                     Some(x) => {
                         m.insert(k, x);
                     }
@@ -780,6 +801,22 @@ mod tests {
                       ("faddp st(1)", None), ("fstp st(0)", None), ("ret", None)];
         let v = verdict(&jumps(&ours), &jumps(&theirs), None);
         assert!(v.branches.is_empty() && v.hunks.iter().all(|h| h.0 == "fpu"), "{:?} {:?}", v.branches, v.hunks);
+        // an order hunk with a register swap, one mov moved across a jle: the je's target is the same line on both
+        // sides; the hunk's lines pair by their text after the swap, not the raw text (a match-base report,
+        // gv_BuryCharacter: "je at +0x11b: ours to +0x131, the original's to +0x131")
+        let ours = [("xor edx, edx", None), ("mov eax, edi", None), ("test esi, esi", None), ("mov ecx, edi", None), ("jle X", Some(12)),
+                    ("cmp dword ptr [ecx], -1", None), ("je X", Some(10)), ("mov eax, ecx", None), ("inc edx", None), ("jmp X", Some(12)),
+                    ("mov eax, edx", None), ("shl eax, 4", None), ("ret", None)];
+        let theirs = [("xor ecx, ecx", None), ("mov eax, edi", None), ("test esi, esi", None), ("jle X", Some(12)), ("mov edx, edi", None),
+                      ("cmp dword ptr [edx], -1", None), ("je X", Some(10)), ("mov eax, edx", None), ("inc ecx", None), ("jmp X", Some(12)),
+                      ("mov eax, ecx", None), ("shl eax, 4", None), ("ret", None)];
+        let v = verdict(&jumps(&ours), &jumps(&theirs), None);
+        assert!(v.shape && v.branches.is_empty() && v.hunks.iter().all(|h| h.0 == "order"), "{:?} {:?}", v.branches, v.hunks);
+        // the same hunk with the je going elsewhere in the original is still a branch difference
+        let mut other = theirs.to_vec();
+        other[6] = ("je X", Some(11));
+        let v = verdict(&jumps(&ours), &jumps(&other), None);
+        assert!(!v.shape && v.branches.len() == 1 && v.branches[0].contains("je at +0x6: ours to +0xa, the original's to +0xb"), "{:?}", v.branches);
     }
 
     /// A switch at the function's start: three cases and a default, the 3-entry jump table at +0x28 after three
