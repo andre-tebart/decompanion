@@ -111,10 +111,6 @@ fn slot(o: &Opnd) -> Option<(Reg, Num)> {
     }
 }
 
-fn slots(s: &Shape) -> impl Iterator<Item = (Reg, Num)> + '_ {
-    s.ops.iter().filter_map(slot)
-}
-
 /// The general registers (eax=0 .. edi=7) a line names, any part of them.
 fn gprs(s: &Shape) -> impl Iterator<Item = u8> + '_ {
     s.ops.iter().flat_map(|o| match *o {
@@ -436,17 +432,53 @@ pub fn esp_normalised(lines: &[Shape]) -> Vec<Shape> {
     }).collect()
 }
 
-/// rename_slots: the slot offsets mapped (any slot of that offset, esp or ebp).
-fn rename_slots(lines: &[Shape], m: &[(Num, Num)]) -> Vec<Shape> {
-    lines.iter().map(|s| s.map_ops(|o| match (*o, slot(o)) {
-        (Opnd::Mem { seg, size, base, index, scale, disp }, Some(_)) => {
-            Opnd::Mem { seg, size, base, index, scale, disp: m.iter().find(|p| p.0 == disp).map(|p| p.1).unwrap_or(disp) }
+// ------------------------------------------------------------------------------------------------ explain
+
+/// Whether b is a by a renaming and another order: each line of a paired with a line of b of the same masked
+/// shape (registers and stack offsets masked; equal ones in their order), the pairs unified into one renaming
+/// (registers over `allowed`; with slots, stack offsets too). The renaming, None when the pairs do not unify.
+fn reordered(a: &[Shape], b: &[Shape], allowed: u8, slots: Slots) -> Option<Unify> {
+    let key = |s: &Shape| mask_slots(&mask_regs(s));
+    let mut theirs: HashMap<Shape, std::collections::VecDeque<usize>> = HashMap::new();
+    for (j, s) in b.iter().enumerate() {
+        theirs.entry(key(s)).or_default().push_back(j);
+    }
+    let mut u = Unify::new(allowed, slots);
+    for x in a {
+        let j = theirs.get_mut(&key(x))?.pop_front()?;
+        if !u.line(x, &b[j]) {
+            return None;
         }
-        (o, _) => o,
-    })).collect()
+    }
+    Some(u)
 }
 
-// ------------------------------------------------------------------------------------------------ explain
+/// The order class by trying the renamings of at most six registers: where pairing the lines by their masked
+/// shapes in order pairs the wrong ones (two lines alike but for their registers, reordered).
+fn order_by_permutation(xa: &[Shape], xb: &[Shape], toks: &[u8]) -> Option<String> {
+    let masked = |l: &[Shape]| l.iter().map(mask_regs).collect::<Vec<_>>();
+    if toks.len() > 6 || !multiset_eq(&masked(xa), &masked(xb)) {
+        return None;
+    }
+    let mut got = None;
+    permutations(toks.len(), |perm| {
+        let mut m = identity();
+        for (k, &g) in toks.iter().enumerate() {
+            m[g as usize] = toks[perm[k]];
+        }
+        if m == identity() {
+            return false;
+        }
+        if multiset_eq(&xa.iter().map(|s| rename(s, &m)).collect::<Vec<_>>(), xb) {
+            let mut names: Vec<(String, String)> = toks.iter().map(|&g| (name(g), name(m[g as usize]))).filter(|p| p.0 != p.1).collect();
+            names.sort();
+            got = Some(format!("same instructions, other order, after {}", names.iter().map(|(k, v)| format!("{k}->{v}")).collect::<Vec<_>>().join(" ")));
+            return true;
+        }
+        false
+    });
+    got
+}
 
 /// The renamable registers in a function's context: ebp is the frame pointer (not renamable) when the function
 /// sets it up (`mov ebp, esp` among its first lines).
@@ -511,56 +543,31 @@ pub fn explain(xa: &[Shape], xb: &[Shape], context: &[Shape]) -> Option<(String,
             return Some(("slots".into(), format!("{}{sd}", if rd.is_empty() { String::new() } else { rd + " " })));
         }
     }
-    if xa.len() == xb.len() && toks.len() <= 6 {
-        let masked = |l: &[Shape]| l.iter().map(mask_regs).collect::<Vec<_>>();
-        if multiset_eq(&masked(xa), &masked(xb)) {
-            let mut got = None;
-            permutations(toks.len(), |perm| {
-                let mut m = identity();
-                for (k, &g) in toks.iter().enumerate() {
-                    m[g as usize] = toks[perm[k]];
-                }
-                if m == identity() {
-                    return false;
-                }
-                if multiset_eq(&xa.iter().map(|s| rename(s, &m)).collect::<Vec<_>>(), xb) {
-                    let mut names: Vec<(String, String)> = toks.iter().map(|&g| (name(g), name(m[g as usize]))).filter(|p| p.0 != p.1).collect();
-                    names.sort();
-                    got = Some(("order".to_string(), format!("same instructions, other order, after {}",
-                                                            names.iter().map(|(k, v)| format!("{k}->{v}")).collect::<Vec<_>>().join(" "))));
-                    return true;
-                }
-                false
-            });
-            if got.is_some() {
-                return got;
-            }
-        }
-    }
-    if xa.len() == xb.len() && xa.iter().chain(xb).any(|s| s.is("push") || s.is("pop") || s.esp_adjust().is_some()) {
-        let (na, nb) = (esp_normalised(xa), esp_normalised(xb));
-        if multiset_eq(&na, &nb) {
-            return Some(("order".into(), "same instructions, other order across a push / pop (esp offsets taken at the hunk's start)".into()));
-        }
-        let offs: Vec<Num> = {
-            let s: BTreeSet<(String, Num)> = na.iter().chain(&nb).flat_map(|s| slots(s).filter(|x| x.0 == Reg::ESP).map(|x| (offset(x.1), x.1)).collect::<Vec<_>>()).collect();
-            s.into_iter().map(|x| x.1).collect()
+    // the same instructions in another order, after a renaming of registers (and of stack offsets): the lines
+    // pair by their masked shapes, the pairs unify into one renaming
+    if xa.len() == xb.len() {
+        let after = |u: &Unify| {
+            let parts: Vec<String> = [reg_desc(u), slot_desc(&slot_pairs(u))].into_iter().filter(|x| !x.is_empty()).collect();
+            if parts.is_empty() { String::new() } else { format!(", after {}", parts.join(" ")) }
         };
-        let ms = |l: &[Shape]| l.iter().map(mask_slots).collect::<Vec<_>>();
-        if offs.len() <= 5 && multiset_eq(&ms(&na), &ms(&nb)) {
-            let mut got = None;
-            permutations(offs.len(), |perm| {
-                let sm: Vec<(Num, Num)> = offs.iter().zip(perm).filter(|(k, v)| **k != offs[**v]).map(|(k, v)| (*k, offs[*v])).collect();
-                if !sm.is_empty() && multiset_eq(&rename_slots(&na, &sm), &nb) {
-                    let pairs: Vec<(String, String)> = sm.iter().map(|(k, v)| (offset(*k), offset(*v))).collect();
-                    got = Some(("slots".to_string(), format!("other order across a push / pop (esp offsets taken at the hunk's start), {}", slot_desc(&pairs))));
-                    return true;
-                }
-                false
-            });
-            if got.is_some() {
-                return got;
+        if let Some(u) = reordered(xa, xb, allowed, Slots::None) {
+            return Some(("order".into(), format!("same instructions, other order{}", after(&u))));
+        }
+        if let Some(note) = order_by_permutation(xa, xb, &toks) {
+            return Some(("order".into(), note));
+        }
+        // across a push / pop the esp offsets move with the push: taken at the hunk's start first, a remap after
+        if xa.iter().chain(xb).any(|s| s.is("push") || s.is("pop") || s.esp_adjust().is_some()) {
+            let (na, nb) = (esp_normalised(xa), esp_normalised(xb));
+            if multiset_eq(&na, &nb) {
+                return Some(("order".into(), "same instructions, other order across a push / pop (esp offsets taken at the hunk's start)".into()));
             }
+            if let Some(u) = reordered(&na, &nb, allowed, Slots::ByOffset) {
+                return Some(("slots".into(), format!("other order across a push / pop (esp offsets taken at the hunk's start){}", after(&u))));
+            }
+        }
+        if let Some(u) = reordered(xa, xb, allowed, Slots::ByOffset) {
+            return Some(("order".into(), format!("same instructions, other order{}", after(&u))));
         }
     }
     if let Some(s) = sib_explain(xa, xb) {
@@ -822,6 +829,24 @@ mod tests {
         assert_eq!(cls(&ours, &orig), None);
         // one renaming for the whole function does not renew
         assert!(!one_renaming(&parse_all(&["mov esi, dword ptr [esi + 0x10]", "ret"]), &parse_all(&["mov eax, dword ptr [esi + 0x10]", "ret"])));
+    }
+
+    #[test]
+    fn renaming_with_another_order() {
+        // gildegold ls_ReadSceneRecords: one rotation (eax->ecx, ecx->edx, edx->eax) and a lea moved before a load
+        let ours = ["mov ecx, dword ptr [esi + 0x34]", "lea eax, [esi + 0x48]", "push eax", "push ecx", "mov edx, dword ptr [esi + 0x38]", "push edx"];
+        let orig = ["lea ecx, [esi + 0x48]", "mov edx, dword ptr [esi + 0x34]", "push ecx", "push edx", "mov eax, dword ptr [esi + 0x38]", "push eax"];
+        let (c, n) = cls(&ours, &orig).unwrap();
+        assert!(c == "order" && n.ends_with("after eax->ecx ecx->edx edx->eax"), "{c} {n}");
+        // seven registers in play: beyond the permutation search, within the pairing
+        let ours = ["mov eax, ebx", "mov ecx, edx", "mov esi, edi", "push ebp", "add eax, ecx", "add esi, eax"];
+        let orig = ["push ebp", "mov ebx, eax", "mov edx, ecx", "mov edi, esi", "add ebx, edx", "add edi, ebx"];
+        assert_eq!(cls(&ours, &orig).unwrap().0, "order");
+        // another order and other stack offsets in one hunk (gildegold gv_RankCulpritsAll)
+        let ours = ["xor edi, edi", "mov dword ptr [esp + 0x1c], edi", "mov esi, X", "mov dword ptr [esp + 0x20], edi"];
+        let orig = ["mov esi, X", "xor edi, edi", "mov dword ptr [esp + 0x20], edi", "mov dword ptr [esp + 0x24], edi"];
+        let (c, n) = cls(&ours, &orig).unwrap();
+        assert!(c == "order" && n.contains("[ + 0x1c]->[ + 0x20]"), "{c} {n}");
     }
 
     #[test]

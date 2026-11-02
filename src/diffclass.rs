@@ -288,12 +288,14 @@ type Aligned = (Vec<(usize, usize)>, HashMap<usize, usize>, HashSet<(usize, usiz
 /// The shapes an order hunk's lines pair by (ours, the original's): the renaming its note names ("after ecx->edx
 /// edx->ecx") applied to ours, the esp offsets normalised on both sides when the note says across a push / pop.
 fn order_keys(la: &[Line], lb: &[Line], note: &str) -> (Vec<Shape>, Vec<Shape>) {
-    let (mut a, b) = (shapes(la), shapes(lb));
+    let (mut a, mut b) = (shapes(la), shapes(lb));
     if note.contains("across a push / pop") {
-        return (shape::esp_normalised(&a), shape::esp_normalised(&b));
+        (a, b) = (shape::esp_normalised(&a), shape::esp_normalised(&b));
     }
     if let Some((_, m)) = note.rsplit_once(", after ") {
-        let pairs: Vec<(String, String)> = m.split(' ').filter_map(|p| p.split_once("->")).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        // the registers renamed (the note's stack offsets, `[ + 0x10]->[ + 0x14]`, are no registers)
+        let pairs: Vec<(String, String)> = m.split(' ').filter_map(|p| p.split_once("->")).filter(|(k, v)| !(k.contains(']') || v.contains('[')))
+            .map(|(k, v)| (k.to_string(), v.to_string())).collect();
         if let Some(map) = shape::reg_map(&pairs).filter(|_| !pairs.is_empty()) {
             a = a.iter().map(|s| shape::rename(s, &map)).collect();
         }
