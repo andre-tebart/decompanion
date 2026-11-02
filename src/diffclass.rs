@@ -178,6 +178,12 @@ fn jump_block(l: &[Line], t: usize) -> Option<std::ops::Range<usize>> {
     Some(t..end + 1)
 }
 
+/// The conditional jump on the opposite condition.
+fn inverted(mn: &str) -> Option<&'static str> {
+    const PAIRS: [(&str, &str); 8] = [("je", "jne"), ("jl", "jge"), ("jle", "jg"), ("jb", "jae"), ("jbe", "ja"), ("js", "jns"), ("jo", "jno"), ("jp", "jnp")];
+    PAIRS.iter().find_map(|&(a, b)| if mn == a { Some(b) } else if mn == b { Some(a) } else { None })
+}
+
 /// The tail class: the hunk differs by blocks one side reaches by a jump and the other has inline (VC6 merges
 /// identical return tails and call sequences into one and jumps to it, or keeps a copy per path: the same code
 /// either way). Each `jmp` of one side's lines whose target block (jump_block) is a run of the other side's lines, the
@@ -194,15 +200,25 @@ fn tail(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: usize,
         let mut k = 0;
         while k < if side == 0 { ra.len() } else { rb.len() } {
             let x = if side == 0 { ra[k] } else { rb[k] };
-            let jumps_to = (jl[x].shape.mn == "jmp").then_some(jl[x].target).flatten();
+            // a jmp to the block, or a conditional jump to it where the other side branches round its copy on the
+            // inverted condition (`je X` against `jne Y; <the block>; Y:`)
+            let mn = jl[x].shape.mn;
+            let skip = inverted(mn);
+            let jumps_to = (mn == "jmp" || skip.is_some()).then_some(jl[x].target).flatten();
             let found = jumps_to.and_then(|t| jl.iter().position(|l| l.addr as i64 == t)).and_then(|t| jump_block(jl, t)).and_then(|blk| {
                 let want = shapes(&jl[blk.clone()]);
                 let inline = if side == 0 { &rb } else { &ra };
-                // a run of consecutive lines of the other side's hunk that is the block
-                (0..inline.len()).find(|&q| {
-                    q + want.len() <= inline.len() && (0..want.len()).all(|d| inline[q + d] == inline[q] + d)
-                        && shape::same_code(&want, &shapes(&il[inline[q]..inline[q] + want.len()]), at)
-                }).map(|q| (q, want.len(), jl[blk.start].addr))
+                // a run of consecutive lines of the other side's hunk that is the block (behind the inverted jump)
+                let pre = skip.is_some() as usize;
+                (pre..inline.len()).find(|&q| {
+                    let n = want.len();
+                    q + n <= inline.len() && (q - pre..q + n).all(|d| inline[d] == inline[q - pre] + d - (q - pre))
+                        && shape::same_code(&want, &shapes(&il[inline[q]..inline[q] + n]), at)
+                        && skip.is_none_or(|s| {
+                            let g = &il[inline[q - 1]];
+                            g.shape.mn == s && il.get(inline[q] + n).is_some_and(|after| g.target == Some(after.addr as i64))
+                        })
+                }).map(|q| (q - pre, want.len() + pre, jl[blk.start].addr))
             });
             match found {
                 Some((q, n, at_addr)) => {
@@ -211,8 +227,9 @@ fn tail(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: usize,
                     inline.drain(q..q + n);
                     if side == 0 { ra.remove(k) } else { rb.remove(k) };
                     let (who, other) = if side == 0 { ("ours", "the original") } else { ("the original", "ours") };
-                    notes.push(format!("{who} jumps to a shared block at +{} ({n} instructions) {other} has inline at +{}",
-                                       py_hex(at_addr as i64 - base), py_hex(from as i64 - base)));
+                    let how = if mn == "jmp" { "jumps" } else { "branches" };
+                    notes.push(format!("{who} {how} to a shared block at +{} ({} instructions) {other} has inline at +{}",
+                                       py_hex(at_addr as i64 - base), n - skip.is_some() as usize, py_hex(from as i64 - base)));
                 }
                 None => k += 1,
             }
@@ -953,6 +970,14 @@ mod tests {
         // the other way round
         let (hs, _) = analyse(&theirs, &ours, None);
         assert!(hs[0].4 == "tail" && hs[0].5.starts_with("the original jumps to a shared block"), "{hs:?}");
+        // gildegold ai_TrustedOfFour: ours branches to one shared `return -1` epilogue, the original branches round a
+        // copy of it on the inverted condition
+        let ours = jumps(&[("test eax, eax", None), ("je X", Some(4)), ("mov eax, 1", None), ("ret", None),
+                           ("pop edi", None), ("or eax, -1", None), ("ret", None)]);
+        let orig = jumps(&[("test eax, eax", None), ("jne X", Some(5)), ("pop edi", None), ("or eax, -1", None), ("ret", None),
+                           ("mov eax, 1", None), ("ret", None), ("pop edi", None), ("or eax, -1", None), ("ret", None)]);
+        let (hs, _) = analyse(&ours, &orig, None);
+        assert!(hs.len() == 1 && hs[0].4 == "tail" && hs[0].5.contains("ours branches to a shared block at +0x4 (3 instructions)"), "{hs:?}");
         // a block that differs is no tail
         let mut other = theirs.clone();
         other[5] = Line::of(other[5].addr, "mov eax, -2", false, None);
