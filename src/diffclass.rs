@@ -544,7 +544,17 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
             code.push((*i1, a[*i1..*i2].iter().take(8).cloned().collect(), b[*j1..*j2].iter().take(8).cloned().collect()));
         }
     }
-    let moved = !code.is_empty() && multiset_eq(&minus, &plus);
+    // the code hunks are moved instructions: their lines the same on both sides, or with the lines of the explained
+    // hunks taken as they are (a hunk-local renaming can pair a moved instruction with another one, and leave
+    // its partner to a code hunk of its own: gildegold gm_RemoveOwned, two zeroings moved apart)
+    let moved = !code.is_empty() && (multiset_eq(&minus, &plus) || {
+        let (mut m, mut p) = (minus.clone(), plus.clone());
+        for (i1, i2, j1, j2, _, _) in hs.iter().filter(|h| h.4 != "code" && h.4 != "fill") {
+            m.extend_from_slice(&a[*i1..*i2]);
+            p.extend_from_slice(&b[*j1..*j2]);
+        }
+        multiset_eq(&m, &p)
+    });
     let renamed = !code.is_empty() && !moved && shape::one_renaming(&shapes(la), &shapes(lb));
     let bad = tables.is_some_and(|t| !t.diffs.is_empty());
     if bad {

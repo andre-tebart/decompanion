@@ -36,7 +36,7 @@ pub enum Opnd {
 }
 
 /// One instruction as the diff compares it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug)]
 pub struct Shape {
     pub mn: &'static str,
     /// 0 none, 1 rep / repe, 2 repne
@@ -46,8 +46,42 @@ pub struct Shape {
     /// value dies here, so a renaming may map it anew
     pub kill: bool,
     /// a push that saves a callee-saved register for the caller (one the function has not written yet), or a pop
-    /// that restores one before the return (mark_saves): which register it names is the allocation's choice
+    /// that restores one before the return (mark_saves): which register it names is the allocation's choice. It
+    /// comes from the function around the line, not from the line: equality, hashing and order leave it out, only
+    /// the unification reads it
     pub save: bool,
+}
+
+impl Shape {
+    fn key(&self) -> (&'static str, u8, &[Opnd], bool) {
+        (self.mn, self.rep, &self.ops, self.kill)
+    }
+}
+
+impl PartialEq for Shape {
+    fn eq(&self, o: &Shape) -> bool {
+        self.key() == o.key()
+    }
+}
+
+impl Eq for Shape {}
+
+impl std::hash::Hash for Shape {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.key().hash(h)
+    }
+}
+
+impl PartialOrd for Shape {
+    fn partial_cmp(&self, o: &Shape) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+impl Ord for Shape {
+    fn cmp(&self, o: &Shape) -> std::cmp::Ordering {
+        self.key().cmp(&o.key())
+    }
 }
 
 /// A register no instruction of x86-32 names: what a masked register reads (shape_keys).

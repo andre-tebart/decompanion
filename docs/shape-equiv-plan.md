@@ -35,10 +35,11 @@ proof applied. `dcp escalate` (deep) refuses on a concrete meaning divergence.
 Status (2026-11-02): done on shape.rs / diffclass.rs / asmcmd.rs. Item 1 as the identity logic of asmdiff
 --symbols (no module of its own: our unrelocated numbers, floating constants, switch-table labels, pooled
 literals, `calls differ`); item 2 as `asmdiff --regs auto` and the hunk renamings (renewed where a register is
-overwritten, with reordering and stack-offset remaps, no limit on the registers); item 3 needs nothing of its
-own (other save registers unify with the renaming, a move across a push / pop is order); item 4 as the tail
-class (jmp and conditional jumps) with `returns=` in the asmdiff head. Measured on gildegold af0cd2c: 25 draft
--> shape, none the other way; vfs_EntryPath, hmt_ClearOffices, ai_TokenMayor shape, evt_FindLogic still draft.
+overwritten, with reordering and stack-offset remaps, no limit on the registers); item 3 as saves (a push of a
+callee-saved register not yet written, the pops before a ret) that pair whatever register they name, and the
+code hunks counted as moved instructions with the explained hunks' lines; item 4 as the tail class (jmp and
+conditional jumps) with `returns=` in the asmdiff head. Measured on gildegold af0cd2c: 32 draft -> shape, none
+the other way; vfs_EntryPath, hmt_ClearOffices, evt_FindLogic, ai_TokenMayor shape.
 
 Order: items 2–4 are explainers. Build them over the typed instructions (`dis::Ins`, compared structurally: equal
 modulo a register bijection, a stack-slot remap, a push/pop set) on `diffclass::FunctionCompare`, not as more
