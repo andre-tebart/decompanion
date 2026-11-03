@@ -589,14 +589,18 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         }
     }
     // the placeholder spellings the file declares (a macro, a file-scope function or variable): names of objects,
-    // not uses (a local or a field spelled alike is neither)
-    let mut spelled: Vec<(String, i64, String, String)> = vec![];
+    // not uses (a local or a field spelled alike is neither); a macro with the words of its body
+    let mut spelled: Vec<(String, i64, String, String, Vec<String>)> = vec![];
     let decl_names = model.decls.iter().map(|d| match d {
-        crate::clang::Decl::F(n, _, ws, ..) | crate::clang::Decl::V(n, _, ws, ..) => (n, ws.0),
+        crate::clang::Decl::F(n, _, ws, ..) | crate::clang::Decl::V(n, _, ws, ..) => (n, ws.0, vec![]),
     });
-    for (name, line) in decl_names.chain(model.defines.iter().map(|d| (&d.0, d.2))) {
+    let macro_names = defines.iter().map(|(n, _, l, s, e)| {
+        let body = sf.code.get((s + n.len()).min(*e)..*e).unwrap_or("");
+        (n, *l, WORD.find_iter(body).map(|w| w.as_str().to_string()).collect::<Vec<_>>())
+    });
+    for (name, line, words) in decl_names.chain(macro_names) {
         if let Some(v) = placeholder(name).filter(|_| !spelled.iter().any(|x| x.2 == *name)) {
-            spelled.push((rel.to_string(), line, name.clone(), format!("{v:x}")));
+            spelled.push((rel.to_string(), line, name.clone(), format!("{v:x}"), words));
         }
     }
     // a unit file with code but no addressed function, and no function the scan names as missing its address comment:

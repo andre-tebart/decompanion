@@ -261,7 +261,7 @@ pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 pub(crate) struct ScanView {
     pub(crate) functions: Vec<(String, i64, i64, Vec<(Option<String>, i64)>)>, // file, comment line, end line, addrs
     pub(crate) placeholders: Vec<(String, i64, String, String)>,              // file, line, ident, value
-    pub(crate) spelled: Vec<(String, i64, String, String)>,                   // the placeholders declared: file, line, ident, value
+    pub(crate) spelled: Vec<(String, i64, String, String, Vec<String>)>,      // the placeholders declared: file, line, ident, value, a macro's body words
     pub(crate) ptrcasts: Vec<(String, i64, String, String)>,                  // file, line, text, value
     pub(crate) data: Vec<(String, i64, String, String, Vec<(Option<String>, i64)>)>, // file, line, kind, name, addrs
     pub(crate) items: ScanItems, // L.src's
@@ -459,19 +459,20 @@ pub fn c_name_alias(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         out.finding("error", "C.name.alias", a, a + 1, format!("{} names of ours at {a:#x}: {}; one object has one name (dcp rename the others to it, \
                      or declare an alias: #define B A  /* {a:#x} */)", by_name.len(), list.join(", ")), &first);
     }
-    // placeholder spellings declared for an address φ names otherwise
+    // placeholder spellings declared for an address φ names otherwise (a macro whose body names the object there is
+    // a declared spelling of it: a cast for an @original call, an old name kept on purpose)
     let x = scan_inputs(ctx)?;
     let cur = &x.target;
     let owners = line_targets(&x.scan, &x.targets);
     let mut seen: HashSet<&str> = HashSet::new();
-    for (file, line, ident, hex) in &x.scan.spelled {
+    for (file, line, ident, hex, words) in &x.scan.spelled {
         let mine: &[String] = owners.at(file, *line).filter(|m| !m.is_empty()).map(|m| m.as_slice()).unwrap_or(&x.targets);
         let Some(v) = hex_value(hex).filter(|v| *v <= i64::MAX as u64).map(|v| v as i64) else { continue };
         if !mine.contains(cur) || phi.of(ident).is_some() || seen.contains(ident.as_str()) {
             continue;
         }
         let named: BTreeSet<String> = phi.at(v).filter(|e| ours(e)).map(|e| e.name.clone()).collect();
-        if named.is_empty() {
+        if named.is_empty() || words.iter().any(|w| named.contains(w)) {
             continue;
         }
         seen.insert(ident);
