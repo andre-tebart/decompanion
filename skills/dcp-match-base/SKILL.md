@@ -218,7 +218,9 @@ work, however long.
 
 ### 2.4 Commit
 One function, one commit: `<unit>: <name> shape + readable (match-base)` (`byte + readable` when it got there).
-`dcp build` exits 0 first.
+`dcp build` exits 0 first. A message of more than one line goes through a file: write it to a scratch file and
+`git commit -F <file>` (on Windows a here-string piped into `git commit -F -` can arrive as a pathspec). Check that
+the commit went in (`git status` clean) before the next function.
 
 ### 2.5 Other units, headers, data
 - Another unit may change when the meaning needs it and the change is right for it too; a header edit
@@ -304,7 +306,8 @@ of a session; that is expected base work, not a reason to escalate it.
    revert; `dcp build` exits 0.
 2. `dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
    computed report (errors, byte and readable counts before -> after, `grades changed` per function, renames,
-   the next item). It must say `gate: ok`.
+   the next item). It must say `gate: ok`. It promotes nothing while src/, include/ or decl/ hold uncommitted
+   changes (`promote=refused  dirty=N`: a grade needs its commit): commit the last function first.
 3. Rewrite the lead comment of every unit you touched to its current state (a few lines): what the unit is,
    then one `Open:` line per unit-level question still open (head conflicts, data owners). Drop what is
    settled; never add a dated or "this session" line. Escalated functions carry their reason in their tag,

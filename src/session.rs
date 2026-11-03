@@ -7,7 +7,7 @@
 //!         no bug or error conflict on any target, every target's link is ok; then the overview: per target the unit
 //!         table summary, the first open function (`dcp layout next`), the toolchain declaration and how much of it is
 //!         probed.
-//! wrap    build, link, check every target; promote the grade baseline (main checkout only); the report: units
+//! wrap    build, link, check every target; promote the grade baseline (main checkout only, the source committed); the report: units
 //!         declared, joined and renamed (decl/*.dcl and names.log since the base), the functions drafted (with their
 //!         grades), renames, the boundary levels and status of every unit the session touched, the check before ->
 //!         after, the next item.
@@ -60,6 +60,16 @@ pub fn session_dirty(root: &str) -> Vec<String> {
         let path = l.get(3..).unwrap_or("").trim().trim_matches('"');
         !(path.starts_with("build/") || path.starts_with(".dcp/"))
     }).map(|l| l.trim_end().to_string()).collect()
+}
+
+/// The dirty paths of H's source (src/, include/, decl/: session_dirty's lines under them). A grade promoted from
+/// them has a witness in no history (docs/mental-model.md §8.6): promote and the wrap refuse.
+pub fn source_dirty(root: &str) -> Vec<String> {
+    session_dirty(root).into_iter().filter(|l| {
+        let path = l.get(3..).unwrap_or("").trim().trim_matches('"');
+        // a rename `old -> new`: either side under the source counts
+        path.split(" -> ").any(|p| ["src/", "include/", "decl/"].iter().any(|d| p.trim_matches('"').starts_with(d)))
+    }).collect()
 }
 
 /// The commit of HEAD ('' without one).
@@ -391,8 +401,14 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
     if let Some(pr) = promoted.filter(|p| !p.is_empty()) {
         let mut lines = pr.lines();
         let first = lines.next().unwrap_or("");
-        out.push(format!("baseline: {first}{}", if refused { " (nothing written: dcp debt add each fall wanted on purpose, then dcp promote)" }
-                         else { " (commit ledger/grades.tsv with the session)" }));
+        let why = if !refused {
+            " (commit ledger/grades.tsv with the session)"
+        } else if first.contains("dirty=") {
+            " (nothing written: commit the source first, then dcp session wrap again)"
+        } else {
+            " (nothing written: dcp debt add each fall wanted on purpose, then dcp promote)"
+        };
+        out.push(format!("baseline: {first}{why}"));
         if refused {
             out.extend(lines.map(|l| l.to_string()));
         }

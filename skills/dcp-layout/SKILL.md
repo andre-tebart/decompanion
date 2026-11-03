@@ -189,7 +189,9 @@ A helper the original inlined everywhere (so no address) stands in its unit's fi
 1. Finish or revert the function in progress; `dcp build` exits 0.
 2. `dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
    computed report (check before -> after, units declared / joined / renamed, functions drafted with their
-   grades, renames, the units touched with their boundary levels, the next item). It must say `gate: ok`.
+   grades, renames, the units touched with their boundary levels, the next item). It must say `gate: ok`. It
+   promotes nothing while src/, include/ or decl/ hold uncommitted changes (`promote=refused  dirty=N`): commit
+   the drafts first.
 3. Rewrite the lead comment of every unit you touched to its current state (a few lines): what the unit is,
    then one `Open:` line per boundary doubt you leave open, with its lead. Drop what is settled; never add a
    dated or "this session" line. The evidence for a boundary goes into its decl line's reason. Rough functions

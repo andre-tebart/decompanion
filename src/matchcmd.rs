@@ -543,9 +543,20 @@ fn write_baseline(root: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// `dcp promote` (every target built): ledger/grades.tsv from the current grades of every target; refused when a
-/// grade fell against it unless `accept_falls`.
+/// `dcp promote` (every target built): ledger/grades.tsv from the current grades of every target; refused when the
+/// source (src/, include/, decl/) has uncommitted changes, and when a grade fell against it unless `accept_falls`.
 pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> Result<Out> {
+    // a witness is a commit (docs/mental-model.md §8.6): grades of uncommitted source are in no history
+    let dirty = crate::session::source_dirty(root);
+    if !dirty.is_empty() {
+        let mut out = vec![record(&[("promote", s("refused")), ("dirty", Tok::I(dirty.len() as i64))])
+            + "  (the source is not committed: commit or revert src/, include/ and decl/ first, then promote)"];
+        out.extend(dirty.iter().take(10).map(|l| format!("  dirty {l}")));
+        if dirty.len() > 10 {
+            out.push(format!("  ... {} more (git status)", dirty.len() - 10));
+        }
+        return Ok((out, None, 1));
+    }
     let old = read_baseline(root);
     let mut targets = vec![];
     let mut falls = vec![];
@@ -787,6 +798,24 @@ pub fn lint_command(p: &crate::project::Project) -> Result<(Vec<String>, bool)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// promote refuses grades of uncommitted source (src/, include/, decl/); the ledger's own changes do not count.
+    #[test]
+    fn promote_refuses_dirty_source() {
+        let d = std::env::temp_dir().join(format!("dcp-promote-dirty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let root = d.to_string_lossy().replace('\\', "/");
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&d).output().unwrap().status.success());
+        crate::testkit::write(&d, "ledger/grades.tsv", "target\taddress\n");
+        git(&["init", "-q"]);
+        crate::testkit::write(&d, "notes.md", "x");
+        assert!(crate::session::source_dirty(&root).is_empty()); // the ledger, a note: not H's source
+        crate::testkit::write(&d, "include/net.h", "int f(void);\n");
+        let (out, _, code) = promote_command(&root, &[], false).unwrap();
+        assert!(code == 1 && out[0].starts_with("promote=refused  dirty=1") && out[1] == "  dirty ?? include/net.h", "{out:?}");
+        assert_eq!(read_baseline(&root), "target\taddress\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn asmdiff_windows() {
