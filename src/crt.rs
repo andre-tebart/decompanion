@@ -103,10 +103,176 @@ fn longest_run(mask: &[u8]) -> (usize, usize) {
     best
 }
 
-/// setup.place_members: the placements of the archives' code sections in the image's code sections.
+/// One library code section: (archive, object, section number).
+type Member<'a> = (&'a str, &'a Obj, usize);
+
+/// What a member placed at one address says about other addresses: its references (the name it references, with
+/// the address the image's field resolves to; `#<lib>/<object>#<secnum>` for another section of its own object,
+/// with that section's base; `#<lib>/<object>:<name>` for a compiler constant, which the linker keeps per object),
+/// its external definitions (name, address), and whether every reference into its own section lands where the
+/// section's symbol is.
+struct Says {
+    refs: Vec<(String, i64)>,
+    defs: Vec<(String, i64)>,
+    self_ok: bool,
+}
+
+fn says(img: &crate::pe::Image, (lib, o, k): Member, va: i64) -> Says {
+    let sec = &o.sections[k];
+    let mut out = Says { refs: vec![], defs: vec![], self_ok: true };
+    for r in &sec.relocs {
+        let (kind, width) = r.kind_width();
+        if kind != ABSOLUTE && kind != RELATIVE {
+            continue;
+        }
+        let Some(sym) = o.symbol_at(r.symbol_index) else { continue };
+        let site = (va as u32).wrapping_add(r.offset);
+        let Some(t) = r.resolve(site, &img.read(site, width as usize), o.addend(k, r)) else { continue };
+        let t = t as i64;
+        if sym.defined() && sym.secnum as usize == k {
+            out.self_ok &= t == va + sym.value as i64;
+        } else if sym.defined() && sym.constant().is_some() {
+            out.refs.push((format!("#{lib}/{}:{}", o.name, sym.name), t));
+        } else if sym.defined() && sym.external() {
+            out.refs.push((sym.name.clone(), t));
+        } else if sym.defined() {
+            out.refs.push((format!("#{lib}/{}#{}", o.name, sym.secnum), t - sym.value as i64));
+        } else if sym.unresolved() {
+            out.refs.push((sym.name.clone(), t));
+        }
+    }
+    for &si in &sec.syms {
+        let s = &o.symbols[si];
+        if s.external() && s.defined() {
+            out.defs.push((s.name.clone(), va + s.value as i64));
+        }
+    }
+    out
+}
+
+/// The name a dllimport pointer imports, as the image's import table spells it (`__imp__Sleep@4` -> `Sleep`);
+/// None for a C++ name.
+fn import_name(sym: &str) -> Option<&str> {
+    let s = sym.strip_prefix(coff::IMPORT_PREFIX)?;
+    let s = s.strip_prefix('_').unwrap_or(s);
+    if s.starts_with('?') {
+        return None;
+    }
+    Some(match s.rsplit_once('@') {
+        Some((n, d)) if !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit()) => n,
+        _ => s,
+    })
+}
+
+/// What the image's imports and the members placed alone have settled: where a name is (a placed member defines
+/// it, or its reference resolves it), the names placed members define at an address, the names they reference at
+/// an address, the import slots (all, and by name).
+#[derive(Default)]
+struct Known {
+    at: HashMap<String, i64>,
+    defs: HashMap<i64, BTreeSet<String>>,
+    refd: HashMap<i64, BTreeSet<String>>,
+    slots: HashMap<i64, Option<String>>,
+    imports: HashMap<String, i64>,
+}
+
+impl Known {
+    fn new(img: &crate::pe::Image) -> Known {
+        let mut k = Known::default();
+        for imp in img.imports() {
+            if let Some(n) = &imp.name {
+                k.imports.entry(n.clone()).or_insert(imp.slot as i64);
+            }
+            k.slots.insert(imp.slot as i64, imp.name);
+        }
+        k
+    }
+
+    /// Where a reference's name is settled (an import pointer: by the import's name).
+    fn of(&self, key: &str) -> Option<i64> {
+        if key.starts_with(coff::IMPORT_PREFIX) {
+            return import_name(key).and_then(|n| self.imports.get(n).copied());
+        }
+        self.at.get(key).copied()
+    }
+
+    /// The member at this address contradicts what is settled: a reference into its own section misses the
+    /// symbol; a reference resolves where its name is not, or where a placed member defines other names; an
+    /// import pointer is no import slot, or the slot of another name; a definition sits where its name is not, or where placed members
+    /// reference other names.
+    fn contradicts(&self, s: &Says) -> bool {
+        if !s.self_ok {
+            return true;
+        }
+        for (key, t) in &s.refs {
+            if self.of(key).is_some_and(|a| a != *t) {
+                return true;
+            }
+            if key.starts_with(coff::IMPORT_PREFIX) {
+                match self.slots.get(t) {
+                    None => return true,
+                    Some(Some(n)) if import_name(key).is_some_and(|k| k != n) => return true,
+                    _ => {}
+                }
+            } else if !key.starts_with('#') && self.defs.get(t).is_some_and(|ns| !ns.contains(key)) {
+                return true;
+            }
+        }
+        for (name, a) in &s.defs {
+            if self.at.get(name).is_some_and(|x| x != a) {
+                return true;
+            }
+            if self.refd.get(a).is_some_and(|ns| ns.iter().any(|n| !s.defs.iter().any(|(d, b)| d == n && b == a))) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Every reference of the member resolves where its name is settled (and it has one): its targets confirm it.
+    fn confirms(&self, s: &Says) -> bool {
+        !s.refs.is_empty() && !self.contradicts(s) && s.refs.iter().all(|(key, t)| self.of(key) == Some(*t))
+    }
+
+    fn learn(&mut self, s: &Says) {
+        for (name, a) in &s.defs {
+            self.at.insert(name.clone(), *a);
+            self.defs.entry(*a).or_default().insert(name.clone());
+        }
+        for (key, t) in &s.refs {
+            if !key.starts_with(coff::IMPORT_PREFIX) {
+                self.at.entry(key.clone()).or_insert(*t);
+            }
+            if !key.starts_with('#') && !key.starts_with(coff::IMPORT_PREFIX) {
+                self.refd.entry(*t).or_default().insert(key.clone());
+            }
+        }
+    }
+}
+
+/// Library sections of equal masked bytes, the positions where they match, and per position what each member
+/// placed there says.
+struct Group<'a> {
+    members: Vec<Member<'a>>,
+    short: bool, // fewer than LONG_MIN compared bytes: placed only where its targets confirm it
+    n: i64,
+    hits: Vec<(i64, Vec<Says>)>,
+}
+
+/// The fewest compared bytes of a section its targets may confirm; with LONG_MIN its bytes place it unless its
+/// targets contradict it.
+const SHORT_MIN: usize = 4;
+const LONG_MIN: usize = 8;
+
+/// setup.place_members: the placements of the archives' code sections in the image's code sections. A section
+/// matches where its masked bytes equal the image's; it is placed there only when what its relocations resolve to
+/// agrees with the imports and the other placed members (a member placed alone settles the names it defines and
+/// references, until nothing changes). Sections of equal masked bytes are told apart by their targets; those
+/// that stay alike are placed together (φ open between them). A short section is placed only where every
+/// target confirms it.
 pub fn place_members(img: &crate::pe::Image, libs: &[(String, Vec<Obj>)], reloc_sites: &BTreeSet<i64>) -> Vec<Placed> {
     // (lib, object, section number) in (lib, object name, section) order
-    let mut secs: Vec<(&str, &Obj, usize)> = vec![];
+    let mut secs: Vec<Member> = vec![];
     for (lib, objs) in libs {
         for o in objs {
             for k in o.code_sections() {
@@ -115,31 +281,32 @@ pub fn place_members(img: &crate::pe::Image, libs: &[(String, Vec<Obj>)], reloc_
         }
     }
     secs.sort_by(|a, b| (a.0, &a.1.name, a.2).cmp(&(b.0, &b.1.name, b.2)));
-    let mut groups: Vec<((Vec<u8>, Vec<u8>), Vec<(&str, &Obj, usize)>)> = vec![];
+    let mut keyed: Vec<((Vec<u8>, Vec<u8>), Vec<Member>)> = vec![];
     let mut at: HashMap<(Vec<u8>, Vec<u8>), usize> = HashMap::new();
     for (lib, o, k) in secs {
         let s = &o.sections[k];
         let data = s.data.clone().unwrap_or_default();
         let mask = s.mask();
-        if mask.iter().filter(|&&m| m == 0).count() < 8 {
+        let compared = mask.iter().filter(|&&m| m == 0).count();
+        if compared < SHORT_MIN || (compared < LONG_MIN && s.relocs.is_empty()) {
             continue;
         }
         let key = (data, mask);
         match at.get(&key) {
-            Some(&i) => groups[i].1.push((lib, o, k)),
+            Some(&i) => keyed[i].1.push((lib, o, k)),
             None => {
-                at.insert(key.clone(), groups.len());
-                groups.push((key, vec![(lib, o, k)]));
+                at.insert(key.clone(), keyed.len());
+                keyed.push((key, vec![(lib, o, k)]));
             }
         }
     }
-    groups.sort_by(|a, b| (a.1[0].0, &a.1[0].1.name, a.1[0].2).cmp(&(b.1[0].0, &b.1[0].1.name, b.1[0].2)));
+    keyed.sort_by(|a, b| (a.1[0].0, &a.1[0].1.name, a.1[0].2).cmp(&(b.1[0].0, &b.1[0].1.name, b.1[0].2)));
     let code_secs: Vec<&crate::pe::Section> = img.sections.iter().filter(|s| s.holds_code()).collect();
-    let mut placed: Vec<(i64, i64)> = vec![];
-    let mut out = vec![];
-    for ((data, mask), members) in &groups {
-        let (aoff, alen) = longest_run(mask);
+    let mut groups: Vec<Group> = vec![];
+    for ((data, mask), members) in keyed {
+        let (aoff, alen) = longest_run(&mask);
         let anchor = &data[aoff..(aoff + alen).min(data.len())];
+        let n = data.len() as i64;
         let mut hits: BTreeSet<i64> = BTreeSet::new();
         for s in &code_secs {
             let raw = img.section_data(s);
@@ -147,60 +314,109 @@ pub fn place_members(img: &crate::pe::Image, libs: &[(String, Vec<Obj>)], reloc_
             while let Some(p) = memchr::memmem::find(&raw[from..], anchor).map(|p| p + from) {
                 if p >= aoff {
                     let start = p - aoff;
-                    if start + data.len() <= raw.len() && raw[start..start + data.len()].iter().zip(data).zip(mask).all(|((x, y), m)| *m != 0 || x == y) {
+                    if start + data.len() <= raw.len() && raw[start..start + data.len()].iter().zip(&data).zip(&mask).all(|((x, y), m)| *m != 0 || x == y) {
                         hits.insert(s.va as i64 + start as i64);
                     }
                 }
                 from = p + 1;
             }
         }
-        let (lib0, o0, k0) = members[0];
-        let sec0 = &o0.sections[k0];
-        let labels: Vec<String> = members.iter().map(|(lib, o, k)| format!("{lib}/{}:{}#{k}", o.name, o.sections[*k].name)).collect();
-        let n = data.len() as i64;
-        let mut ok = vec![];
-        for &va in &hits {
-            if !reloc_sites.is_empty() {
-                let abs_ok = sec0.relocs.iter().filter(|r| r.kind_width().0 == ABSOLUTE).all(|r| reloc_sites.contains(&(va + r.offset as i64)));
-                if !abs_ok {
-                    continue;
-                }
-                if reloc_sites.range(va..va + n).any(|&site| mask[(site - va) as usize] == 0) {
-                    continue;
+        let sec0 = &members[0].1.sections[members[0].2];
+        let hits: Vec<(i64, Vec<Says>)> = hits.into_iter()
+            .filter(|&va| reloc_sites.is_empty()
+                || (sec0.relocs.iter().filter(|r| r.kind_width().0 == ABSOLUTE).all(|r| reloc_sites.contains(&(va + r.offset as i64)))
+                    && !reloc_sites.range(va..va + n).any(|&site| mask[(site - va) as usize] == 0)))
+            .map(|va| (va, members.iter().map(|&m| says(img, m, va)).collect()))
+            .collect();
+        if !hits.is_empty() {
+            let short = mask.iter().filter(|&&m| m == 0).count() < LONG_MIN;
+            groups.push(Group { members, short, n, hits });
+        }
+    }
+    // the members at a position that survive what is settled: a long one unless contradicted, a short one confirmed
+    let alive = |known: &Known, g: &Group, says: &[Says]| -> Vec<usize> {
+        (0..g.members.len()).filter(|&i| if g.short { known.confirms(&says[i]) } else { !known.contradicts(&says[i]) }).collect()
+    };
+    let overlaps = |placed: &[(i64, i64)], lo: i64, hi: i64| placed.iter().any(|&(a, b)| lo < b && a < hi);
+    // place members alone until nothing changes: the only survivor at a position, at no other position of its group
+    let mut known = Known::new(img);
+    let mut placed: Vec<(i64, i64)> = vec![];
+    let mut alone: HashMap<(usize, usize), usize> = HashMap::new(); // (group, hit) -> the member placed alone
+    loop {
+        let mut changed = false;
+        for (gi, g) in groups.iter().enumerate() {
+            let lives: Vec<(usize, Vec<usize>)> = g.hits.iter().enumerate()
+                .filter(|(hi, (va, _))| !alone.contains_key(&(gi, *hi)) && !overlaps(&placed, *va, va + g.n))
+                .map(|(hi, (_, s))| (hi, alive(&known, g, s))).filter(|(_, m)| !m.is_empty()).collect();
+            for (hi, ms) in &lives {
+                let m = ms[0];
+                let (va, says) = &g.hits[*hi];
+                if ms.len() == 1 && !lives.iter().any(|(h, o)| h != hi && o.contains(&m)) && !alone.iter().any(|(&(g2, _), &m2)| g2 == gi && m2 == m)
+                    && !overlaps(&placed, *va, va + g.n) && !known.contradicts(&says[m]) {
+                    known.learn(&says[m]);
+                    placed.push((*va, va + g.n));
+                    alone.insert((gi, *hi), m);
+                    changed = true;
                 }
             }
-            ok.push(va);
         }
-        if ok.is_empty() {
-            continue;
+        if !changed {
+            break;
         }
-        if ok.len() > members.len() {
-            out.push(Placed::Issue("ambiguous", ok[0], ok[0] + n,
-                                   format!("{} matches at {} positions: {}", labels.join("|"), ok.len(),
-                                           ok.iter().take(6).map(|x| format!("{x:#x}")).collect::<Vec<_>>().join(", "))));
-            continue;
-        }
-        let names: BTreeSet<String> = members.iter().map(|(_, o, k)| sec_first_name(o, *k).map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{}:{}#{k}", o.name, o.sections[*k].name))).collect();
-        let units: BTreeSet<String> = members.iter().map(|(lib, o, _)| format!("lib:{lib}/{}", o.name)).collect();
-        let join = |s: &BTreeSet<String>| s.iter().cloned().collect::<Vec<_>>().join("|");
-        let mut values: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
-        for (_, o, k) in members {
-            for &si in &o.sections[*k].syms {
-                let s = &o.symbols[si];
-                if s.named() {
-                    values.entry(s.value).or_default().insert(s.name.clone());
+    }
+    // then every group in order: its members placed alone, and the rest where they survive (together)
+    let mut out = vec![];
+    let mut done: Vec<(i64, i64)> = vec![];
+    for (gi, g) in groups.iter().enumerate() {
+        let labels: Vec<String> = g.members.iter().map(|(lib, o, k)| format!("{lib}/{}:{}#{k}", o.name, o.sections[*k].name)).collect();
+        let taken: HashSet<usize> = alone.iter().filter(|(k, _)| k.0 == gi).map(|(_, &m)| m).collect();
+        let mut at: Vec<(i64, Vec<usize>, bool)> = vec![];
+        let mut rest: Vec<(i64, Vec<usize>, bool)> = vec![];
+        for (hi, (va, says)) in g.hits.iter().enumerate() {
+            match alone.get(&(gi, hi)) {
+                Some(&m) => at.push((*va, vec![m], true)),
+                None => {
+                    let ms: Vec<usize> = alive(&known, g, says).into_iter().filter(|m| !taken.contains(m)).collect();
+                    if !ms.is_empty() && !overlaps(&placed, *va, va + g.n) {
+                        rest.push((*va, ms, false));
+                    } else if !ms.is_empty() && !g.short {
+                        out.push(Placed::Issue("duplicate", *va, va + g.n, format!("{} matches where another member is placed", labels.join("|"))));
+                    }
                 }
             }
         }
-        for &va in &ok {
-            let hi = va + n;
-            if placed.iter().any(|&(a, b)| va < b && a < hi) {
-                out.push(Placed::Issue("duplicate", va, hi, format!("{} matches where another member is placed", labels.join("|"))));
+        if rest.len() > g.members.len() - taken.len() {
+            out.push(Placed::Issue("ambiguous", rest[0].0, rest[0].0 + g.n,
+                                   format!("{} matches at {} positions: {}", labels.join("|"), rest.len(),
+                                           rest.iter().take(6).map(|x| format!("{:#x}", x.0)).collect::<Vec<_>>().join(", "))));
+            rest.clear();
+        }
+        at.extend(rest);
+        at.sort();
+        for (va, ms, mine) in at {
+            let hi = va + g.n;
+            if !mine && overlaps(&done, va, hi) {
+                if !g.short {
+                    out.push(Placed::Issue("duplicate", va, hi, format!("{} matches where another member is placed", labels.join("|"))));
+                }
                 continue;
             }
-            placed.push((va, hi));
-            out.push(Placed::At(Placement { lo: va, hi, name: join(&names), unit: join(&units), lib: lib0.to_string(), members: members.len(),
+            done.push((va, hi));
+            let members: Vec<Member> = ms.iter().map(|&i| g.members[i]).collect();
+            let names: BTreeSet<String> = members.iter().map(|(_, o, k)| sec_first_name(o, *k).map(|s| s.to_string())
+                .unwrap_or_else(|| format!("{}:{}#{k}", o.name, o.sections[*k].name))).collect();
+            let units: BTreeSet<String> = members.iter().map(|(lib, o, _)| format!("lib:{lib}/{}", o.name)).collect();
+            let join = |s: &BTreeSet<String>| s.iter().cloned().collect::<Vec<_>>().join("|");
+            let mut values: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
+            for (_, o, k) in &members {
+                for &si in &o.sections[*k].syms {
+                    let s = &o.symbols[si];
+                    if s.named() {
+                        values.entry(s.value).or_default().insert(s.name.clone());
+                    }
+                }
+            }
+            out.push(Placed::At(Placement { lo: va, hi, name: join(&names), unit: join(&units), lib: members[0].0.to_string(), members: members.len(),
                                             values: values.iter().map(|(v, ns)| (*v, ns.iter().cloned().collect())).collect() }));
         }
     }
@@ -645,4 +861,64 @@ mod tests {
         let (rows, _) = k.run("S.thunk", &["S.imports", "S.crt.code"], r#"{"toolchain": "vc6"}"#);
         assert!(rows.is_empty() && d > 0); // the dll holds no `jmp [slot]` stub
     }
+
+    /// A text section of: 0x00 fopen (calls 0x20), 0x0e a GetTickCount caller, 0x20 openfile, 0x30 atoi (calls 0x40),
+    /// 0x40 atol, 0x50 atoi's shape calling 0x20; and library members for them.
+    fn targets_image() -> (crate::pe::Image, Vec<(&'static str, Vec<u8>)>) {
+        use crate::coff::testlib::code_obj;
+        use crate::pe::testpe::build_with;
+        let call = |at: u32, to: u32| (to as i32 - (at as i32 + 4)).to_le_bytes();
+        let slot = BASE + DATA + 0x150;
+        let mut t = vec![0xccu8; 0x60];
+        let fopen = |c: [u8; 4]| [&[0x55u8, 0x8b, 0xec, 0x51, 0x52, 0xe8][..], &c, &[0x5a, 0x59, 0x5d, 0xc3]].concat();
+        let imp = |c: [u8; 4]| [&[0x55u8, 0x8b, 0xec, 0xff, 0x15][..], &c, &[0x5d, 0xc3, 0x90]].concat();
+        let atoi = |c: [u8; 4]| [&[0xffu8, 0x74, 0x24, 0x04, 0xe8][..], &c, &[0x59, 0xc3]].concat();
+        let leaf = |b: u8| [&[0x33u8, 0xc0][..], &[b; 7], &[0xc3]].concat();
+        for (at, code) in [(0x00, fopen(call(6, 0x20))), (0x0e, imp(slot.to_le_bytes())), (0x20, leaf(0x40)), (0x30, atoi(call(0x35, 0x40))),
+                           (0x40, leaf(0x48)), (0x50, atoi(call(0x55, 0x20)))] {
+            t[at..at + code.len()].copy_from_slice(&code);
+        }
+        let img = crate::pe::Image::parse(build_with(None, Some(&t))).unwrap();
+        let caller = |code: Vec<u8>, off: u32, typ: u16, me: &str, callee: &str| code_obj(&code, &[(off, 1, typ)], &[(me, 0, 1, 2), (callee, 0, 0, 2)]);
+        let objs = vec![
+            ("a.obj", caller(fopen([0; 4]), 6, 0x14, "_fopen", "__openfile")),
+            ("b.obj", caller(fopen([0; 4]), 6, 0x14, "__wfopen", "__wopenfile")),
+            ("c.obj", code_obj(&leaf(0x40), &[], &[("__openfile", 0, 1, 2)])),
+            ("d.obj", caller(atoi([0; 4]), 5, 0x14, "_atoi", "_atol")),
+            ("e.obj", code_obj(&leaf(0x48), &[], &[("_atol", 0, 1, 2)])),
+            ("f.obj", caller(imp([0; 4]), 5, 0x06, "_ticks", "__imp__GetTickCount@0")),
+            ("g.obj", caller(imp([0; 4]), 5, 0x06, "_wticks", "__imp__GetTickCountW@0")),
+        ];
+        (img, objs)
+    }
+
+    /// (name, lo, members) of the placements, the issues' messages.
+    fn place(img: &crate::pe::Image, objs: &[(&str, Vec<u8>)], keep: &[&str]) -> (Vec<(String, u32, usize)>, Vec<String>) {
+        let objs = objs.iter().filter(|(n, _)| keep.contains(n)).map(|(n, b)| crate::coff::Obj::parse_named(n, b).unwrap()).collect();
+        let (mut at, mut issues) = (vec![], vec![]);
+        for p in super::place_members(img, &[("L.LIB".to_string(), objs)], &Default::default()) {
+            match p {
+                super::Placed::At(x) => at.push((x.name, x.lo as u32 - BASE - TEXT, x.members)),
+                super::Placed::Issue(w, _, _, m) => issues.push(format!("{w}: {m}")),
+            }
+        }
+        at.sort_by_key(|x| x.1);
+        (at, issues)
+    }
+
+    #[test]
+    fn members_told_apart_by_their_targets() {
+        let (img, objs) = targets_image();
+        let all = ["a.obj", "b.obj", "c.obj", "d.obj", "e.obj", "f.obj", "g.obj"];
+        let (at, issues) = place(&img, &objs, &all);
+        let s = |n: &str, lo, m| (n.to_string(), lo, m);
+        // fopen: the callee placed at 0x20 is __openfile; the import slot is GetTickCount's; atoi (short): its callee
+        // _atol is placed at 0x40, and the same shape at 0x50 calls __openfile
+        assert_eq!(at, [s("_fopen", 0, 1), s("_ticks", 0x0e, 1), s("__openfile", 0x20, 1), s("_atoi", 0x30, 1), s("_atol", 0x40, 1)]);
+        assert!(issues.is_empty(), "{issues:?}");
+        // nothing tells fopen from _wfopen: placed together, φ open between them; atoi's callee unknown: not placed
+        let (at, _) = place(&img, &objs, &["a.obj", "b.obj", "d.obj"]);
+        assert_eq!(at, [s("__wfopen|_fopen", 0, 2)]);
+    }
 }
+

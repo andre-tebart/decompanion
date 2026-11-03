@@ -34,6 +34,8 @@ answers.rs holds the owner at its highest support, but almost no read command us
 - Remove `walk_func`'s `M.*` exclusion and the silent 0x400 cap. When nothing is known, the header says the extent is a
   guess.
 - φ ranking: the defining object first, then declarations, then views. Never alphabetical.
+- A fold that S.crt.code could not split by targets (`__inc|_fgetc`, `_mbsdup|_strdup`: φ open between the members)
+  displays as the fold, not as one of its names.
 - A name whose address comes only from its spelling (a cast macro, a view) is logged as such, never as `func ADDR`.
 
 ## Rejected
