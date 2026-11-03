@@ -11,7 +11,7 @@
 //! A literal (a string, a floating constant) has no name of H: its bytes are its identity, and the original's field
 //! must refer to the same bytes. Where φ gives that address one of our data objects, the two declarations
 //! contradict each other (our literal, or the datum the original loads: VC6 pools its literals, and a layout may
-//! have named one as a datum): open, listed, and the literal binds nowhere. G.grade, `dcp asmdiff`, `dcp
+//! have named one as a datum): open, listed, and the literal binds only in read-only data. G.grade, `dcp asmdiff`, `dcp
 //! diffclass`, `dcp escalate` and the prover's binding (equiv::bind) all read this one check; M8 / M9 / M10 are
 //! its findings.
 
@@ -597,5 +597,10 @@ mod tests {
         let (bound, unbound) = crate::equiv::bind(&obj, &code, &img, VA, &aligned, &refs, &p);
         let at = |o: usize| u32::from_le_bytes(bound[o..o + 4].try_into().unwrap());
         assert_eq!((at(1), at(7), at(13), at(18), unbound), (A, B, VA + 0x40, C, 0));
+        // φ names a datum where the constant lies: read-only data holds these bytes for good, the literal binds
+        let p = phi(&[(VA + 0x40, "one")]);
+        let refs = Refs::new(&obj, &code, &p);
+        let (bound, unbound) = crate::equiv::bind(&obj, &code, &img, VA, &aligned, &refs, &p);
+        assert_eq!((u32::from_le_bytes(bound[13..17].try_into().unwrap()), unbound), (VA + 0x40, 0));
     }
 }

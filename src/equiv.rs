@@ -2221,7 +2221,8 @@ pub(crate) fn literal(obj: &crate::coff::Obj, s: u32) -> Option<Vec<u8>> {
 /// Our function's code with each relocated field holding the address its object has in the original: φ's where φ
 /// knows our symbol (the reference check, refcheck.rs, compares it with the original's field); a literal, or a
 /// symbol φ says nothing about (open), the address the original's field holds at its aligned sites (`sites`),
-/// the same at every one, a literal only where the original holds its bytes and φ gives no datum of ours there;
+/// the same at every one, a literal only where the original holds its bytes (and, where φ gives a datum of ours
+/// there, in read-only data);
 /// any other symbol an address the original cannot hold. Returns the code and how many relocations stayed unbound.
 pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
             sites: &[crate::refcheck::Site], refs: &crate::refcheck::Refs, phi: &crate::phi::Phi) -> (Vec<u8>, usize) {
@@ -2256,7 +2257,10 @@ pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crat
         let ok = match targets.get(&s).map(|t| t.0) {
             Some(Target::Lit { bytes, delta, .. }) => {
                 let at = a.wrapping_add(*delta);
-                img.in_image(at) && *img.bytes(at, bytes.len()) == **bytes && crate::refcheck::datum_at(phi, at as i64).is_none()
+                // where φ names a datum the literal binds only in read-only data: there the datum holds these bytes for
+                // good (a variable may change, and the original reads it)
+                img.in_image(at) && *img.bytes(at, bytes.len()) == **bytes
+                    && (crate::refcheck::datum_at(phi, at as i64).is_none() || img.section_of(at).is_some_and(|x| !x.writable()))
             }
             // a label of our own section (a switch table): the tables compare checks it
             _ => true,

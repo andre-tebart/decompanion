@@ -22,7 +22,8 @@ the literal there. On gildegold 05bbe07:
 - `ch_EmptyName` at 0x631090 on the `""` VC6 puts in .bss (8 byte functions), `cm_TextNewline` ("$A").
 - A real datum among them: `ch_StepSample` (`char ch_StepSample[] = "normal_s"`, written by
   SetCharacterStepSample), which ch_WalkSound reads where ours pushes the literal: a meaning difference left open.
-- Not binding the literal cost two proofs (ahm_SendSetShare, ai_SolveCannonAim: shape to draft).
+- The prover binds such a literal only in read-only data (`ai_FloatOne` is .rdata: the datum holds 1.0 for good);
+  in writable data it stays unbound (`ch_StepSample`: the original reads the buffer's current text).
 
 ## Task
 
