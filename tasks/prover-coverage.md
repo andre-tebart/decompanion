@@ -29,6 +29,7 @@ duplicated test. Each one claims "same dataflow, other allocation, scheduling or
      function whose named references cross is shape only with a proof (grade::code_grade): sv_CameraToObject,
      sv_FlyCameraToObject, ai_AimCannon, he_Unk53f270 on gildegold 05bbe07 wait on this (normalized-alignment
      pairs them right as well);
+     the nine are declared debt in gildegold (15bda65);
   5. one side's duplicated test or threaded jump (a block paired with a path);
   6. switch tables, flags across blocks, `rep scasb`.
 - Test inputs: ls_ReadSceneRecords, sv_DrawNamePlates, gm_TakeOverCharacter, ai_TrustedOfTwo, gm_SpawnCharacter,

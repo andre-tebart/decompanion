@@ -15,6 +15,7 @@
   ai_TutorialMarkerUpdate (ai_Tutorial / ai_ClockMs loaded into swapped registers), he_Unk53f270, he_Unk53f370
   (ai_Time / +4), sv_FlyCameraToObject, sv_CameraToObject (sv_ViewPos / sv_ViewRot stores), ai_AimCannon
   (ai_CannonShot fields), ai_Unk4e30c0, d3if_SelectScene. With registers masked, each pairs with its own.
+  They are declared debt in gildegold (15bda65): when this lands, lift them (`dcp promote`).
 
 ## Root cause
 
