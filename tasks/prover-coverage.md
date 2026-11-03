@@ -1,7 +1,6 @@
 # Prover coverage instead of new diffclass classes
 
 - **Priority:** P1 · **Size:** L (each step M) · **Root:** R10
-- **Depends on:** prover-stop-reason-names-effects
 
 ## Problem
 
@@ -20,7 +19,8 @@ duplicated test. Each one claims "same dataflow, other allocation, scheduling or
 
 - Freeze the class set. It stays as a fast path and a navigation view.
 - Tally the stop reasons over the corpus (`DCP_EQUIV_DUMP`), keep the mutant control at zero, and extend the prover in
-  this order (by the sample):
+  this order (by the sample). The stop reason names the effect pair and prints both effects (escape, fill and copy
+  have their own reasons), so tally by the text before the first `:`:
   1. an escaped frame laid out otherwise;
   2. affine induction correspondences (x = a*y + c at loop heads), plus relocation binding with another addend
      (sym+0x48);

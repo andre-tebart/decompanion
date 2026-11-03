@@ -16,7 +16,6 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 3 | [prover-stop-reason-names-effects](prover-stop-reason-names-effects.md): the prover names the real effect pair | S | |
 | 4 | [one-call-set-comparison](one-call-set-comparison.md): one call set, counts on both sides | S | |
 | 5 | [wrap-refuses-dirty-tree](wrap-refuses-dirty-tree.md): no witness without a commit | S | |
 | 6 | [headers-write-keeps-phi](headers-write-keeps-phi.md): `--write` never splits an address comment from its definition | S | |
@@ -43,7 +42,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 22 | [readers-use-answer-table](readers-use-answer-table.md): one owner lookup for every reader; φ ranking | M | |
 | 23 | [b1-evidence-from-alignment](b1-evidence-from-alignment.md): B1 evidence from the alignment, two tail messages | M | |
 | 24 | [switch-tables-per-case](switch-tables-per-case.md): switch tables per case through the cut correspondence | M | |
-| 25 | [prover-coverage](prover-coverage.md): extend the prover by stop-reason tally; freeze the class set | L | 3 |
+| 25 | [prover-coverage](prover-coverage.md): extend the prover by stop-reason tally; freeze the class set | L | |
 | 26 | [skills-sync-and-fixes](skills-sync-and-fixes.md): skill drift check, contradictions, VC6 spellings reference | S-M | 14 |
 | 27 | [session-progress-from-tool](session-progress-from-tool.md): `done=N/8` from the tool, not from commits | S | |
 | 28 | [consistency-at-uses](consistency-at-uses.md): type agreement at uses; stale casts and exceptions | M | 14 |

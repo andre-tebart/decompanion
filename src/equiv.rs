@@ -299,11 +299,12 @@ impl Arena {
         }
     }
 
-    /// An expression as text (DCP_EQUIV_DEBUG).
+    /// An expression as text, in the function's terms: entry registers, argument slots by their entry offset,
+    /// call results by their call (DCP_EQUIV_DEBUG and the stop reasons).
     fn show(&self, e: E) -> String {
         match &self.nodes[e as usize] {
             Node::Const(v) => format!("{v:#x}"),
-            Node::Var(v) => format!("{v:?}"),
+            Node::Var(v) => var_text(v),
             Node::Lin(c, t) => {
                 let mut s: Vec<String> = t.iter().map(|(x, k)| if *k == 1 { self.show(*x) } else { format!("{}*{}", *k as i32, self.show(*x)) }).collect();
                 if *c != 0 {
@@ -784,6 +785,88 @@ impl Cfg {
         }
         a
     }
+}
+
+const REG_NAMES: [&str; 8] = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
+
+fn loc_text(l: &Loc) -> String {
+    match l {
+        Loc::Reg(g) => REG_NAMES.get(*g as usize).map_or(format!("r{g}"), |r| r.to_string()),
+        Loc::Slot(o) => format!("[esp0{o:+#x}]"),
+        Loc::Fpu(i) => format!("st({i} from the bottom)"),
+    }
+}
+
+/// A variable as text: what it stands for in the function (`ecx0`: ecx at the entry, `eax@call1@3`: eax after the
+/// second call of block pair 3, `v9@3`: a value the paths into pair 3 agree on).
+fn var_text(v: &Var) -> String {
+    match v {
+        Var::Sp0 => "esp0".into(),
+        Var::Arg(o) => format!("arg[esp0{o:+#x}]"),
+        Var::In(0, g) if (*g as usize) < REG_NAMES.len() => format!("{}0", REG_NAMES[*g as usize]),
+        Var::In(p, k) => format!("v{k}@{p}"),
+        Var::Own(p, s, l) => format!("{}'s {}@{p}", if *s == 0 { "ours" } else { "the original" }, loc_text(l)),
+        Var::Ret(p, k, g) => format!("{}@call{k}@{p}", loc_text(&Loc::Reg(*g))),
+        Var::EscBase => "frame".into(),
+        Var::Undef(o) => format!("undef[frame{o:+#x}]"),
+        Var::ArgBase => "args".into(),
+        Var::FRet(p, k) => format!("st0@call{k}@{p}"),
+    }
+}
+
+/// An effect as text.
+fn effect_text(x: &Effect, ar: &Arena) -> String {
+    let list = |v: &[E]| v.iter().map(|&a| ar.show(a)).collect::<Vec<_>>().join(", ");
+    match x {
+        Effect::Store(a, w, v) => format!("store{w} [{}] = {}", ar.show(*a), ar.show(*v)),
+        Effect::Call(t, args) => format!("call {} ({})", ar.show(*t), list(args)),
+        Effect::Escape(r) => format!("escape {{{}}}", r.iter().map(|(o, v)| format!("frame{o:+#x}: {}", ar.show(*v))).collect::<Vec<_>>().join(", ")),
+        Effect::Fill(d, n, v, w) => format!("fill{w} [{}] x {} = {}", ar.show(*d), ar.show(*n), ar.show(*v)),
+        Effect::Copy(d, f, n, w) => format!("copy{w} [{}] <- [{}] x {}", ar.show(*d), ar.show(*f), ar.show(*n)),
+    }
+}
+
+/// The kind of an effect, with its article.
+fn effect_kind(x: &Effect) -> &'static str {
+    match x {
+        Effect::Store(..) => "a store",
+        Effect::Call(..) => "a call",
+        Effect::Escape(..) => "an escaped frame",
+        Effect::Fill(..) => "a fill (rep stos)",
+        Effect::Copy(..) => "a copy (rep movs)",
+    }
+}
+
+/// Why a block pair's first differing effects differ: the kind, then both effects as text (of an escaped frame, its
+/// first slot that differs).
+fn differ(x: Option<&Effect>, y: Option<&Effect>, ar: &Arena) -> String {
+    let cap = |s: String| if s.chars().count() > 160 { format!("{}...", s.chars().take(160).collect::<String>()) } else { s };
+    let both = |what: &str, x: String, y: String| format!("{what}: ours {}; the original {}", cap(x), cap(y));
+    let (x, y) = match (x, y) {
+        (Some(x), Some(y)) => (x, y),
+        (None, Some(e)) => return format!("one side has an effect the other does not: the original {}", cap(effect_text(e, ar))),
+        (Some(e), None) => return format!("one side has an effect the other does not: ours {}", cap(effect_text(e, ar))),
+        (None, None) => return "the effects differ".into(),
+    };
+    let what = match (x, y) {
+        (Effect::Escape(ra), Effect::Escape(rb)) => {
+            let at = |r: &[(i32, E)], o: i32| r.iter().find(|s| s.0 == o).copied();
+            let mut offs: Vec<i32> = ra.iter().chain(rb).map(|s| s.0).collect();
+            offs.sort_unstable();
+            offs.dedup();
+            let show = |o: i32, s: Option<(i32, E)>| format!("frame{o:+#x} = {}", s.map_or("nothing".to_string(), |s| ar.show(s.1)));
+            return match offs.into_iter().find(|&o| at(ra, o) != at(rb, o)) {
+                Some(o) => both("an escaped frame laid out otherwise", show(o, at(ra, o)), show(o, at(rb, o))),
+                None => both("an escaped frame laid out otherwise", effect_text(x, ar), effect_text(y, ar)),
+            };
+        }
+        (Effect::Call(..), Effect::Call(..)) => "a call differs (callee or arguments)".to_string(),
+        (Effect::Store(..), Effect::Store(..)) => "a store differs (address or value)".to_string(),
+        (Effect::Fill(..), Effect::Fill(..)) => "a fill (rep stos) differs".to_string(),
+        (Effect::Copy(..), Effect::Copy(..)) => "a copy (rep movs) differs".to_string(),
+        _ => format!("{} against {}", effect_kind(x), effect_kind(y)),
+    };
+    both(&what, effect_text(x, ar), effect_text(y, ar))
 }
 
 // ------------------------------------------------------------------------------------------------ execution
@@ -2080,25 +2163,13 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
         lower(&mut low.1, rb.esc);
         if ra.effects != rb.effects || std::env::var_os("DCP_EQUIV_TRACE").is_some() {
             if std::env::var_os("DCP_EQUIV_DEBUG").is_some() {
-                let show = |e: &[Effect], ar: &Arena| e.iter().map(|x| match x {
-                    Effect::Store(a, w, v) => format!("store{w} {} = {}", ar.show(*a), ar.show(*v)),
-                    Effect::Call(t, args) => format!("call {} ({})", ar.show(*t), args.iter().map(|&a| ar.show(a)).collect::<Vec<_>>().join(", ")),
-                    Effect::Copy(d, f, n, w) => format!("copy{w} {} <- {} x {}", ar.show(*d), ar.show(*f), ar.show(*n)),
-                    Effect::Fill(d, n, v, w) => format!("fill{w} {} x {} = {}", ar.show(*d), ar.show(*n), ar.show(*v)),
-                    other => format!("{other:?}"),
-                }).collect::<Vec<_>>().join("\n    ");
+                let show = |e: &[Effect], ar: &Arena| e.iter().map(|x| effect_text(x, ar)).collect::<Vec<_>>().join("\n    ");
                 eprintln!("equiv: block pair {a:#x} / {b:#x}\n  ours:\n    {}\n  the original:\n    {}", show(&ra.effects, &ar), show(&rb.effects, &ar));
             }
         }
         if ra.effects != rb.effects {
             let k = ra.effects.iter().zip(&rb.effects).position(|(x, y)| x != y).unwrap_or(ra.effects.len().min(rb.effects.len()));
-            let what = match (ra.effects.get(k), rb.effects.get(k)) {
-                (Some(Effect::Call(..)), Some(Effect::Call(..))) => "a call differs (callee or arguments)",
-                (Some(Effect::Store(..)), Some(Effect::Store(..))) => "a store differs (address or value)",
-                (None, Some(_)) | (Some(_), None) => "one side has an effect the other does not (a store or a call)",
-                _ => "a store against a call",
-            };
-            return unknown(what.into(), a, b);
+            return unknown(differ(ra.effects.get(k), rb.effects.get(k), &ar), a, b);
         }
         if ra.fpu.len() != rb.fpu.len() {
             return unknown("the FPU stacks differ in depth".into(), a, b);
@@ -2564,6 +2635,23 @@ mod tests {
         // reading the slot next to the one passed is another value
         let c = [0x83, 0xec, 0x08, 0x8d, 0x04, 0x24, 0x50, 0xe8, 0xf4, 0x0f, 0, 0, 0x8b, 0x44, 0x24, 0x08, 0x83, 0xc4, 0x0c, 0xc3];
         assert!(matches!(p(&a, &c), Outcome::Unknown(_)), "{:?}", p(&a, &c));
+    }
+
+    #[test]
+    fn the_stop_names_both_effects() {
+        // sub esp,4; mov dword [esp],1; lea eax,[esp]; push eax; call 0x402000; add esp,8; ret  against the same with 2
+        let a = [0x83, 0xec, 0x04, 0xc7, 0x04, 0x24, 1, 0, 0, 0, 0x8d, 0x04, 0x24, 0x50, 0xe8, 0xed, 0x0f, 0, 0, 0x83, 0xc4, 0x08, 0xc3];
+        let mut b = a;
+        b[6] = 2;
+        let why = |o: Outcome| match o {
+            Outcome::Unknown(s) => s.why,
+            o => panic!("{o:?}"),
+        };
+        assert_eq!(why(p(&a, &b)), "an escaped frame laid out otherwise: ours frame+0x0 = 0x1; the original frame+0x0 = 0x2");
+        // mov [0x500000],eax; ret  against  call 0x402000; ret
+        let c = [0xa3, 0, 0, 0x50, 0, 0xc3];
+        let d = [0xe8, 0xfb, 0x0f, 0, 0, 0xc3];
+        assert_eq!(why(p(&c, &d)), "a store against a call: ours store4 [0x500000] = eax0; the original call 0x402000 ()");
     }
 
     #[test]

@@ -100,8 +100,11 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   `proof:` (the last line) is the dataflow prover's reading of the whole function: `equal` means it showed both do
   the same (the same stores and calls with the same arguments in the same order, the same branches and return
   value, whatever registers, slots, instruction choice or block layout); `unknown:` names what stopped it and
-  where (an FPU instruction, a call or store that differs, ...): the first place to read. It is a report: the
-  grade does not read it yet.
+  where (an FPU instruction, a call or store that differs, an escaped frame laid out otherwise, ...): the first
+  place to read. For differing effects it prints both, ours first: `a store differs (address or value): ours
+  store4 [ecx0 + 0x10] = arg[esp0+0x8]; the original ...` (`ecx0`: ecx at the entry, `arg[esp0+0x8]`: the argument
+  there, `eax@call1@3`: eax after a call, `frame+0x4`: a slot of a local whose address escaped, by its offset). It is
+  a report: the grade does not read it yet.
 - `dcp disasm 0xADDR` - the original code (`--ours NAME`: ours from its object; `--no-bytes`, `--range +0x200..+0x400`);
   `dcp dump 0xADDR [LEN]` - its constants and strings.
 - `dcp refs NAME|0xADDR` - every use and declaration: the callers say what a parameter means.
