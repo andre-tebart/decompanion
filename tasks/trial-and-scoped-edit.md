@@ -1,7 +1,6 @@
 # Trial and scoped edit primitive
 
 - **Priority:** P1 · **Size:** M · **Root:** R11
-- **Depends on:** trials-use-grade-verdict
 - **Blocks:** exceptions-must-discriminate
 
 ## Problem
@@ -16,8 +15,8 @@ These are the two most frequent requests across all reports:
 ## Root cause
 
 - Nothing writes or evaluates one function's text in place. `dcp fn` prints `at=` but cannot write.
-- A trial compile-and-grade exists twice already: headers.rs:1026-1045 (`--trial`, build/obj/trial) and
-  datafix.rs:747.
+- A trial compile exists twice already: headers.rs `trial_grades` (`--trial`, build/obj/trial) and datafix.rs
+  `Trial::verdicts`. Both grade through one verdict, `grade::Grader` (G.grade's).
 
 ## Task
 
@@ -27,7 +26,8 @@ These are the two most frequent requests across all reports:
 - `dcp fn NAME --replace FILE... --trial` writes nothing. For each FILE it compiles the unit in build/obj/trial and
   prints one line: experiment, dist, proof, witness and differences. Worker 33's best-distance variant was semantically
   wrong, so distance alone is not enough.
-- Factor the headers and datafix trials into one `trial(unit_text) -> verdicts`, used by all three.
+- Factor the headers and datafix trial compiles into one `trial(unit_text) -> grades` (through `grade::Grader`),
+  used by all three.
 
 ## Rejected
 

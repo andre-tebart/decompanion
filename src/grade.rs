@@ -178,6 +178,53 @@ pub(crate) fn code_grade(matched: bool, structural: bool, proved: bool, chk: &cr
     }
 }
 
+/// The code grade of one function from its reference check and (when needed: not a byte match whose every reference
+/// agrees) its verdict. The one decision G.grade, the header trial and data fix's trial share (docs/mental-model.md
+/// §4: an experiment has one implementation).
+fn decide<'a>(is_byte: bool, chk: &crate::refcheck::Check, judged: impl Fn() -> &'a Judged) -> &'static str {
+    if is_byte {
+        if chk.differs().next().is_none() {
+            return "byte";
+        }
+        // the bytes match, a reference does not: shape only when named references cross and a proof shows the
+        // effects the same
+        let proof = if chk.literal_differs() { None } else { judged().2 };
+        code_grade(true, false, proof.is_some(), chk)
+    } else {
+        let (v, _, proof) = judged();
+        code_grade(false, v.shape, proof.is_some(), chk)
+    }
+}
+
+/// What a trial grades one compiled function against (as G.grade reads them): the image, φ, the function alignment.
+pub(crate) struct Grader<'a> {
+    pub env: Env<'a>,
+    pub phi: &'a Phi,
+    pub align: i64,
+}
+
+impl Grader<'_> {
+    /// One function's code grade as G.grade gives it: `matched` the compare's byte match (M.match's), `next` the next
+    /// start, `whi` the walk's or the source extent's end.
+    pub(crate) fn grade(&self, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: i64, next: u32, whi: Option<i64>,
+                        matched: bool) -> &'static str {
+        let refs = Refs::new(obj, code, self.phi);
+        let t = Task { i: 0, code, obj, lo, next, whi, matched, phi: self.phi, refs: &refs };
+        let (_, _, _, o, sites, v) = compute(&self.env, &t, self.align);
+        let cell = std::cell::OnceCell::new();
+        if let Some(v) = v {
+            let _ = cell.set(v);
+        }
+        let judged = || cell.get_or_init(|| verdict(&self.env, obj, code, lo as u32, &o, &refs, self.phi));
+        let chk = if matched {
+            crate::refcheck::check(obj, code, self.env.img, &sites, &refs, self.phi)
+        } else {
+            crate::refcheck::check(obj, code, self.env.img, &judged().1, &refs, self.phi)
+        };
+        decide(matched, &chk, judged)
+    }
+}
+
 /// compute over the tasks on every core: (index, result).
 fn compute_all(env: &Env, todo: &[Task], align: i64) -> Vec<(usize, Computed)> {
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(todo.len().max(1));
@@ -280,7 +327,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             // the bytes match, a reference does not (M8: another object, M9 / M10: other bytes): a meaning
             // difference, unless named references only cross and a proof shows the effects the same
             let proof = if chk.literal_differs() { None } else { judged().2 };
-            g = code_grade(true, false, proof.is_some(), &chk).to_string();
+            g = decide(true, &chk, judged).to_string();
             (hunks, dist_ins) = (json!({}), 0usize);
             why = shown("B1 byte: the bytes match; ");
             why.push(match proof {
@@ -290,7 +337,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             });
         } else {
             let (v, _, proof) = judged();
-            g = code_grade(false, v.shape, proof.is_some(), &chk).to_string();
+            g = decide(false, &chk, judged).to_string();
             hunks = v.hunks_json();
             dist_ins = v.distance;
             let mut w = vec![];

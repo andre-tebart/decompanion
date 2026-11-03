@@ -18,5 +18,6 @@ These are decisions for docs/mental-model.md that the triage surfaced. The code 
    (§10). Decide its place in `store::Question` and its support level (derived).
 4. **The held-verdict cache** in grade.rs (`HELD`) needed a key fix in b49c0ea. It is the kind of special-invalidation
    cache AGENTS.md accepts only as a last resort. Its key now also holds φ's addresses of every relocation's object
-   (the prover binds through φ); the reference check runs on every run, outside it. Once trials-use-grade-verdict
-   has unified the verdict, check whether it is still needed.
+   (the prover binds through φ); the reference check runs on every run, outside it. The verdict is unified now
+   (grade::decide, grade::Grader for the header and data fix trials, which hold nothing): check whether it is
+   still needed.

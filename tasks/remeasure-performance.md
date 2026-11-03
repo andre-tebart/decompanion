@@ -23,7 +23,8 @@ Measure with dcp-bench and DCP_TIMING on gildegold:
 - a cold `session start` after a daemon restart (55 s reported). Print its phases; the held verdicts and the prover are
   recomputed for everything (grade.rs:210-218);
 - the 19.7 s single-unit build after `escalate`;
-- `headers conflicts --trial` on f3gm (reported at 1-2 minutes), after trials-use-grade-verdict;
+- `headers conflicts --trial` on f3gm (reported at 1-2 minutes; it now grades every function with the prover and
+  the reference check, as G.grade does, and nothing is held between runs); likewise `data fix --write`'s trial;
 - the first-use cost of `dump` and `why`.
 
 File a task for each result that misses the budget.

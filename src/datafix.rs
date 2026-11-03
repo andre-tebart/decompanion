@@ -24,8 +24,9 @@
 //! elements, several declarators) is listed as `manual` with the reason.
 //!
 //! `--write` trial-compiles each unit's edits first (Trial): the unit's edited text into build/trial/, one compiler
-//! run into build/obj/trial/, every function of the unit compared as M.match compares it. A unit's edits are
-//! accepted together when the unit compiles and keeps every byte match; else each group is tried alone and the
+//! run into build/obj/trial/, every byte or shape function of the unit graded as G.grade grades it (grade::Grader:
+//! the compare, the reference check against φ, the shape classes, the prover). A unit's edits are accepted together
+//! when the unit compiles and no function falls below its grade; else each group is tried alone and the
 //! groups that pass on their own are tried together, then added one at a time while the unit stays whole.
 //! Positions are in characters, as Python's str offsets were.
 
@@ -666,9 +667,26 @@ fn apply(files: &mut Files, edits: &[&Edit]) -> BTreeMap<String, Vec<char>> {
 }
 
 /// address -> unit of every function graded byte.
-fn byte_functions(db: &str) -> Result<HashMap<i64, String>> {
-    let fs = crate::with_db(db, |c| store::claims_of(c, db, "experiment", None, |f| f.s("of") == Some("function") && f.s("outcome") == Some("byte")))?;
-    Ok(fs.iter().map(|f| (f.lo, f.s("unit").unwrap_or("").to_string())).collect())
+/// The functions graded byte or shape (the ones a fix can make fall): address -> (unit, code grade).
+fn graded_functions(db: &str) -> Result<HashMap<i64, (String, String)>> {
+    let fs = crate::with_db(db, |c| store::claims_of(c, db, "experiment", None, |f| {
+        f.s("of") == Some("function") && matches!(f.s("outcome"), Some("byte" | "shape"))
+    }))?;
+    Ok(fs.iter().map(|f| (f.lo, (f.s("unit").unwrap_or("").to_string(), f.s("outcome").unwrap_or("").to_string()))).collect())
+}
+
+fn rank(code: &str) -> usize {
+    crate::grade::CODE.iter().position(|x| *x == code).unwrap_or(0)
+}
+
+/// The functions of `before` whose grade `now` is lower (or gone): (address, before, now).
+fn fallen(before: &HashMap<i64, (String, String)>, now: &HashMap<i64, (String, String)>) -> Vec<(i64, String, String)> {
+    let mut out: Vec<(i64, String, String)> = before.iter().filter_map(|(a, (_, g))| {
+        let n = now.get(a).map(|x| x.1.clone()).unwrap_or_else(|| "draft".into());
+        (rank(&n) < rank(g)).then(|| (*a, g.clone(), n))
+    }).collect();
+    out.sort();
+    out
 }
 
 /// The error findings of the store as (rule, address, message).
@@ -696,8 +714,14 @@ struct Trial<'a> {
     relocs: Option<Vec<u32>>,
     starts: Vec<u32>,
     sources: HashMap<String, Vec<Rc<Claim>>>,
-    byte: HashMap<String, HashSet<i64>>,
+    /// per unit: its byte and shape functions with their grade
+    graded: HashMap<String, HashMap<i64, String>>,
     forms: Vec<Vec<u8>>,
+    fill_forms: Vec<Vec<u8>>,
+    phi: crate::phi::Phi,
+    /// the walk's or the source extent's end of each function (G.grade's extent)
+    walk: HashMap<i64, i64>,
+    align: i64,
 }
 
 /// One trial compile's outcome: the object's path, else the compiler's first error.
@@ -713,13 +737,16 @@ impl<'a> Trial<'a> {
         let root = p.root.to_string_lossy().into_owned();
         let img = crate::image(&p.target(None).map_err(err)?.path)?;
         let units = crate::plan::plan(p).map_err(err)?.iter().map(|t| (t.unit.clone(), t.clone())).collect();
-        let (relocs, starts, srcs) = crate::with_db(&db, |c| {
+        let (relocs, starts, srcs, walk) = crate::with_db(&db, |c| {
             let los = |kind: &str, keep: &dyn Fn(&Claim) -> bool| store::claims_of(c, &db, kind, None, keep).map(|fs| fs.iter().map(|f| f.lo).collect::<Vec<i64>>());
             let relocs = los("ref", &|f| f.s("rkind") == Some("reloc"));
             let mut starts: Vec<i64> = los("start", &|_| true)?;
             starts.extend(los("symbol", &|f| matches!(f.s("skind"), Some("func" | "thunk")) && f.support > store::OPEN)?);
             let srcs = store::claims_of(c, &db, "source", None, |f| &*f.rule == "L.src" && f.s("what") == Some("func"))?;
-            Ok((relocs?, starts, srcs))
+            let walk: HashMap<i64, i64> = store::claims_of(c, &db, "symbol", None, |f| {
+                f.s("skind") == Some("func") && matches!(&*f.rule, "S.codewalk" | "L.src.extent")
+            })?.iter().map(|f| (f.lo, f.hi)).collect();
+            Ok((relocs?, starts, srcs, walk))
         })?;
         let mut relocs: Vec<u32> = relocs.into_iter().map(|x| x as u32).collect();
         relocs.sort_unstable();
@@ -732,12 +759,16 @@ impl<'a> Trial<'a> {
         for f in srcs.iter() {
             sources.entry(f.s("unit").unwrap_or("").to_string()).or_default().push(f.clone());
         }
-        let mut byte: HashMap<String, HashSet<i64>> = HashMap::new();
-        for (a, u) in byte_functions(&db)? {
-            byte.entry(u).or_default().insert(a);
+        let mut graded: HashMap<String, HashMap<i64, String>> = HashMap::new();
+        for (a, (u, g)) in graded_functions(&db)? {
+            graded.entry(u).or_default().insert(a, g);
         }
-        let forms = crate::toolchain::of(&p.toolchain_key()).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect::<Vec<_>>()).unwrap_or_default();
-        Ok(Trial { p, root, img, tools: crate::vc6::Tools::of(p), units, relocs, starts, sources, byte, forms: crate::compare::fill_order(&forms) })
+        let tc = crate::toolchain::of(&p.toolchain_key());
+        let fill_forms = tc.as_ref().map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect::<Vec<_>>()).unwrap_or_default();
+        let align = tc.as_ref().map(|t| t.function_alignment() as i64).unwrap_or(16);
+        let phi = crate::names::ledger_phi(&db)?;
+        Ok(Trial { p, root, img, tools: crate::vc6::Tools::of(p), units, relocs, starts, sources, graded, forms: crate::compare::fill_order(&fill_forms),
+                   fill_forms, phi, walk, align })
     }
 
     /// For each (unit, its files' new texts): (whether the unit compiles and keeps every byte match, why not).
@@ -772,7 +803,7 @@ impl<'a> Trial<'a> {
         for ((unit, _), c) in jobs.iter().zip(done) {
             let got = match &c.error {
                 Some(e) => Err(e.clone()),
-                None => self.matches(unit, &c.obj),
+                None => self.grades(unit, &c.obj),
             };
             for f in [&c.src, &c.obj] {
                 let _ = std::fs::remove_file(f);
@@ -780,12 +811,16 @@ impl<'a> Trial<'a> {
             out.push(match got {
                 Err(e) => (false, e),
                 Ok(got) => {
-                    let need = self.byte.get(*unit).cloned().unwrap_or_default();
-                    let lost: Vec<i64> = need.iter().filter(|a| !got.contains(a)).copied().collect();
-                    match lost.iter().min() {
+                    let need = self.graded.get(*unit).cloned().unwrap_or_default();
+                    let mut lost: Vec<(i64, &String, &str)> = need.iter().filter_map(|(a, g)| {
+                        let n = got.get(a).copied().unwrap_or("draft");
+                        (rank(n) < rank(g)).then_some((*a, g, n))
+                    }).collect();
+                    lost.sort();
+                    match lost.first() {
                         None => (true, String::new()),
-                        Some(first) => (false, format!("loses {} byte match(es), first {first:#x} (a definition here changes how this unit's code \
-                                                        reaches it: the original may define it in another unit)", lost.len())),
+                        Some((first, g, n)) => (false, format!("{} function(s) fall, first {first:#x} {g} -> {n} (a definition here changes how this \
+                                                                unit's code reaches it: the original may define it in another unit)", lost.len())),
                     }
                 }
             });
@@ -793,22 +828,24 @@ impl<'a> Trial<'a> {
         Ok(out)
     }
 
-    /// The addresses of the unit that byte-match with the object at obj.
-    fn matches(&self, unit: &str, obj: &str) -> Result<HashSet<i64>, String> {
+    /// The code grade G.grade would give each byte or shape function of the unit with the object at obj.
+    fn grades(&self, unit: &str, obj: &str) -> Result<HashMap<i64, &'static str>, String> {
         let data = std::fs::read(obj).map_err(|e| format!("{obj}: {e}"))?;
         let o = crate::coff::Obj::parse(&data)?;
         let index = o.function_index();
-        let mut out = HashSet::new();
-        for s in self.sources.get(unit).into_iter().flatten() {
+        let need = self.graded.get(unit);
+        let fills: HashSet<Vec<u8>> = self.fill_forms.iter().cloned().collect();
+        let env = crate::diffclass::Env { img: &self.img, range: (self.img.base as i64, self.img.end() as i64), fills: &fills, forms: &self.forms };
+        let g = crate::grade::Grader { env, phi: &self.phi, align: self.align };
+        let mut out = HashMap::new();
+        for s in self.sources.get(unit).into_iter().flatten().filter(|s| need.is_some_and(|n| n.contains_key(&s.lo))) {
             let Some(&k) = index.get(s.s("symbol").unwrap_or("")) else { continue };
             let code = o.function_code(k);
             let lo = s.lo as u32;
             let i = self.starts.partition_point(|&x| x <= lo);
             let next = self.starts.get(i).copied().unwrap_or(self.img.end());
-            let c = crate::compare::compare(&self.img, &code, lo, self.relocs.as_deref(), next, &self.forms);
-            if c.matched() {
-                out.insert(s.lo);
-            }
+            let matched = crate::compare::compare(&self.img, &code, lo, self.relocs.as_deref(), next, &self.forms).matched();
+            out.insert(s.lo, g.grade(&o, &code, s.lo, next, self.walk.get(&s.lo).copied(), matched));
         }
         Ok(out)
     }
@@ -992,7 +1029,7 @@ pub fn data_fix(p: &Project, checks: Option<String>, unit: Option<String>, write
             continue;
         }
         // trial compiles decide; only accepted edits are written, then one build
-        let before = byte_functions(&db)?;
+        let before = graded_functions(&db)?;
         let errors_before = errors_of(&db)?;
         let trial = Trial::new(p)?;
         let per: Vec<(String, Vec<&Edit>)> = units.iter().map(|u| (u.to_string(), edits.iter().filter(|x| x.unit == *u).collect())).collect();
@@ -1010,9 +1047,9 @@ pub fn data_fix(p: &Project, checks: Option<String>, unit: Option<String>, write
         }
         sync()?;
         let failed = failed_units(&db)?;
-        let now = byte_functions(&db)?;
-        let still = before.keys().filter(|a| !now.contains_key(a)).count();
-        let before_units: HashSet<&String> = before.values().collect();
+        let now = graded_functions(&db)?;
+        let still = fallen(&before, &now).len();
+        let before_units: HashSet<&String> = before.values().map(|x| &x.0).collect();
         // the scan's rules on the written H (an address comment detached from its datum: L.src, M.gen), not only
         // the compile: a new error sends the batch back (docs/mental-model.md §5)
         let new_errors: Vec<(String, i64, String)> = errors_of(&db)?.into_iter().filter(|e| !errors_before.contains(e)).collect();
@@ -1028,16 +1065,16 @@ pub fn data_fix(p: &Project, checks: Option<String>, unit: Option<String>, write
             sync()?;
             let failed = if failed.is_empty() { "-".to_string() } else { failed.iter().cloned().collect::<Vec<_>>().join(",") };
             say(format!("  reverted {}", record(&[("edits", Tok::I(accepted.len() as i64)),
-                                                   ("why", s(format!("after writing, {still} byte match(es) lost, {} new error(s), failed units: {failed}",
+                                                   ("why", s(format!("after writing, {still} function(s) fell, {} new error(s), failed units: {failed}",
                                                                      new_errors.len())))])))?;
             accepted.clear();
             status = 1;
         }
         let groups: HashSet<&str> = accepted.iter().map(|x| x.group.as_str()).collect();
-        let now = byte_functions(&db)?;
+        let now = graded_functions(&db)?;
         say(record(&[("check", s(check.clone())), ("applied", Tok::I(groups.len() as i64)),
                      ("rejected", Tok::I(verdicts.iter().map(|v| v.1.len() as i64).sum())),
-                     ("byte_lost", Tok::I(before.keys().filter(|a| !now.contains_key(a)).count() as i64)),
+                     ("fell", Tok::I(fallen(&before, &now).len() as i64)),
                      ("trial_ms", Tok::I(t1.as_millis() as i64)), ("ms", Tok::I(t0.elapsed().as_millis() as i64))]))?;
     }
     Ok(status)

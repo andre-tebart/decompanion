@@ -130,7 +130,10 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   a text that would detach an address comment is refused (`--at LINE` places the include when the default line fails
   the trial). `warning=declaration-set`: re-grade every function of the unit after the include,
   byte ones first (VC6 /O2 moves code by the declaration set alone): `--trial` compiles the unit with the include
-  (nothing written) and lists the functions whose grade would fall (`fall=ADDR ... code=byte trial=shape`). A dropped duplicate's
+  (nothing written), grades each function as G.grade does (the prover and the reference check too) and lists the
+  ones it changes with the grade now, the baseline's and the trial's (`fn=ADDR ... now=byte baseline=byte
+  trial=shape m1=yes`); `m1=yes` is a fall `dcp check` would report (below the baseline), and only those count
+  (`m1=N`, exit 1); below the current grade but not the baseline is no fall. A dropped duplicate's
   comment never describes its function (Q6 reads the function's own documentation only), so no words are lost to Q6.
 
 ### 2.2 Code below shape (`section=draft`)

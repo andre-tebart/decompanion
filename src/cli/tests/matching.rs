@@ -254,9 +254,14 @@ fn headers_conflicts_trial_grades() {
     write(&t, "include/slow.h", "#pragma optimize(\"\", off)\n");
     let before = read(&t, "src/net.c");
     let (code, out) = dcp(&t, &["headers", "conflicts", "net", "plain", "--trial"]);
-    assert!(code == 0 && out.contains("trial=compiled  functions=1  falls=0  rises=0  same=1"), "{out}");
+    assert!(code == 0 && out.contains("trial=compiled  functions=1  m1=0  lower=0  higher=0  same=1"), "{out}");
+    // below the current grade, but no baseline holds it: no fall M1 reports
     let (code, out) = dcp(&t, &["headers", "conflicts", "net", "slow", "--trial"]);
-    assert!(code == 1 && out.contains("falls=1") && out.contains("  fall=0x10001020  name=get  code=byte  trial=draft"), "{out}");
+    assert!(code == 0 && out.contains("m1=0  lower=1") && out.contains("  fn=0x10001020  name=get  now=byte  baseline=-  trial=shape  m1=no"), "{out}");
+    // the baseline holds byte: a fall
+    assert_eq!(dcp(&t, &["promote"]).0, 0);
+    let (code, out) = dcp(&t, &["headers", "conflicts", "net", "slow", "--trial"]);
+    assert!(code == 1 && out.contains("m1=1  lower=1") && out.contains("  fn=0x10001020  name=get  now=byte  baseline=byte  trial=shape  m1=yes"), "{out}");
     assert_eq!(read(&t, "src/net.c"), before);
     assert!(std::fs::read_dir(t.join("build/obj/trial")).map(|d| d.count() == 0).unwrap_or(true));
     assert!(dcp(&t, &["grade", "get"]).1.contains("experiment=byte"));

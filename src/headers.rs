@@ -1101,7 +1101,7 @@ fn resolve_header(root: &str, h: &str) -> Option<String> {
 /// instruction diff over the extent and slot its grade row read. (address, name, code grade now, in the trial), or
 /// the compiler's first error.
 #[allow(clippy::type_complexity)]
-fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Result<Vec<(i64, String, String, String)>, String>> {
+fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Result<Vec<TrialGrade>, String>> {
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
     let tools = crate::vc6::Tools::of(p);
@@ -1135,6 +1135,8 @@ fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Resul
     let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
     let forms = crate::compare::fill_order(&fill_forms);
     let env = crate::diffclass::Env { img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
+    let phi = crate::names::ledger_phi(&db)?;
+    let g = crate::grade::Grader { env, phi: &phi, align: tc.function_alignment() as i64 };
     let starts = crate::asmcmd::all_starts(&db, &img)?;
     let relocs: Option<Vec<u32>> = if img.relocations().is_empty() {
         None
@@ -1143,31 +1145,51 @@ fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Resul
         v.sort_unstable();
         (!v.is_empty()).then_some(v)
     };
+    // the walk's or the source extent's end of each function (G.grade's extent)
+    let walk: HashMap<i64, i64> = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |f| {
+        f.s("skind") == Some("func") && matches!(&*f.rule, "S.codewalk" | "L.src.extent")
+    }))?.iter().map(|f| (f.lo, f.hi)).collect();
+    let base: HashMap<i64, String> = crate::queues::parse_baseline(&crate::fsmemo::read_text(&py_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default())
+        .into_iter().filter(|x| x.0 .0 == p.target_name).map(|x| (x.0 .1, x.1.code)).collect();
     let mut out = vec![];
     for r in crate::queues::function_grades(&db)?.iter().filter(|r| r["unit"].as_str() == Some(unit.unit.as_str())) {
         let (a, name) = (r["addr"].as_i64().unwrap_or(0), r["name"].as_str().unwrap_or("").to_string());
         let now = r["code"].as_str().unwrap_or("").to_string();
+        let baseline = base.get(&a).cloned();
         let Some(&k) = index.get(&name) else {
-            out.push((a, name, now, "none".into()));
+            out.push(TrialGrade { addr: a, name, now, baseline, trial: "none".into() });
             continue;
         };
         let code = o.function_code(k);
         let next = starts.get(starts.partition_point(|&x| x <= a)).copied().unwrap_or(img.end() as i64) as u32;
-        let grade = if crate::compare::compare(&img, &code, a as u32, relocs.as_deref(), next, &forms).matched() {
-            "byte"
-        } else {
-            let d = &r["dist"];
-            let (cd, cm) = code.code();
-            let size = crate::diffclass::code_size(&env, cd, cm, a as u32);
-            let extent = d.get("extent").and_then(|v| v.as_i64()).unwrap_or(size);
-            let slot = d.get("slot").and_then(|v| v.as_i64()).unwrap_or(extent.max(next as i64 - a));
-            let orig = crate::diffclass::original(&env, a as u32, extent, slot, tc.function_alignment() as i64);
-            if crate::diffclass::FunctionCompare::new(&env, &o, &code, a as u32, &orig).verdict.shape { "shape" } else { "draft" }
-        };
-        out.push((a, name, now, grade.to_string()));
+        let matched = crate::compare::compare(&img, &code, a as u32, relocs.as_deref(), next, &forms).matched();
+        let trial = g.grade(&o, &code, a, next, walk.get(&a).copied(), matched).to_string();
+        out.push(TrialGrade { addr: a, name, now, baseline, trial });
     }
-    out.sort();
+    out.sort_by_key(|t| t.addr);
     Ok(Ok(out))
+}
+
+/// One function of a trial: its code grade now, in the baseline (ledger/grades.tsv) and in the trial (G.grade's
+/// verdict on the trial's object; "none" when the trial's object lacks it).
+struct TrialGrade {
+    addr: i64,
+    name: String,
+    now: String,
+    baseline: Option<String>,
+    trial: String,
+}
+
+impl TrialGrade {
+    /// M1 would fire: the trial grade is below the baseline's.
+    fn m1(&self) -> bool {
+        let rank = |c: &str| crate::grade::CODE.iter().position(|x| *x == c);
+        match (self.baseline.as_deref().and_then(rank), rank(&self.trial)) {
+            (Some(b), Some(t)) => t < b,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
 }
 
 /// `dcp headers conflicts UNIT HEADER.. [--write] [--trial] [--at LINE]`: (the lines, the exit status).
@@ -1293,16 +1315,21 @@ pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<S
             }
             Ok(gs) => {
                 let rank = |c: &str| ["none", "draft", "shape", "byte"].iter().position(|x| *x == c).unwrap_or(0);
-                let fell: Vec<_> = gs.iter().filter(|g| rank(&g.3) < rank(&g.2)).collect();
-                let rose: Vec<_> = gs.iter().filter(|g| rank(&g.3) > rank(&g.2)).collect();
-                falls += fell.len();
-                out.push(record(&[("trial", s("compiled")), ("functions", Tok::I(gs.len() as i64)), ("falls", Tok::I(fell.len() as i64)),
-                                  ("rises", Tok::I(rose.len() as i64)), ("same", Tok::I((gs.len() - fell.len() - rose.len()) as i64))])
-                         + "  (the unit with the includes, as --write would leave it, compiled and each function's code graded; nothing written)");
-                for (what, gs) in [("fall", fell), ("rise", rose)] {
-                    for (a, name, now, then) in gs {
-                        out.push(format!("  {}", record(&[(what, Tok::I(*a)), ("name", s(name.clone())), ("code", s(now.clone())), ("trial", s(then.clone()))])));
-                    }
+                let lower = gs.iter().filter(|g| rank(&g.trial) < rank(&g.now)).count();
+                let higher = gs.iter().filter(|g| rank(&g.trial) > rank(&g.now)).count();
+                // the falls the trial brings: below the baseline and changed by it (one from before is dcp check's already)
+                let m1: Vec<&TrialGrade> = gs.iter().filter(|g| g.m1() && g.trial != g.now).collect();
+                falls += m1.len();
+                out.push(record(&[("trial", s("compiled")), ("functions", Tok::I(gs.len() as i64)), ("m1", Tok::I(m1.len() as i64)),
+                                  ("lower", Tok::I(lower as i64)), ("higher", Tok::I(higher as i64)),
+                                  ("same", Tok::I((gs.len() - lower - higher) as i64))])
+                         + "  (the unit as --write would leave it, compiled and each function graded as G.grade grades it; m1: below \
+                            the baseline, a fall dcp check reports; nothing written)");
+                // every function whose grade the trial changes, and every one M1 would hold (a fall from before too)
+                for g in gs.iter().filter(|g| g.trial != g.now || g.m1()) {
+                    out.push(format!("  {}", record(&[("fn", Tok::I(g.addr)), ("name", s(g.name.clone())), ("now", s(g.now.clone())),
+                                                       ("baseline", os(g.baseline.clone())), ("trial", s(g.trial.clone())),
+                                                       ("m1", s(if g.m1() { "yes" } else { "no" }))])));
                 }
             }
         }

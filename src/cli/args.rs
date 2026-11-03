@@ -528,7 +528,7 @@ pub enum DataCmd {
         /// only this unit's fixes
         #[arg(long)]
         unit: Option<String>,
-        /// apply, compile, keep only units that lose no byte match
+        /// apply, compile, keep only units where no byte or shape function falls (graded as G.grade grades)
         #[arg(long)]
         write: bool,
         /// edits listed per check (default 40)
