@@ -91,7 +91,11 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   the two frames differ in size (`frame: ours 0xcc, the original's 0xc8`) and these lines differ only by the
   shifted stack offsets; the `code` hunks left beside them are the real cause (often a variable in a register
   on one side, in a slot on the other). A switch's jump and index tables are data, not code: `tables=equal`
-  (or `differ` with the entries that point elsewhere: a case body or the case order differs). grade, asmdiff
+  (or `differ` with the entries that point elsewhere: a case body or the case order differs). A jump target is
+  a place between instructions, mapped through the alignment: `branch targets differ` lists the jumps the
+  alignment pairs whose targets are not the same place, with both target instructions and where the alignment
+  puts ours' (a statement structure difference, not shape); `jumps into code hunks: N jumps into the code hunk at
+  +X` are target differences that hunk accounts for: read the hunk, not the jumps. grade, asmdiff
   and diffclass read the same extent, so `hunks=0` with equal tables is shape.
   `proof:` (the last line) is the dataflow prover's reading of the whole function: `equal` means it showed both do
   the same (the same stores and calls with the same arguments in the same order, the same branches and return

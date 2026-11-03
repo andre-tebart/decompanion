@@ -29,7 +29,7 @@
   - the first aligned equal-text pair whose bytes differ, with both encodings ("je: other target", "encoding 3 vs 6
     bytes");
   - two distinct tail messages.
-- This also gives "B1: branch targets only".
+- This also gives "B1: branch targets only" (the targets as cuts through `diffclass::Cuts`).
 - asmdiff marks equal-text pairs whose bytes differ.
 
 ## Reports

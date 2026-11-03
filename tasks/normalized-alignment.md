@@ -1,7 +1,6 @@
 # Align on normalized keys
 
 - **Priority:** P1 · **Size:** L · **Root:** R3
-- **Related:** branch-targets-as-cut-points
 
 ## Problem
 
@@ -29,7 +28,9 @@
 ## Task
 
 - Align with registers and stack offsets masked (`x86::shape_keys` / `mask_regs`).
-- Map internal branch targets through the alignment before comparing.
+- Map internal branch targets through the alignment before comparing: diffclass's branch check already does
+  (`diffclass::Cuts`, the cut correspondence over the hunks); asmdiff's `!` on branches after a layout shift should
+  read the same correspondence.
 - Then classify each pair exactly; the per-hunk renaming falls out.
 - This changes grade's distance and verdicts. Measure on gildegold as 87cebdd did, and keep the speed budget.
 

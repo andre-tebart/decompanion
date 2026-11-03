@@ -555,7 +555,7 @@ fn sib_explain(xa: &[Shape], xb: &[Shape]) -> Option<String> {
     changed.then(|| "base/index swapped in [r1 + r2 + disp]".to_string())
 }
 
-fn st_masked(s: &Shape) -> Shape {
+pub(crate) fn st_masked(s: &Shape) -> Shape {
     s.map_ops(|o| match *o {
         Opnd::Reg(r) if (Reg::ST0 as u32..=Reg::ST7 as u32).contains(&(r as u32)) => Opnd::Reg(Reg::ST0),
         o => o,

@@ -1,7 +1,6 @@
 # Escalate gates on the verdict, not on prose
 
 - **Priority:** P1 · **Size:** S · **Root:** R1
-- **Depends on:** branch-targets-as-cut-points (otherwise escalate refuses on false positives)
 
 ## Problem
 
@@ -23,7 +22,9 @@
 ## Task
 
 - Refuse on any remaining *concrete* difference from the one verdict: witness, real branch differences, switch table
-  entries (the references and literals already refuse).
+  entries (the references and literals already refuse). The real branch differences are `Verdict::branches` (the
+  cut correspondence, `diffclass::Cuts`); `Verdict::into_code` lists the jumps a code hunk accounts for and is no
+  difference of its own.
 - Each is explained only through the existing `--divergence-explained`.
 - The refusal prints the diffclass summary and the raw counts: "ours 544, +15 for shared tails = 559, limit 12".
 - `only_missing_statements` names the clause it matched, as `admits_unread` already does.

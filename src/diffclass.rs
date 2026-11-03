@@ -311,11 +311,23 @@ pub struct Verdict {
     pub tables: Option<Tables>,
     pub frame: Option<(i64, i64)>,
     pub branches: Vec<String>,
+    /// The jumps whose targets do not correspond for a code hunk's sake: one line per hunk, the hunk's difference.
+    pub into_code: Vec<String>,
 }
 
 impl Verdict {
     /// Verdict.summary (the classes by weight, ties by name).
     pub fn summary(&self) -> String {
+        self.summary_with(true)
+    }
+
+    /// The summary without the branch lines, for a reader that prints them on their own (`dcp diffclass`: one
+    /// difference is reported once).
+    pub fn summary_without_branches(&self) -> String {
+        self.summary_with(false)
+    }
+
+    fn summary_with(&self, branches: bool) -> String {
         let mut hs = self.hunks.clone();
         hs.sort_by(|x, y| (-x.1, &x.0).cmp(&(-y.1, &y.0)));
         let mut s = hs.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ");
@@ -330,7 +342,10 @@ impl Verdict {
         if let Some((a, b)) = self.frame {
             s += &format!("; frame {} vs {} (stack offsets aligned)", py_hex(a), py_hex(b));
         }
-        if !self.branches.is_empty() {
+        if branches && !self.into_code.is_empty() {
+            s += &format!("; {}", self.into_code[..self.into_code.len().min(3)].join("; "));
+        }
+        if branches && !self.branches.is_empty() {
             s += &format!("; branch targets differ ({}): {}", self.branches.len(), self.branches[..self.branches.len().min(3)].join("; "));
         }
         if let Some(t) = &self.tables {
@@ -356,8 +371,6 @@ fn mnemonic(t: &str) -> &str {
     t.split(' ').next().unwrap_or("")
 }
 
-type Aligned = (Vec<(usize, usize)>, HashMap<usize, usize>, HashSet<(usize, usize)>);
-
 /// The shapes an order hunk's lines pair by (ours, the original's): the renaming its note names ("after ecx->edx
 /// edx->ecx") applied to ours, the esp offsets normalised on both sides when the note says across a push / pop.
 fn order_keys(la: &[Line], lb: &[Line], note: &str) -> (Vec<Shape>, Vec<Shape>) {
@@ -376,153 +389,320 @@ fn order_keys(la: &[Line], lb: &[Line], note: &str) -> (Vec<Shape>, Vec<Shape>) 
     (a, b)
 }
 
-fn aligned(la: &[Line], lb: &[Line], hs: &[Hunk]) -> Aligned {
-    let (mut jumps, mut m, mut starts) = (vec![], HashMap::new(), HashSet::new());
-    let (mut i, mut j) = (0usize, 0usize);
-    let mut all: Vec<Hunk> = hs.to_vec();
-    all.sort();
-    all.push((la.len(), la.len(), lb.len(), lb.len(), String::new(), String::new()));
-    for (i1, i2, j1, j2, cls, note) in all {
-        let (di, dj) = (i1 as i64 - i as i64, j1 as i64 - j as i64);
-        if di == dj && dj > 0 {
-            for k in i..i1 {
-                m.insert(k, j + k - i);
-                if la[k].target.is_some() && lb[j + k - i].target.is_some() {
-                    jumps.push((k, j + k - i));
+/// How the inside of one aligned piece corresponds between the sides: line k of ours with line k of the original's
+/// (an equal run, a renaming), or not at all (code, fill, tail), or in another order: the lines pair by the keys the
+/// class compared (`pair`: order_keys), the cut after k lines of ours with the one after k lines of the original's
+/// when both prefixes are the same multiset of masked lines (`prefix`: shape_keys, registers and offsets masked, as
+/// the hunk's renaming of registers and stack slots leaves them).
+enum Inside {
+    None,
+    ByIndex,
+    Reordered { pair: (Vec<Shape>, Vec<Shape>), prefix: (Vec<Shape>, Vec<Shape>) },
+}
+
+struct Piece {
+    i1: usize,
+    i2: usize,
+    j1: usize,
+    j2: usize,
+    cls: String, // "" for an equal run
+    inside: Inside,
+}
+
+/// The cut correspondence of one function's two listings (§1: inside a function φ is the alignment). A cut is a
+/// place between instructions, cut k before line k (k = len: the end); a jump target is a cut. The equal runs and
+/// the hunks of the alignment are pieces in a row on both sides; a cut corresponds:
+/// - at a piece's boundary, always (an empty side's one cut with both of the other side's);
+/// - in an equal run, and in a regs, sib, frame or slots hunk of equal length, by position;
+/// - in an order or fpu hunk, where the prefixes before the cuts are the same multiset under the hunk's keys
+///   (order_keys: the text the class compared);
+/// - in a code, fill or tail hunk, not inside.
+///
+/// The lines the alignment pairs (`pairs`) are those of the by-position pieces and, in an order or fpu hunk, the
+/// lines of equal keys in turn: never two lines of a hunk by their raw text.
+pub struct Cuts {
+    pieces: Vec<Piece>,
+    pub pairs: Vec<(usize, usize)>,
+}
+
+fn multiset_prefix_eq(a: &[Shape], b: &[Shape], k: usize) -> bool {
+    k <= a.len() && k <= b.len() && multiset_eq(&a[..k], &b[..k])
+}
+
+impl Cuts {
+    /// `renamed`: the whole function equal under one renaming, so a code hunk of equal length pairs by position.
+    pub fn new(la: &[Line], lb: &[Line], hs: &[Hunk], renamed: bool) -> Cuts {
+        let mut all: Vec<&Hunk> = hs.iter().collect();
+        all.sort();
+        let mut pieces = vec![];
+        let (mut i, mut j) = (0usize, 0usize);
+        for (i1, i2, j1, j2, cls, note) in all {
+            let (i1, i2, j1, j2) = (*i1, *i2, *j1, *j2);
+            if i1 < i || j1 < j {
+                continue; // overlaps the piece before (none should)
+            }
+            if i1 - i == j1 - j && i1 > i {
+                pieces.push(Piece { i1: i, i2: i1, j1: j, j2: j1, cls: String::new(), inside: Inside::ByIndex });
+            }
+            let same_len = i2 - i1 == j2 - j1;
+            let inside = match cls.as_str() {
+                "regs" | "sib" | "frame" if same_len => Inside::ByIndex,
+                "slots" if same_len && !note.contains("other order") => Inside::ByIndex,
+                "code" if same_len && renamed => Inside::ByIndex,
+                "order" | "slots" => {
+                    let masked = |l: &[Line]| shape::shape_keys(&shapes(l));
+                    Inside::Reordered { pair: order_keys(&la[i1..i2], &lb[j1..j2], note), prefix: (masked(&la[i1..i2]), masked(&lb[j1..j2])) }
                 }
-            }
+                "fpu" => {
+                    let st = |l: &[Line]| -> Vec<Shape> { l.iter().map(|x| shape::st_masked(&x.shape)).collect() };
+                    let (a, b) = (st(&la[i1..i2]), st(&lb[j1..j2]));
+                    Inside::Reordered { prefix: (shape::shape_keys(&a), shape::shape_keys(&b)), pair: (a, b) }
+                }
+                _ => Inside::None,
+            };
+            pieces.push(Piece { i1, i2, j1, j2, cls: cls.clone(), inside });
+            i = i2;
+            j = j2;
         }
-        if cls == "order" {
-            // the hunk's lines pair by their text as the class saw it: ours after the hunk's register renaming, both
-            // sides' esp offsets taken at the hunk's start across a push / pop. The raw text pairs a line with
-            // another one the swap made look the same (a match-base report, gv_BuryCharacter: ours' `mov eax, edx`
-            // paired with the original's earlier `mov eax, edx`, and a je to the line counted as other control flow)
-            let (ka, kb) = order_keys(&la[i1..i2], &lb[j1..j2], &note);
-            let mut same: HashMap<&Shape, VecDeque<usize>> = HashMap::new();
-            for k in j1..j2 {
-                same.entry(&kb[k - j1]).or_default().push_back(k);
-            }
-            let mut rest = vec![];
-            for k in i1..i2 {
-                match same.get_mut(&ka[k - i1]).and_then(|q| q.pop_front()) {
-                    Some(x) => {
-                        m.insert(k, x);
+        if la.len() - i == lb.len() - j && la.len() > i {
+            pieces.push(Piece { i1: i, i2: la.len(), j1: j, j2: lb.len(), cls: String::new(), inside: Inside::ByIndex });
+        }
+        let mut pairs = vec![];
+        for p in &pieces {
+            match &p.inside {
+                Inside::ByIndex => pairs.extend((0..p.i2 - p.i1).map(|k| (p.i1 + k, p.j1 + k))),
+                Inside::Reordered { pair: (ka, kb), .. } => {
+                    let mut same: HashMap<&Shape, VecDeque<usize>> = HashMap::new();
+                    for (k, s) in kb.iter().enumerate() {
+                        same.entry(s).or_default().push_back(p.j1 + k);
                     }
-                    None => rest.push(k),
+                    pairs.extend(ka.iter().enumerate().filter_map(|(k, s)| Some((p.i1 + k, same.get_mut(s)?.pop_front()?))));
                 }
-            }
-            let mut left: Vec<usize> = same.values().flat_map(|q| q.iter().copied()).collect();
-            left.sort();
-            for (k, x) in rest.into_iter().zip(left) {
-                m.insert(k, x);
-            }
-            starts.insert((i1, j1));
-        } else if i2 - i1 == j2 - j1 && cls != "fill" {
-            for k in 0..i2 - i1 {
-                m.insert(i1 + k, j1 + k);
+                Inside::None => {}
             }
         }
-        // the first lines of an explained hunk are one place of the code on both sides: a jump to it is the same
-        // jump though the lines before moved (a match-base report: a longer fpu hunk moved a loop head by 8 bytes,
-        // and the loop's jne counted as other control flow)
-        if !matches!(cls.as_str(), "code" | "fill" | "") && i1 < la.len() && j1 < lb.len() {
-            starts.insert((i1, j1));
-        }
-        let mut theirs: HashMap<&str, VecDeque<usize>> = HashMap::new();
-        for k in j1..j2 {
-            if lb[k].target.is_some() {
-                theirs.entry(&lb[k].text).or_default().push_back(k);
-            }
-        }
-        for k in i1..i2 {
-            if la[k].target.is_some() {
-                if let Some(x) = theirs.get_mut(la[k].text.as_str()).and_then(|q| q.pop_front()) {
-                    jumps.push((k, x));
-                }
-            }
-        }
-        i = i.max(i2);
-        j = j.max(j2);
+        Cuts { pieces, pairs }
     }
-    (jumps, m, starts)
+
+    fn at(&self, ca: usize) -> impl Iterator<Item = &Piece> {
+        let from = self.pieces.partition_point(|p| p.i2 < ca);
+        self.pieces[from..].iter().take_while(move |p| p.i1 <= ca)
+    }
+
+    /// The original's cuts that correspond to our cut `ca`.
+    pub fn images(&self, ca: usize) -> Vec<usize> {
+        let mut out = vec![];
+        for p in self.at(ca) {
+            if ca == p.i1 {
+                out.push(p.j1);
+            }
+            if ca == p.i2 {
+                out.push(p.j2);
+            }
+            if p.i1 < ca && ca < p.i2 {
+                let k = ca - p.i1;
+                match &p.inside {
+                    Inside::ByIndex => out.push(p.j1 + k),
+                    Inside::Reordered { prefix: (ka, kb), .. } if multiset_prefix_eq(ka, kb, k) => out.push(p.j1 + k),
+                    _ => {}
+                }
+            }
+        }
+        out
+    }
+
+    /// The hunk of class `cls` our cut `ca` or the original's cut `cb` lies in or on (both, when one hunk has
+    /// both), as (ours' first line, the original's first line).
+    fn hunk_of(&self, cls: &str, ca: Option<usize>, cb: Option<usize>) -> Option<(usize, usize)> {
+        let on_a = |p: &Piece| ca.is_some_and(|c| p.i1 <= c && c <= p.i2);
+        let on_b = |p: &Piece| cb.is_some_and(|c| p.j1 <= c && c <= p.j2);
+        let hunks = || self.pieces.iter().filter(|p| p.cls == cls);
+        hunks().find(|p| on_a(p) && on_b(p)).or_else(|| hunks().find(|p| on_a(p) || on_b(p))).map(|p| (p.i1, p.j1))
+    }
+
+    /// Whether the code from our cut `ca` and from the original's cut `cb` is the same block run to its end: the same
+    /// instructions in turn (a `jmp` followed, a conditional jump's targets the same place or the same code again)
+    /// up to a `ret` or to a pair of cuts that correspond. VC6 keeps a copy of a return tail per path or merges them,
+    /// so two jumps the alignment pairs can go to two copies of one tail (gildegold gm_CharLevel, ls_WriteMessageQueues:
+    /// the original's copy before the loop, ours after it).
+    ///
+    /// `zero`: per side, the registers known to be zero at the jump (known_zero). A `xor R, R` only one side's path
+    /// has is skipped when R is zero at the other side's jump and no line of either path so far names R (no flag
+    /// reader after it): R is zero after it on both. VC6 threads a jump past a zeroing that is redundant on its path
+    /// (gildegold ai_DecideUseMilitaryObject: `test eax, eax; je` to the epilogue after its `xor eax, eax`, ours to
+    /// the one before; ai_ExecuteUseMilitaryObject: the original zeroes eax before its `test esi, esi; je`).
+    #[allow(clippy::too_many_arguments)]
+    fn same_tail(&self, la: &[Line], lb: &[Line], ca: usize, cb: usize, mut zero: [Vec<&'static str>; 2], depth: u32) -> bool {
+        let (mut x, mut y) = (ca, cb);
+        for _ in 0..32 {
+            x = follow_jmp(la, x);
+            y = follow_jmp(lb, y);
+            if self.images(x).contains(&y) {
+                return true;
+            }
+            let (Some(a), Some(b)) = (la.get(x), lb.get(y)) else { return false };
+            if a.text != b.text {
+                let skip = |l: &[Line], k: usize, z: &[&str]| z.iter().any(|r| l[k].text == format!("xor {r}, {r}"))
+                    && !l.get(k + 1).is_some_and(|n| reads_flags(&n.text));
+                if skip(la, x, &zero[1]) {
+                    x += 1;
+                    continue;
+                }
+                if skip(lb, y, &zero[0]) {
+                    y += 1;
+                    continue;
+                }
+                return false;
+            }
+            for z in zero.iter_mut() {
+                z.retain(|r| !names_reg(&a.text, r));
+            }
+            if a.shape.mn == "ret" {
+                return true;
+            }
+            if let (Some(ta), Some(tb)) = (a.target, b.target) {
+                let (Some(ja), Some(jb)) = (cut_of(la, ta), cut_of(lb, tb)) else { return false };
+                if !(self.images(ja).contains(&jb) || depth > 0 && self.same_tail(la, lb, ja, jb, [vec![], vec![]], depth - 1)) {
+                    return false;
+                }
+            } else if a.target.is_some() != b.target.is_some() {
+                return false;
+            }
+            (x, y) = (x + 1, y + 1);
+        }
+        false
+    }
+
+    /// The hunk our cut lies strictly inside, for a target the alignment gives no place: (its class, its first line).
+    fn inside_of(&self, ca: usize) -> Option<(&str, usize)> {
+        self.at(ca).find(|p| p.i1 < ca && ca < p.i2).map(|p| (p.cls.as_str(), p.i1))
+    }
 }
 
-struct Pos {
-    a: HashMap<i64, usize>,
-    b: HashMap<i64, usize>,
+/// The cut of a target address: the line that starts there, or the end.
+fn cut_of(l: &[Line], t: i64) -> Option<usize> {
+    let k = l.partition_point(|x| (x.addr as i64) < t);
+    let end = l.last().map(|x| (x.addr + x.size) as i64);
+    (k < l.len() && l[k].addr as i64 == t || k == l.len() && end == Some(t)).then_some(k)
 }
 
-fn follow(l: &[Line], pos: &HashMap<i64, usize>, mut i: Option<usize>) -> Option<usize> {
-    for _ in 0..8 {
-        let Some(k) = i else { break };
-        if k >= l.len() || l[k].target.is_none() || mnemonic(&l[k].text) != "jmp" {
+const GPRS: [(&str, &[&str]); 8] = [("eax", &["eax", "ax", "al", "ah"]), ("ecx", &["ecx", "cx", "cl", "ch"]), ("edx", &["edx", "dx", "dl", "dh"]),
+                                   ("ebx", &["ebx", "bx", "bl", "bh"]), ("esi", &["esi", "si"]), ("edi", &["edi", "di"]),
+                                   ("ebp", &["ebp", "bp"]), ("esp", &["esp", "sp"])];
+
+/// Whether a line's text names register `r` (eax) or a part of it (al).
+fn names_reg(text: &str, r: &str) -> bool {
+    let parts = GPRS.iter().find(|g| g.0 == r).map(|g| g.1).unwrap_or(&[]);
+    text.split(|c: char| !c.is_ascii_alphanumeric()).any(|t| parts.contains(&t))
+}
+
+/// Whether an instruction reads the flags (a conditional jump, setcc, cmovcc, adc, sbb).
+fn reads_flags(text: &str) -> bool {
+    let mn = mnemonic(text);
+    mn.starts_with('j') && mn != "jmp" || mn.starts_with("set") || mn.starts_with("cmov") || matches!(mn, "adc" | "sbb" | "pushfd" | "lahf")
+}
+
+/// The registers known to be zero where the jump at line `k` is taken: R of a `je` right after `test R, R` (or
+/// `or R, R`, `cmp R, 0`), and of each `xor R, R` earlier in its block with no line between naming R. Read back at
+/// most 8 lines, never past a call, a jump, a return or a line some jump goes to.
+fn known_zero(l: &[Line], k: usize) -> Vec<&'static str> {
+    let is_target = |q: usize| l.iter().any(|x| x.target == Some(l[q].addr as i64));
+    let mut out = vec![];
+    if is_target(k) {
+        return out;
+    }
+    if mnemonic(&l[k].text) == "je" && k > 0 {
+        let p = &l[k - 1].text;
+        if let Some(g) = GPRS.iter().find(|g| [format!("test {0}, {0}", g.0), format!("or {0}, {0}", g.0), format!("cmp {}, 0", g.0)].contains(p)) {
+            out.push(g.0);
+        }
+    }
+    for q in (k.saturating_sub(8)..k).rev() {
+        let t = &l[q].text;
+        if let Some(g) = GPRS.iter().find(|g| *t == format!("xor {0}, {0}", g.0)) {
+            if !out.contains(&g.0) && (q + 1..k).all(|m| !names_reg(&l[m].text, g.0)) {
+                out.push(g.0);
+            }
+        }
+        if matches!(mnemonic(t), "call" | "ret" | "jmp") || l[q].target.is_some() || is_target(q) {
             break;
         }
-        i = pos.get(&l[k].target.unwrap()).copied();
     }
-    i.filter(|&k| k < l.len())
+    out
 }
 
-#[allow(clippy::too_many_arguments)]
-fn same_code(la: &[Line], lb: &[Line], ia: usize, ib: usize, m: &HashMap<usize, usize>, starts: &HashSet<(usize, usize)>,
-             pos: &Pos, depth: u32, steps: u32) -> bool {
-    let (mut ia, mut ib) = (Some(ia), Some(ib));
-    for _ in 0..steps {
-        ia = follow(la, &pos.a, ia);
-        ib = follow(lb, &pos.b, ib);
-        let (Some(x), Some(y)) = (ia, ib) else { return false };
-        if m.get(&x) == Some(&y) || starts.contains(&(x, y)) {
-            return true;
+/// A cut through the `jmp`s that start there (at most 8).
+fn follow_jmp(l: &[Line], mut c: usize) -> usize {
+    for _ in 0..8 {
+        match l.get(c) {
+            Some(x) if x.shape.mn == "jmp" => match x.target.and_then(|t| cut_of(l, t)) {
+                Some(t) => c = t,
+                None => break,
+            },
+            _ => break,
         }
-        if la[x].text != lb[y].text {
-            return false;
-        }
-        let mn = mnemonic(&la[x].text);
-        if mn == "ret" || mn == "jmp" {
-            return true;
-        }
-        if la[x].target.is_some() || lb[y].target.is_some() {
-            let ja = la[x].target.and_then(|t| pos.a.get(&t).copied());
-            let jb = lb[y].target.and_then(|t| pos.b.get(&t).copied());
-            match (ja, jb) {
-                (Some(ja), Some(jb)) if depth > 0 && same_code(la, lb, ja, jb, m, starts, pos, depth - 1, steps) => {}
-                _ => return false,
-            }
-        }
-        ia = Some(x + 1);
-        ib = Some(y + 1);
     }
-    false
+    c
 }
 
-fn positions(l: &[Line]) -> HashMap<i64, usize> {
-    l.iter().enumerate().map(|(i, x)| (x.addr as i64, i)).collect()
-}
-
-fn branch_diffs(la: &[Line], lb: &[Line], hs: &[Hunk]) -> Vec<String> {
+/// The branch check, (the real differences, the grouped lines of jumps into code hunks): every pair of jumps the
+/// alignment pairs (Cuts::pairs), their targets taken as cuts and mapped through the cut correspondence. A target
+/// pair that does not correspond but goes to two copies of the same code (Cuts::same_tail) is the same jump. One
+/// that does not, with a cut in or on a code hunk, is that hunk's difference: one line per hunk. Any
+/// other is a real difference of the statement structure; its message names both target instructions and where the
+/// alignment puts ours' target (two offsets that read the same are never printed alone: a match-base report).
+fn branch_diffs(la: &[Line], lb: &[Line], hs: &[Hunk], renamed: bool) -> (Vec<String>, Vec<String>) {
     if la.is_empty() || lb.is_empty() {
-        return vec![];
+        return (vec![], vec![]);
     }
-    let (jumps, m, starts) = aligned(la, lb, hs);
-    let pos = Pos { a: positions(la), b: positions(lb) };
+    let cuts = Cuts::new(la, lb, hs, renamed);
     let base = la[0].addr as i64;
-    let place = |t: i64, p: &HashMap<i64, usize>| if p.contains_key(&t) { format!("+{}", py_hex(t - base)) } else { "outside the code".to_string() };
-    let mut out = vec![];
-    for (i, j) in jumps {
-        let (ta, tb) = (la[i].target.unwrap(), lb[j].target.unwrap());
-        let (ia, ib) = (pos.a.get(&ta).copied(), pos.b.get(&tb).copied());
-        if ia.is_none() && ib.is_none() {
+    let off = |l: &[Line], c: usize| match l.get(c) {
+        Some(x) => x.addr as i64 - base,
+        None => l.last().map(|x| (x.addr + x.size) as i64 - base).unwrap_or(0),
+    };
+    let place = |l: &[Line], c: Option<usize>| match c {
+        Some(c) => format!("+{} ({})", py_hex(off(l, c)), l.get(c).map(|x| x.text.as_str()).unwrap_or("the end")),
+        None => "outside the code".to_string(),
+    };
+    let (mut out, mut into): (Vec<String>, Vec<((usize, usize), usize)>) = (vec![], vec![]);
+    for &(i, j) in &cuts.pairs {
+        let (Some(ta), Some(tb)) = (la[i].target, lb[j].target) else { continue };
+        let (ca, cb) = (cut_of(la, ta), cut_of(lb, tb));
+        if ca.is_none() && cb.is_none() {
             continue;
         }
-        if let (Some(x), Some(y)) = (ia, ib) {
-            if same_code(la, lb, x, y, &m, &starts, &pos, 4, 24) {
+        let images = ca.map(|c| cuts.images(c)).unwrap_or_default();
+        if cb.is_some_and(|c| images.contains(&c)) {
+            continue;
+        }
+        if let (Some(x), Some(y)) = (ca, cb) {
+            if cuts.same_tail(la, lb, x, y, [known_zero(la, i), known_zero(lb, j)], 4) {
                 continue;
             }
         }
-        out.push(format!("{} at +{}: ours to {}, the original's to {}", mnemonic(&la[i].text), py_hex(la[i].addr as i64 - base),
-                         place(ta, &pos.a), place(tb, &pos.b)));
+        if let Some(h) = cuts.hunk_of("code", ca, cb) {
+            match into.iter_mut().find(|x| x.0 == h) {
+                Some(x) => x.1 += 1,
+                None => into.push((h, 1)),
+            }
+            continue;
+        }
+        let mut s = format!("{} at +{}: ours to {}, the original's to {}", mnemonic(&la[i].text), py_hex(la[i].addr as i64 - base),
+                            place(la, ca), place(lb, cb));
+        if let Some(c) = ca {
+            match (images.first(), cuts.inside_of(c)) {
+                (Some(&x), _) => s += &format!("; the alignment puts ours' target at the original's +{}", py_hex(off(lb, x))),
+                (None, Some((cls, h))) => s += &format!("; ours' target lies inside the {cls} hunk at +{}, which gives it no place in the original",
+                                                        py_hex(off(la, h))),
+                _ => {}
+            }
+        }
+        out.push(s);
     }
-    out
+    into.sort();
+    let into = into.into_iter().map(|((h, _), n)| format!("{n} jump{} into the code hunk at +{}", if n == 1 { "" } else { "s" }, py_hex(off(la, h)))).collect();
+    (out, into)
 }
 
 fn bump(w: &mut Vec<(String, i64)>, k: &str, n: i64) {
@@ -560,14 +740,14 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
     if bad {
         bump(&mut weight, "table", tables.unwrap().diffs.len() as i64);
     }
-    let branches = branch_diffs(la, lb, hs);
+    let (branches, into_code) = branch_diffs(la, lb, hs, renamed);
     if !branches.is_empty() {
         bump(&mut weight, "branch", branches.len() as i64);
     }
     let shape = (code.is_empty() || moved || renamed) && !bad && branches.is_empty();
     code.truncate(6);
     Verdict { shape, hunks: weight, moved, renamed, code, distance: distance(&a, &b), tables: tables.cloned(), frame: None,
-              branches: branches.into_iter().take(12).collect() }
+              branches: branches.into_iter().take(12).collect(), into_code }
 }
 
 /// diffclass.analyse: (the hunks, the verdict) of two listings: the plain diff, or the frame-aligned one when the
@@ -1031,7 +1211,7 @@ mod tests {
         let mut b = body.to_vec();
         b[1] = ("je X", Some(2));
         let v = verdict(&a, &jumps(&b), None);
-        assert!(!v.shape && v.hunks == [("branch".to_string(), 1)] && v.branches[0].contains("je at +0x1: ours to +0x4, the original's to +0x2"));
+        assert!(!v.shape && v.hunks == [("branch".to_string(), 1)] && v.branches[0].contains("je at +0x1: ours to +0x4 (xor eax, eax), the original's to +0x2 (mov eax, 1); the alignment puts ours' target at the original's +0x4"), "{:?}", v.branches);
         let renamed: Vec<(String, Option<u32>)> = body.iter().map(|(t, g)| (t.replace("eax", "ecx"), *g)).collect();
         let renamed: Vec<(&str, Option<u32>)> = renamed.iter().map(|(t, g)| (t.as_str(), *g)).collect();
         assert!(verdict(&a, &jumps(&renamed), None).shape);
@@ -1066,7 +1246,81 @@ mod tests {
         let mut other = theirs.to_vec();
         other[6] = ("je X", Some(11));
         let v = verdict(&jumps(&ours), &jumps(&other), None);
-        assert!(!v.shape && v.branches.len() == 1 && v.branches[0].contains("je at +0x6: ours to +0xa, the original's to +0xb"), "{:?}", v.branches);
+        assert!(!v.shape && v.branches.len() == 1 && v.branches[0].contains("je at +0x6: ours to +0xa (mov eax, edx), the original's to +0xb (shl eax, 4)"), "{:?}", v.branches);
+        // the epilogue's pops in another order (a match-base report, gm_FreeStallCapacity: "jg at +0x35: ours to
+        // +0x76, the original's to +0x76"): the je goes to the cut inside the order hunk after the same two movs on
+        // both sides, though the instructions at the target differ
+        let ours = [("test eax, eax", None), ("je X", Some(4)), ("mov ecx, 1", None), ("mov edx, 2", None), ("pop ebx", None),
+                    ("pop edi", None), ("ret", None)];
+        let theirs = [("test eax, eax", None), ("je X", Some(4)), ("mov edx, 2", None), ("mov ecx, 1", None), ("pop edi", None),
+                      ("pop ebx", None), ("ret", None)];
+        let v = verdict(&jumps(&ours), &jumps(&theirs), None);
+        assert!(v.shape && v.branches.is_empty() && v.into_code.is_empty(), "{:?} {:?}", v.branches, v.hunks);
+        // into the same hunk after other prefixes: a real difference, both target instructions named
+        let mut other = theirs.to_vec();
+        other[1] = ("je X", Some(3));
+        let v = verdict(&jumps(&ours), &jumps(&other), None);
+        assert!(!v.shape && v.branches.len() == 1, "{:?}", v.branches);
+        assert!(v.branches[0].contains("ours to +0x4 (pop ebx), the original's to +0x3 (mov ecx, 1)"), "{:?}", v.branches);
+        // one inserted instruction shifts every later target (a match-base report: ~12 "targets differ" lines for
+        // one epilogue): the targets in equal runs correspond by position
+        let tail = [("mov eax, 1", None), ("cmp ecx, 2", None), ("jne X", Some(9)), ("inc eax", None), ("ret", None)];
+        let row = |t: &(&'static str, Option<u32>), d: u32| (t.0, t.1.map(|g| g + d));
+        let ours: Vec<_> = [("test eax, eax", None), ("je X", Some(5)), ("push esi", None), ("pop esi", None), ("xor eax, eax", None)]
+            .iter().map(|t| row(t, 0)).chain(tail.iter().map(|t| row(t, 0))).collect();
+        let theirs: Vec<_> = [("test eax, eax", None), ("je X", Some(6)), ("push esi", None), ("mov esi, ecx", None), ("pop esi", None),
+                              ("xor eax, eax", None)].iter().map(|t| row(t, 0)).chain(tail.iter().map(|t| row(t, 1))).collect();
+        let (hs, v) = analyse(&jumps(&ours), &jumps(&theirs), None);
+        assert!(v.branches.is_empty() && v.into_code.is_empty() && hs.len() == 1 && hs[0].4 == "code", "{:?} {:?} {hs:?}", v.branches, v.into_code);
+        // two jumps into a code hunk, its lines differing: one line under the hunk, no branch difference
+        let ours = [("test eax, eax", None), ("je X", Some(5)), ("cmp ecx, 1", None), ("je X", Some(6)), ("ret", None), ("mov eax, 1", None),
+                    ("mov eax, 2", None), ("ret", None)];
+        let theirs = [("test eax, eax", None), ("je X", Some(6)), ("cmp ecx, 1", None), ("je X", Some(5)), ("ret", None), ("mov eax, 3", None),
+                      ("mov eax, 4", None), ("ret", None)];
+        let v = verdict(&jumps(&ours), &jumps(&theirs), None);
+        assert!(v.branches.is_empty() && v.into_code == ["2 jumps into the code hunk at +0x5"], "{:?} {:?}", v.branches, v.into_code);
+        assert!(v.summary().contains("2 jumps into the code hunk at +0x5") && !v.summary_without_branches().contains("jumps into"));
+        // two copies of one return tail, ours' je to the first, the original's to the second (gildegold gm_CharLevel,
+        // proved equal): the same code from both targets, no difference
+        let body = [("test eax, eax", None), ("je X", Some(3)), ("mov eax, 1", None), ("pop esi", None), ("ret", None),
+                    ("xor eax, eax", None), ("pop esi", None), ("ret", None)];
+        let mut other = body.to_vec();
+        other[1] = ("je X", Some(6));
+        let v = verdict(&jumps(&body), &jumps(&other), None);
+        assert!(v.shape && v.branches.is_empty(), "{:?}", v.branches);
+        // the original's je skips the zeroing its tail does (gildegold ai_DecideUseMilitaryObject: `je` past
+        // `xor eax, eax`, eax differs at the return): a real difference
+        let ours = [("test ecx, ecx", None), ("je X", Some(3)), ("inc edx", None), ("pop edi", None), ("pop esi", None), ("xor eax, eax", None),
+                    ("ret", None)];
+        let theirs = [("test ecx, ecx", None), ("je X", Some(4)), ("inc edx", None), ("xor eax, eax", None), ("pop edi", None), ("pop esi", None),
+                      ("ret", None)];
+        let v = verdict(&jumps(&ours), &jumps(&theirs), None);
+        assert!(!v.shape && v.branches.len() == 1 && v.branches[0].contains("ours to +0x3 (pop edi), the original's to +0x4 (pop edi)"), "{:?} {:?}", v.branches, v.hunks);
+        // the same where the je is taken on eax zero: the zeroing it skips is redundant on its path, the same jump
+        let zero = |t: &[(&'static str, Option<u32>)]| -> Vec<(&'static str, Option<u32>)> {
+            t.iter().map(|&(x, g)| (if x == "test ecx, ecx" { "test eax, eax" } else { x }, g)).collect()
+        };
+        let v = verdict(&jumps(&zero(&ours)), &jumps(&zero(&theirs)), None);
+        assert!(v.shape && v.branches.is_empty(), "{:?} {:?}", v.branches, v.hunks);
+        // the original zeroes eax before its jump, ours on the path (gildegold ai_ExecuteUseMilitaryObject)
+        let ours = [("test esi, esi", None), ("je X", Some(4)), ("xor eax, eax", None), ("inc edx", None), ("pop edi", None),
+                    ("xor eax, eax", None), ("ret", None)];
+        let theirs = [("xor eax, eax", None), ("test esi, esi", None), ("je X", Some(5)), ("inc edx", None), ("xor eax, eax", None),
+                      ("pop edi", None), ("ret", None)];
+        let v = verdict(&jumps(&ours), &jumps(&theirs), None);
+        assert!(v.shape && v.branches.is_empty() && v.into_code.is_empty(), "{:?} {:?}", v.branches, v.hunks);
+        // the same where the original's eax is not zero at the jump: its path returns eax as it was
+        let (mut o, mut t) = (ours.to_vec(), theirs.to_vec());
+        (o[2], t[0]) = (("mov eax, ecx", None), ("mov eax, ecx", None));
+        let v = verdict(&jumps(&o), &jumps(&t), None);
+        assert!(!v.shape && v.branches.len() == 1, "{:?} {:?}", v.branches, v.hunks);
+        // the zeroing earlier in the jump's block (gildegold amt_HasColumn7Holder)
+        let ours = [("xor eax, eax", None), ("test edi, edi", None), ("je X", Some(5)), ("inc edx", None), ("xor eax, eax", None),
+                    ("pop edi", None), ("pop esi", None), ("ret", None)];
+        let theirs = [("xor eax, eax", None), ("test edi, edi", None), ("je X", Some(4)), ("inc edx", None), ("pop edi", None),
+                      ("xor eax, eax", None), ("pop esi", None), ("ret", None)];
+        let v = verdict(&jumps(&ours), &jumps(&theirs), None);
+        assert!(v.branches.is_empty(), "{:?} {:?}", v.branches, v.hunks);
     }
 
     /// A switch at the function's start: three cases and a default, the 3-entry jump table at +0x28 after three

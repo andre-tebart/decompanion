@@ -1,7 +1,6 @@
 # Switch tables compared per case
 
 - **Priority:** P1 · **Size:** M · **Root:** R3
-- **Depends on:** branch-targets-as-cut-points
 
 ## Problem
 
@@ -16,7 +15,9 @@ One folded case prints `byte +0x44: 0x00 vs 0x48 ...` 12 times. The case-body or
 
 ## Task
 
-- Compare per case value: case → entry → target cut, with the target cuts mapped through the cut correspondence.
+- Compare per case value: case → entry → target cut, with the target cuts mapped through the cut correspondence
+  (`diffclass::Cuts::new` on the classified hunks, `Cuts::images`; `branch_diffs` shows the use). `compare_tables`
+  then needs the classified hunks, so it runs after `classify_hunks` / `frame_hunks` in `analyse`.
 - Report the entry counts and the differing cases: "case 0: ours to default, the original's to +0x..".
 - Show the case-body order in the `tables=` output.
 

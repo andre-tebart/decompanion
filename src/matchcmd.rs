@@ -495,6 +495,10 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
         out.push(format!("  branch targets differ ({}): jumps the alignment pairs go to other code", v.branches.len()));
         out.extend(v.branches.iter().map(|d| format!("      {d}")));
     }
+    if !v.into_code.is_empty() {
+        out.push(format!("  jumps into code hunks: targets the alignment pairs differ inside or at a code hunk (its difference): {}",
+                         v.into_code.join("; ")));
+    }
     for (i1, i2, j1, j2, cls, info) in &r.hunks {
         let at = if *i1 < la.len() { la[*i1].addr } else { lb[*j1].addr };
         out.push(format!("  {at:#010x}  {cls:<6} {:>4}  {info}", i2 - i1 + j2 - j1));
@@ -509,7 +513,7 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
             }
         }
     }
-    out.push(format!("  summary: {}", v.summary()));
+    out.push(format!("  summary: {}", v.summary_without_branches()));
     out.extend(ref_lines(&r, verdict != "draft"));
     out.extend(r.open_lines.iter().map(|l| format!("  open: {l}")));
     let (proof, unbound) = &r.proof;

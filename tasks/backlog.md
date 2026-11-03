@@ -16,7 +16,6 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 2 | [branch-targets-as-cut-points](branch-targets-as-cut-points.md): branch targets mapped through the alignment | M | |
 | 3 | [prover-stop-reason-names-effects](prover-stop-reason-names-effects.md): the prover names the real effect pair | S | |
 | 4 | [one-call-set-comparison](one-call-set-comparison.md): one call set, counts on both sides | S | |
 | 5 | [wrap-refuses-dirty-tree](wrap-refuses-dirty-tree.md): no witness without a commit | S | |
@@ -39,11 +38,11 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 17 | [small-correctness-fixes](small-correctness-fixes.md): refs `comment=`, disasm args, garbled sentence, client.rs:1, tables in disasm | S | |
 | 18 | [not-found-explains](not-found-explains.md): "unknown name" prints the ill-formed or compile cause | S | |
 | 19 | [freshness-visible](freshness-visible.md): quiet builds say what they compiled; code hash on grade | S | |
-| 20 | [escalate-gates-on-verdict](escalate-gates-on-verdict.md): escalate refuses on concrete differences, not prose | S | 2 |
+| 20 | [escalate-gates-on-verdict](escalate-gates-on-verdict.md): escalate refuses on concrete differences, not prose | S | |
 | 21 | [trial-and-scoped-edit](trial-and-scoped-edit.md): `dcp fn NAME --replace FILE [--trial]` | M | 7 |
 | 22 | [readers-use-answer-table](readers-use-answer-table.md): one owner lookup for every reader; φ ranking | M | |
 | 23 | [b1-evidence-from-alignment](b1-evidence-from-alignment.md): B1 evidence from the alignment, two tail messages | M | |
-| 24 | [switch-tables-per-case](switch-tables-per-case.md): switch tables per case through the cut correspondence | M | 2 |
+| 24 | [switch-tables-per-case](switch-tables-per-case.md): switch tables per case through the cut correspondence | M | |
 | 25 | [prover-coverage](prover-coverage.md): extend the prover by stop-reason tally; freeze the class set | L | 3 |
 | 26 | [skills-sync-and-fixes](skills-sync-and-fixes.md): skill drift check, contradictions, VC6 spellings reference | S-M | 14 |
 | 27 | [session-progress-from-tool](session-progress-from-tool.md): `done=N/8` from the tool, not from commits | S | |
@@ -53,7 +52,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 31 | [frame-slot-annotation](frame-slot-annotation.md): entry-relative slots and arguments in disasm and asmdiff | M | |
 | 32 | [diffclass-meaning-classes](diffclass-meaning-classes.md): `const` and `addrval` as concrete differences | M | |
 | 33 | [datum-experiment](datum-experiment.md): the datum object experiment, graded, seen by M1 | M | |
-| 34 | [normalized-alignment](normalized-alignment.md): align on keys with registers and slots masked | L | 2 |
+| 34 | [normalized-alignment](normalized-alignment.md): align on keys with registers and slots masked | L | |
 | 35 | [gap-data-through-data-fix](gap-data-through-data-fix.md): `data fix` splits gap blocks and drops unused externs | M-L | 7 |
 | 36 | [headers-conflicts-scope](headers-conflicts-scope.md): duplicates anywhere; the trial drops superseded declarations | M | 6, 7 |
 | 37 | [d-rule-messages-sizes](d-rule-messages-sizes.md): D1/D7/D5 messages name their sizes and alternatives | S | |
