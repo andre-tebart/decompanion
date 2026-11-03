@@ -8,6 +8,7 @@ Report-style commands print their full state on every call, and workers pipe eve
 the largest group of reports (about 25 reports, 60+ sightings). Examples:
 
 - One `ok <unit> errors= warnings= obj=` line per compiled unit: 10 to 90 lines after a header edit.
+  (The build's `FAILED units=` line is gone: a failed unit's functions are `open` in the `grades:` line.)
 - The full `grades:` histogram. It never names which function moved, and it cannot show two moves that cancel out. That
   is all `build-grades-line-mismatch` is.
 - check repeats the static link `note` lines and the category totals on every run.

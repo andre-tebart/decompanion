@@ -149,7 +149,8 @@ pub fn queue(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str
 fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> Result<Vec<Row>> {
     let rows = function_grades(db)?;
     let mut by_unit: Vec<(String, Vec<&Row>)> = vec![];
-    for r in rows.iter() {
+    // a function not run (its unit has no object) is no work item: M.compile is
+    for r in rows.iter().filter(|r| s(r, "code") != crate::grade::NOT_RUN) {
         let u = s(r, "unit");
         match by_unit.iter_mut().find(|x| x.0 == u) {
             Some(x) => x.1.push(r),
@@ -407,6 +408,18 @@ pub fn baseline_text(targets: &[(String, String)], old: &str, accept_falls: bool
     Ok(render(&rows))
 }
 
+/// The functions of a target's grades whose experiment did not run (their unit has no object): (unit, count).
+pub fn not_run(db: &str) -> Result<Vec<(String, usize)>> {
+    let mut out: Vec<(String, usize)> = vec![];
+    for r in function_grades(db)?.iter().filter(|r| s(r, "code") == crate::grade::NOT_RUN) {
+        match out.iter_mut().find(|x| x.0 == s(r, "unit")) {
+            Some(x) => x.1 += 1,
+            None => out.push((s(r, "unit").to_string(), 1)),
+        }
+    }
+    Ok(out)
+}
+
 /// The falls of a target's function grades against a baseline text.
 pub fn regressions(target: &str, db: &str, text: &str) -> Result<Vec<String>> {
     let mut base: Vec<(i64, Entry)> = parse_baseline(text).into_iter().filter(|x| x.0 .0 == target).map(|x| (x.0 .1, x.1)).collect();
@@ -531,6 +544,27 @@ mod tests {
         assert_eq!(f.iter().map(|x| (x.severity.as_str(), x.check.as_str())).collect::<Vec<_>>(), [("warn", "M1.debt")]);
         assert!(f[0].message.contains("debt byte+readable -> draft+readable, witness abc1234: tie-break; waits for the header"), "{}", f[0].message);
         assert!(run(0).iter().any(|x| x.severity == "error" && x.check == "M1.debt"));
+    }
+
+    #[test]
+    fn m1_counts_functions_not_run_per_unit() {
+        // a unit without an object: its baseline functions are not run (open), one M1 line for the unit, no falls
+        use crate::rules::testkit::Kit;
+        use serde_json::json;
+        let k = Kit::new(&crate::pe::testpe::build(None));
+        std::fs::create_dir_all(k.dir.join("ledger")).unwrap();
+        std::fs::write(k.dir.join("ledger").join("grades.tsv"),
+                       format!("{HEADER}
+t	0x10001000	f	u	byte	readable		
+t	0x10001010	g	u	shape	readable		
+")).unwrap();
+        let open = |a: i64, n: &str| (a, a + 1, "experiment", json!({"of": "function", "name": n, "unit": "u", "outcome": "open"}), crate::store::DECLARED);
+        k.put("G.grade", &[open(0x10001000, "f"), open(0x10001010, "g"),
+                           (0x10001000, 0x10001001, "readability", json!({"of": "function", "name": "f", "grade": "draft"}), crate::store::DECLARED)]);
+        let f = k.run("M1.baseline", &["G.grade"], r#"{"target": "t", "max_debt": -1, "code_rank": {"draft": 0, "shape": 1, "byte": 2}}"#).1;
+        assert_eq!(f.len(), 1, "{:?}", f.iter().map(|x| &x.message).collect::<Vec<_>>());
+        assert!(f[0].check == "M1" && f[0].lo == 0x10001000 && f[0].message.starts_with("unit u has no object (M.compile): 2 baseline function(s)"),
+                "{}", f[0].message);
     }
 
     #[test]

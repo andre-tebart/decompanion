@@ -16,7 +16,6 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 8 | [unbuilt-function-not-run](unbuilt-function-not-run.md): an unbuilt function is open, not draft | M | |
 | 9 | [source-file-without-unit-finding](source-file-without-unit-finding.md): a source file without a unit is ill-formed | S-M | |
 | 10 | [ill-formed-is-error](ill-formed-is-error.md): ill-formed ids gate; C.name.alias covers every name | S-M | |
 | 11 | [data-extent-fallback](data-extent-fallback.md): no one-byte data owners | S-M | |

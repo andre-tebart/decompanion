@@ -137,7 +137,10 @@ fn compile_and_byte_match() {
     unit(&t, "net", &[head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return nothing;\n}\n"]);
     let (code, out) = dcp(&t, &["build"]);
     assert!(code == 1 && out.contains("src/net.c(6)") && out.contains("C2065"), "{out}");
-    assert!(out.trim_end().lines().last().unwrap().starts_with("  FAILED units=net  "), "{out}");
+    // its functions are not run (open), not draft: the build gives no grade a fall
+    assert!(out.contains("failed=1") && out.contains("grades: open+"), "{out}");
+    let (_, out) = dcp(&t, &["grade", "get"]);
+    assert!(out.contains("experiment=open") && out.contains("not run: no object: the unit net failed to compile"), "{out}");
     let (code, out) = dcp(&t, &["check"]);
     assert!(code == 1 && out.contains("M.compile"), "{out}");
 }

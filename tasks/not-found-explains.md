@@ -8,7 +8,10 @@ After any of the following, `dcp grade X` says "X is neither a unit nor a graded
 
 - a `#define` placed between the address comment and the definition;
 - `}/* 0x...` ending up on one line;
-- a unit that failed to build.
+- a unit file that was emptied, so the scan finds no function in it.
+
+A unit that only fails to compile keeps its rows: grade prints `experiment=open` with `not run: no object: the unit
+X failed to compile`.
 
 There are 6 sightings.
 

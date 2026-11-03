@@ -21,6 +21,8 @@ The data rules only prove, never refute:
   the reference check (refcheck.rs: the sites at their offsets, as `sites_matched`, then `check` against φ) applied
   to relocated fields.
 - Grade it, and let M1 see data falls.
+- A datum whose unit has no object is *not run* (outcome `open`, `grade::NOT_RUN`), as for functions: M1 counts it in
+  its per-unit line, not as a fall.
 
 ## Rejected
 

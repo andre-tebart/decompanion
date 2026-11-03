@@ -59,8 +59,9 @@ dist='N ins / M bytes, size ours vs original'`. `section=draft`: the experiment 
 experiment is shape or byte, only readability is missing. `gates=` names the failing rules.
 
 ### 2.1 Reading: the tools
-- `dcp grade NAME` - the failing rules with their evidence (B1..B3: the experiment, byte / shape / draft; Q1..Q6, Q8:
-  readability, kept apart), `dist`, and the calls without a prototype (`M7 consistency:`, the experiment's side).
+- `dcp grade NAME` - the failing rules with their evidence (B1..B3: the experiment, byte / shape / draft, or open when
+  its unit does not compile; Q1..Q6, Q8: readability, kept apart), `dist`, and the calls without a prototype
+  (`M7 consistency:`, the experiment's side).
 - `dcp asmdiff NAME` - our instructions against the original's, aligned; `--regs eax=ecx,esi=edi` renames
   registers on our side, `--regs auto` by the renaming most of the function agrees on (the head shows it:
   `regs=...`). Views: `--changed` (only the differing lines, `--context N` around each), `--at 0xADDR` (a

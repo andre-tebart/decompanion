@@ -788,11 +788,18 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     let read: HashMap<i64, std::rc::Rc<Claim>> = store::claims(db, &ctx.db, "readability", &ctx.needed, |f| f.s("of") == Some("function"))
         .map_err(err)?.into_iter().map(|f| (f.lo, f)).collect();
+    // the baseline functions whose experiment did not run (their unit has no object), per unit: (first address, count)
+    let mut not_run: std::collections::BTreeMap<String, (i64, usize)> = std::collections::BTreeMap::new();
     for (a, r) in &base {
         let (name, code, readability) = (&r[2], &r[4], &r[5]);
         let mut falls = vec![];
         match now.get(a) {
             None => falls.push(format!("graded {code} + {readability} in the baseline, no grade now (its source is gone?)")),
+            // the premise is missing, not the grade: no fall (docs/mental-model.md §4), one line per unit below
+            Some(g) if g.s("outcome") == Some(crate::grade::NOT_RUN) => {
+                let e = not_run.entry(g.s("unit").unwrap_or("").to_string()).or_insert((*a, 0));
+                e.1 += 1;
+            }
             Some(g) => {
                 let nc = g.s("outcome").unwrap_or("");
                 if let (Some(b), Some(n)) = (rank(code), rank(nc)) {
@@ -809,6 +816,10 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         for what in falls {
             out.finding("error", "M1", at, at + 1, format!("{name} at {:#x}: {what} (baseline ledger/grades.tsv)", a), "");
         }
+    }
+    for (unit, (a, n)) in &not_run {
+        let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };
+        out.finding("error", "M1", at, at + 1, format!("unit {unit} has no object (M.compile): {n} baseline function(s) have no experiment,                                                         their grades are not checked (baseline ledger/grades.tsv)"), "");
     }
     // the debt (§8.6): every declared regression is listed, never a gate failure, while the target holds no more
     // than the gate's max_debt of them (when [gate] max_debt sets one)

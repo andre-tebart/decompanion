@@ -112,10 +112,13 @@ pub fn grade_command(p: &crate::project::Project, what: Option<String>, lint: &s
         out.push(format!("{}  ({lint})", record(&[("target", s(p.target_name.clone())), ("functions", Tok::I(rows.len() as i64)),
                                                  ("units", Tok::I(units.len() as i64))])));
         out.push(format!("  {:<10} {:>7} {:>9} {:>7}", "experiment", "draft", "readable", "total"));
-        for code in ["byte", "shape", "draft"] {
+        for code in ["byte", "shape", "draft", crate::grade::NOT_RUN] {
             let n = |rd: &str| rows.iter().filter(|r| st(r, "code") == code && st(r, "readability") == rd).count();
             let (d, rd) = (n("draft"), n("readable"));
-            out.push(format!("  {code:<10} {d:>7} {rd:>9} {:>7}", d + rd));
+            // open: not run (its unit has no object), listed only when there is one
+            if code != crate::grade::NOT_RUN || d + rd > 0 {
+                out.push(format!("  {code:<10} {d:>7} {rd:>9} {:>7}", d + rd));
+            }
         }
         for u in units.iter() {
             out.push(format!("  {}", record(&[("unit", vt(u.get("unit"))), ("range", Tok::R(int(u, "lo"), int(u, "hi"))), ("experiment", vt(u.get("code"))),
@@ -560,6 +563,18 @@ pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> 
     let old = read_baseline(root);
     let mut targets = vec![];
     let mut falls = vec![];
+    // a function not run has no grade to write: the baseline would lose its entry (not even --accept-falls)
+    let mut unbuilt = vec![];
+    for p in projects {
+        let db = opened(p)?;
+        unbuilt.extend(queues::not_run(&db)?.into_iter().map(|(u, n)| format!("  unbuilt: {} unit {u}: {n} function(s) not run", p.target_name)));
+    }
+    if !unbuilt.is_empty() {
+        let mut out = vec![record(&[("promote", s("refused")), ("unbuilt", Tok::I(unbuilt.len() as i64))])
+            + "  (a unit has no object: its functions have no experiment; fix the compile (dcp check: M.compile), then promote)"];
+        out.extend(unbuilt);
+        return Ok((out, None, 1));
+    }
     for p in projects {
         let db = opened(p)?;
         falls.extend(queues::regressions(&p.target_name, &db, &old)?);

@@ -120,9 +120,18 @@ thread_local! {
         std::cell::RefCell::new(Default::default());
 }
 
+/// A sourced function without compiled code: its source, why, and whether its experiment ran. With no object of
+/// its unit (it failed to compile, or is not compiled yet) the experiment is not run: open, not a fall
+/// (docs/mental-model.md §3, §4); an object without the function is H's failure: the experiment ran.
+pub struct Missing {
+    pub src: Rc<Claim>,
+    pub why: String,
+    pub ran: bool,
+}
+
 /// match.compiled_functions: every L.src function source of the current target whose unit compiled and whose
-/// object defines it, compared with the image (sorted by address); the others as (source, why).
-pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, Vec<(Rc<Claim>, String)>)> {
+/// object defines it, compared with the image (sorted by address); the others as Missing.
+pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, Vec<Missing>)> {
     let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
     // the relocation sites only for an image that has base relocations (Python reads them, then drops them)
@@ -186,11 +195,11 @@ pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, 
         let obj = objs[&unit].clone();
         let Some((path, obj)) = obj else {
             let why = if objects.contains_key(&unit) { "failed to compile" } else { "is not compiled (dcp build)" };
-            missing.push((s, format!("no object: the unit {why}")));
+            missing.push(Missing { why: format!("no object: the unit {unit} {why}"), src: s, ran: false });
             continue;
         };
         let Some(&k) = obj.1.get(&name) else {
-            missing.push((s, format!("the object of unit {unit} defines no function {name}")));
+            missing.push(Missing { why: format!("the object of unit {unit} defines no function {name}"), src: s, ran: true });
             continue;
         };
         let lo = s.lo as u32;

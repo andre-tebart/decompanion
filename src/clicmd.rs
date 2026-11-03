@@ -886,13 +886,6 @@ pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64),
         }
         out.push(format!("  grades: {}", c.iter().map(|((a, b), v)| format!("{a}+{b}={v}")).collect::<Vec<_>>().join("  ")));
     }
-    if !bad.is_empty() {
-        // the last line says the build failed: a failed unit's functions have no object, so the grades above fall
-        // with it (a report: `dcp build | tail -1` showed only the grades and read as a grade fall)
-        let tus: Vec<String> = bad.iter().map(|f| py_str(&f.value["tu"])).collect();
-        out.push(format!("  FAILED units={}  (no object: the grades above count their functions as unbuilt; the errors are listed above)",
-                         tus.join(",")));
-    }
     Ok((out, !bad.is_empty()))
 }
 

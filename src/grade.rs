@@ -22,6 +22,10 @@ fn err(e: rusqlite::Error) -> Error {
 
 pub(crate) const CODE: [&str; 3] = ["draft", "shape", "byte"];
 
+/// The outcome of an experiment that did not run (its unit has no object): open, no grade, so below none of CODE
+/// and no fall (docs/mental-model.md §3, §4); M.compile / M.compile.stale say why, M1 counts it per unit.
+pub(crate) const NOT_RUN: &str = "open";
+
 /// The reference differences a function's failing lines name one by one (the rest by their count).
 const REF_LINES: usize = 8;
 
@@ -378,9 +382,10 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                         dist: json!({"ins": dist_ins, "bytes": nbytes, "size": size, "orig": orig_size, "extent": extent, "slot": slot}) });
     }
     HELD.with(|h| *h.borrow_mut() = (held.0, used));
-    for (s, reason) in &missing {
-        let orig = walk.get(&s.lo).map(|w| json!(w.hi - s.lo)).unwrap_or(Value::Null);
-        rows.push(Row { src: s.clone(), code: "draft".into(), why: vec![format!("B3 draft: {reason}")], hunks: json!({}), open: vec![],
+    for m in &missing {
+        let orig = walk.get(&m.src.lo).map(|w| json!(w.hi - m.src.lo)).unwrap_or(Value::Null);
+        let (code, why) = if m.ran { ("draft", format!("B3 draft: {}", m.why)) } else { (NOT_RUN, format!("not run: {}", m.why)) };
+        rows.push(Row { src: m.src.clone(), code: code.into(), why: vec![why], hunks: json!({}), open: vec![],
                         dist: json!({"ins": null, "bytes": null, "size": null, "orig": orig}) });
     }
     rows.sort_by_key(|r| r.src.lo); // stable
@@ -475,7 +480,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for u in store::claims(db, &ctx.db, "unit", &ctx.needed, |f| f.value.get("status").is_some()).map_err(err)? {
         let tu = u.s("tu").unwrap_or("");
         let Some(fs) = per_unit.get(tu) else { continue };
-        let code = fs.iter().map(|f| f.0.as_str()).min_by_key(|c| rank(c)).unwrap_or("draft");
+        // a unit with a function not run has no outcome: open
+        let code = if fs.iter().any(|f| f.0 == NOT_RUN) { NOT_RUN } else { fs.iter().map(|f| f.0.as_str()).min_by_key(|c| rank(c)).unwrap_or("draft") };
         let named = u.value.get("named_by").filter(|n| !n.is_null());
         let readable = fs.iter().all(|f| f.1 == "readable") && named.is_some_and(|n| n.as_str() != Some("guess"));
         let named_v = match named {
