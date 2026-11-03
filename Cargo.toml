@@ -35,7 +35,12 @@ name = "dcp-bench"
 path = "tools/bench.rs"
 
 [profile.dev]
-opt-level = 1
+opt-level = 0
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
 
 [profile.release]
 opt-level = 3
