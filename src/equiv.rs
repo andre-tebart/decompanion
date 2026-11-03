@@ -306,11 +306,12 @@ impl Arena {
             Node::Const(v) => format!("{v:#x}"),
             Node::Var(v) => var_text(v),
             Node::Lin(c, t) => {
-                let mut s: Vec<String> = t.iter().map(|(x, k)| if *k == 1 { self.show(*x) } else { format!("{}*{}", *k as i32, self.show(*x)) }).collect();
+                let mut s = t.iter().map(|(x, k)| if *k == 1 { self.show(*x) } else { format!("{}*{}", *k as i32, self.show(*x)) }).collect::<Vec<_>>().join(" + ");
                 if *c != 0 {
-                    s.push(format!("{:#x}", c));
+                    let o = off(*c as i32);
+                    s = format!("{s} {} {}", &o[..1], &o[1..]);
                 }
-                format!("({})", s.join(" + "))
+                format!("({s})")
             }
             Node::Op(o, a) => format!("{o:?}({})", a.iter().map(|&x| self.show(x)).collect::<Vec<_>>().join(", ")),
             Node::Load(a, w, p, k) => format!("[{}]{w}@{p}.{k}", self.show(*a)),
@@ -787,12 +788,17 @@ impl Cfg {
     }
 }
 
+/// A signed offset as text: `+0x8`, `-0x100`.
+fn off(o: i32) -> String {
+    if o < 0 { format!("-{:#x}", o.unsigned_abs()) } else { format!("+{o:#x}") }
+}
+
 const REG_NAMES: [&str; 8] = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
 
 fn loc_text(l: &Loc) -> String {
     match l {
         Loc::Reg(g) => REG_NAMES.get(*g as usize).map_or(format!("r{g}"), |r| r.to_string()),
-        Loc::Slot(o) => format!("[esp0{o:+#x}]"),
+        Loc::Slot(o) => format!("[esp0{}]", off(*o)),
         Loc::Fpu(i) => format!("st({i} from the bottom)"),
     }
 }
@@ -802,13 +808,13 @@ fn loc_text(l: &Loc) -> String {
 fn var_text(v: &Var) -> String {
     match v {
         Var::Sp0 => "esp0".into(),
-        Var::Arg(o) => format!("arg[esp0{o:+#x}]"),
+        Var::Arg(o) => format!("arg[esp0{}]", off(*o)),
         Var::In(0, g) if (*g as usize) < REG_NAMES.len() => format!("{}0", REG_NAMES[*g as usize]),
         Var::In(p, k) => format!("v{k}@{p}"),
-        Var::Own(p, s, l) => format!("{}'s {}@{p}", if *s == 0 { "ours" } else { "the original" }, loc_text(l)),
+        Var::Own(p, s, l) => format!("{} {}@{p}", if *s == 0 { "our" } else { "the original's" }, loc_text(l)),
         Var::Ret(p, k, g) => format!("{}@call{k}@{p}", loc_text(&Loc::Reg(*g))),
         Var::EscBase => "frame".into(),
-        Var::Undef(o) => format!("undef[frame{o:+#x}]"),
+        Var::Undef(o) => format!("undef[frame{}]", off(*o)),
         Var::ArgBase => "args".into(),
         Var::FRet(p, k) => format!("st0@call{k}@{p}"),
     }
@@ -820,7 +826,7 @@ fn effect_text(x: &Effect, ar: &Arena) -> String {
     match x {
         Effect::Store(a, w, v) => format!("store{w} [{}] = {}", ar.show(*a), ar.show(*v)),
         Effect::Call(t, args) => format!("call {} ({})", ar.show(*t), list(args)),
-        Effect::Escape(r) => format!("escape {{{}}}", r.iter().map(|(o, v)| format!("frame{o:+#x}: {}", ar.show(*v))).collect::<Vec<_>>().join(", ")),
+        Effect::Escape(r) => format!("escape {{{}}}", r.iter().map(|(o, v)| format!("frame{}: {}", off(*o), ar.show(*v))).collect::<Vec<_>>().join(", ")),
         Effect::Fill(d, n, v, w) => format!("fill{w} [{}] x {} = {}", ar.show(*d), ar.show(*n), ar.show(*v)),
         Effect::Copy(d, f, n, w) => format!("copy{w} [{}] <- [{}] x {}", ar.show(*d), ar.show(*f), ar.show(*n)),
     }
@@ -854,7 +860,7 @@ fn differ(x: Option<&Effect>, y: Option<&Effect>, ar: &Arena) -> String {
             let mut offs: Vec<i32> = ra.iter().chain(rb).map(|s| s.0).collect();
             offs.sort_unstable();
             offs.dedup();
-            let show = |o: i32, s: Option<(i32, E)>| format!("frame{o:+#x} = {}", s.map_or("nothing".to_string(), |s| ar.show(s.1)));
+            let show = |o: i32, s: Option<(i32, E)>| format!("frame{} = {}", off(o), s.map_or("nothing".to_string(), |s| ar.show(s.1)));
             return match offs.into_iter().find(|&o| at(ra, o) != at(rb, o)) {
                 Some(o) => both("an escaped frame laid out otherwise", show(o, at(ra, o)), show(o, at(rb, o))),
                 None => both("an escaped frame laid out otherwise", effect_text(x, ar), effect_text(y, ar)),
