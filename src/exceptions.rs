@@ -4,6 +4,9 @@
 //! - `@original why`: the original itself was inconsistent here (it called a function through another spelling);
 //!   its evidence is an experiment whose bytes need the spelling.
 //! - `@vc6 why`: the checker's model of C (clang) differs from H's toolchain at this site; the gap is the checker's.
+//! One kind is a declaration of I's instruction, since the sources have no line for it (decl/text.dcl):
+//! - `0xADDR overrun -- why`: the original's access at that instruction overruns its object (a memset one int
+//!   past a field); S.extent takes it for no evidence of the object's extent.
 //!
 //! Exceptions are visible and counted, like debt: `dcp exceptions` lists them.
 
@@ -16,6 +19,8 @@ pub enum Kind {
     Original,
     /// the checker (clang) differs from the toolchain here
     Checker,
+    /// the original's access at an instruction overruns its object (decl `overrun`)
+    Overrun,
 }
 
 impl Kind {
@@ -23,6 +28,7 @@ impl Kind {
         match self {
             Kind::Original => "@original",
             Kind::Checker => "@vc6",
+            Kind::Overrun => "overrun",
         }
     }
 }
@@ -48,6 +54,16 @@ pub fn of_text(file: &str, text: &str) -> Vec<Exception> {
         out.push(Exception { file: file.to_string(), line: i + 1, kind: if m == "@vc6" { Kind::Checker } else { Kind::Original }, why });
     }
     out
+}
+
+/// The exceptions the declarations make (decl/*.dcl `overrun` lines of any target), by file and line.
+pub fn of_decls(root: &Path, targets: &[String]) -> Vec<Exception> {
+    let r = root.to_string_lossy();
+    let (ds, _) = crate::decl::load(&crate::decl::files(&r), &r, targets);
+    ds.into_iter()
+        .filter(|d| d.kind == "overrun")
+        .map(|d| Exception { file: d.file.clone(), line: d.line as usize, kind: Kind::Overrun, why: d.reason.trim().to_string() })
+        .collect()
 }
 
 /// Every exception of the project's sources (src/*.c, include/*.h, recursively), by file and line.

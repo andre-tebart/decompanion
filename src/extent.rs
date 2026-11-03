@@ -234,12 +234,28 @@ struct Fx<'a> {
     ev: Vec<Ev>,
     callee: u32, // while a call's terms apply
     pops: i64,
+    overrun: &'a HashSet<u32>, // the declared exceptions: instructions whose access overruns its object
+    hit: Vec<u32>,             // the declared ones this function met
 }
 
 impl Fx<'_> {
+    /// An instruction declared to overrun its object (decl `overrun`): its accesses are no evidence (an exception
+    /// removes the convention's premise there: the original kept to C's object bounds).
+    fn overruns(&mut self, site: u32) -> bool {
+        let o = self.overrun.contains(&site);
+        if o {
+            self.hit.push(site);
+        }
+        o
+    }
+
     /// The object around the pointer value v reaches [v + lo, v + hi): evidence or a summary term.
     fn reach(&mut self, v: V, lo: i64, hi: i64, site: u32, how: &'static str) {
         if hi <= lo || hi - lo > MAX_SPAN {
+            return;
+        }
+        let proves = matches!(v, V::Addr(..) | V::Arg(..)) || matches!(v, V::Walk(_) if hi > 0);
+        if proves && self.overruns(site) {
             return;
         }
         match v {
@@ -703,7 +719,7 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
                         lo = lo.min(base as i64 + glo);
                         hi = hi.max(last.min(gl) + ghi);
                     }
-                    if s > 0 && end > base && hi > lo {
+                    if s > 0 && end > base && hi > lo && !fx.overruns(x.addr) {
                         fx.ev.push(Ev { lo, hi, base, site: x.addr, how: "bound", to: 0 });
                     }
                 }
@@ -797,6 +813,9 @@ fn step(x: &WIns, next: Option<&WIns>, lp: Option<&Steps>, st: &mut St, fx: &mut
 
 /// A callee's term at a call site: the passed pointer reaches as far as the term with the passed arguments.
 fn apply(fx: &mut Fx, p: V, t: &Term, args: &[V], site: u32) {
+    if fx.overruns(site) {
+        return;
+    }
     let mut mult = t.mult;
     let mut f = vec![];
     for &k in &t.f {
@@ -852,6 +871,10 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
     let default = targets.first().cloned().unwrap_or_default();
+    let overrun_decls: Vec<&crate::decl::Decl> = decls.iter()
+        .filter(|d| d.kind == "overrun" && d.target.as_deref().unwrap_or(&default) == target).collect();
+    let overrun: HashSet<u32> = overrun_decls.iter().map(|d| d.lo as u32).collect();
+    let mut hit: HashSet<u32> = HashSet::new();
     for d in decls.iter().filter(|d| d.kind == "writes" && d.target.as_deref().unwrap_or(&default) == target) {
         let (Some(p), Some(s)) = (d.key("ptr"), d.key("size")) else { continue };
         if let Some((k, t)) = writes_seed(p.s(), s.s()) {
@@ -932,8 +955,10 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for &f in &order {
         let (lo, hi) = funcs[f];
         let ins: Vec<&WIns> = lists[f].iter().collect();
-        let mut fx = Fx { data: &data, summaries: &summaries, pops_of: &pops_of, own: Summary::default(), ev: vec![], callee: 0, pops: 0 };
+        let mut fx = Fx { data: &data, summaries: &summaries, pops_of: &pops_of, own: Summary::default(), ev: vec![], callee: 0, pops: 0,
+                          overrun: &overrun, hit: vec![] };
         analyse(&ins, lo, hi, &mut fx);
+        hit.extend(fx.hit.iter().copied());
         let (own, ev, pops) = (fx.own, fx.ev, fx.pops);
         if pops > 0 {
             pops_of.insert(lo, pops);
@@ -958,6 +983,12 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             v["to"] = json!(to);
         }
         out.claim(lo, hi, "evidence", v, DERIVED);
+    }
+    // an exception without evidence: the instruction (no longer) proves anything there
+    for d in overrun_decls.iter().filter(|d| !hit.contains(&(d.lo as u32))) {
+        out.finding("warn", "S.extent.overrun", d.lo, d.lo + 1,
+                     format!("{}:{}: overrun at {:#x}: the original's code there proves no object's extent (no access through a data address, \
+                              no copy, no loop bound): the exception has no evidence; drop it", d.file, d.line, d.lo), &d.by());
     }
     Ok(())
 }
@@ -1034,5 +1065,28 @@ mod tests {
         ]);
         let call = of(&rows, "evidence").into_iter().find(|r| r.0 == d + 0xe0).unwrap().2;
         assert_eq!((call["to"].as_i64(), call["site"].as_i64()), (Some(t + 0x90), Some(t + 0xa9)));
+    }
+
+    /// An `overrun` exception (main_ChooseTalents' memset of six ints into five): the rep stosd at it is no
+    /// evidence; one at an instruction that proves nothing (a ret) is stale.
+    #[test]
+    fn an_overrun_exception_removes_its_evidence() {
+        let (c, fns) = code();
+        let k = Kit::new(&build_with(None, Some(&c)));
+        let t = (BASE + TEXT) as i64;
+        let syms: Vec<(i64, i64, &str, serde_json::Value, crate::store::Support)> =
+            fns.iter().map(|&(a, b)| (t + a as i64, t + b as i64, "symbol", json!({"skind": "func", "extent": "derived"}), DERIVED)).collect();
+        k.put("S.codewalk", &syms);
+        std::fs::create_dir_all(k.dir.join("decl")).unwrap();
+        std::fs::write(k.dir.join("decl/text.dcl"), format!("{:#010x} overrun -- six ints into five\n{:#010x} overrun -- nothing there\n",
+                                                            t + 0x7c, t + 0x90)).unwrap();
+        let ctx = k.ctx("S.extent", &["S.codewalk"], r#"{"toolchain": "vc6"}"#);
+        let (rows, conflicts) = dispatch(&ctx).unwrap().sorted();
+        let d = (BASE + DATA) as i64;
+        assert!(!of(&rows, "evidence").iter().any(|r| r.0 == d + 0xc0), "the copy at the exception is no evidence");
+        assert!(of(&rows, "evidence").iter().any(|r| r.0 == d + 0x84), "the rest stays");
+        let stale: Vec<String> = conflicts.iter().map(|c| format!("{} {}", c.check, c.message)).collect();
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(stale[0].contains("S.extent.overrun") && stale[0].contains(&format!("overrun at {:#x}", t + 0x90)), "{stale:?}");
     }
 }

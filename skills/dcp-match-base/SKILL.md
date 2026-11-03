@@ -244,7 +244,10 @@ the commit went in (`git status` clean) before the next function.
   access, a loop bound, a block copy, a reader call) are run-time corruption the gate cannot see otherwise: declare
   the object at the size D8 names, with the names inside it as views or fields of its type. A reader or copier of
   the game (`vfs_fread(buf, size, n, f)`) tells S.extent its size through
-  `dcp decl add "0xADDR writes ptr=a0 size=a1*a2 -- why"`.
+  `dcp decl add "0xADDR writes ptr=a0 size=a1*a2 -- why"`. When the evidence is the original's own overrun (a
+  memset one int past a field, while its copies of the record show the smaller size), the declaration is right:
+  declare the exception on the instruction D8 names, `dcp decl add "0xSITE overrun -- why"` (`dcp exceptions`
+  lists it).
 - Gap data: the `full_data_<addr>` / `full_rdata_<addr>` blocks (defined in the gap block at the end of `src/main.c`,
   `extern GAPDATA` elsewhere) are bytes no symbol covers yet: name, type, extent and owner are all unknown, and
   their place in main says nothing about ownership. When the function you raise shows what one is, settle all

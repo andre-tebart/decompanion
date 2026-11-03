@@ -47,10 +47,12 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         }
         Cmd::Exceptions => {
             let p = glue::config(sel, None)?;
-            let es = crate::exceptions::of_project(&p.root);
+            let mut es = crate::exceptions::of_project(&p.root);
+            let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
+            es.extend(crate::exceptions::of_decls(&p.root, &targets));
             let n = |k: crate::exceptions::Kind| Tok::I(es.iter().filter(|e| e.kind == k).count() as i64);
             let mut l = vec![rec(&[("exceptions", Tok::I(es.len() as i64)), ("original", n(crate::exceptions::Kind::Original)),
-                                   ("vc6", n(crate::exceptions::Kind::Checker)),
+                                   ("vc6", n(crate::exceptions::Kind::Checker)), ("overrun", n(crate::exceptions::Kind::Overrun)),
                                    ("unexplained", Tok::I(es.iter().filter(|e| e.why.is_empty()).count() as i64))])];
             for e in &es {
                 l.push(format!("  {}", rec(&[("at", s(format!("{}:{}", e.file, e.line))), ("kind", s(e.kind.marker())),

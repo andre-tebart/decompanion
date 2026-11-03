@@ -20,9 +20,12 @@ fn exceptions_listed_with_their_reasons() {
     let t = tiny();
     write(&t, "include/net.h", "int add2(int a);  /* @vc6 */\n");
     unit(&t, "net", &["extern int counter;\n", "/* 0x10001030, logs hello */\nvoid log_hello(void)\n{\n    add2(1, 2);  /* @original the original pushes two */\n}\n"]);
+    write(&t, "decl/text.dcl", "0x10001030 overrun -- six ints into five
+");
     let (code, out) = dcp(&t, &["exceptions"]);
-    assert!(code == 0 && out.starts_with("exceptions=2  original=1  vc6=1  unexplained=1"), "{out}");
+    assert!(code == 0 && out.starts_with("exceptions=3  original=1  vc6=1  overrun=1  unexplained=1"), "{out}");
     assert!(out.contains("at=include/net.h:1  kind=@vc6  why=-") && out.contains("at=src/net.c:6  kind=@original  why='the original pushes two'"), "{out}");
+    assert!(out.contains("at=decl/text.dcl:1  kind=overrun  why='six ints into five'"), "{out}");
 }
 
 #[test]

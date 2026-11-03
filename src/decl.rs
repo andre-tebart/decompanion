@@ -57,6 +57,7 @@ const KINDS: &[Spec] = &[
     Spec { kind: "libunit", words: &[], required: &[("tu", Shape::Unit), ("lib", Shape::Path)], optional: &[], range: true },
     Spec { kind: "file", words: &[], required: &[("tu", Shape::Unit), ("path", Shape::Path)], optional: &[], range: false },
     Spec { kind: "writes", words: &[], required: &[("ptr", Shape::Expr), ("size", Shape::Expr)], optional: &[], range: false },
+    Spec { kind: "overrun", words: &[], required: &[], optional: &[], range: false },
 ];
 
 fn spec(kind: &str) -> Option<&'static Spec> {
@@ -498,6 +499,12 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
                     out.finding("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: writes at {:#x}: not a function (outside every code section)", d.file, d.line, d.lo), &by);
                 }
             }
+            // an exception (read by S.extent: the original's access at this instruction overruns its object); checked here
+            "overrun" => {
+                if !is_code {
+                    out.finding("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: overrun at {:#x}: not an instruction (outside every code section)", d.file, d.line, d.lo), &by);
+                }
+            }
             "file" => {
                 let path = ks("path");
                 let mut want: Vec<u8> = path.chars().map(|c| c as u32 as u8).collect();
@@ -561,7 +568,7 @@ mod tests {
         for (line, err) in [
             ("0x1 start", "missing reason (` -- why` ends every declaration)"),
             ("0x1 start --", "missing reason after `--`"),
-            ("0x1 frob -- x", "unknown kind 'frob' (known: boundary, bytes, file, foreign, fptr, idxtable, jumptable, libunit, name, start, writes)"),
+            ("0x1 frob -- x", "unknown kind 'frob' (known: boundary, bytes, file, foreign, fptr, idxtable, jumptable, libunit, name, overrun, start, writes)"),
             ("0x1 writes ptr=a0 -- x", "writes: missing size="),
             ("0x1 writes ptr=a0 size=a1+a2 -- x", "writes: size=a1+a2 is not an argument (a0, a1, ...), a number or a product of them (a1*a2)"),
             ("0x1 bytes dead -- x", "bytes declares a range: ADDR..END"),

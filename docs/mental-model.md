@@ -332,6 +332,13 @@ disagree cannot be included together.
 **`@vc6 why`** is a different exception: the checker's model of C (clang) differs from H's toolchain at this site. The
 gap is in the checker, not in H.
 
+**`0xADDR overrun -- why`** (decl/text.dcl) is the same exception against the extent convention (C: a pointer stays
+inside its object, S.extent): the original's access at that instruction overruns its object, as `memset(f.talent, 0,
+6 * sizeof(int))` clears one int past a five-int field. Without it, the overrun proves the object and its neighbour
+one object (D8) and moves H away from the bytes: the record copies elsewhere still say 0x2c. It is declared on I's
+instruction because H has no line for it. Its evidence is the rest of I that contradicts the overrun extent (here
+the 11-dword copies of the record). One whose instruction proves no extent is stale.
+
 What follows:
 
 - **An exception must discriminate.** `@original` is valid only if the consistent spelling changes the bytes. A tool
@@ -390,7 +397,7 @@ The source names the model's concepts, and the command line speaks them:
 | a placed library member | `S.crt.code`, `S.crt.data`, `S.lib.data`: reproduced | |
 | a reference the byte comparison cannot see (8.3) | `A1` (a cast the source scan sees), `M.ref.missing` (an absolute operand our bytes hold as a constant), `M8` / `M9` / `M10` (the reference check's findings on a byte match: our reference against the original's target through φ, a literal by its bytes), `D6` | `dcp findings --category contradiction` |
 | readability (§9) | `readability.rs` (Q1..Q6, Q8), `G.grade`'s `readability` row, apart from the experiment | `dcp grade`: `readability=` |
-| an exception | `exceptions.rs`: `@original why`, `@vc6 why` with their reasons | `dcp exceptions` |
+| an exception | `exceptions.rs`: `@original why`, `@vc6 why` with their reasons; `0xADDR overrun -- why` in decl/text.dcl (an instruction of I has no line in H) | `dcp exceptions` |
 | debt, a witness | the accepted column of `ledger/grades.tsv` (`queues::Debt`: the grade before and now, the witness commit, why, what it waits for); `M1.debt` lists them and bounds them by `[gate] max_debt` | `dcp debt add NAME --to G --why W --waits-for X`, `dcp debt list` |
 
 What the code does not do yet:
