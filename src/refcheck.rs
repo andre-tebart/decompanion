@@ -419,7 +419,16 @@ pub fn check(obj: &Obj, code: &FunctionCode, img: &crate::pe::Image, sites: &[Si
                 if state == State::Same {
                     continue;
                 }
-                let have = if img.in_image(a) { img.bytes(a, bytes.len()).to_vec() } else { vec![] };
+                // the original's bytes there: a string to its NUL (the line names the whole string, not our
+                // literal's length of it), a constant at its size
+                let have = if !img.in_image(a) {
+                    vec![]
+                } else if *rule == "M9" {
+                    let b = img.bytes(a, bytes.len().max(64));
+                    b[..b.iter().position(|&c| c == 0).map_or(b.len(), |z| z + 1)].to_vec()
+                } else {
+                    img.bytes(a, bytes.len()).to_vec()
+                };
                 (lit_text(bytes, rule), *rule, a, vec![], state, Some((bytes.clone(), have)))
             }
             Target::Name { name, delta } => {
