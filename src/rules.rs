@@ -867,9 +867,11 @@ pub(crate) fn d8(decls: &[ExtentDecl], ev: &[ExtentEv], named: impl Fn(i64) -> O
             && inside.windows(2).all(|w| w[1].lo <= w[0].lo + w[0].size)
             && inside.last().is_some_and(|d| hi <= d.lo + d.size);
         let msg = if tiled {
-            format!("{msg} (all of unit {}, in order and without a hole: it links as the original's, but it is one object: declare it as one of \
-                     {} bytes with the pieces as its fields, or as views of it with `@original` where a unit needs another spelling)",
-                    first.unit, hi - first.lo)
+            let cut = if first.lo < lo { format!(" ({} holds bytes before it: cut it there unless the rows say otherwise)", first.name) } else { String::new() };
+            format!("{msg} (all of unit {}, in order and without a hole: it links as the original's, but it is one object: declare one object \
+                     holding {lo:#x}..{hi:#x}, the pieces inside as its fields, or as views of it with `@original` where a unit needs another \
+                     spelling; the range is what the accesses reach, a lower bound: a table's start and end follow from its rows' stride{cut})",
+                    first.unit)
         } else {
             msg
         };
@@ -1278,8 +1280,10 @@ mod tests_aligned {
         assert_eq!(got.iter().map(|g| (g.0, g.1, g.2, g.4.as_str())).collect::<Vec<_>>(),
                    [("error", 0x1f8, 0x204, "src:inner"), ("error", 0x300, 0x308, "src:gap_300"), ("error", 0x60c7c0, 0x60cb00, "src:ai_Unk60c7c0"),
                     ("error", 0x76f920, 0x76fa1c, "src:ai_Unk76f920")], "{msgs:?}");
-        assert!(msgs[1].ends_with("(all of unit main, in order and without a hole: it links as the original's, but it is one object: declare it as one of \
-                                    8 bytes with the pieces as its fields, or as views of it with `@original` where a unit needs another spelling)"), "{}", msgs[1]);
+        assert!(msgs[1].ends_with("(all of unit main, in order and without a hole: it links as the original's, but it is one object: declare one \
+                                    object holding 0x300..0x308, the pieces inside as its fields, or as views of it with `@original` where a unit \
+                                    needs another spelling; the range is what the accesses reach, a lower bound: a table's start and end follow \
+                                    from its rows' stride)"), "{}", msgs[1]);
         let msgs = [msgs[0], msgs[2], msgs[3]];
         assert!(msgs[2].starts_with("ai_Unk76f920 at 0x76f920 is 4 bytes, the original's code uses 0x76f920..0x76fa1c as one object (the address \
                                      0x76f920 passed at 0x51c99d to ls_ReadSaveHeader (0x51cee0), which reaches that far through it): \

@@ -16,6 +16,9 @@ Names are outside the model (§8.1), so this is tool ergonomics.
 - **Collisions.** On a collision, name the existing object's unit and comment (the suggest-a-name part is declined).
 - **Struct fields.** `dcp rename TYPE.field NEW` uses clang member references, inside the existing command. Today a
   field is renamed "by its words" (rename.rs:19-20), which hits unrelated structs.
+- **Globals into one object's fields.** `dcp rename ai_UpdateStart ai_Update.start` is refused ("no C identifier"), so
+  merging the pieces of one object (D8) into a record is a hand rewrite plus hand-written names.log lines
+  (gildegold e09ed0f5). Accept `OLD OBJ.field` when OBJ's type has the field at OLD's address, and log it.
 
 ## Rejected
 
