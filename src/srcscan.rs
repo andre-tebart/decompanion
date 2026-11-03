@@ -388,6 +388,11 @@ pub(crate) type DataRow = (String, i64, String, String, String, Addrs, bool, boo
 pub(crate) type ViewRow = (String, i64, String, String, String, u64, Addrs, bool);
 pub(crate) type ErrRow = (String, i64, String, String);
 
+/// Whether a unit file's functions make it no unit: none has an address (for any target) and none is unlinked.
+fn yields_no_unit(functions: &[FnRow]) -> bool {
+    !functions.iter().any(|f| !f.0 .4.is_empty() || f.0 .5)
+}
+
 /// One file's part of the scan: the rows of srcscan's dataclasses (macros, described, functions, data, ptrcasts,
 /// views, rawobj, errors, placeholders) and the file's piece.
 pub(crate) struct FilePart {
@@ -401,8 +406,10 @@ pub(crate) struct FilePart {
     #[allow(dead_code)]
     pub views: Vec<ViewRow>,
     pub rawobj: Vec<String>,
-    #[cfg_attr(not(test), allow(dead_code))]
     pub errors: Vec<ErrRow>,
+    /// a unit file with code but no addressed function (ill-formed, L.src): its message. The plan keeps it as a unit
+    /// of every target, so its compile shows what is wrong instead of the unit silently going.
+    pub no_unit: Option<String>,
     pub placeholders: Vec<(String, i64, String, u64)>,
     pub piece: ScanPiece,
 }
@@ -581,6 +588,15 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
             placeholders.push((rel.to_string(), sf.line_of(m.start()), w.to_string(), v));
         }
     }
+    // a unit file with code but no addressed function, and no function the scan names as missing its address comment:
+    // the scan could not read it as a unit (a head alone, as `dcp unit new` writes it, is a unit waiting for its functions)
+    let has_code = || sf.code.lines().any(|l| !matches!(py_strip(l).chars().next(), None | Some('#')));
+    let no_unit = (is_unit && yields_no_unit(&functions) && !errors.iter().any(|e| e.2 == "L.src") && has_code()).then(|| {
+        format!("{rel}: no addressed function found (scan: no function with an address comment or unlinked, code outside every function): the file is no unit")
+    });
+    if let Some(m) = &no_unit {
+        err(&mut errors, 1, "L.src", m.clone());
+    }
     let ad = |a: &Addrs| a.iter().map(|(t, x)| (t.clone(), *x as i64)).collect::<Vec<_>>();
     let mut defs_of: Defs = HashMap::new();
     for d in &model.decls {
@@ -602,7 +618,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
     };
     let lint = views.iter().map(|(t, m)| Ok((t.clone(), crate::lint::file_lint(rel, &sf, m)?))).collect::<Result<Vec<_>>>()?;
     let piece = hold(Piece { view, rel: rel.to_string(), defs: defs_of, lint, sysinc: crate::lint::system_includes(text) });
-    Ok(FilePart { rel: rel.to_string(), macros, described, functions, data, ptrcasts, views: vrows, rawobj, errors, placeholders, piece })
+    Ok(FilePart { rel: rel.to_string(), macros, described, functions, data, ptrcasts, views: vrows, rawobj, errors, no_unit, placeholders, piece })
 }
 
 #[cfg(test)]

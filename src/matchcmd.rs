@@ -141,7 +141,7 @@ pub fn grade_command(p: &crate::project::Project, what: Option<String>, lint: &s
         return Ok((out, None, 0));
     }
     let Some(Value::Object(r)) = crate::asmcmd::find_function(&db, &what)? else {
-        return Ok((out, Some(format!("{what} is neither a unit nor a graded function of target {}", p.target_name)), 1));
+        return Ok((out, Some(crate::clicmd::not_found(p, format!("{what} is neither a unit nor a graded function of target {}", p.target_name))?), 1));
     };
     function_lines(&mut out, &r, true);
     if let Some(Value::Object(h)) = r.get("hunks").filter(|h| h.as_object().is_some_and(|m| !m.is_empty())) {

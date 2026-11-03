@@ -368,6 +368,11 @@ impl Scan {
     pub fn functions(&self) -> impl Iterator<Item = &srcscan::FnRow> {
         self.parts.iter().flat_map(|p| p.functions.iter())
     }
+
+    /// The unit files that yield no unit (FilePart::no_unit): their L.src messages, in file order.
+    pub fn no_unit_files(&self) -> Vec<&str> {
+        self.parts.iter().filter_map(|p| p.no_unit.as_deref()).collect()
+    }
 }
 
 type FileKey = (String, String, String); // root, rel, sha256
@@ -590,7 +595,11 @@ mod tests {
                               "/* unlinked, dropped by /OPT:REF */\nvoid unused(void)\n{\n}\n",
                               "/* a description, no address */\nvoid g(void)\n{\n}\n",
                               "void h(void)\n{\n}\n"]);
-        let root = tree("scan", &[("src/net.c", &net), ("src/net/extra.c", "int x;\n"),
+        // gv.c: text inserted between every character of an addressed function: no function the scan reads
+        let gv: String = "/* 0x10001040 */\nvoid gv(void)\n{\n}\n".chars().flat_map(|c| [c, 'x']).collect();
+        let root = tree("scan", &[("src/net.c", &net), ("src/net/extra.c", "int x;\n"), ("src/gv.c", &gv),
+                                  // a head alone (`dcp unit new`): a unit waiting for its functions, no error and no unit yet
+                                  ("src/tail.c", "/* tail: the rest\n   unit 0x10001050..0x10001060, named by guess */\n#include \"tail.h\"\n"),
                                   ("include/net.h", "int NetOpen(int port);  /* 0x10001000 */\nextern int counter2;  /* 0x10002030 */\n")]);
         let sc = scan(&root, None).unwrap();
         let fns: HashMap<&str, &srcscan::FnRow> = sc.functions().map(|f| (f.0 .3.as_str(), f)).collect();
@@ -618,9 +627,17 @@ mod tests {
         let mut errs: Vec<&srcscan::ErrRow> = sc.parts.iter().flat_map(|p| p.errors.iter()).chain(sc.own_errors.iter()).collect();
         errs.sort();
         assert_eq!(errs.iter().map(|e| (e.0.as_str(), e.1, e.2.as_str())).collect::<Vec<_>>(),
-                   [("src/net.c", 37, "L.src"), ("src/net.c", 41, "L.src"), ("src/net/extra.c", 1, "L.src")]);
-        assert!(errs[0].3.contains("g: no address comment") && errs[1].3.contains("h: no address comment"));
-        assert!(errs[2].3.contains("unexpected source file src/net/extra.c"));
+                   [("src/gv.c", 1, "L.src"), ("src/net.c", 37, "L.src"), ("src/net.c", 41, "L.src"), ("src/net/extra.c", 1, "L.src")]);
+        assert!(errs[0].3.starts_with("src/gv.c: no addressed function found (scan: no function with an address comment"), "{}", errs[0].3);
+        assert!(errs[1].3.contains("g: no address comment") && errs[2].3.contains("h: no address comment"));
+        assert!(errs[3].3.contains("unexpected source file src/net/extra.c"));
+        assert_eq!(sc.no_unit_files(), [errs[0].3.as_str()]);
+        // the plan keeps the file as a unit of every target (its compile shows what is wrong), without functions
+        for t in ["tiny", "other"] {
+            let units = crate::plan::units(&root, &sc, t, "tiny", &HashMap::new()).unwrap();
+            let got: Vec<(&str, usize)> = units.iter().map(|u| (u.unit.as_str(), u.functions.len())).collect();
+            assert_eq!(got, [("gv", 0), ("net", if t == "tiny" { 3 } else { 2 })], "{t}");
+        }
         let ph: Vec<&str> = sc.parts.iter().flat_map(|p| p.placeholders.iter()).map(|p| p.2.as_str()).collect();
         assert_eq!(ph, ["FUN_10001020"]);
     }

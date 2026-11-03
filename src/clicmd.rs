@@ -877,6 +877,8 @@ pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64),
                                                   ("flags", J::V(v.get("flags").cloned().unwrap_or(Value::Null)))]))));
         out.extend(errors.iter().take(10).map(|x| format!("    {}", py_str(x))));
     }
+    let no_unit = no_unit_files(p)?;
+    out.extend(no_unit.iter().map(|m| format!("  L.src {m}")));
     let rows = crate::queues::function_grades(&db)?;
     if !rows.is_empty() {
         let mut c: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -886,7 +888,7 @@ pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64),
         }
         out.push(format!("  grades: {}", c.iter().map(|((a, b), v)| format!("{a}+{b}={v}")).collect::<Vec<_>>().join("  ")));
     }
-    Ok((out, !bad.is_empty()))
+    Ok((out, !bad.is_empty() || !no_unit.is_empty()))
 }
 
 /// `dcp check`'s findings of one target: the counts line (per category, then per severity), the bug / error lines
@@ -936,6 +938,20 @@ pub fn gate_target(p: &crate::project::Project, units: i64, quiet: bool) -> Resu
     Ok((out, good, link.as_ref().map(|l| l.1), link.as_ref().map(|l| l.3)))
 }
 
+/// The scan's L.src messages of the unit files that yield no unit (a file the scan cannot read as a unit: its
+/// functions are not where grade and fn look for them).
+pub fn no_unit_files(p: &crate::project::Project) -> Result<Vec<String>> {
+    let root = p.root.to_string_lossy().into_owned();
+    let src = p.input_hash("src").map_err(err)?.unwrap_or_default();
+    Ok(crate::frontend::scan(&root, Some(&src)).map_err(err)?.no_unit_files().into_iter().map(|m| m.to_string()).collect())
+}
+
+/// A not-found message with the unit files that yield no unit appended (the name may be in one of them).
+pub fn not_found(p: &crate::project::Project, msg: String) -> Result<String> {
+    let files = no_unit_files(p)?;
+    Ok(if files.is_empty() { msg } else { format!("{msg}; a unit file failed to load: {}", files.join("; ")) })
+}
+
 // ------------------------------------------------------------------------------------------------ fn
 
 /// `dcp fn KEY`: one function of the sources, a record with its file and lines (its address comment to the end of its
@@ -949,7 +965,7 @@ pub fn fn_command(p: &crate::project::Project, key: &str) -> Result<Out> {
     let addr_of = |addrs: &[(Option<String>, u64)]| addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == p.target_name).map(|x| x.1 as i64);
     let hits: Vec<&crate::srcscan::FnRow> = sc.functions().filter(|f| f.0 .3 == key || (a.is_some() && addr_of(&f.0 .4) == a)).collect();
     if hits.is_empty() {
-        return Ok((vec![], Some(format!("no function {key} in the sources (target {})", p.target_name)), 1));
+        return Ok((vec![], Some(not_found(p, format!("no function {key} in the sources (target {})", p.target_name))?), 1));
     }
     let mut out = vec![];
     for ((file, _, unit, name, addrs, ..), (.., comment_line, _, end_line, _)) in hits {

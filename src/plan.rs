@@ -2,8 +2,11 @@
 //! `src/<unit>.c`, compiled as it stands.
 //!
 //! A unit is a translation unit of a target when it holds a function with an address of that target or an unlinked
-//! function. The flags of a unit: the target's declared cflags, then the cflags of the first [[toolchain.unit]]
-//! whose glob matches the unit name (and whose `targets`, when given, list the target), then the target's define
+//! function, or when it has code but no function addressed for any target or unlinked (ill-formed, the scan's L.src;
+//! it is still compiled, so the build shows it). A head alone (`dcp unit new`) is no unit yet.
+//!
+//! The flags of a unit: the target's declared cflags, then the cflags of the first [[toolchain.unit]] whose glob
+//! matches the unit name (and whose `targets`, when given, list the target), then the target's define
 //! (`/DDCP_TARGET_<name>`).
 //!
 //! `__FILE__` and `__LINE__`: the file carries the original's `#line 1 "<path>"` and its `#line N` pins itself; the
@@ -53,21 +56,21 @@ fn address_for(addrs: &[(Option<String>, u64)], target: &str, default: &str) -> 
     addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(default) == target).map(|x| x.1 as i64)
 }
 
-/// The translation units of one target, in unit name order.
+/// The translation units of one target, in unit name order, planned from the file list: every `src/<unit>.c` with a
+/// function addressed for the target or unlinked, and every one with code but no function addressed for any target
+/// or unlinked (ill-formed, L.src), so its compile shows what is wrong instead of its row going.
 pub fn units(root: &str, scan: &frontend::Scan, target: &str, default: &str, names: &HashMap<String, String>) -> Result<Vec<Tu>, String> {
-    let mut by_file: BTreeMap<&str, Vec<&crate::srcscan::FnRow>> = BTreeMap::new();
-    for f in scan.functions() {
-        by_file.entry(f.0 .0.as_str()).or_default().push(f);
-    }
+    let by_file: BTreeMap<&str, &crate::srcscan::FilePart> = scan.parts.iter().map(|p| (p.rel.as_str(), &**p)).collect();
     let mut out = vec![];
-    for (rel, mut fs) in by_file {
+    for (rel, part) in by_file {
         let Some(unit) = rel.strip_prefix("src/").and_then(|r| r.strip_suffix(".c")).filter(|u| !u.contains('/')) else { continue };
+        let mut fs: Vec<&crate::srcscan::FnRow> = part.functions.iter().collect();
         fs.sort_by_key(|f| f.0 .1);
         let fns: Vec<(Option<i64>, String)> = fs.iter().filter_map(|f| {
             let a = address_for(&f.0 .4, target, default);
             (a.is_some() || f.0 .5).then(|| (a, f.0 .3.clone()))
         }).collect();
-        if !fns.is_empty() {
+        if !fns.is_empty() || part.no_unit.is_some() {
             let path = py_path(&format!("{root}/{rel}"));
             let src_hash = fsmemo::sha256(&path).map_err(|e| format!("{path}: {e}"))?;
             out.push(Tu { target: target.into(), unit: unit.into(), file: rel.into(), functions: fns, file_name: names.get(unit).cloned(), src_hash });
