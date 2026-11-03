@@ -856,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "e2e: VC6, starts processes"]
     fn debugged_crash_and_handled_exception() {
         let dir = std::env::temp_dir().join(format!("dcp-debugger-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

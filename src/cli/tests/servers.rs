@@ -184,13 +184,17 @@ fn match_server() {
     assert!(out.contains("next=0x10008d20") && out.contains("name=ServerThread") && out.contains("section=draft"), "{out}");
     // the data site
     let (_, out) = dcp(&d, &["claims", "0x10031270..0x10031274", "--kind", "symbol"]);
-    assert!(out.contains("extent=site") && out.contains("name=g_stopServer") && out.contains("proven"), "{out}");
+    assert!(out.contains("extent=site") && out.contains("name=g_stopServer") && out.contains("reproduced"), "{out}");
     // the link and check
     let (code, out) = dcp(&d, &["link"]);
     assert!(code == 0 && out.contains("ok=yes") && out.contains("unresolved=0"), "{out}");
     assert!(d.join("build/link/server/server.dll").exists() && read(&d, "build/link/server/server.def").contains("Init @2"));
     assert_eq!(dcp(&d, &["check"]).0, 0);
-    // promote and M1
+    // promote (of committed source only) and M1
+    for a in [&["add", "-A"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "server"]] {
+        let o = std::process::Command::new("git").args(a).current_dir(&d).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
     let (code, out) = dcp(&d, &["promote"]);
     assert!(code == 0 && out.contains("functions=4"), "{out}");
     let good = read(&d, "src/dllmain.c");
@@ -257,7 +261,9 @@ fn ghidra_export_and_draft() {
     let init = &text[text.find("/* 0x10008cc0").unwrap()..text.find("/* 0x10008cf0").unwrap()];
     // the export's name, the library member's name, the placeholder of a function in no unit yet
     assert!(init.starts_with("/* 0x10008cc0, Init */") && init.contains("_beginthread(unk_10008d20,0,param_1)"), "{init}");
-    assert!(text[..text.find("/* 0x10008cb0").unwrap()].contains("#include <process.h>")); // the CRT header that declares _beginthread
+    // process.h declares _beginthread only under _MT (/MT), which these cflags do not define: the head's dcp block declares it
+    let head = &text[..text.find("/* 0x10008cb0").unwrap()];
+    assert!(!head.contains("#include <process.h>") && head.contains("_beginthread();"), "{text}");
 }
 
 // ------------------------------------------------------------------------------------------------ two targets

@@ -2430,9 +2430,9 @@ mod tests {
     /// DCP_EQUIV_OUT: the prover's measurement without a project.
     /// `cargo test --profile iter --lib equiv::tests::corpus -- --ignored`
     #[test]
-    #[ignore]
+    #[ignore = "measurement: DCP_EQUIV_CORPUS"]
     fn corpus() {
-        let dir = std::env::var("DCP_EQUIV_CORPUS").expect("DCP_EQUIV_CORPUS");
+        let Ok(dir) = std::env::var("DCP_EQUIV_CORPUS") else { return }; // a measurement: only with a corpus
         // DCP_EQUIV_ONLY: these functions only (with DCP_EQUIV_DEBUG: their debug output)
         let only: Option<Vec<String>> = std::env::var("DCP_EQUIV_ONLY").ok().map(|v| v.split(',').map(|x| format!("{x}.eq")).collect());
         let files: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
@@ -2475,9 +2475,9 @@ mod tests {
     /// proved equal is printed: either the change cannot be seen (a dead stack slot) or the prover is wrong.
     /// `DCP_EQUIV_CORPUS=dir cargo test --lib equiv::tests::mutants -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "measurement: DCP_EQUIV_CORPUS"]
     fn mutants() {
-        let dir = std::env::var("DCP_EQUIV_CORPUS").expect("DCP_EQUIV_CORPUS");
+        let Ok(dir) = std::env::var("DCP_EQUIV_CORPUS") else { return }; // a measurement: only with a corpus
         // DCP_EQUIV_ONLY=name and DCP_EQUIV_AT=address: that function's mutants there only (DCP_EQUIV_DEBUG: traced)
         let only = std::env::var("DCP_EQUIV_ONLY").ok().map(|x| format!("{x}.eq"));
         let at_only = std::env::var("DCP_EQUIV_AT").ok().and_then(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());

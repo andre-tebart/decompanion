@@ -164,12 +164,14 @@ fn byte_match_with_a_differing_literal_is_no_byte() {
     dcp(&t, &["build"]);
     assert_eq!(facts(&t, "symbol", None).iter().filter(|f| &*f.rule == "M.match").map(|f| f.lo).collect::<Vec<_>>(), [0x10001020]);
     let (_, out) = dcp(&t, &["grade", "get"]);
-    assert!(out.contains("experiment=draft") && out.contains("B1 byte: M9") && out.contains("differs from the original's bytes"), "{out}");
-    assert!(out.contains("B3 draft: 1 referenced literal(s) / constant(s) differ from the original's (M9)"), "{out}");
-    let (_, out) = dcp(&t, &["asmdiff", "get"]); // X on both sides: equal
-    assert!(out.contains("differing=0") && !out.contains("... ") && out.contains("   0x10001020  mov eax, dword ptr [X]"), "{out}");
+    assert!(out.contains("experiment=draft") && out.contains("B1 byte: the bytes match; M9 at +0x0: our literal \"4\\x13\" where the original's field refers to \"4\\x12\" at 0x10002000"), "{out}");
+    assert!(out.contains("B3 draft: 1 reference(s) differ from the original's (M9): a meaning difference"), "{out}");
+    // X on both sides, but the reference check finds another target: the line differs (the grade's one verdict)
+    let (_, out) = dcp(&t, &["asmdiff", "get"]);
+    assert!(out.contains("differing=1  refs_differ=1") && !out.contains("... ")
+            && out.contains("!  0x10001020  mov eax, dword ptr [X]   | mov eax, dword ptr [X]   (M9: \"4\\x13\" | 0x10002000)"), "{out}");
     let (_, out) = dcp(&t, &["asmdiff", "get", "--symbols"]);
-    assert!(out.contains("differing=0") && out.contains("!  0x10001020  mov eax, dword ptr [\"4\\x13\"]   | mov eax, dword ptr [0x10002000]"), "{out}");
+    assert!(out.contains("differing=1") && out.contains("!  0x10001020  mov eax, dword ptr [\"4\\x13\"]   | mov eax, dword ptr [0x10002000]"), "{out}");
 }
 
 #[test]

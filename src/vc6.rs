@@ -458,7 +458,7 @@ mod real_tests {
     /// members import the decorated names exactly (name type NAME) with the exe's hints; a library unit's object
     /// joins the archive next to the import members.
     #[test]
-    #[ignore]
+    #[ignore = "e2e: VC6 and GildeGold.exe"]
     fn import_library_from_the_image() {
         if !Path::new(EXE).exists() || !Path::new(ROOT).join("VC98/Bin/CL.EXE").exists() {
             return;
