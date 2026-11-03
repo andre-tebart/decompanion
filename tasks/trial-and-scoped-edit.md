@@ -22,7 +22,8 @@ These are the two most frequent requests across all reports:
 ## Task
 
 - `dcp fn NAME --replace FILE` swaps exactly the `at=` span (the address comment plus the definition, raw bytes, so
-  backslashes are safe). It validates the result with the scan rules (see headers-write-keeps-phi).
+  backslashes are safe). It validates the result with the scan rules: `headers::phi_breaks` (old text against new: new L.src errors, address
+  comments that no longer attach), moved to a shared place.
 - `dcp fn NAME --replace FILE... --trial` writes nothing. For each FILE it compiles the unit in build/obj/trial and
   prints one line: experiment, dist, proof, witness and differences. Worker 33's best-distance variant was semantically
   wrong, so distance alone is not enough.

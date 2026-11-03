@@ -343,15 +343,29 @@ fn insert_includes(text: &str, headers: &[String], pos: usize) -> String {
     lines[..pos].iter().map(|l| l.to_string()).chain(add).chain(lines[pos..].iter().map(|l| l.to_string())).collect::<Vec<_>>().join("\n")
 }
 
-/// Where the includes go in a unit's file (a line index, 0-based): after its last include, or earlier, at the start
-/// of the file-scope statement holding the first use of a name the headers declare when that use comes first.
+/// The head region's end (a line index, 0-based): the first function definition's line, or the start of the comment
+/// directly above it (its address comment); the file's end without a definition. An include goes no further.
+fn head_end(text: &str, m: &FileModel) -> usize {
+    let n = text.split('\n').count();
+    let Some(def) = m.defs.iter().map(|d| d.0).min() else { return n };
+    // 1-based lines: a comment ending on the definition's line or the one before is attached to it
+    let above = m.comments.iter().filter(|c| c.2 == def || c.2 == def - 1).map(|c| c.0).min();
+    (above.unwrap_or(def) - 1).max(0) as usize
+}
+
+/// Where the includes go in a unit's file (a line index, 0-based): after its last include in the head region (above
+/// the first function and its address comment), or earlier, at the start of the file-scope statement holding the
+/// first use of a name the headers declare when that use comes first. Never right below a comment line: a comment
+/// belongs to the line under it (an address comment to its definition or datum).
 fn include_pos(x: &Texts, rel: &str, text: &str, names: &HashSet<String>) -> usize {
-    let after = after_includes(text);
+    let m = x.model_of(rel, text).unwrap_or_else(|| x.model_alone(rel, text));
+    let end = head_end(text, &m);
+    let head: String = text.split('\n').take(end).collect::<Vec<_>>().join("\n");
+    let after = after_includes(&head).min(end);
     if names.is_empty() {
         return after;
     }
     let src = Source::new(text);
-    let m = x.model_of(rel, text).unwrap_or_else(|| x.model_alone(rel, text));
     let code = live_code(&src, &m);
     let decl_lines = x.declared_lines(rel, text);
     let mut first = None;
@@ -370,9 +384,14 @@ fn include_pos(x: &Texts, rel: &str, text: &str, names: &HashSet<String>) -> usi
     for (cs, ce, _) in &src.comments {
         inside.extend(src.line_of(*cs)..src.line_of(ce.saturating_sub(1)));
     }
+    // line i is right below a comment line (text that is no code and no directive)
+    let below_comment = |i: usize| i > 0 && {
+        let r = raw[i - 1].trim_matches(crate::srcscan::py_space);
+        !r.is_empty() && !r.starts_with('#') && code_lines.get(i - 1).is_some_and(|c| py_strip(c).is_empty())
+    };
     let (mut ok, mut depth, mut prev) = (vec![], 0i64, ';');
     for (i, l) in code_lines.iter().enumerate() {
-        ok.push(depth == 0 && !inside.contains(&i) && matches!(prev, ';' | '}' | '#'));
+        ok.push(depth == 0 && !inside.contains(&i) && matches!(prev, ';' | '}' | '#') && !below_comment(i));
         let t = py_strip(l);
         if raw.get(i).is_some_and(|r| r.trim_start_matches(crate::srcscan::py_space).starts_with('#')) {
             prev = '#';
@@ -382,6 +401,44 @@ fn include_pos(x: &Texts, rel: &str, text: &str, names: &HashSet<String>) -> usi
         depth += l.matches('{').count() as i64 - l.matches('}').count() as i64;
     }
     (0..=first).rev().find(|&i| ok[i]).unwrap_or(0)
+}
+
+/// The headers a unit's text already includes (by file name), of `headers`.
+fn included_already(text: &str, headers: &[String]) -> Vec<String> {
+    let base = |h: &str| Path::new(h).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let have: HashSet<String> = INCLUDE_LINE.captures_iter(text).map(|c| base(&c[1])).collect();
+    headers.iter().filter(|h| have.contains(&base(h))).cloned().collect()
+}
+
+/// What a new text of a unit's file does to φ against the old one (srcscan's rules on both): each L.src error the
+/// new text has and the old does not, each function or datum whose address comment no longer attaches to it.
+/// A command that writes H refuses on any (docs/mental-model.md §5: never write an ill-formed φ).
+fn phi_breaks(x: &Texts, rel: &str, old: &str, new: &str) -> Result<Vec<String>, String> {
+    let scan = |text: &str| {
+        let m = x.model_of(rel, text).unwrap_or_else(|| x.model_alone(rel, text));
+        crate::srcscan::scan_file_rs(rel, text, &m, &[]).map_err(|e| e.to_string())
+    };
+    let (a, b) = (scan(old)?, scan(new)?);
+    let mut out = vec![];
+    let had: HashSet<&str> = a.errors.iter().filter(|e| e.2 == "L.src").map(|e| e.3.as_str()).collect();
+    out.extend(b.errors.iter().filter(|e| e.2 == "L.src" && !had.contains(e.3.as_str())).map(|e| format!("L.src {}:{}: {}", e.0, e.1, e.3)));
+    let fns = |p: &crate::srcscan::FilePart| -> HashMap<String, String> { p.functions.iter().map(|f| (f.0.3.clone(), format!("{:?}", f.0.4))).collect() };
+    let (fa, fb) = (fns(&a), fns(&b));
+    for f in &a.functions {
+        let name = &f.0.3;
+        if !f.0.4.is_empty() && fb.get(name) != fa.get(name) && !b.errors.iter().any(|e| e.3.contains(&format!("function {name}:"))) {
+            out.push(format!("function {name}: its address comment no longer attaches to it"));
+        }
+    }
+    let data = |p: &crate::srcscan::FilePart| -> HashMap<String, String> { p.data.iter().map(|d| (d.3.clone(), format!("{:?}", d.5))).collect() };
+    let (da, db) = (data(&a), data(&b));
+    // a declaration the write drops (a duplicate of the header's) takes its comment with it: no detachment
+    for (name, addrs) in &da {
+        if addrs != "[]" && db.get(name).is_some_and(|b| b != addrs) {
+            out.push(format!("datum {name}: its address comment no longer attaches to it"));
+        }
+    }
+    Ok(out)
 }
 
 /// One head line without the declarators of `names` in its `extern T a, b, c;` statements: None when no code is
@@ -493,6 +550,9 @@ struct Trial {
     lines: [Vec<String>; 2], // the unit file's lines: the base's, the trial copy's
     vc6: Option<(Vec<Dg>, Vec<Dg>)>,
     pos: usize,
+    /// the headers the unit already includes: not included again
+    already: Vec<String>,
+    old: String,
 }
 
 /// The diagnostics of a trial copy as the unit's file's: the copy's own lines, or the name and line its `#line`
@@ -552,6 +612,9 @@ fn trial(x: &Ctx, unit: &str, headers: &[String], drop: &BTreeMap<i64, HashSet<S
         .ok_or_else(|| format!("LookupError: no unit {unit} in target {}", p.target_name))?;
     let head = a.file.clone();
     let old = read(&x.root, &head);
+    let already = included_already(&old, headers);
+    let headers: Vec<String> = headers.iter().filter(|h| !already.contains(h)).cloned().collect();
+    let headers = headers.as_slice();
     let lines: Vec<&str> = old.split('\n').collect();
     let pos = match at.filter(|&a| a != 0) {
         Some(at) => (at - 1).max(0) as usize,
@@ -606,10 +669,20 @@ fn trial(x: &Ctx, unit: &str, headers: &[String], drop: &BTreeMap<i64, HashSet<S
     };
     let split = |t: &str| t.split('\n').map(|l| l.to_string()).collect::<Vec<_>>();
     let lines = [split(&old), split(&new)];
-    Ok(Trial { unit: a, base: grouped(base), tri: grouped(tri), new, lines, vc6, pos })
+    Ok(Trial { unit: a, base: grouped(base), tri: grouped(tri), new, lines, vc6, pos, already, old })
 }
 
 impl Trial {
+    /// What the text --write would leave does to φ (phi_breaks).
+    fn breaks(&self, x: &Texts) -> Result<Vec<String>, String> {
+        phi_breaks(x, &self.unit.file, &self.old, &self.new.replace(TRIAL_MARK, ""))
+    }
+
+    /// The record of the headers left out (the unit includes them already), if any.
+    fn already_line(&self) -> Option<String> {
+        (!self.already.is_empty()).then(|| record(&[("already_included", s(self.already.join(",")))]) + "  (the unit includes them: not included again)")
+    }
+
     /// A diagnostic's line as its text reads: the unit file's in the base or the trial copy, another file's as the
     /// file reads.
     fn text(&self, d: &Dg, base: bool, rd: &mut Reader) -> String {
@@ -1205,16 +1278,24 @@ pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<S
     if try_grades {
         // the declaration set's effect itself: the unit compiled as --write would leave it, every function graded
         let t = trial(&x, unit, &hdrs, &drop, at).map_err(err)?;
+        out.extend(t.already_line());
+        let breaks = t.breaks(&x).map_err(err)?;
+        if !breaks.is_empty() {
+            out.push(record(&[("trial", s("phi")), ("breaks", Tok::I(breaks.len() as i64)), ("at", Tok::I(t.pos as i64 + 1))])
+                     + "  (the text --write would leave detaches address comments: --write refuses it; --at LINE puts the includes elsewhere)");
+            out.extend(breaks.iter().map(|b| format!("  {b}")));
+            falls += breaks.len();
+        }
         match trial_grades(p, &t.unit, &t.new.replace(TRIAL_MARK, ""))? {
             Err(e) => {
                 out.push(record(&[("trial", s("failed")), ("why", s(e))]));
-                falls = 1;
+                falls += 1;
             }
             Ok(gs) => {
                 let rank = |c: &str| ["none", "draft", "shape", "byte"].iter().position(|x| *x == c).unwrap_or(0);
                 let fell: Vec<_> = gs.iter().filter(|g| rank(&g.3) < rank(&g.2)).collect();
                 let rose: Vec<_> = gs.iter().filter(|g| rank(&g.3) > rank(&g.2)).collect();
-                falls = fell.len();
+                falls += fell.len();
                 out.push(record(&[("trial", s("compiled")), ("functions", Tok::I(gs.len() as i64)), ("falls", Tok::I(fell.len() as i64)),
                                   ("rises", Tok::I(rose.len() as i64)), ("same", Tok::I((gs.len() - fell.len() - rose.len()) as i64))])
                          + "  (the unit with the includes, as --write would leave it, compiled and each function's code graded; nothing written)");
@@ -1234,6 +1315,15 @@ pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<S
         return Ok((out, 1));
     }
     let t = trial(&x, unit, &hdrs, &drop, at).map_err(err)?;
+    out.extend(t.already_line());
+    let breaks = t.breaks(&x).map_err(err)?;
+    if !breaks.is_empty() {
+        out.push(record(&[("write", s("refused")), ("why", s(format!("the text would detach {} address comments", breaks.len()))),
+                          ("at", Tok::I(t.pos as i64 + 1))])
+                 + "  (the includes went before the file's line `at`; --at LINE puts them elsewhere)");
+        out.extend(breaks.iter().map(|b| format!("  {b}")));
+        return Ok((out, 1));
+    }
     let mut rd = Reader { root: root.clone(), memo: HashMap::new() };
     let left: Vec<&Group> = t.new_errors(&mut rd).into_iter().filter(|g| t.exemption(g, &mut rd).is_none()).collect();
     let vleft = vc6_new(&t.vc6);
@@ -1250,7 +1340,8 @@ pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<S
         return Ok((out, 1));
     }
     std::fs::write(py_path(&format!("{root}/{}", t.unit.file)), t.new.replace(TRIAL_MARK, "")).map_err(err)?;
-    out.push(record(&[("write", s(t.unit.file.clone())), ("included", s(hdrs.join(","))), ("at", Tok::I(t.pos as i64 + 1)),
+    let included: Vec<String> = hdrs.iter().filter(|h| !t.already.contains(h)).cloned().collect();
+    out.push(record(&[("write", s(t.unit.file.clone())), ("included", s(included.join(","))), ("at", Tok::I(t.pos as i64 + 1)),
                       ("dropped", Tok::I(drop.values().map(|v| v.len() as i64).sum())), ("lines", Tok::I(drop.len() as i64))])
              + "  (dcp build, then dcp check and re-grade the unit)");
     Ok((out, 0))
@@ -1314,6 +1405,42 @@ extern int x;
 #include \"late.h\"
 ";
         assert_eq!(include_pos(&x, "h.c", text, &set(&["x"])), 2); // not inside the comment, not inside the statement
+        // the head region only: an include below the first function does not draw the others after it
+        let text = "#include \"a.h\"\nint g;\n\n/* 0x10001000, uses x */\nint f(void)\n{\n    return x;\n}\n#include \"late.h\"\n";
+        assert_eq!(include_pos(&x, "src/u.c", text, &set(&["x"])), 1);
+        assert_eq!(include_pos(&x, "src/u.c", text, &set(&["y"])), 1);
+        // never between a comment and the line it belongs to (a datum's address comment)
+        let text = "#include \"a.h\"\n/* 0x10002000, the x pointer */\nint *px = &x;\n";
+        assert_eq!(include_pos(&x, "src/u.c", text, &set(&["x"])), 1);
+    }
+
+    /// A text that detaches an address comment breaks φ: phi_breaks names it (needs libclang).
+    #[test]
+    fn phi_breaks_on_detached_comments() {
+        if frontend::library(None).is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("dcp-phi-breaks-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let r = root.to_string_lossy().into_owned();
+        let x = Texts { root: r.clone(), front: Front::of(&r).unwrap(), scan: None };
+        let old = "/* 0x10002000, the counter */\nint counter = 1;\n\n/* 0x10001000, reads it */\nint f(void)\n{\n    return counter;\n}\n";
+        assert_eq!(phi_breaks(&x, "src/u.c", old, old).unwrap(), Vec::<String>::new());
+        let before_head = format!("extern int y;\n{old}");
+        assert_eq!(phi_breaks(&x, "src/u.c", old, &before_head).unwrap(), Vec::<String>::new());
+        let split_fn = old.replace("*/\nint f", "*/\nextern int y;\nint f");
+        let b = phi_breaks(&x, "src/u.c", old, &split_fn).unwrap();
+        assert!(b.len() == 1 && b[0].starts_with("L.src src/u.c:6: function f: no address comment"), "{b:?}");
+        let split_datum = old.replace("*/\nint counter", "*/\nextern int y;\nint counter");
+        let b = phi_breaks(&x, "src/u.c", old, &split_datum).unwrap();
+        assert_eq!(b, ["datum counter: its address comment no longer attaches to it"]);
+    }
+
+    #[test]
+    fn headers_already_included() {
+        let text = "#include \"a.h\"\n  # include \"sub/B.h\"\n/* #include \"c.h\" is not one */\n";
+        let hs = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(included_already(text, &hs(&["a.h", "b.h", "d.h"])), ["a.h", "b.h"]);
     }
 
     /// The file-scope declarations lint repeats (needs libclang): data definitions as externs, K&R definitions with

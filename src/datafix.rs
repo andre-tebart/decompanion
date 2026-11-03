@@ -671,6 +671,11 @@ fn byte_functions(db: &str) -> Result<HashMap<i64, String>> {
     Ok(fs.iter().map(|f| (f.lo, f.s("unit").unwrap_or("").to_string())).collect())
 }
 
+/// The error findings of the store as (rule, address, message).
+fn errors_of(db: &str) -> Result<HashSet<(String, i64, String)>> {
+    Ok(crate::storedb::st_findings(db, None, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").map(|c| (c.1, c.2, c.4)).collect())
+}
+
 fn failed_units(db: &str) -> Result<BTreeSet<String>> {
     let fs = crate::with_db(db, |c| store::claims_of(c, db, "build", None, |f| f.value.get("ok").and_then(|v| v.as_bool()) == Some(false)))?;
     Ok(fs.iter().map(|f| f.s("tu").unwrap_or("").to_string()).collect())
@@ -988,6 +993,7 @@ pub fn data_fix(p: &Project, checks: Option<String>, unit: Option<String>, write
         }
         // trial compiles decide; only accepted edits are written, then one build
         let before = byte_functions(&db)?;
+        let errors_before = errors_of(&db)?;
         let trial = Trial::new(p)?;
         let per: Vec<(String, Vec<&Edit>)> = units.iter().map(|u| (u.to_string(), edits.iter().filter(|x| x.unit == *u).collect())).collect();
         let verdicts = trial.judge(&mut files, &per)?;
@@ -1007,7 +1013,13 @@ pub fn data_fix(p: &Project, checks: Option<String>, unit: Option<String>, write
         let now = byte_functions(&db)?;
         let still = before.keys().filter(|a| !now.contains_key(a)).count();
         let before_units: HashSet<&String> = before.values().collect();
-        if still > 0 || (!failed.is_empty() && failed.iter().any(|f| !before_units.contains(f))) {
+        // the scan's rules on the written H (an address comment detached from its datum: L.src, M.gen), not only
+        // the compile: a new error sends the batch back (docs/mental-model.md §5)
+        let new_errors: Vec<(String, i64, String)> = errors_of(&db)?.into_iter().filter(|e| !errors_before.contains(e)).collect();
+        for e in new_errors.iter().take(10) {
+            say(format!("  new error {} {:#010x}: {}", e.0, e.1, e.2))?;
+        }
+        if still > 0 || !new_errors.is_empty() || (!failed.is_empty() && failed.iter().any(|f| !before_units.contains(f))) {
             for rel in new.keys() {
                 // the trial missed something: the batch goes back
                 let old = files.text(rel).to_vec();
@@ -1016,7 +1028,8 @@ pub fn data_fix(p: &Project, checks: Option<String>, unit: Option<String>, write
             sync()?;
             let failed = if failed.is_empty() { "-".to_string() } else { failed.iter().cloned().collect::<Vec<_>>().join(",") };
             say(format!("  reverted {}", record(&[("edits", Tok::I(accepted.len() as i64)),
-                                                   ("why", s(format!("after writing, {still} byte match(es) lost, failed units: {failed}")))])))?;
+                                                   ("why", s(format!("after writing, {still} byte match(es) lost, {} new error(s), failed units: {failed}",
+                                                                     new_errors.len())))])))?;
             accepted.clear();
             status = 1;
         }

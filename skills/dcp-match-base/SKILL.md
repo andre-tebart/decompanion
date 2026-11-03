@@ -125,7 +125,10 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   prototyped, per call `safe` or re-grade) and the functions to re-grade; a call / other finding on a line marked
   `@original` / `@vc6` shows `exempt=<marker>` and blocks nothing (a redeclaration with another type never: VC6
   rejects it whatever the marker), an error the unit already had is no finding; `--write` makes the include when only
-  duplicates are in the way (`--at LINE` places the include when the default line fails the trial). `warning=declaration-set`: re-grade every function of the unit after the include,
+  duplicates are in the way, in the head region (after its last include, above the first function's address comment,
+  never right below a comment); a header the unit already includes is not included again (`already_included=`);
+  a text that would detach an address comment is refused (`--at LINE` places the include when the default line fails
+  the trial). `warning=declaration-set`: re-grade every function of the unit after the include,
   byte ones first (VC6 /O2 moves code by the declaration set alone): `--trial` compiles the unit with the include
   (nothing written) and lists the functions whose grade would fall (`fall=ADDR ... code=byte trial=shape`). A dropped duplicate's
   comment never describes its function (Q6 reads the function's own documentation only), so no words are lost to Q6.

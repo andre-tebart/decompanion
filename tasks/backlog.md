@@ -16,7 +16,6 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 6 | [headers-write-keeps-phi](headers-write-keeps-phi.md): `--write` never splits an address comment from its definition | S | |
 | 7 | [trials-use-grade-verdict](trials-use-grade-verdict.md): the header and data trials use G.grade's verdict | S | |
 | 8 | [unbuilt-function-not-run](unbuilt-function-not-run.md): an unbuilt function is open, not draft | M | |
 | 9 | [source-file-without-unit-finding](source-file-without-unit-finding.md): a source file without a unit is ill-formed | S-M | |
@@ -51,7 +50,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 33 | [datum-experiment](datum-experiment.md): the datum object experiment, graded, seen by M1 | M | |
 | 34 | [normalized-alignment](normalized-alignment.md): align on keys with registers and slots masked | L | |
 | 35 | [gap-data-through-data-fix](gap-data-through-data-fix.md): `data fix` splits gap blocks and drops unused externs | M-L | 7 |
-| 36 | [headers-conflicts-scope](headers-conflicts-scope.md): duplicates anywhere; the trial drops superseded declarations | M | 6, 7 |
+| 36 | [headers-conflicts-scope](headers-conflicts-scope.md): duplicates anywhere; the trial drops superseded declarations | M | 7 |
 | 37 | [d-rule-messages-sizes](d-rule-messages-sizes.md): D1/D7/D5 messages name their sizes and alternatives | S | |
 | 38 | [q3-pointer-context](q3-pointer-context.md): Q3 only for literals in pointer context | S | |
 | 39 | [daemon-file-lock](daemon-file-lock.md): confirm and remove the libclang file mapping | S then M | |
