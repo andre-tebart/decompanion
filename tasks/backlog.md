@@ -60,6 +60,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | # | Task | Size | Depends on |
 |---|---|---|---|
 | 42 | [signature-claims-from-call-sites](signature-claims-from-call-sites.md): derived signature claims from I's call sites | M-L | 14 |
+| 58 | [record-type-claims](record-type-claims.md): record types as claims: one struct type per record | L | 14, 42 |
 | 43 | [m7-names-callee](m7-names-callee.md): M7 names the callee and the declaration in scope | S-M | |
 | 44 | [function-order-check](function-order-check.md): function source order against address order | S | |
 | 45 | [pooled-literal-owner](pooled-literal-owner.md): pooled toolchain literals as a derived owner | M | |
