@@ -19,6 +19,8 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 11 | [data-extent-fallback](data-extent-fallback.md): no one-byte data owners | S-M | |
 | 12 | [containment-check](containment-check.md): references and views stay inside their object | M | |
 | 13 | [library-placement-checks-targets](library-placement-checks-targets.md): library placement checks member targets | M | |
+| 56 | [d8-split-object-is-error](d8-split-object-is-error.md): one object of the original split into several of ours is an error | S | |
+| 57 | [d1-padding-decided](d1-padding-decided.md): D1 decides alignment padding instead of warning | S-M | |
 
 ## P1
 
