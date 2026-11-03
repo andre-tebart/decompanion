@@ -102,9 +102,11 @@ pub static CHECKS: &[(&str, Category)] = &[
     ("S5", Category::Gap),
     ("S.crt.ambiguous", Category::Gap),
     ("S.crt.duplicate", Category::Gap),
+    ("C.name.extern", Category::Gap),            // an extern no definition holds, in unowned bytes
     // older than H
     ("M.compile.stale", Category::Stale),
     ("M.lint.stale", Category::Stale),
+    ("M2.stale", Category::Stale),               // a byte + readable function's @deep / @stuck tag (the build clears it)
     // regressions
     ("M1", Category::Debt),
     ("M1.debt", Category::Debt),
@@ -115,9 +117,25 @@ pub fn category(check: &str) -> Category {
     CHECKS.iter().find(|c| c.0 == check).map(|c| c.1).unwrap_or(Category::Contradiction)
 }
 
+/// The least severity a finding of a check is emitted at: an ill-formed check is an error (§5: the gate fails on
+/// it), every other keeps the severity its rule gives.
+pub fn floor<'a>(check: &str, severity: &'a str) -> &'a str {
+    if category(check) == Category::IllFormed && !matches!(severity, "error" | "bug") {
+        "error"
+    } else {
+        severity
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ill_formed_is_an_error() {
+        assert_eq!((floor("C.name.alias", "warn"), floor("L.src", "info"), floor("M.gen", "bug")), ("error", "error", "bug"));
+        assert_eq!((floor("S5", "warn"), floor("M2.stale", "warn")), ("warn", "warn"));
+    }
 
     /// Every check id the core reports has its category, once: the ids of the sources' `finding(` calls with a
     /// literal id, and the ones computed (layout's issues, the scan's errors, the reference check's, the placement).
@@ -172,9 +190,9 @@ pub static RULES: &[RuleDef] = &[
         doc: "A direct call whose target lies strictly inside a function (not at its start) contradicts that function's\nextent or the call's decoding.",
     },
     RuleDef {
-        id: "C.name.alias", version: "1", max_support: REPRODUCED, phase: "C", loader: false,
-        needs: &["L.src"], outputs: &[], inputs: &[],
-        doc: "Several source names declared for one data address (the address comments of definitions and externs; a\nview is another object) are one object under several names: a warning listing each name where it is\ndeclared. Native: native/dcp_core/src/setup.rs c_name_alias.",
+        id: "C.name.alias", version: "2", max_support: REPRODUCED, phase: "C", loader: false,
+        needs: &["kind:name", "kind:source", "kind:symbol"], outputs: &[], inputs: &["scan", "targets"],
+        doc: "φ many-to-one without a reason (docs/mental-model.md §8.7), an error: several names of ours at one address\n(the address comments of functions, data definitions and externs; decl names) that neither the toolchain\nnor the image explains (a library fold, an export of our function) and no alias declares (a view, `#define B\nA`); two definitions at one address are L.src's. Also a placeholder spelling (`ai_Unk5049e0`, a cast macro\n`ai_Unk5a9e40K`) of an address φ names otherwise while the spelling is no object of φ: a stale name a rename\ndid not reach. C.name.extern (a gap, a warning): an extern no definition holds whose address no symbol owns\n(unknown data). Native: native/dcp_core/src/layout.rs c_name_alias.",
     },
     RuleDef {
         id: "C.toolchain", version: "2", max_support: REPRODUCED, phase: "C", loader: false,

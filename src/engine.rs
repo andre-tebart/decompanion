@@ -205,7 +205,7 @@ impl<'a> Engine<'a> {
     /// A rule's inputs: the configuration's, with what the front end computes for the rules of the sources.
     fn inputs(&mut self, r: &RuleDef) -> Result<Rc<Inputs>> {
         let base = self.base_inputs()?;
-        let front = matches!(r.id, "L.src" | "L5.placeholder" | "A1.addr.cast" | "L13.data.code" | "G.grade" | "M.lint");
+        let front = matches!(r.id, "L.src" | "L5.placeholder" | "C.name.alias" | "A1.addr.cast" | "L13.data.code" | "G.grade" | "M.lint");
         if !front {
             return Ok(base);
         }

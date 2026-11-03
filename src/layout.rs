@@ -5,7 +5,7 @@ use crate::rules::Ctx;
 use crate::store::{self, Out, Claim, Support, DECLARED, OPEN};
 use crate::image;
 use rusqlite::Connection;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 fn err(e: rusqlite::Error) -> Error {
     Error::runtime(e.to_string())
@@ -261,6 +261,7 @@ pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 pub(crate) struct ScanView {
     pub(crate) functions: Vec<(String, i64, i64, Vec<(Option<String>, i64)>)>, // file, comment line, end line, addrs
     pub(crate) placeholders: Vec<(String, i64, String, String)>,              // file, line, ident, value
+    pub(crate) spelled: Vec<(String, i64, String, String)>,                   // the placeholders declared: file, line, ident, value
     pub(crate) ptrcasts: Vec<(String, i64, String, String)>,                  // file, line, text, value
     pub(crate) data: Vec<(String, i64, String, String, Vec<(Option<String>, i64)>)>, // file, line, kind, name, addrs
     pub(crate) items: ScanItems, // L.src's
@@ -270,6 +271,7 @@ impl ScanView {
     pub(crate) fn extend(&mut self, o: &ScanView) {
         self.functions.extend_from_slice(&o.functions);
         self.placeholders.extend_from_slice(&o.placeholders);
+        self.spelled.extend_from_slice(&o.spelled);
         self.ptrcasts.extend_from_slice(&o.ptrcasts);
         self.data.extend_from_slice(&o.data);
         self.items.fns.extend_from_slice(&o.items.fns);
@@ -417,6 +419,79 @@ pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                              format!("{file}:{line}: {ident}: 0x{hex} is not an address of {} (a dropped or extra digit?)", listed.join(", ")),
                              &by);
             }
+        }
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------------------------ C.name.alias
+
+/// C.name.alias: φ many-to-one without a reason (docs/mental-model.md §8.7). One object has one name:
+/// - several names of ours (address comments of definitions, externs, functions; `decl` names) at one address, unless
+///   the toolchain or the image explains it (Phi::many_reason) or an alias is declared (a view, `#define B A`); two
+///   definitions at one address are L.src's;
+/// - a placeholder spelling (`ai_Unk5049e0`, `ai_Unk5a9e40K`) of an address that φ names otherwise, the spelling
+///   itself no object of φ: a stale name a rename did not reach.
+/// C.name.extern, a gap: an extern-only name (no definition of it) whose address no symbol owns (unknown data):
+/// it links only while nothing uses it.
+pub fn c_name_alias(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
+    let names = store::claims(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?;
+    let phi = crate::phi::Phi::new(&names, &[]);
+    let mut defs: HashMap<i64, usize> = HashMap::new();
+    for f in store::claims(db, &ctx.db, "source", &ctx.needed, |f| matches!(f.s("what"), Some("func" | "data"))).map_err(err)? {
+        *defs.entry(f.lo).or_default() += 1;
+    }
+    let ours = |e: &crate::phi::Entry| matches!(e.origin, crate::phi::Origin::Source | crate::phi::Origin::Decl) && e.view.is_none();
+    let at = |by: &str| by.strip_prefix("src:").or_else(|| by.strip_prefix("decl:")).unwrap_or(by).to_string();
+    for (a, es) in phi.many() {
+        if crate::phi::Phi::many_reason(&es).is_some() || defs.get(&a).is_some_and(|&n| n > 1) {
+            continue;
+        }
+        let mut by_name: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for e in es.iter().filter(|e| ours(e)) {
+            let w = by_name.entry(e.name.as_str()).or_default();
+            if !w.contains(&at(&e.by)) {
+                w.push(at(&e.by));
+            }
+        }
+        let list: Vec<String> = by_name.iter().map(|(n, w)| format!("{n} ({})", w.join(", "))).collect();
+        let first = es.iter().find(|e| ours(e)).map(|e| e.by.clone()).unwrap_or_default();
+        out.finding("error", "C.name.alias", a, a + 1, format!("{} names of ours at {a:#x}: {}; one object has one name (dcp rename the others to it, \
+                     or declare an alias: #define B A  /* {a:#x} */)", by_name.len(), list.join(", ")), &first);
+    }
+    // placeholder spellings declared for an address φ names otherwise
+    let x = scan_inputs(ctx)?;
+    let cur = &x.target;
+    let owners = line_targets(&x.scan, &x.targets);
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (file, line, ident, hex) in &x.scan.spelled {
+        let mine: &[String] = owners.at(file, *line).filter(|m| !m.is_empty()).map(|m| m.as_slice()).unwrap_or(&x.targets);
+        let Some(v) = hex_value(hex).filter(|v| *v <= i64::MAX as u64).map(|v| v as i64) else { continue };
+        if !mine.contains(cur) || phi.of(ident).is_some() || seen.contains(ident.as_str()) {
+            continue;
+        }
+        let named: BTreeSet<String> = phi.at(v).filter(|e| ours(e)).map(|e| e.name.clone()).collect();
+        if named.is_empty() {
+            continue;
+        }
+        seen.insert(ident);
+        let list: Vec<&str> = named.iter().map(|s| s.as_str()).collect();
+        out.finding("error", "C.name.alias", v, v + 1, format!("{file}:{line}: {ident} spells {v:#x}, which is {}: a stale name of the object \
+                     (rename it to {}, or drop it)", list.join(" / "), list[0]), &format!("src:{file}:{line}"));
+    }
+    // extern-only names in unowned bytes
+    let is_extern = |f: &Claim| f.s("origin") == Some("source") && f.reason.as_deref().is_some_and(|r| r.ends_with("(extern)"));
+    let defined: HashSet<&str> = names.iter().filter(|f| f.s("origin") == Some("source") && !is_extern(f)).filter_map(|f| f.s("name")).collect();
+    for f in names.iter().filter(|f| is_extern(f)) {
+        let name = f.s("name").unwrap_or("");
+        if defined.contains(name) || phi.at(f.lo).any(|e| e.name != name && e.origin != crate::phi::Origin::Analyzer) {
+            continue; // a definition elsewhere, or another name here (the alias above)
+        }
+        let owned = store::claims(db, &ctx.db, "symbol", &ctx.needed, |s| s.lo <= f.lo && f.lo < s.hi && s.s("skind") != Some("unknown.data"))
+            .map_err(err)?;
+        if owned.is_empty() {
+            out.finding("warn", "C.name.extern", f.lo, f.lo + 1, format!("{}: extern {name} at {:#x}: no definition holds it, its bytes are unowned \
+                         (define the object in its unit, or drop the extern)", at(&f.by), f.lo), &f.by);
         }
     }
     Ok(())

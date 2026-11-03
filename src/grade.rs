@@ -467,7 +467,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if has("deep") && has("stuck") {
             out.finding("error", "M2", s.lo, s.lo + 1, format!("{name}: carries both @deep and @stuck"), &s.by);
         } else if !tag.is_empty() && r.code == "byte" && q == "readable" {
-            out.finding("warn", "M2", s.lo, s.lo + 1, format!("{name}: byte + readable, its @{tag} tag is stale (dcp build clears it)"), &s.by);
+            out.finding("warn", "M2.stale", s.lo, s.lo + 1, format!("{name}: byte + readable, its @{tag} tag is stale (dcp build clears it)"), &s.by);
         }
         // a passing byte experiment reproduces; anything less rests on the address comment
         out.claim(s.lo, s.lo + 1, "experiment", e, if r.code == "byte" { REPRODUCED } else { DECLARED });

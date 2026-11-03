@@ -507,10 +507,11 @@ impl Out {
         self.finding2(severity, check, lo, hi, message, a, "");
     }
 
-    /// A finding naming the producers of both claims (a contradiction's two sides).
+    /// A finding naming the producers of both claims (a contradiction's two sides). An ill-formed check is never
+    /// below error (registry::floor: H that is no program or φ that is no mapping fails the gate).
     pub fn finding2(&mut self, severity: &str, check: &str, lo: i64, hi: i64, message: String, a: &str, b: &str) {
         self.findings.push(Finding {
-            severity: severity.to_string(),
+            severity: crate::registry::floor(check, severity).to_string(),
             check: check.to_string(),
             lo,
             hi,

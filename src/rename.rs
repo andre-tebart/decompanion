@@ -505,6 +505,9 @@ pub fn rename_command(p: &crate::project::Project, pairs: Vec<(String, String, S
         return Ok((x.out, errs, 1));
     }
     x.out.extend(said);
+    // φ before the rename: the other names of ours at OLD's address (C.name.alias: one object has one name)
+    let names = crate::with_db(&db, |c| crate::store::claims_of(c, &db, "name", None, |_| true))?;
+    let phi = crate::phi::Phi::new(&names, &[]);
     for pl in &edits {
         x.out.push(record(&[("renamed", s(pl.old.clone())), ("to", s(pl.new.clone())), ("kind", s(pl.kind)), ("at", oi(pl.a)),
                             ("files", Tok::I(pl.files.len() as i64)), ("replacements", Tok::I(pl.files.values().sum::<usize>() as i64)),
@@ -541,6 +544,18 @@ pub fn rename_command(p: &crate::project::Project, pairs: Vec<(String, String, S
             if !views.is_empty() {
                 x.out.push(format!("note: the views of {} keep their names: {} (rename each: dcp rename VIEW NEW)", pl.old,
                                    views.iter().take(8).cloned().collect::<Vec<_>>().join(", ")));
+            }
+        }
+        if let Some(a) = pl.a {
+            let mut others: BTreeMap<&str, &str> = BTreeMap::new();
+            for e in phi.at(a).filter(|e| matches!(e.origin, crate::phi::Origin::Source | crate::phi::Origin::Decl) && e.view.is_none()) {
+                if e.name != pl.old && e.name != pl.new {
+                    others.entry(e.name.as_str()).or_insert(e.by.strip_prefix("src:").or_else(|| e.by.strip_prefix("decl:")).unwrap_or(&e.by));
+                }
+            }
+            if !others.is_empty() {
+                x.out.push(format!("note: other names of ours at {a:#x}: {} (one object has one name: dcp rename each to {})",
+                                   others.iter().map(|(n, w)| format!("{n} ({w})")).collect::<Vec<_>>().join(", "), pl.new));
             }
         }
     }

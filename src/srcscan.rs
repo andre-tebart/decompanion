@@ -343,7 +343,7 @@ impl ScanPiece {
 fn hold(p: Piece) -> ScanPiece {
     use sha2::{Digest, Sha256};
     let v = &p.view;
-    let rows = format!("{}\0{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}", p.rel, v.functions, v.placeholders, v.ptrcasts, v.data, v.items.fns, v.items.datas,
+    let rows = format!("{}\0{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}{:?}", p.rel, v.functions, v.placeholders, v.spelled, v.ptrcasts, v.data, v.items.fns, v.items.datas,
                        v.items.views, v.items.errors, { let mut d: Vec<_> = p.defs.iter().collect(); d.sort_by(|a, b| a.0.cmp(b.0)); d });
     let digest = Sha256::digest(rows.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
     let piece = Arc::new(p);
@@ -588,6 +588,17 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
             placeholders.push((rel.to_string(), sf.line_of(m.start()), w.to_string(), v));
         }
     }
+    // the placeholder spellings the file declares (a macro, a file-scope function or variable): names of objects,
+    // not uses (a local or a field spelled alike is neither)
+    let mut spelled: Vec<(String, i64, String, String)> = vec![];
+    let decl_names = model.decls.iter().map(|d| match d {
+        crate::clang::Decl::F(n, _, ws, ..) | crate::clang::Decl::V(n, _, ws, ..) => (n, ws.0),
+    });
+    for (name, line) in decl_names.chain(model.defines.iter().map(|d| (&d.0, d.2))) {
+        if let Some(v) = placeholder(name).filter(|_| !spelled.iter().any(|x| x.2 == *name)) {
+            spelled.push((rel.to_string(), line, name.clone(), format!("{v:x}")));
+        }
+    }
     // a unit file with code but no addressed function, and no function the scan names as missing its address comment:
     // the scan could not read it as a unit (a head alone, as `dcp unit new` writes it, is a unit waiting for its functions)
     let has_code = || sf.code.lines().any(|l| !matches!(py_strip(l).chars().next(), None | Some('#')));
@@ -607,6 +618,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
     let view = ScanView {
         functions: functions.iter().filter(|(a, _)| !a.4.is_empty()).map(|(a, b)| (a.0.clone(), b.3, b.5, ad(&a.4))).collect(),
         placeholders: placeholders.iter().map(|x| (x.0.clone(), x.1, x.2.clone(), format!("{:x}", x.3))).collect(),
+        spelled,
         ptrcasts: ptrcasts.iter().map(|x| (x.0.clone(), x.1, x.2.clone(), format!("{:x}", x.3))).collect(),
         data: data.iter().map(|d| (d.0.clone(), d.1, d.4.clone(), d.3.clone(), ad(&d.5))).collect(),
         items: crate::layout::ScanItems {

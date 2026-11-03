@@ -277,3 +277,25 @@ fn answers_name_current_claims_after_same_output_rerun() {
     let ids: std::collections::BTreeSet<i64> = crate::answers::rows(&db, None, None).unwrap().iter().filter_map(|r| r.symbol).collect();
     assert!(!ids.is_empty() && ids.iter().all(|&i| crate::storedb::st_fact(&db, i).unwrap().is_some()));
 }
+
+/// C.name.alias over every name of ours: an extern under another name than the definition, a cast macro still spelling
+/// a renamed function's address (a local spelled alike is no name); C.name.extern: an extern only, in unowned bytes;
+/// rename lists the other names at its address.
+#[test]
+fn name_alias_and_extern_only() {
+    let t = tiny();
+    unit(&t, "net", &["int counter = 0x1234;  /* 0x10002000 */\nextern int net_Count;  /* 0x10002000 */\nextern int lost;  /* 0x10002040 */\n\
+                       #define net_Unk10001020K ((int (*)(void))get)\nint get(void);\n",
+                      "/* 0x10001020, reads the counter */\nint get(void)\n{\n    int net_Unk10001020 = 1;\n    return counter + net_Unk10001020;\n}\n"]);
+    dcp(&t, &["check"]);
+    let mut alias = errors(&t, "C.name.alias");
+    alias.sort_by_key(|c| c.2);
+    assert_eq!(alias.len(), 2, "{alias:?}");
+    assert!(alias[0].4.starts_with("src/net.c:4: net_Unk10001020K spells 0x10001020, which is get: a stale name"), "{}", alias[0].4);
+    assert!(alias[1].4.starts_with("2 names of ours at 0x10002000: counter (src/net.c:1), net_Count (src/net.c:2)"), "{}", alias[1].4);
+    let ext = findings_of(&t, None, "C.name.extern");
+    assert!(ext.len() == 1 && ext[0].0 == "warn" && ext[0].4.contains("extern lost at 0x10002040"), "{ext:?}");
+    // a rename names the other names at OLD's address
+    let (_, out) = dcp(&t, &["rename", "counter", "net_Total", "--why", "what it counts"]);
+    assert!(out.contains("note: other names of ours at 0x10002000: net_Count (src/net.c:2) (one object has one name: dcp rename each to net_Total)"), "{out}");
+}

@@ -16,7 +16,6 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 10 | [ill-formed-is-error](ill-formed-is-error.md): ill-formed ids gate; C.name.alias covers every name | S-M | |
 | 11 | [data-extent-fallback](data-extent-fallback.md): no one-byte data owners | S-M | |
 | 12 | [containment-check](containment-check.md): references and views stay inside their object | M | |
 | 13 | [library-placement-checks-targets](library-placement-checks-targets.md): library placement checks member targets | M | |

@@ -74,7 +74,7 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   `--symbols` prints the call targets, data and string literals by name instead of `X`; `!` marks an equal
   instruction that names another symbol or literal than the original's (a wrong callee, datum or string); `=`
   one that names the same address or literal by another name (an alias, `sym+off` for a bare address: no
-  error; two source names of one datum are a `C.name.alias` warning of `dcp check --strict`). A compare against
+  error; two names of ours at one address are a `C.name.alias` error of `dcp check`). A compare against
   an address (`cmp ecx, 0xfb91e4 (or d2_Views+0x81c4)`) also names the array below it the function uses: a
   loop's end pointer lies past the array's end, inside the next object. A `!` line ends with both addresses
   (`0x770ae4 | 0x770ae0`); a floating constant shows its value on both sides; `calls: _ftol ours x2, the
