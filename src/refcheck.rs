@@ -133,9 +133,11 @@ pub struct Refs {
 }
 
 /// A reference of ours at `name + within` outside the object's declared size (`size` bytes; one past the end is
-/// inside): an immediate or an absolute memory operand without a register (an indexed operand's displacement is
-/// the compiler's arithmetic, `[arr-4+ecx*4]`). `&cm_SendRing + 0x4973c0` is the constant 0xf00500 spelled as an
-/// address: it moves with cm_SendRing in a relinked image.
+/// inside): an absolute memory operand without a register, or an immediate more than one object size past either
+/// end. The compiler's own arithmetic is no such reference: an indexed operand's displacement (`[arr-4+ecx*4]`),
+/// and the pointers strength reduction makes of a loop over the elements' field (`cmp esi, &arr[N].f`: one element
+/// past the end at most, an element no larger than the object). `&cm_SendRing + 0x4973c0` is the constant
+/// 0xf00500 spelled as an address: it moves with cm_SendRing in a relinked image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outside {
     /// the relocated field's offset in the function
@@ -197,8 +199,10 @@ impl Refs {
                 continue;
             }
             let ins = ins.get_or_insert_with(|| crate::dis::decode(code.code().0, 0));
-            if let Some(imm) = bare_field(code, *off, ins) {
-                outside.push(Outside { off: *off, name: name.clone(), within, size, imm });
+            match bare_field(code, *off, ins) {
+                Some(true) if (-size..=2 * size).contains(&within) => {} // a loop pointer of strength reduction
+                Some(imm) => outside.push(Outside { off: *off, name: name.clone(), within, size, imm }),
+                None => {}
             }
         }
         Refs { targets, expect, outside }
@@ -642,12 +646,14 @@ mod tests {
         assert_eq!(run(&image(A, B, VA + 0x40), &p).differs().count(), 0);
     }
 
-    /// Containment: `mov eax, [g_a+0x10]` and `mov eax, offset g_b+8` lie outside the 4-byte objects (one past the end
-    /// is inside); `mov eax, [g_c-4+ecx*4]` is the compiler's indexing, not checked.
+    /// Containment: `mov eax, [g_a+0x10]` and `mov eax, offset g_b+9` lie outside the 4-byte objects (one past the end
+    /// is inside); `mov eax, [g_c-4+ecx*4]` is the compiler's indexing and `cmp esi, offset g_b+6` a loop pointer
+    /// one element past the end, not checked.
     #[test]
     fn a_reference_outside_its_declared_object_is_listed() {
-        let code = [0xa1u8, 0x10, 0, 0, 0, 0xb8, 0x08, 0, 0, 0, 0x8b, 0x04, 0x8d, 0xfc, 0xff, 0xff, 0xff, 0xa1, 0x04, 0, 0, 0, 0xc3];
-        let relocs = [(1u32, 2u32, 6u16), (6, 3, 6), (13, 4, 6), (18, 2, 6)];
+        let code = [0xa1u8, 0x10, 0, 0, 0, 0xb8, 0x09, 0, 0, 0, 0x8b, 0x04, 0x8d, 0xfc, 0xff, 0xff, 0xff, 0xa1, 0x04, 0, 0, 0, 0x81, 0xfe, 0x06, 0, 0, 0,
+                    0xc3];
+        let relocs = [(1u32, 2u32, 6u16), (6, 3, 6), (13, 4, 6), (18, 2, 6), (24, 3, 6)];
         let syms = [(".text", 0, 1, 3), ("_f", 0, 1, 2), ("_g_a", 0, 0, 2), ("_g_b", 0, 0, 2), ("_g_c", 0, 0, 2)];
         let obj = Obj::parse(&crate::coff::testlib::code_obj(&code, &relocs, &syms)).unwrap();
         let code = obj.function_code(obj.function_index()["f"]);
@@ -659,7 +665,7 @@ mod tests {
         let p = Phi::new(&[claim(A, "g_a"), claim(B, "g_b"), claim(C, "g_c")], &[]);
         let refs = Refs::new(&obj, &code, &p);
         let got: Vec<(u32, &str, i64, bool)> = refs.outside.iter().map(|o| (o.off, o.name.as_str(), o.within, o.imm)).collect();
-        assert_eq!(got, [(1, "g_a", 0x10, false), (6, "g_b", 8, true)]);
+        assert_eq!(got, [(1, "g_a", 0x10, false), (6, "g_b", 9, true)]);
         assert!(refs.outside[0].line().starts_with("M.contain at +0x1: &g_a + 0x10 (an absolute memory operand) lies outside g_a (4 bytes, declared)"),
                 "{}", refs.outside[0].line());
     }

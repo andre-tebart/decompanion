@@ -303,7 +303,8 @@ offset.
 
 Containment holds both ways. A reference of H at `sym + N` outside sym's declared size (sizeof; one past the end is
 inside) is no address of sym: H is ill-formed there (`M.contain`), whatever the bytes compare, because the sum moves
-with sym when relinked (`&cm_SendRing + 0x4973c0` is the constant 0xf00500). A view past its container is the same
+with sym when relinked (`&cm_SendRing + 0x4973c0` is the constant 0xf00500). The compiler's own arithmetic is
+none: an indexed displacement, and a loop's pointer one element past either end. A view past its container is the same
 (`D7`). And a near-certain reference of I into the bytes our object gives a datum as padding contradicts H's
 layout on the owner question (`D9`): the datum is larger, or an object of its own is missing there.
 

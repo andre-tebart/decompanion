@@ -242,8 +242,9 @@ the commit went in (`git status` clean) before the next function.
   code reads. D9 (the original reads the padding our object gives a datum), D7 (a view past its container's
   declared size) and D8 (the original's code uses more bytes as one object than the declaration holds: a field
   access, a loop bound, a block copy, a reader call) are run-time corruption the gate cannot see otherwise: declare
-  the object at the size D8 names, with the names inside it as views or fields of its type. A reader or copier of the game (`vfs_fread(buf, size, n, f)`)
-  tells S.extent its size through `dcp decl add "0xADDR writes ptr=a0 size=a1*a2 -- why"`.
+  the object at the size D8 names, with the names inside it as views or fields of its type. A reader or copier of
+  the game (`vfs_fread(buf, size, n, f)`) tells S.extent its size through
+  `dcp decl add "0xADDR writes ptr=a0 size=a1*a2 -- why"`.
 - Gap data: the `full_data_<addr>` / `full_rdata_<addr>` blocks (defined in the gap block at the end of `src/main.c`,
   `extern GAPDATA` elsewhere) are bytes no symbol covers yet: name, type, extent and owner are all unknown, and
   their place in main says nothing about ownership. When the function you raise shows what one is, settle all
