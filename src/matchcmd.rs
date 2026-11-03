@@ -441,11 +441,7 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     if n > 0 {
         out.push("  legend: '-' ours (our object), '+' the original (the image)".into());
     }
-    let (ca, cb) = r.unmatched_calls();
-    if !ca.is_empty() || !cb.is_empty() {
-        let list = |c: &[(String, usize)]| if c.is_empty() { "none".to_string() } else { c.iter().map(|(n, k)| format!("{n} x{k}")).collect::<Vec<_>>().join(", ") };
-        out.push(format!("  calls differ: ours {} | the original {}", list(&ca), list(&cb)));
-    }
+    out.extend(r.calls_line().map(|l| format!("  {l}")));
     let proved = matches!(r.proof.0, crate::equiv::Outcome::Equal { .. });
     out.extend(ref_lines(&r, crate::grade::code_grade(false, r.verdict.shape, proved, &r.refs) == "shape"));
     out.extend(open_lines);
@@ -514,6 +510,7 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
         }
     }
     out.push(format!("  summary: {}", v.summary_without_branches()));
+    out.extend(r.calls_line().map(|l| format!("  {l}")));
     out.extend(ref_lines(&r, verdict != "draft"));
     out.extend(r.open_lines.iter().map(|l| format!("  open: {l}")));
     let (proof, unbound) = &r.proof;

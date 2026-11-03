@@ -16,7 +16,6 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 4 | [one-call-set-comparison](one-call-set-comparison.md): one call set, counts on both sides | S | |
 | 5 | [wrap-refuses-dirty-tree](wrap-refuses-dirty-tree.md): no witness without a commit | S | |
 | 6 | [headers-write-keeps-phi](headers-write-keeps-phi.md): `--write` never splits an address comment from its definition | S | |
 | 7 | [trials-use-grade-verdict](trials-use-grade-verdict.md): the header and data trials use G.grade's verdict | S | |

@@ -76,9 +76,10 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   error; two source names of one datum are a `C.name.alias` warning of `dcp check --strict`). A compare against
   an address (`cmp ecx, 0xfb91e4 (or d2_Views+0x81c4)`) also names the array below it the function uses: a
   loop's end pointer lies past the array's end, inside the next object. A `!` line ends with both addresses
-  (`0x770ae4 | 0x770ae0`); a floating constant shows its value on both sides; `calls differ: ours ... | the
-  original ...` lists the callees one side calls and the other does not, whatever the alignment (a wrong callee
-  in a hunk of other differences, or call sites merged on one side).
+  (`0x770ae4 | 0x770ae0`); a floating constant shows its value on both sides; `calls: _ftol ours x2, the
+  original x1` lists each callee the two sides call a different number of times, with both counts, whatever the
+  alignment (a wrong callee in a hunk of other differences, call sites merged or duplicated on one side); a tail
+  `jmp` to a function counts as a call. diffclass prints the same line, and the witness reads the same call set.
   Frames of other sizes are aligned as diffclass aligns them (`frame=0x3bc/0x3b8`): a line that differs only
   by the shift is equal (`~`), so only the real differences show; `--plain` diffs the texts as they are.
 - `dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`, `fpu`,

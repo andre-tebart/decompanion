@@ -25,6 +25,9 @@ pub struct Reading {
     /// a concrete difference (equiv::witness: a call or a global store one side has and the other never refers
     /// to), said with the ledger's name of its address
     pub witness: Option<String>,
+    /// the callees the two sides call a different number of times (equiv::calls_differ), named by φ: (name, ours,
+    /// the original's), and how many of our calls go to a symbol bind could not place
+    pub calls: (Vec<(String, usize, usize)>, usize),
     /// the reference check (refcheck.rs, G.grade's): each of our relocations at an aligned instruction against
     /// φ, a literal by its bytes
     pub refs: crate::refcheck::Check,
@@ -66,38 +69,16 @@ impl Reading {
         (!ours.is_empty() || !theirs.is_empty()).then(|| format!("{} | {}", ours.join(", "), theirs.join(", ")))
     }
 
-    /// The calls of each side that the other side does not make, whatever the alignment (a wrong callee in a hunk
-    /// of other differences shows only as a - / + pair): (ours, the original's), each as (name, count). A call of
-    /// ours is the original's when the address the original calls is one its symbol has in the ledger; a callee
-    /// either side cannot name is left out.
-    pub fn unmatched_calls(&self) -> (Vec<(String, usize)>, Vec<(String, usize)>) {
-        let (Some((va, vb)), Some((na, nb))) = (&self.values, &self.named) else { return (vec![], vec![]) };
-        let calls = |l: &[Line]| -> Vec<usize> { (0..l.len()).filter(|&k| l[k].shape.mn == "call" && l[k].text.ends_with('X')).collect() };
-        // known on both sides: ours placed by the ledger, the original's named by it (`call 0x5df681` is not known)
-        let ca: Vec<usize> = calls(&self.la).into_iter().filter(|&i| matches!(va[i].first(), Some(Val::Addrs(_)))).collect();
-        let cb: Vec<usize> = calls(&self.lb).into_iter().filter(|&j| !nb[j].trim_start_matches("call ").starts_with("0x")).collect();
-        let mut left: Vec<usize> = cb.clone();
-        let mut ours_left = vec![];
-        for i in ca {
-            let hit = left.iter().position(|&j| match (va[i].first(), vb[j].first()) {
-                (Some(Val::Addrs(xs)), Some(y)) => xs.contains(y),
-                _ => na[i] == nb[j],
-            });
-            match hit {
-                Some(k) => {
-                    left.remove(k);
-                }
-                None => ours_left.push(i),
-            }
+    /// The calls line (equiv::calls_differ, the call set witness reads): each callee whose count differs, with
+    /// both counts, `calls: _ftol ours x2, the original x1`; None when every count agrees.
+    pub fn calls_line(&self) -> Option<String> {
+        let (diff, unbound) = &self.calls;
+        if diff.is_empty() {
+            return None;
         }
-        let count = |names: Vec<&String>| -> Vec<(String, usize)> {
-            let mut m: std::collections::BTreeMap<String, usize> = Default::default();
-            for n in names {
-                *m.entry(n.trim_start_matches("call ").to_string()).or_default() += 1;
-            }
-            m.into_iter().collect()
-        };
-        (count(ours_left.iter().map(|&i| &na[i]).collect()), count(left.iter().map(|&j| &nb[j]).collect()))
+        let each: Vec<String> = diff.iter().map(|(n, a, b)| format!("{n} ours x{a}, the original x{b}")).collect();
+        let tail = if *unbound > 0 { format!(" ({unbound} of our calls to a symbol not placed: left out)") } else { String::new() };
+        Some(format!("calls: {}{tail}", each.join("; ")))
     }
 
     /// Whether line i of ours and line j of the original's refer to the same things by their X fields although
@@ -447,6 +428,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
     let ref_lines = refs.lines(phi, a as u32, Some(&unit));
     let open_lines = refs.open_lines(phi, a as u32);
     let mut witness = None;
+    let mut calls = (vec![], 0);
     let proof = crate::timing::phase("r.proof", || -> Result<_, Error> { Ok({
         let (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &sites, &refs_of, phi);
         if let Some(dir) = std::env::var_os("DCP_EQUIV_DUMP") {
@@ -460,9 +442,12 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
             witness = Some(format!("{who} +{:#x} {} {:#x}{}; {other} never refers to it", w.at - a as u32, w.what, w.addr,
                                    name.map(|n| format!(" ({n})")).unwrap_or_default()));
         }
+        let (diff, unbound) = crate::equiv::calls_differ(&ours, &data, a as u32);
+        let named = |t: u32| phi.names_at(t as i64).into_iter().next().unwrap_or_else(|| format!("{t:#x}"));
+        calls = (diff.into_iter().map(|(t, x, y)| (named(t), x, y)).collect(), unbound);
         (crate::timing::phase("r.prove", || crate::equiv::prove(&ours, &data, a as u32)), unbound)
     }) })?;
-    Ok(Ok(Reading { row, fc, named, values, proof, witness, refs, ref_lines, open_lines }))
+    Ok(Ok(Reading { row, fc, named, values, proof, witness, calls, refs, ref_lines, open_lines }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points

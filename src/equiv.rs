@@ -2010,11 +2010,7 @@ const NEAR: u32 = 0x1000;
 /// witnesses, never false ones), and every address it refers to anywhere (each instruction of the linear
 /// decode: an immediate, a displacement, a branch target).
 fn acts(code: &[u8], va: u32) -> (Vec<(u32, &'static str, u32)>, BTreeSet<u32>) {
-    const WRITES: &[&str] = &["mov", "add", "sub", "adc", "sbb", "and", "or", "xor", "inc", "dec", "neg", "not", "shl", "shr", "sar", "rol",
-                              "ror", "xchg", "fst", "fstp", "fist", "fistp", "pop", "seta", "setae", "setb", "setbe",
-                              "sete", "setne", "setg", "setge", "setl", "setle", "sets", "setns"];
     let ins = dis::decode(code, va);
-    let end = va + code.len() as u32;
     let mut refs = BTreeSet::new();
     for i in &ins {
         refs.extend(i.target);
@@ -2026,6 +2022,18 @@ fn acts(code: &[u8], va: u32) -> (Vec<(u32, &'static str, u32)>, BTreeSet<u32>) 
             }
         }
     }
+    let mut out = reached(&ins, va, va + code.len() as u32);
+    out.sort();
+    (out, refs)
+}
+
+/// Walks the instructions from the entry: each call (direct, through an absolute address), each jump out of the
+/// function (a tail call, `jmp [abs]` an import's) as "calls", each write to an absolute address as "stores to",
+/// as (instruction address, what, address). A switch's cases are not followed.
+fn reached(ins: &[dis::Ins], va: u32, end: u32) -> Vec<(u32, &'static str, u32)> {
+    const WRITES: &[&str] = &["mov", "add", "sub", "adc", "sbb", "and", "or", "xor", "inc", "dec", "neg", "not", "shl", "shr", "sar", "rol",
+                              "ror", "xchg", "fst", "fstp", "fist", "fistp", "pop", "seta", "setae", "setb", "setbe",
+                              "sete", "setne", "setg", "setge", "setl", "setle", "sets", "setns"];
     let at: HashMap<u32, usize> = ins.iter().enumerate().map(|(k, i)| (i.addr, k)).collect();
     let mut seen = BTreeSet::new();
     let mut todo = vec![va];
@@ -2063,8 +2071,31 @@ fn acts(code: &[u8], va: u32) -> (Vec<(u32, &'static str, u32)>, BTreeSet<u32>) 
             _ => {}
         }
     }
-    out.sort();
-    (out, refs)
+    out
+}
+
+/// The call set of one side (the one witness reads): each callee it reaches from its entry with how often,
+/// a tail `jmp` to a symbol and a `jmp [abs]` counted as calls.
+pub fn calls(code: &[u8], va: u32) -> BTreeMap<u32, usize> {
+    let mut m = BTreeMap::new();
+    for (_, what, t) in reached(&dis::decode(code, va), va, va + code.len() as u32) {
+        if what == "calls" {
+            *m.entry(t).or_default() += 1;
+        }
+    }
+    m
+}
+
+/// The callees our function (bound: bind) and the original's call a different number of times, as (callee, ours,
+/// the original's), and how many of our calls go to a symbol bind could not place (left out: any of the
+/// original's callees could be theirs).
+pub fn calls_differ(ours: &[u8], theirs: &[u8], va: u32) -> (Vec<(u32, usize, usize)>, usize) {
+    let (ca, cb) = (calls(ours, va), calls(theirs, va));
+    let unbound = ca.range(0xf000_0000..).map(|(_, n)| n).sum();
+    let keys: BTreeSet<u32> = ca.keys().chain(cb.keys()).copied().filter(|&t| t < 0xf000_0000).collect();
+    let diff = keys.into_iter().map(|t| (t, ca.get(&t).copied().unwrap_or(0), cb.get(&t).copied().unwrap_or(0)))
+                   .filter(|&(_, a, b)| a != b).collect();
+    (diff, unbound)
 }
 
 /// A concrete difference between our function (bound: bind) and the original's: a callee or a stored global
@@ -2511,6 +2542,21 @@ mod tests {
             eprintln!("mutant equal: {b}");
         }
         eprintln!("mutants: {fns} functions, {tried} mutants, {} proved equal", bad.len());
+    }
+
+    #[test]
+    fn call_set_counts_both_sides() {
+        let va = 0x401000;
+        // call 0x500000; call 0x500000; ret
+        let twice = [0xe8, 0xfb, 0xef, 0x0f, 0x00, 0xe8, 0xf6, 0xef, 0x0f, 0x00, 0xc3];
+        // call 0x500000; jmp 0x600000 (a tail call)
+        let tail = [0xe8, 0xfb, 0xef, 0x0f, 0x00, 0xe9, 0xf6, 0xef, 0x1f, 0x00];
+        assert_eq!(calls(&tail, va), BTreeMap::from([(0x500000, 1), (0x600000, 1)]));
+        assert_eq!(calls_differ(&twice, &tail, va), (vec![(0x500000, 2, 1), (0x600000, 0, 1)], 0));
+        assert_eq!(calls_differ(&tail, &tail, va), (vec![], 0));
+        // call 0xf0000100 (a symbol bind could not place): left out, counted
+        let unplaced = [0xe8, 0xfb, 0xf0, 0xbf, 0xef, 0xc3];
+        assert_eq!(calls_differ(&unplaced, &[0xc3], va), (vec![], 1));
     }
 
     #[test]
