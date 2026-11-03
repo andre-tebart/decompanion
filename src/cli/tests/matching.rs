@@ -193,6 +193,28 @@ fn asmdiff_symbols_marks_an_alias_equal() {
     assert!(out.contains("C.name.alias") && out.contains("counter (src/net.c:2), net_Counter (include/other.h:1)"), "{out}");
 }
 
+/// Containment (§8.7): a view one past a 1-byte char (our object pads it: D7 reads the declared size), and a
+/// reference `&flag + 8` outside it (M.contain, ill-formed whatever the bytes; asmdiff marks the line).
+#[test]
+#[ignore = "e2e: VC6"]
+fn references_and_views_stay_inside_their_object() {
+    if !has_vc6() {
+        return;
+    }
+    let t = tiny();
+    with_vc6(&t);
+    net_decl(&t);
+    unit(&t, "net", &["char flag = 0x34;  /* 0x10002000 */\n#define flag_hi (*(char *)((char *)&flag + 1))  /* 0x10002001 */\n",
+                      "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return *(int *)((char *)&flag + 8);\n}\n"]);
+    dcp(&t, &["build"]);
+    let (code, out) = dcp(&t, &["check"]);
+    assert!(code == 1 && out.contains("D7") && out.contains("view flag_hi at 0x10002001 is flag +0x1, outside flag (1 bytes)"), "{out}");
+    assert!(out.contains("M.contain") && out.contains("get at 0x10001020: M.contain at +0x1: &flag + 0x8 (an absolute memory operand) lies outside flag (1 bytes"),
+            "{out}");
+    let (_, out) = dcp(&t, &["asmdiff", "get"]);
+    assert!(out.contains("M.contain: outside its object)") && out.contains("  contain: M.contain at +0x1"), "{out}");
+}
+
 #[test]
 #[ignore = "e2e: VC6"]
 fn rename_counts_the_errors_of_the_tree_as_from_before() {

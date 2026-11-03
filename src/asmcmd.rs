@@ -34,6 +34,9 @@ pub struct Reading {
     /// its concrete differences, one line each (`M8 at +0x1c: ...`), and the references φ says nothing about
     pub ref_lines: Vec<String>,
     pub open_lines: Vec<String>,
+    /// our references outside their object's declared size (refcheck::Outside, M.contain): (our field's address,
+    /// its line)
+    pub outside: Vec<(u32, String)>,
 }
 
 /// What one of our X fields refers to, for comparing it with the original's number: the addresses its symbol
@@ -141,7 +144,10 @@ fn reloc_val(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crate
             if let Some(v) = crate::srcscan::placeholder_whole(&cname) {
                 at.push(v as i64);
             }
-            if at.is_empty() {
+            // `&sym + N` outside sym's declared size is no address of sym (M.contain): whatever number the sum
+            // makes, it equals nothing of the original's
+            let outside = names.phi.size_of(&cname).is_some_and(|n| sym.secnum as usize != code.secnum && !(0..=n).contains(&addend));
+            if at.is_empty() || outside {
                 Val::Unknown
             } else {
                 Val::Addrs(at.into_iter().map(|a| a + addend).collect())
@@ -427,6 +433,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
     let refs = crate::refcheck::check(&obj, &code, &img, &sites, &refs_of, phi);
     let ref_lines = refs.lines(phi, a as u32, Some(&unit));
     let open_lines = refs.open_lines(phi, a as u32);
+    let outside = refs_of.outside.iter().map(|o| (a as u32 + o.off, o.line())).collect();
     let mut witness = None;
     let mut calls = (vec![], 0);
     let proof = crate::timing::phase("r.proof", || -> Result<_, Error> { Ok({
@@ -447,7 +454,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
         calls = (diff.into_iter().map(|(t, x, y)| (named(t), x, y)).collect(), unbound);
         (crate::timing::phase("r.prove", || crate::equiv::prove(&ours, &data, a as u32)), unbound)
     }) })?;
-    Ok(Ok(Reading { row, fc, named, values, proof, witness, calls, refs, ref_lines, open_lines }))
+    Ok(Ok(Reading { row, fc, named, values, proof, witness, calls, refs, ref_lines, open_lines, outside }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points

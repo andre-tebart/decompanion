@@ -464,7 +464,7 @@ impl<'a> Where<'a> {
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileModel {
     pub defs: Vec<(i64, i64, String, bool)>,
-    pub vars: Vec<(i64, i64, i64, i64, String, String, bool)>,
+    pub vars: Vec<(i64, i64, i64, i64, String, String, bool, i64)>, // .., the size of its type (0: none clang knows)
     pub macros: Vec<(i64, String, bool)>,
     pub defines: Vec<(String, bool, i64, i64, i64, i64)>,
     pub casts: Vec<(i64, i64, i64, i64, String)>,
@@ -711,7 +711,9 @@ fn model_rs(a: &Api, t: &Tu, root: &str, text: &str) -> Result<ModelOut> {
             // None: a type clang does not know (its recovery makes an unknown type name int)
             let agg = if (ws.1..=e.1).any(|ln| errs.contains(&(ws.0.clone(), ln))) { None } else { Some(aggregate) };
             let f = out.entry(&ws.0);
-            f.vars.push((ws.1, ws.2, e.1, e.2, name.clone(), kind.to_string(), stat));
+            // the type's size (an incomplete or erroneous type has none: clang's recovery makes an unknown type int)
+            let size = if agg.is_some() { unsafe { (a.clang_Type_getSizeOf)(ty) }.max(0) } else { 0 };
+            f.vars.push((ws.1, ws.2, e.1, e.2, name.clone(), kind.to_string(), stat, size));
             if matches!(tk, 112 | 114) {
                 let size = unsafe { (a.clang_Type_getSizeOf)((a.clang_getArrayElementType)(ty)) };
                 if size > 0 {

@@ -301,6 +301,12 @@ Not the same thing: **containment**. An object of H that φ maps into another ob
 struct field) is no second owner: the owner is the outer object, and uses of the inner one are references with an
 offset.
 
+Containment holds both ways. A reference of H at `sym + N` outside sym's declared size (sizeof; one past the end is
+inside) is no address of sym: H is ill-formed there (`M.contain`), whatever the bytes compare, because the sum moves
+with sym when relinked (`&cm_SendRing + 0x4973c0` is the constant 0xf00500). A view past its container is the same
+(`D7`). And a near-certain reference of I into the bytes our object gives a datum as padding contradicts H's
+layout on the owner question (`D9`): the datum is larger, or an object of its own is missing there.
+
 ### 8.8 Consistent declarations and `@original`
 
 The lint (`dcp lint`: clang as a type checker over the units) is not a readability check. It is an analysis with a

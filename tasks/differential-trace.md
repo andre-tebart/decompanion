@@ -18,7 +18,7 @@ A dynamic experiment against I.
 ## Rejected
 
 runtime-data-guards-debug-variant, runtime canaries. Their real cause is a datum smaller than the original's extent:
-see data-extent-fallback and containment-check.
+data-extent-fallback and containment-check are done (a data owner is never one byte; M.contain, D7 by the declared size, D9).
 
 ## Reports
 

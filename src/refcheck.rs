@@ -128,6 +128,55 @@ pub fn phi_addrs(phi: &Phi, name: &str) -> Vec<i64> {
 pub struct Refs {
     pub targets: Vec<Target>,
     pub expect: Vec<Vec<i64>>,
+    /// our references outside their object (containment, docs/mental-model.md §8.7): ill-formed
+    pub outside: Vec<Outside>,
+}
+
+/// A reference of ours at `name + within` outside the object's declared size (`size` bytes; one past the end is
+/// inside): an immediate or an absolute memory operand without a register (an indexed operand's displacement is
+/// the compiler's arithmetic, `[arr-4+ecx*4]`). `&cm_SendRing + 0x4973c0` is the constant 0xf00500 spelled as an
+/// address: it moves with cm_SendRing in a relinked image.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outside {
+    /// the relocated field's offset in the function
+    pub off: u32,
+    pub name: String,
+    pub within: i64,
+    pub size: i64,
+    /// the field is an immediate (else a memory operand's displacement)
+    pub imm: bool,
+}
+
+impl Outside {
+    /// `M.contain at +0x1c: &cm_SendRing + 0x4973c0 (an immediate) lies outside cm_SendRing (4 bytes): ...`
+    pub fn line(&self) -> String {
+        let at = if self.within < 0 { format!("- {:#x}", self.within.unsigned_abs()) } else { format!("+ {:#x}", self.within) };
+        let what = if self.imm { "an immediate" } else { "an absolute memory operand" };
+        format!("M.contain at +{:#x}: &{} {at} ({what}) lies outside {} ({} bytes, declared): no address of it; write the number \
+                 when the original's is a constant, else the object the address belongs to", self.off, self.name, self.name, self.size)
+    }
+}
+
+/// The instruction of a decoded listing that holds the byte at `off` and the field that byte lies in.
+pub fn field_at(ins: &[crate::dis::Ins], off: u32) -> Option<(&crate::dis::Ins, crate::dis::FieldKind)> {
+    let i = ins.partition_point(|x| x.addr <= off);
+    let x = ins.get(i.checked_sub(1)?)?;
+    Some((x, x.field_at(off - x.addr)?))
+}
+
+/// The kind of the field at an offset of our function's code, for the containment check: Some(true) an
+/// immediate, Some(false) a memory operand's displacement with no base and no index register; None any other.
+fn bare_field(code: &FunctionCode, off: u32, ins: &[crate::dis::Ins]) -> Option<bool> {
+    let (x, kind) = field_at(ins, off)?;
+    match kind {
+        crate::dis::FieldKind::Imm | crate::dis::FieldKind::Imm2 => Some(true),
+        crate::dis::FieldKind::Disp => {
+            let m = x.ops.iter().find(|o| o.typ == crate::dis::OpType::Mem)?;
+            (m.base == crate::dis::Reg::None && m.index == crate::dis::Reg::None).then_some(false)
+        }
+        crate::dis::FieldKind::Branch => None,
+    }
+    .filter(|_| off < code.code_len.unwrap_or(u32::MAX))
 }
 
 impl Refs {
@@ -137,7 +186,22 @@ impl Refs {
             Target::Name { name, .. } => phi_addrs(phi, name),
             _ => vec![],
         }).collect();
-        Refs { targets, expect }
+        // containment: the decode only for a function with a reference past its object's declared size
+        let mut outside = vec![];
+        let mut ins: Option<Vec<crate::dis::Ins>> = None;
+        for ((off, r), t) in code.relocs.iter().zip(&targets) {
+            let Target::Name { name, delta } = t else { continue };
+            let Some(size) = phi.size_of(name) else { continue };
+            let within = obj.addend(code.secnum, r).wrapping_sub(*delta) as i32 as i64;
+            if (0..=size).contains(&within) {
+                continue;
+            }
+            let ins = ins.get_or_insert_with(|| crate::dis::decode(code.code().0, 0));
+            if let Some(imm) = bare_field(code, *off, ins) {
+                outside.push(Outside { off: *off, name: name.clone(), within, size, imm });
+            }
+        }
+        Refs { targets, expect, outside }
     }
 }
 
@@ -576,6 +640,28 @@ mod tests {
         // a placeholder name is no datum (a pooled literal the layout has not explained yet)
         let p = phi(&[(VA + 0x40, "ai_Unk10001040")]);
         assert_eq!(run(&image(A, B, VA + 0x40), &p).differs().count(), 0);
+    }
+
+    /// Containment: `mov eax, [g_a+0x10]` and `mov eax, offset g_b+8` lie outside the 4-byte objects (one past the end
+    /// is inside); `mov eax, [g_c-4+ecx*4]` is the compiler's indexing, not checked.
+    #[test]
+    fn a_reference_outside_its_declared_object_is_listed() {
+        let code = [0xa1u8, 0x10, 0, 0, 0, 0xb8, 0x08, 0, 0, 0, 0x8b, 0x04, 0x8d, 0xfc, 0xff, 0xff, 0xff, 0xa1, 0x04, 0, 0, 0, 0xc3];
+        let relocs = [(1u32, 2u32, 6u16), (6, 3, 6), (13, 4, 6), (18, 2, 6)];
+        let syms = [(".text", 0, 1, 3), ("_f", 0, 1, 2), ("_g_a", 0, 0, 2), ("_g_b", 0, 0, 2), ("_g_c", 0, 0, 2)];
+        let obj = Obj::parse(&crate::coff::testlib::code_obj(&code, &relocs, &syms)).unwrap();
+        let code = obj.function_code(obj.function_index()["f"]);
+        let claim = |lo: u32, n: &str| {
+            let v = json!({"name": n, "origin": "source", "size": 4});
+            Rc::new(crate::store::Claim { id: lo as i64, rule: Rc::from("L.src"), lo: lo as i64, hi: lo as i64 + 1, text: String::new(), value: v,
+                                          support: crate::store::DECLARED, by: "t".into(), reason: None })
+        };
+        let p = Phi::new(&[claim(A, "g_a"), claim(B, "g_b"), claim(C, "g_c")], &[]);
+        let refs = Refs::new(&obj, &code, &p);
+        let got: Vec<(u32, &str, i64, bool)> = refs.outside.iter().map(|o| (o.off, o.name.as_str(), o.within, o.imm)).collect();
+        assert_eq!(got, [(1, "g_a", 0x10, false), (6, "g_b", 8, true)]);
+        assert!(refs.outside[0].line().starts_with("M.contain at +0x1: &g_a + 0x10 (an absolute memory operand) lies outside g_a (4 bytes, declared)"),
+                "{}", refs.outside[0].line());
     }
 
     #[test]

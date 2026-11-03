@@ -189,7 +189,8 @@ fn match_server() {
     let (code, out) = dcp(&d, &["link"]);
     assert!(code == 0 && out.contains("ok=yes") && out.contains("unresolved=0"), "{out}");
     assert!(d.join("build/link/server/server.dll").exists() && read(&d, "build/link/server/server.def").contains("Init @2"));
-    assert_eq!(dcp(&d, &["check"]).0, 0);
+    let (code, out) = dcp(&d, &["check"]);
+    assert_eq!(code, 0, "{out}");
     // promote (of committed source only) and M1
     for a in [&["add", "-A"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "server"]] {
         let o = std::process::Command::new("git").args(a).current_dir(&d).output().unwrap();

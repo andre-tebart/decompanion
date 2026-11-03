@@ -105,7 +105,7 @@ pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataD
     let default = p.targets[0].name.clone();
     let mut out = vec![];
     for part in &scan.parts {
-        for (file, line, unit, name, kind, addrs, _, statik) in &part.data {
+        for (file, line, unit, name, kind, addrs, _, statik, _) in &part.data {
             let a = addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == p.target_name).map(|x| x.1 as i64);
             if let Some(a) = a {
                 out.push(DataDef { unit: unit.clone(), name: name.clone(), file: file.clone(), line: *line, kind: kind.clone(), addr: a,
@@ -140,7 +140,7 @@ pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataD
             d.level = g.support.name().into();
             d.extent = vstr(g, "extent");
             d.section = vstr(g, "kind");
-            d.size = (g.s("extent") != Some("draft") || g.hi - g.lo > 1).then_some(g.hi - g.lo);
+            d.size = Some(g.hi - g.lo);
         }
         d.next_start = starts.range(d.addr + 1..).next().copied();
         for (sev, check, msg, a) in by_addr.get(&d.addr).into_iter().flatten() {
@@ -963,6 +963,15 @@ pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool
         return Ok((out, 1));
     }
     out.push(record(&[("unit", s(unit)), ("declarations", Tok::I(ds.len() as i64))]));
+    // the original's absolute memory operands (no register: D9's), target -> sites, for the rooms
+    let img = crate::image(&p.target(None).map_err(err)?.path)?;
+    let db = p.store_path();
+    let mut into: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
+    for f in crate::with_db(&db, |c| store::claims_of(c, &db, "ref", None, |f| f.s("rkind") == Some("operand")))? {
+        if let Some(t) = f.value.get("to").and_then(|v| v.as_i64()) {
+            into.entry(t).or_default().push(f.lo);
+        }
+    }
     for d in ds {
         let room = d.next_start.map(|n| n - d.addr);
         let over = match (d.size, room) { (Some(sz), Some(r)) if sz != 0 && sz > r => Some(sz - r), _ => None };
@@ -973,6 +982,15 @@ pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool
                                           ("src", s(format!("{}:{}", d.file, d.line)))])));
         for (c, m) in &d.conflicts {
             out.push(format!("    {c}: {m}"));
+        }
+        // under the room: the addresses in it the original's code refers to, with their uses
+        if let (Some(sz), Some(n)) = (d.size, d.next_start) {
+            for (t, sites) in into.range(d.addr + sz..n) {
+                let users = sites.iter().filter(|&&x| crate::rules::bare_operand(&img, x, *t)).count();
+                if users > 0 {
+                    out.push(format!("    {}", record(&[("room_ref", Tok::I(*t)), ("off", s(format!("+{:#x}", t - d.addr))), ("users", Tok::I(users as i64))])));
+                }
+            }
         }
     }
     Ok((out, 0))

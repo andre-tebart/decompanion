@@ -77,6 +77,8 @@ pub struct Entry {
     pub folded: bool,
     /// a view (`(*(T *)((char *)&C + OFF))`): the container's name
     pub view: Option<String>,
+    /// a data object's declared size (sizeof, the front end's): its extent in H
+    pub size: Option<i64>,
 }
 
 impl Entry {
@@ -97,6 +99,7 @@ pub struct Phi {
     pub entries: Vec<Entry>,
     by_name: HashMap<String, BTreeMap<i64, Support>>,
     by_addr: BTreeMap<i64, Vec<usize>>,
+    sizes: HashMap<String, i64>,
 }
 
 impl Phi {
@@ -114,7 +117,8 @@ impl Phi {
                     _ => n.to_string(),
                 };
                 entries.push(Entry { name, raw: raw.to_string(), addr: f.lo, origin, support: f.support, by: f.by.clone(),
-                                     folded: parts.len() > 1, view: f.s("view").map(String::from) });
+                                     folded: parts.len() > 1, view: f.s("view").map(String::from),
+                                     size: f.value.get("size").and_then(|v| v.as_i64()).filter(|&n| n > 0) });
             }
         }
         let mut by_name: HashMap<String, BTreeMap<i64, Support>> = HashMap::new();
@@ -127,20 +131,32 @@ impl Phi {
             let az = v.get("analyzer").and_then(|x| x.as_str()).unwrap_or("");
             if !name.is_empty() && !crate::names::analyzer_placeholder(az, name) {
                 entries.push(Entry { name: name.to_string(), raw: name.to_string(), addr: v["start"].as_i64().unwrap_or(0), origin: Origin::Analyzer,
-                                     support: crate::store::DECLARED, by: format!("analyzer:{az}"), folded: false, view: None });
+                                     support: crate::store::DECLARED, by: format!("analyzer:{az}"), folded: false, view: None, size: None });
             }
         }
         let mut by_addr: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
         for (i, e) in entries.iter().enumerate() {
             by_addr.entry(e.addr).or_default().push(i);
         }
-        Phi { entries, by_name, by_addr }
+        let mut sizes: HashMap<String, i64> = HashMap::new();
+        for e in &entries {
+            if let Some(n) = e.size {
+                sizes.entry(e.name.clone()).or_insert(n);
+            }
+        }
+        Phi { entries, by_name, by_addr, sizes }
     }
 
     /// φ(name): the addresses the object of H of this C name corresponds to, each at its best support (no
     /// analyzer name: those are no correspondence).
     pub fn of(&self, name: &str) -> Option<&BTreeMap<i64, Support>> {
         self.by_name.get(name)
+    }
+
+    /// The declared size of the object of H of this C name (sizeof, the front end's), when a declaration with an
+    /// address gives one: references stay inside [0, size] of it (one past the end allowed).
+    pub fn size_of(&self, name: &str) -> Option<i64> {
+        self.sizes.get(name).copied()
     }
 
     /// φ⁻¹(addr): the entries at an address, in claim order.

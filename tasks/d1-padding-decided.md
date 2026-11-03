@@ -17,10 +17,13 @@ is larger than the original's object, and our definition reaches into the next o
 ## Task
 
 - Decide it from our object: the extra bytes are padding when the definition's own size (its type's size, from the
-  front end or the symbol) fits the room and the rest is the section's alignment fill up to the next symbol's
+  front end: the L.src claim's `size`, rules.rs `declared_size`; or the symbol) fits the room and the rest is the section's alignment fill up to the next symbol's
   alignment. Then there is no finding.
 - Otherwise it is an error (the declaration is too large: it overlaps the next object).
 - Count the effect on gildegold before landing.
+
+- D9 (rules.rs `room_refs`) already reads the padding the same way: our object's bytes past the declared size. A
+  padding the original's code reads is D9's error, not D1's.
 
 ## Model
 

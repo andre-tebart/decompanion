@@ -215,6 +215,11 @@ fn ref_lines(r: &crate::asmcmd::Reading, shape: bool) -> Vec<String> {
     }).collect()
 }
 
+/// Our references outside their object (M.contain, ill-formed whatever the bytes compare), one line each.
+fn contain_lines(r: &crate::asmcmd::Reading) -> Vec<String> {
+    r.outside.iter().map(|(_, l)| format!("  contain: {l}")).collect()
+}
+
 /// asmdiff's diff: (the differing lines, the frames when aligned, the printed lines). a / b the texts compared, pa /
 /// pb the texts printed (named with --symbols); same(i, j): the named lines i and j refer to the same addresses or
 /// literals under other names (Reading::same_values).
@@ -397,6 +402,11 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     for x in r.refs.differs() {
         crossed.entry(x.ins).or_default().push(format!("{}: {}", x.rule, x.pair()));
     }
+    for (field, _) in &r.outside {
+        if let Some(l) = r.la.iter().find(|l| l.addr <= *field && *field < l.addr + l.size) {
+            crossed.entry(l.addr).or_default().push("M.contain: outside its object".into());
+        }
+    }
     let refs = |i: usize| crossed.get(&r.la[i].addr).map(|v| v.join("; "));
     let (n, frame, mut body) = diff_lines(&r.la, &r.lb, &a, &b, &ka, &kb, pa, pb, plain, all || windowed, &same, &|i, j| r.addresses(i, j), &refs);
     if let Some(side) = &view.side {
@@ -447,6 +457,7 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     out.extend(r.calls_line().map(|l| format!("  {l}")));
     let proved = matches!(r.proof.0, crate::equiv::Outcome::Equal { .. });
     out.extend(ref_lines(&r, crate::grade::code_grade(false, r.verdict.shape, proved, &r.refs) == "shape"));
+    out.extend(contain_lines(&r));
     out.extend(open_lines);
     if !crossed.is_empty() {
         out.push("  refs: '!' on an equal line: the original's field refers to another object or other bytes than ours (ours | the \
@@ -515,6 +526,7 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
     out.push(format!("  summary: {}", v.summary_without_branches()));
     out.extend(r.calls_line().map(|l| format!("  {l}")));
     out.extend(ref_lines(&r, verdict != "draft"));
+    out.extend(contain_lines(&r));
     out.extend(r.open_lines.iter().map(|l| format!("  open: {l}")));
     let (proof, unbound) = &r.proof;
     let base = int(&row, "addr") as u32;

@@ -559,16 +559,48 @@ fn least_size(d: &DataObj) -> Option<u32> {
     Some(least(d.symbol().map(|s| s.value), d.size()?))
 }
 
-/// match_data.extent: [address, address + least size) (one byte without a size).
-fn data_extent(d: &DataObj) -> (i64, i64) {
-    let n = least_size(d).unwrap_or(0).max(1);
-    (d.f.lo, d.f.lo + n as i64)
+/// The size of a data definition's declared type, the front end's (None: a type it does not know).
+fn declared_size(d: &DataObj) -> Option<i64> {
+    d.f.value.get("size").and_then(|v| v.as_i64()).filter(|&n| n > 0)
+}
+
+/// match_data.extent: [address, address + n), never one byte for want of a size: the declared type's size when
+/// our object's symbol can be that large (its COFF size takes in the padding to the next symbol), else the
+/// symbol's least size; without a symbol of ours the declared type's size; without either the contiguity
+/// convention, up to `next` (the next definition's address or the section's end).
+fn data_extent(d: &DataObj, next: i64) -> (i64, i64) {
+    let decl = declared_size(d);
+    let n = match (least_size(d).filter(|&l| l > 0), d.size()) {
+        (Some(l), Some(s)) => decl.filter(|&n| l as i64 <= n && n <= s as i64).unwrap_or(l as i64),
+        _ => decl.unwrap_or(next - d.f.lo),
+    };
+    (d.f.lo, d.f.lo + n.max(1))
+}
+
+/// Per data definition (data_objects' order) where its contiguity extent ends: the next definition's address
+/// above it in the same section of the image, else that section's end.
+fn extent_ends(ctx: &Ctx, objs: &[DataObj]) -> Result<Vec<i64>> {
+    let img = image(&ctx.image)?;
+    let mut los: Vec<i64> = objs.iter().map(|d| d.f.lo).collect();
+    los.sort_unstable();
+    los.dedup();
+    Ok(objs.iter()
+        .map(|d| {
+            let end = img.section_of(d.f.lo as u32).map_or(d.f.lo + 1, |s| s.va as i64 + s.vsize.max(s.raw_size) as i64);
+            let k = los.partition_point(|&x| x <= d.f.lo);
+            los.get(k).copied().unwrap_or(i64::MAX).min(end)
+        })
+        .collect())
 }
 
 /// match_data.site_confirmed: address -> C name of every data address a byte-matched function's absolute
-/// relocation confirms (the first such relocation wins).
+/// relocation confirms (the first such relocation wins). Only a near-certain reference is evidence (§8.2): a
+/// memory operand's displacement, or an immediate at a base relocation of the image. An immediate otherwise may
+/// be a number (`&cm_SendRing + 0x4973c0` is the mask 0xf00500): the original's field minus our addend confirms
+/// nothing.
 fn site_confirmed(ctx: &Ctx, db: &Connection) -> Result<HashMap<u32, String>> {
     let img = image(&ctx.image)?;
+    let based: std::collections::HashSet<u32> = img.relocations().into_iter().collect();
     let (funcs, _) = compiled_functions(ctx, db)?;
     let mut out = HashMap::new();
     for x in &funcs {
@@ -576,6 +608,7 @@ fn site_confirmed(ctx: &Ctx, db: &Connection) -> Result<HashMap<u32, String>> {
             continue;
         }
         let obj = &x.obj.0;
+        let mut ins: Option<Vec<crate::dis::Ins>> = None;
         for (off, r) in &x.code.relocs {
             let Some(t) = obj.symbol_at(r.symbol_index) else { continue };
             let (kind, width) = r.kind_width();
@@ -583,6 +616,15 @@ fn site_confirmed(ctx: &Ctx, db: &Connection) -> Result<HashMap<u32, String>> {
                 continue;
             }
             let site = (x.src.lo as u32).wrapping_add(*off);
+            let ins = ins.get_or_insert_with(|| crate::dis::decode(x.code.code().0, 0));
+            let near = match crate::refcheck::field_at(ins, *off) {
+                Some((_, crate::dis::FieldKind::Disp)) => true,
+                Some((_, crate::dis::FieldKind::Imm | crate::dis::FieldKind::Imm2)) => based.contains(&site),
+                _ => false,
+            };
+            if !near {
+                continue;
+            }
             if let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(x.code.secnum, r)) {
                 out.entry(to).or_insert_with(|| crate::coff::undecorate(&t.name));
             }
@@ -598,10 +640,11 @@ fn global(d: &DataObj, extent: &str, kind: &str) -> Value {
 /// M.data.site: a data definition whose address a byte-matched function's relocation to the same symbol confirms.
 fn m_data_site(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let confirmed = site_confirmed(ctx, db)?;
-    for d in data_objects(ctx, db)? {
+    let objs = data_objects(ctx, db)?;
+    for (d, next) in objs.iter().zip(extent_ends(ctx, &objs)?) {
         if confirmed.get(&(d.f.lo as u32)).map(|s| s.as_str()) == d.f.s("symbol") {
-            let (lo, hi) = data_extent(&d);
-            out.claim(lo, hi, "symbol", global(&d, "site", d.kind().unwrap_or("-")), crate::store::REPRODUCED);
+            let (lo, hi) = data_extent(d, next);
+            out.claim(lo, hi, "symbol", global(d, "site", d.kind().unwrap_or("-")), crate::store::REPRODUCED);
         }
     }
     Ok(())
@@ -659,7 +702,8 @@ fn content_hits(img: &crate::pe::Image, data: &[u8], mask: &[u8]) -> Vec<u32> {
 fn m_data_content(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let confirmed = site_confirmed(ctx, db)?;
-    for d in data_objects(ctx, db)? {
+    let objs = data_objects(ctx, db)?;
+    for (d, next) in objs.iter().zip(extent_ends(ctx, &objs)?) {
         let (Some(sym), Some(kind), Some(size)) = (d.symbol(), d.kind(), d.size()) else { continue };
         if !(kind == "data" || kind == "rdata") || confirmed.get(&(d.f.lo as u32)).map(|s| s.as_str()) == d.f.s("symbol") {
             continue;
@@ -671,15 +715,15 @@ fn m_data_content(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let (a, b) = (sym.value as usize, sym.value as usize + size as usize);
         let data = &sdata[a.min(sdata.len())..b.min(sdata.len())];
         let full = sec.mask();
-        let mask = padding_masked(data, &full[a.min(full.len())..b.min(full.len())], least_size(&d).unwrap_or(0) as usize);
+        let mask = padding_masked(data, &full[a.min(full.len())..b.min(full.len())], least_size(d).unwrap_or(0) as usize);
         let unmasked: Vec<usize> = (0..data.len()).filter(|&k| mask.get(k).copied().unwrap_or(0) == 0).collect();
         if unmasked.len() < 4 || !unmasked.iter().any(|&k| data[k] != 0) {
             continue;
         }
         let hits = content_hits(&img, data, &mask);
         if hits.len() == 1 && hits[0] as i64 == d.f.lo {
-            let (lo, hi) = data_extent(&d);
-            out.claim(lo, hi, "symbol", global(&d, "content", kind), crate::store::REPRODUCED);
+            let (lo, hi) = data_extent(d, next);
+            out.claim(lo, hi, "symbol", global(d, "content", kind), crate::store::REPRODUCED);
         } else if hits.len() == 1 && !masked_equal(&img, d.f.lo as u32, data, &mask) {
             out.finding("error", "M.data.content", d.f.lo, d.f.lo + 1,
                          format!("{}: its bytes occur once in the image, at {:#x}, not at the declared {:#x}",
@@ -694,12 +738,13 @@ fn m_data_draft(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let placed: std::collections::HashSet<i64> =
         store::los(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?.into_iter().collect();
-    for d in data_objects(ctx, db)? {
+    let objs = data_objects(ctx, db)?;
+    for (d, next) in objs.iter().zip(extent_ends(ctx, &objs)?) {
         if placed.contains(&d.f.lo) {
             continue;
         }
-        let (lo, hi) = data_extent(&d);
-        out.claim(lo, hi, "symbol", global(&d, "draft", d.kind().unwrap_or("-")), DECLARED);
+        let (lo, hi) = data_extent(d, next);
+        out.claim(lo, hi, "symbol", global(d, "draft", d.kind().unwrap_or("-")), DECLARED);
     }
     Ok(())
 }
@@ -831,7 +876,38 @@ pub(crate) fn d8(decls: &[ExtentDecl], ev: &[ExtentEv], named: impl Fn(i64) -> O
     out
 }
 
-/// D1 / D4 / D5 / D6 / D7 / D8 (D.data).
+/// The data definitions whose padding the original's references reach. `defs`: per definition its address, its
+/// size (declared, else its symbol's least) and its object size (to the next symbol of its section in our
+/// object): the padding is the bytes between the two, cut at the next known start of the image (`starts`,
+/// sorted). Per such definition (its index) its end, where the padding ends and the targets of `into` (target ->
+/// sites) in it, in address order. Undeclared bytes after the last definition of a unit are a gap (no claim of
+/// H), not padding.
+fn room_refs(defs: &[(i64, i64, i64)], starts: &[i64], into: &std::collections::BTreeMap<i64, Vec<i64>>) -> Vec<(usize, i64, i64, Vec<(i64, Vec<i64>)>)> {
+    let mut out = vec![];
+    for (k, &(lo, n, size)) in defs.iter().enumerate() {
+        let end = lo + n;
+        let i = starts.partition_point(|&s| s <= lo);
+        let next = starts.get(i).copied().unwrap_or(i64::MAX).min(lo + size);
+        if n <= 0 || next <= end {
+            continue;
+        }
+        let hits: Vec<(i64, Vec<i64>)> = into.range(end..next).map(|(t, s)| (*t, s.clone())).collect();
+        if !hits.is_empty() {
+            out.push((k, end, next, hits));
+        }
+    }
+    out
+}
+
+/// Whether the instruction at `site` of the image has a memory operand at the absolute address `t` with no base
+/// and no index register.
+pub(crate) fn bare_operand(img: &crate::pe::Image, site: i64, t: i64) -> bool {
+    crate::dis::decode(&img.read(site as u32, 16), site as u32).first().is_some_and(|x| {
+        x.ops.iter().any(|o| o.typ == crate::dis::OpType::Mem && o.base == crate::dis::Reg::None && o.index == crate::dis::Reg::None && o.disp == t)
+    })
+}
+
+/// D1 / D4 / D5 / D6 / D7 / D8 / D9 (D.data).
 fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
@@ -896,16 +972,48 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         // the definition of that name at or below the view's address (a static name may have several)
         let Some(d) = defs.get(c).and_then(|ds| ds.iter().filter(|d| d.f.lo <= *at).max_by_key(|d| d.f.lo)) else { continue };
-        // the object's size, padding included: past it the view is outside whatever the padding hides
-        let Some(size) = d.size() else { continue };
+        // the declared type's size (the front end's; the padding to the next symbol is no part of the object),
+        // else the object's size, padding included
+        let Some(size) = declared_size(d).or(d.size().map(|s| s as i64)) else { continue };
         let off = at - d.f.lo;
-        if off >= size as i64 {
+        if off >= size {
             let via = if c == first { String::new() } else { format!(" (through {first})") };
             out.finding2("error", "D7", *at, *at + 1,
                           format!("view {vname} at {at:#x} is {c}{via} +{off:#x}, outside {c} ({size} bytes): the view reads whatever the \
                                    linker puts after {c}; declare {c} as large as the original's object (a struct or an array)"),
                           by, &d.f.by);
         }
+    }
+    // D9: the original's absolute memory operands into the bytes past a definition's declared size, before the
+    // next known object (padding or room by our layout)
+    let refs = store::claims(db, &ctx.db, "ref", &ctx.needed, |f| f.s("rkind") == Some("operand")).map_err(err)?;
+    let mut into: std::collections::BTreeMap<i64, Vec<i64>> = std::collections::BTreeMap::new(); // target -> sites
+    for f in &refs {
+        if let Some(t) = f.value.get("to").and_then(|v| v.as_i64()) {
+            into.entry(t).or_default().push(f.lo);
+        }
+    }
+    let sized: Vec<(&DataObj, (i64, i64, i64))> = objs.iter()
+        .filter_map(|d| Some((d, (d.f.lo, declared_size(d).or(least_size(d).map(|l| l as i64))?, d.size()? as i64))))
+        .collect();
+    let defs: Vec<(i64, i64, i64)> = sized.iter().map(|x| x.1).collect();
+    for (k, end, next, hits) in room_refs(&defs, &starts, &into) {
+        let d = sized[k].0;
+        // an indexed operand's displacement is the compiler's arithmetic (`[arr-4+ecx*4]`): only a bare address
+        let bare: Vec<(i64, usize)> = hits.into_iter().filter_map(|(t, sites)| {
+            let n = sites.iter().filter(|&&s| bare_operand(&img, s, t)).count();
+            (n > 0).then_some((t, n))
+        }).collect();
+        if bare.is_empty() {
+            continue;
+        }
+        let name = d.f.s("symbol").unwrap_or("");
+        let each: Vec<String> = bare.iter().take(8).map(|(t, n)| format!("{t:#x} (+{:#x}, {n} use{})", t - d.f.lo, if *n == 1 { "" } else { "s" })).collect();
+        let more = if bare.len() > 8 { format!(" and {} more", bare.len() - 8) } else { String::new() };
+        out.finding("error", "D9", d.f.lo, next,
+                     format!("{name} at {:#x} is {} bytes, our object pads it to {next:#x}; the original's code refers to {}{more} in that padding: \
+                              {name} is larger (an array or a struct), or an object of its own is missing there (dcp data map)",
+                             d.f.lo, end - d.f.lo, each.join(", ")), &d.f.by);
     }
     // D8: the original's code proves a range one object (S.extent): one declaration must hold all of it
     let phi = phi_of(ctx, db)?;
@@ -1176,5 +1284,39 @@ mod tests_aligned {
                 "{}", msgs[2]);
         assert!(msgs[1].contains("ai_Unk60c7c0 needs at least 832 bytes") && !msgs[1].contains("declared inside"), "{}", msgs[1]);
         assert!(msgs[0].contains("which starts before inner: one declaration at 0x1f8 holds inner (0x200, 8 bytes)"), "{}", msgs[0]);
+    }
+}
+
+#[cfg(test)]
+mod tests_extent {
+    use super::{data_extent, DataObj};
+    use std::rc::Rc;
+
+    /// No symbol of ours: the declared type's size, else up to the next definition (never one byte).
+    #[test]
+    fn data_extent_without_our_symbol() {
+        let d = |v: serde_json::Value| DataObj {
+            f: Rc::new(crate::store::Claim { id: 1, rule: Rc::from("L.src"), lo: 0x5ed1b0, hi: 0x5ed1b1, text: String::new(), value: v,
+                                             support: crate::store::DECLARED, by: "src:a.c:1".into(), reason: None }),
+            obj: None,
+            sym: None,
+        };
+        assert_eq!(data_extent(&d(serde_json::json!({"size": 4})), 0x5ed1c0), (0x5ed1b0, 0x5ed1b4));
+        assert_eq!(data_extent(&d(serde_json::json!({})), 0x5ed1bd), (0x5ed1b0, 0x5ed1bd));
+    }
+}
+
+#[cfg(test)]
+mod tests_room {
+    /// D9's padding: a 1-byte char our object pads to 4 bytes, the original reading +1; the reference past the
+    /// padding (another object's) and one inside the declared size are no hits; a definition without padding has none.
+    #[test]
+    fn references_into_a_definitions_padding() {
+        let into: std::collections::BTreeMap<i64, Vec<i64>> = [(0x100, vec![0x10]), (0x101, vec![0x20, 0x30]), (0x104, vec![0x40]), (0x110, vec![0x50])]
+            .into_iter().collect();
+        let defs = [(0x100, 1, 4), (0x104, 4, 4), (0x108, 4, 0x10)];
+        let starts = [0x100, 0x104, 0x108, 0x10c];
+        let got = super::room_refs(&defs, &starts, &into);
+        assert_eq!(got, [(0, 0x101, 0x104, vec![(0x101, vec![0x20, 0x30])])]);
     }
 }

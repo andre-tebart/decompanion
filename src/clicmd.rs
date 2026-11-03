@@ -520,11 +520,11 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
 // ------------------------------------------------------------------------------------------------ why / facts / conflicts / map
 
 /// The value line of `dcp why` at a datum (an address in a section that holds no code, with file bytes): the bytes
-/// from the address to its owner's end (at most 16), as u32 / f32 at a 4-aligned address with 4 of them, as f64 at
-/// an 8-aligned one with 8 (an unnamed constant shows what it holds without `dcp dump`).
-fn value_line(img: &crate::pe::Image, a: i64, owner_hi: i64) -> Option<String> {
+/// from the address up to the next owner (`bound`, at most 16), as u32 / f32 at a 4-aligned address with 4 of them,
+/// as f64 at an 8-aligned one with 8 (an unnamed constant shows what it holds without `dcp dump`).
+fn value_line(img: &crate::pe::Image, a: i64, bound: i64) -> Option<String> {
     let sec = img.section_of(a as u32).filter(|s| !s.holds_code())?;
-    let n = (owner_hi.min(sec.va as i64 + sec.raw_size as i64) - a).clamp(0, 16) as usize;
+    let n = (bound.min(sec.va as i64 + sec.raw_size as i64) - a).clamp(0, 16) as usize;
     if n == 0 {
         return None;
     }
@@ -539,6 +539,13 @@ fn value_line(img: &crate::pe::Image, a: i64, owner_hi: i64) -> Option<String> {
         toks.push(("f64", Tok::S(crate::cliread::fmt_g(f64::from_le_bytes(b[..8].try_into().unwrap()), 15))));
     }
     Some(format!("  {}", record(&toks)))
+}
+
+/// Where the value line at `a` ends: the first run past a's that another owner holds (unknown bytes are no
+/// owner), independent of a's run (a wrong extent of its owner does not cut the value short); at most 16 bytes on.
+fn next_owner(db: &str, a: i64, row: &crate::answers::Answer) -> Result<i64> {
+    let rows = crate::answers::rows(db, Some(row.hi), Some(a + 16))?;
+    Ok(rows.iter().find(|r| r.symbol != row.symbol && !r.owner.starts_with("unknown.")).map_or(a + 16, |r| r.lo.max(row.hi)))
 }
 
 /// The findings whose range holds an address.
@@ -590,13 +597,14 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
             out.push(format!("addr={}  target={t}  not in the image", fmt_addr(a)));
             continue;
         };
+        let bound = if row.hi < a + 16 { next_owner(&db, a, &row)? } else { row.hi };
         let crate::answers::Answer { lo, hi, owner: cls, support: lvl, symbol: sym, .. } = row;
         let off = match img.section_of(a as u32) {
             Some(sec) => format!("  section={}  off=+{:#x}", sec.name, a - sec.va as i64),
             None => "  (headers)".into(),
         };
         out.push(format!("addr={}  target={t}{off}  owner={cls}  support={}  run={}", fmt_addr(a), level(lvl), fmt_range(lo, hi)));
-        if let Some(line) = value_line(&img, a, hi) {
+        if let Some(line) = value_line(&img, a, bound) {
             out.push(line);
         }
         let facts = facts_in(&db, None, a, a + 1)?;

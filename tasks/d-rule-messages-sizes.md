@@ -11,9 +11,12 @@
 
 ## Root cause
 
-- D1 and D7 use `DataObj::size()`, the `coff::data_symbols` distance to the next symbol or the section end, padding
-  included (coff.rs:360-387, rules.rs:644).
+- D1 uses `DataObj::size()`, the `coff::data_symbols` distance to the next symbol or the section end, padding
+  included (coff.rs:360-387, rules.rs:644). D7 now reads the declared size (`declared_size`), the COFF size only
+  without one; its message still says neither which nor the padding.
 - `data map` instead shows the type size (`least`) and the room in the original.
+- The declared type size (sizeof, the front end's) is on the L.src claim of each addressed data definition (`size`,
+  rules.rs `declared_size`): the messages can name it instead of `least`.
 - The messages (rules.rs:1000-1007, 1049-1052) name neither.
 - D5 (rules.rs:1011-1017) applies the COMMON convention, a derived claim, while the byte match with the tentative form
   is reproduced.

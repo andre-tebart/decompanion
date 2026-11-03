@@ -5,7 +5,8 @@
 ## Problem
 
 Q3 flags flag masks such as `0x1000000` as hard-coded addresses (3 sightings). Workers then rewrite the masks as
-`(1 << 24)`, or fake `&sym + off` addresses, to silence it.
+`(1 << 24)`, or fake `&sym + off` addresses, to silence it. (A fake `&sym + off` outside sym's declared size is now
+an M.contain error, refcheck.rs `Outside`; the false Q3 that provokes it remains.)
 
 ## Root cause
 

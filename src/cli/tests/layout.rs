@@ -41,6 +41,13 @@ fn units_from_decl_and_sources() {
     assert_eq!(names, [("counter".to_string(), 0x10002000), ("get".to_string(), 0x10001020)]);
     let src = facts(&t, "source", None);
     assert!(!src.is_empty() && src.iter().all(|f| f.support == DECLARED && f.by.starts_with("src:") && f.reason.as_deref().is_some_and(|r| !r.is_empty())));
+    // no object of the unit: the datum owns its declared type's size (the front end's), not one byte
+    assert!(src.iter().any(|f| f.lo == 0x10002000 && f.value.get("size") == Some(&json!(4))), "{:?}", src.iter().map(|f| &f.value).collect::<Vec<_>>());
+    let owner: Vec<(i64, i64)> = facts(&t, "symbol", None).iter().filter(|f| f.value.get("name") == Some(&json!("counter"))).map(|f| (f.lo, f.hi)).collect();
+    assert_eq!(owner, [(0x10002000, 0x10002004)]);
+    let (_, out) = dcp(&t, &["why", "0x10002000"]);
+    // the value line reads past the answer run (the one-byte source claim cuts it) up to the next owner
+    assert!(out.contains("  value='34 12 00 00 00") && out.contains("u32=0x00001234"), "{out}");
     // an end boundary separates it
     let (code, out) = dcp(&t, &["decl", "add", "0x10001050 boundary end tu=net -- f4 is reached only through data"]);
     assert_eq!(code, 0, "{out}");

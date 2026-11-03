@@ -377,6 +377,12 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 out.finding("error", r.rule, site, site + 4, format!("{name} at {lo:#x}: {l}"), &f.src.by);
             }
         }
+        // containment (§8.7): a reference of ours outside its object's declared size is no address of it, whatever
+        // the bytes compare (ill-formed: it moves with the object in a relinked image)
+        for o in &refs[i].outside {
+            let site = lo + o.off as i64;
+            out.finding("error", "M.contain", site, site + 4, format!("{} at {lo:#x}: {}", f.src.s("symbol").unwrap_or(""), o.line()), &f.src.by);
+        }
         let open = chk.open_lines(&phi, lo as u32);
         rows.push(Row { src: f.src.clone(), code: g, why, hunks, open,
                         dist: json!({"ins": dist_ins, "bytes": nbytes, "size": size, "orig": orig_size, "extent": extent, "slot": slot}) });
