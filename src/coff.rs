@@ -705,7 +705,8 @@ pub(crate) mod testlib {
     }
 
     /// A COFF object: one .text section of these bytes with these relocations (offset, symbol index, type) and
-    /// symbols (name, value, section number, storage class), names of at most 8 bytes; a section symbol first.
+    /// symbols (name, value, section number, storage class), a name of more than 8 bytes in the string table; a
+    /// section symbol first.
     pub fn code_obj(code: &[u8], relocs: &[(u32, u32, u16)], syms: &[(&str, u32, i16, u8)]) -> Vec<u8> {
         let (hdr, sec) = (20usize, 40usize);
         let raw = hdr + sec;
@@ -733,8 +734,15 @@ pub(crate) mod testlib {
             o.extend(si.to_le_bytes());
             o.extend(typ.to_le_bytes());
         }
+        let mut strtab: Vec<u8> = vec![];
         for &(n, value, secnum, cls) in syms {
             let mut f = n.as_bytes().to_vec();
+            if f.len() > 8 {
+                let at = 4 + strtab.len() as u32;
+                strtab.extend(n.as_bytes());
+                strtab.push(0);
+                f = [0u32.to_le_bytes(), at.to_le_bytes()].concat();
+            }
             f.resize(8, 0);
             o.extend(f);
             o.extend(value.to_le_bytes());
@@ -742,7 +750,8 @@ pub(crate) mod testlib {
             o.extend((if cls == 2 && secnum > 0 { 0x20u16 } else { 0 }).to_le_bytes());
             o.extend([cls, 0]);
         }
-        o.extend(4u32.to_le_bytes());
+        o.extend((4 + strtab.len() as u32).to_le_bytes());
+        o.extend(strtab);
         o
     }
 

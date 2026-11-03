@@ -17,7 +17,8 @@ the largest group of reports (about 25 reports, 60+ sightings). Examples:
   read as edits that were made.
 - headers conflicts prints its regrade and declaration-set lists before the verdict.
 - asmdiff prints legend lines and `=` alias lines; refs prints every claim and every full source line.
-- The Q4 remedy is appended to every Q4 line, and M9 prints one line per use site.
+- The Q4 remedy is appended to every Q4 line. (M9 and the reference check's lines now print once per reference, at
+  most 8 in grade's failing lines.)
 - A finding line `severity category check` prints category `debt` for M1, so an undeclared fall reads like a declared
   debt item.
 

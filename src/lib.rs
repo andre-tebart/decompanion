@@ -56,6 +56,7 @@ mod names;
 mod layout;
 mod layoutview;
 mod pe;
+mod refcheck;
 mod phi;
 mod plan;
 mod probe;

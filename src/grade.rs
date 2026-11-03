@@ -6,6 +6,8 @@
 use crate::error::{Error, Result};
 use crate::diffclass::{self, Env, Verdict};
 use crate::readability::{self, Context, Source};
+use crate::phi::Phi;
+use crate::refcheck::{Refs, Site};
 use crate::rules::{compiled_functions, Ctx};
 use crate::store::{self, Out, Claim, DECLARED, REPRODUCED};
 use crate::image;
@@ -20,6 +22,9 @@ fn err(e: rusqlite::Error) -> Error {
 
 pub(crate) const CODE: [&str; 3] = ["draft", "shape", "byte"];
 
+/// The reference differences a function's failing lines name one by one (the rest by their count).
+const REF_LINES: usize = 8;
+
 fn rank(c: &str) -> usize {
     CODE.iter().position(|x| *x == c).unwrap_or(0)
 }
@@ -31,6 +36,8 @@ struct Row {
     why: Vec<String>,
     hunks: Value,
     dist: Value,
+    /// the references φ says nothing about (refcheck: open, not checked)
+    open: Vec<String>,
 }
 
 fn read_text(path: &std::path::Path) -> Option<String> {
@@ -41,17 +48,12 @@ fn read_text(path: &std::path::Path) -> Option<String> {
 /// What one function's code grade is computed from besides its compare: its bytes and relocation mask, where its
 /// code ends (code_len), the targets of the relocated fields after it (its switch tables: offset, width, target
 /// inside the function), its address, the next start, the walk's or the source extent's end, and per relocation
-/// its symbol's name, a literal's bytes and the ledger's address of the name (the prover binds by symbol and by
-/// name, the literal check reads the bytes: a changed callee, string or name leaves the code bytes as they were).
-type Key = (Vec<u8>, Vec<u8>, Option<u32>, Vec<(u32, u32, Option<i64>)>, i64, u32, Option<i64>, Vec<(String, Option<Vec<u8>>, Option<u32>)>);
+/// its symbol's name, a literal's bytes and φ's addresses of the object (the prover binds through φ, the
+/// reference check reads the bytes: a changed callee, string or address comment leaves the code bytes as they
+/// were). The reference check itself runs on every run (refcheck.rs: φ against the held sites).
+type Key = (Vec<u8>, Vec<u8>, Option<u32>, Vec<(u32, u32, Option<i64>)>, i64, u32, Option<i64>, Vec<(String, Option<Vec<u8>>, Vec<i64>)>);
 
-/// A relocation's symbol as the ledger names it (the C name: no `__imp_`, undecorated), for names::unique_addrs.
-fn ledger_name(obj: &crate::coff::Obj, s: u32) -> Option<String> {
-    let sym = obj.symbol_at(s).filter(|s| s.constant().is_none())?;
-    Some(crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name)))
-}
-
-fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>, names: &HashMap<String, u32>) -> Key {
+fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>, refs: &Refs) -> Key {
     let code = &f.code;
     let obj = &f.obj.0;
     let tbl = match code.code_len {
@@ -62,20 +64,24 @@ fn key_of(f: &crate::rules::Compiled, w: Option<&Rc<Claim>>, names: &HashMap<Str
             (*off, r.kind_width().1, t)
         }).collect(),
     };
-    let syms = code.relocs.iter().map(|(_, r)| {
-        (obj.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default(), crate::equiv::literal(obj, r.symbol_index),
-         ledger_name(obj, r.symbol_index).and_then(|n| names.get(&n).copied()))
+    let syms = code.relocs.iter().zip(refs.targets.iter().zip(&refs.expect)).map(|((_, r), (t, at))| {
+        let lit = match t {
+            crate::refcheck::Target::Lit { bytes, .. } => Some(bytes.clone()),
+            _ => None,
+        };
+        (obj.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default(), lit, at.clone())
     }).collect();
     (code.data.clone(), code.mask.clone(), code.code_len, tbl, f.src.lo, f.next, w.map(|w| w.hi), syms)
 }
 
-/// A function's code size, its extent and slot, the original as the diff reads it, its verdict (when asked: a
-/// byte match needs none).
+/// A function's code size, its extent and slot, the original as the diff reads it, a byte match's reference
+/// sites (each relocation at its offset), its verdict (when asked: a byte match whose references agree needs none).
 struct Held {
     size: i64,
     extent: i64,
     slot: i64,
     o: diffclass::Original,
+    matched_sites: Vec<Site>,
     verdict: std::cell::OnceCell<Judged>,
 }
 
@@ -111,61 +117,65 @@ struct Task<'a> {
     next: u32,
     whi: Option<i64>,
     matched: bool,
-    /// the ledger's names at one address (names::unique_addrs)
-    names: &'a HashMap<String, u32>,
+    /// φ, the correspondence the references are checked against, and what the relocations refer to by it
+    phi: &'a Phi,
+    refs: &'a Refs,
 }
 
-type Computed = (i64, i64, i64, diffclass::Original, Option<Judged>);
+type Computed = (i64, i64, i64, diffclass::Original, Vec<Site>, Option<Judged>);
 
-/// A function's shape verdict, the prover's block pairs when it shows the behaviour the same, and the literals
-/// that keep it from shape (equiv::literal_mismatches: a string or a floating constant of ours whose bytes the
-/// original does not hold).
-type Judged = (Verdict, Option<usize>, Vec<String>);
+/// A function's shape verdict, its reference sites (the alignment's: refcheck::sites_aligned) and the prover's
+/// block pairs when it shows the behaviour the same.
+type Judged = (Verdict, Vec<Site>, Option<usize>);
 
-/// A function's code size, extent, slot, original and (no byte match) its verdict.
+/// A function's code size, extent, slot, original, a byte match's sites and (no byte match, or a byte match
+/// whose named references cross) its verdict.
 fn compute(env: &Env, t: &Task, align: i64) -> Computed {
     let (cd, cm) = t.code.code();
     let size = diffclass::code_size(env, cd, cm, t.lo as u32);
     let extent = t.whi.map(|h| h - t.lo).unwrap_or(size);
     let slot = extent.max(t.next as i64 - t.lo);
     let o = diffclass::original(env, t.lo as u32, extent, slot, align);
-    let v = if t.matched { None } else { Some(verdict(env, t.obj, t.code, t.lo as u32, &o, t.names)) };
-    (size, extent, slot, o, v)
+    let sites = if t.matched { crate::refcheck::sites_matched(t.code, env.img, t.lo as u32) } else { vec![] };
+    let crossed = t.matched && crate::refcheck::check(t.obj, t.code, env.img, &sites, t.refs, t.phi).named_differs();
+    let v = if t.matched && !crossed { None } else { Some(verdict(env, t.obj, t.code, t.lo as u32, &o, t.refs, t.phi)) };
+    (size, extent, slot, o, sites, v)
 }
 
-/// A function's shape verdict, and where the shape check leaves it draft, the prover's: the block pairs when it
-/// shows our code's behaviour the same as the original's (equiv: the same effects in the same order, the same
-/// branches, the same returns).
-fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: u32, o: &diffclass::Original,
-           names: &HashMap<String, u32>) -> Judged {
+/// A function's shape verdict, its reference sites, and where the shape check leaves it draft or a named
+/// reference of ours differs from the original's field, the prover's: the block pairs when it shows our code's
+/// behaviour the same as the original's (equiv: the same effects in the same order, the same branches, the same
+/// returns), our references bound through φ (equiv::bind). Two stores reordered pair their fields crosswise: the
+/// proof shows the effects the same all the same.
+fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: u32, o: &diffclass::Original, refs: &Refs,
+           phi: &Phi) -> Judged {
     let fc = diffclass::FunctionCompare::new(env, obj, code, lo, o);
-    let data = env.img.read(lo, o.code.max(0) as usize);
-    let proof = if fc.verdict.shape {
+    let sites = crate::refcheck::sites_aligned(code, env.img, lo, &fc.la, &fc.lb);
+    let crossed = crate::refcheck::check(obj, code, env.img, &sites, refs, phi).named_differs();
+    let proof = if fc.verdict.shape && !crossed {
         None
     } else {
-        // relocations no aligned site binds: through the ledger's names, as dcp diffclass binds them
-        let by_name = |n: &str| names.get(n).copied();
-        let (ours, _) = crate::equiv::bind(obj, code, env.img, lo, &fc.la, &fc.lb, Some(&by_name));
+        let data = env.img.read(lo, o.code.max(0) as usize);
+        let (ours, _) = crate::equiv::bind(obj, code, env.img, lo, &sites, refs, phi);
         match crate::equiv::prove(&ours, &data, lo) {
             crate::equiv::Outcome::Equal { pairs } => Some(pairs),
             _ => None,
         }
     };
-    // the listings compare our literals as X: a shape function may still reference another string or constant
-    let lits = if fc.verdict.shape || proof.is_some() { literal_lines(obj, code, env.img, lo, &fc.la, &fc.lb, &data) } else { vec![] };
-    (fc.verdict, proof, lits)
+    (fc.verdict, sites, proof)
 }
 
-/// The M9 / M10 lines of equiv::literal_mismatches: our strings and floating constants whose bytes the original
-/// holds nowhere it refers to (G.grade keeps such a shape function at draft; dcp diffclass prints them).
-pub(crate) fn literal_lines(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, lo: u32,
-                            la: &[crate::x86::Line], lb: &[crate::x86::Line], data: &[u8]) -> Vec<String> {
-    let hex = |b: &[u8]| b.iter().map(|c| format!("{c:02x}")).collect::<Vec<_>>().join(" ");
-    crate::equiv::literal_mismatches(obj, code, img, lo, la, lb, data).into_iter().map(|(at, name, ours, theirs)| {
-        let (rule, what) = if name.starts_with("??_C@") { ("M9", "literal") } else { ("M10", "constant") };
-        format!("{rule} at +{:#x}: our {what} {name} ({}) is nowhere the original refers to (its bytes there: {})", at - lo,
-                hex(&ours[..ours.len().min(40)]), hex(&theirs[..theirs.len().min(40)]))
-    }).collect()
+/// The code grade from the structure and the reference check: byte when the bytes match and every reference
+/// agrees; shape when the bytes, the shape classes or a proof explain the code and no literal differs (a named
+/// reference that differs only with a proof: the fields cross, the effects are the same); else draft.
+pub(crate) fn code_grade(matched: bool, structural: bool, proved: bool, chk: &crate::refcheck::Check) -> &'static str {
+    if matched && chk.differs().next().is_none() {
+        "byte"
+    } else if (matched || structural || proved) && !chk.literal_differs() && (!chk.named_differs() || proved) {
+        "shape"
+    } else {
+        "draft"
+    }
 }
 
 /// compute over the tasks on every core: (index, result).
@@ -212,20 +222,23 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         held = (world, HashMap::new());
     }
     let mut used: HashMap<Key, Rc<Held>> = HashMap::new();
-    let names = crate::names::unique_addrs(&store::claims(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?);
-    let keys: Vec<Key> = funcs.iter().map(|f| key_of(f, walk.get(&f.src.lo), &names)).collect();
+    let phi = crate::timing::phase("g.phi", || -> Result<Phi> { Ok(Phi::new(&store::claims(db, &ctx.db, "name", &ctx.needed, |_| true).map_err(err)?, &[])) })?;
+    // what each relocation refers to, by φ: the key's, the check's and the binding's
+    let refs: Vec<Refs> = crate::timing::phase("g.refs", || funcs.iter().map(|f| Refs::new(&f.obj.0, &f.code, &phi)).collect());
+    let keys: Vec<Key> = crate::timing::phase("g.keys", || funcs.iter().zip(&refs).map(|(f, r)| key_of(f, walk.get(&f.src.lo), r)).collect());
     // the functions not held (all of them after a start): computed on every core, each independent of the others
     let todo: Vec<Task> = funcs.iter().zip(&keys).enumerate().filter(|(_, (_, k))| !held.1.contains_key(*k)).map(|(i, (f, _))| Task {
-        i, code: &f.code, obj: &f.obj.0, lo: f.src.lo, next: f.next, whi: walk.get(&f.src.lo).map(|w| w.hi), matched: matched.contains(&f.src.lo), names: &names,
+        i, code: &f.code, obj: &f.obj.0, lo: f.src.lo, next: f.next, whi: walk.get(&f.src.lo).map(|w| w.hi), matched: matched.contains(&f.src.lo),
+        phi: &phi, refs: &refs[i],
     }).collect();
     let mut fresh: HashMap<usize, Rc<Held>> = HashMap::new();
-    for (i, r) in compute_all(&env, &todo, x.function_alignment) {
-        let (size, extent, slot, o, v) = r;
+    for (i, r) in crate::timing::phase("g.compute", || compute_all(&env, &todo, x.function_alignment)) {
+        let (size, extent, slot, o, matched_sites, v) = r;
         let verdict = std::cell::OnceCell::new();
         if let Some(v) = v {
             let _ = verdict.set(v);
         }
-        fresh.insert(i, Rc::new(Held { size, extent, slot, o, verdict }));
+        fresh.insert(i, Rc::new(Held { size, extent, slot, o, matched_sites, verdict }));
     }
     for (i, (f, key)) in funcs.iter().zip(keys).enumerate() {
         let lo = f.src.lo;
@@ -238,30 +251,46 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let orig_size = h.o.code;
         let n = size.min(orig_size);
         let nbytes = f.c.diffs.iter().filter(|&&k| (k as i64) < n).count() as i64 + (size - orig_size).abs();
-        let (g, why, hunks, dist_ins);
-        let consts = if matched.contains(&lo) {
-            let sites: HashSet<u32> = f.code.relocs.iter().map(|(off, _)| *off).collect();
-            crate::rules::constant_mismatches(&img, f, &sites)
-        } else {
-            vec![]
+        let (g, mut why, hunks, dist_ins);
+        let is_byte = matched.contains(&lo);
+        let unit = f.src.s("unit");
+        // the reference check (refcheck.rs): a byte match's sites at their offsets, else the alignment's
+        let judged = || -> &Judged {
+            h.verdict.get_or_init(|| verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o, &refs[i], &phi))
         };
-        if matched.contains(&lo) && consts.is_empty() {
-            (g, why, hunks, dist_ins) = ("byte".to_string(), vec![], json!({}), 0usize);
-        } else if matched.contains(&lo) {
-            // the bytes match, a literal or a floating constant they reference does not (M9 / M10): a meaning
-            // difference, draft (it must not pass at shape)
-            (g, hunks, dist_ins) = ("draft".to_string(), json!({}), 0usize);
-            let mut w: Vec<String> = consts.iter().map(|(_, _, rule, msg)| format!("B1 byte: {rule} {msg}")).collect();
-            let rules: BTreeSet<&str> = consts.iter().map(|c| c.2).collect();
-            w.push(format!("B3 draft: {} referenced literal(s) / constant(s) differ from the original's ({}): a meaning difference",
-                           consts.len(), rules.into_iter().collect::<Vec<_>>().join(", ")));
-            why = w;
+        let chk = crate::timing::phase("g.check", || if is_byte {
+            crate::refcheck::check(&f.obj.0, &f.code, &img, &h.matched_sites, &refs[i], &phi)
         } else {
-            if h.verdict.get().is_none() {
-                let _ = h.verdict.set(verdict(&env, &f.obj.0, &f.code, lo as u32, &h.o, &names));
+            crate::refcheck::check(&f.obj.0, &f.code, &img, &judged().1, &refs[i], &phi)
+        });
+        let lines = chk.lines(&phi, lo as u32, unit);
+        let rules: BTreeSet<&str> = chk.differs().map(|r| r.rule).collect();
+        let rules = rules.into_iter().collect::<Vec<_>>().join(", ");
+        // the failing lines name the first differences, the count names them all
+        let shown = |tag: &str| -> Vec<String> {
+            let mut v: Vec<String> = lines.iter().take(REF_LINES).map(|l| format!("{tag}{l}")).collect();
+            if lines.len() > REF_LINES {
+                v.push(format!("{tag}{} more reference(s) differ (dcp diffclass {})", lines.len() - REF_LINES, f.src.s("symbol").unwrap_or("")));
             }
-            let (v, proof, lits) = h.verdict.get().unwrap();
-            g = if (v.shape || proof.is_some()) && lits.is_empty() { "shape" } else { "draft" }.to_string();
+            v
+        };
+        if is_byte && lines.is_empty() {
+            (g, why, hunks, dist_ins) = ("byte".to_string(), vec![], json!({}), 0usize);
+        } else if is_byte {
+            // the bytes match, a reference does not (M8: another object, M9 / M10: other bytes): a meaning
+            // difference, unless named references only cross and a proof shows the effects the same
+            let proof = if chk.literal_differs() { None } else { judged().2 };
+            g = code_grade(true, false, proof.is_some(), &chk).to_string();
+            (hunks, dist_ins) = (json!({}), 0usize);
+            why = shown("B1 byte: the bytes match; ");
+            why.push(match proof {
+                Some(pairs) => format!("B2 shape: the same behaviour, proved ({pairs} block pairs) with every reference at φ's address: the \
+                                        references cross ({rules})"),
+                None => format!("B3 draft: {} reference(s) differ from the original's ({rules}): a meaning difference", lines.len()),
+            });
+        } else {
+            let (v, _, proof) = judged();
+            g = code_grade(false, v.shape, proof.is_some(), &chk).to_string();
             hunks = v.hunks_json();
             dist_ins = v.distance;
             let mut w = vec![];
@@ -269,11 +298,15 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             if !c_why.is_empty() {
                 w.push(format!("B1 byte: {c_why}"));
             }
-            if !lits.is_empty() {
-                // the code is shape, a literal it references is not the original's: a meaning difference
-                w.extend(lits.iter().map(|l| format!("B2 shape: {l}")));
-                w.push(format!("B3 draft: {} referenced literal(s) / constant(s) differ from the original's: a meaning difference; the hunks: {}",
-                               lits.len(), v.summary()));
+            // the reference differences first: a meaning difference, whatever else the code has
+            w.extend(shown(if v.shape || proof.is_some() { "B2 shape: " } else { "B3 draft: " }));
+            if g == "shape" && !lines.is_empty() {
+                w.push(format!("B2 shape: the same behaviour, proved ({} block pairs) with every reference at φ's address: the references \
+                                cross ({rules}); the hunks: {}", proof.unwrap_or(0), v.summary()));
+            } else if g == "draft" && (v.shape || proof.is_some()) {
+                // the code is shape, a reference it makes is not the original's
+                w.push(format!("B3 draft: {} reference(s) differ from the original's ({rules}): a meaning difference; the hunks: {}",
+                               lines.len(), v.summary()));
             } else if g == "draft" {
                 w.push(format!("{}{}", if v.code.is_empty() { "B3 draft: " } else { "B3 draft: unexplained code hunks: " }, v.summary()));
             } else if let (false, Some(pairs)) = (v.shape, proof) {
@@ -283,13 +316,24 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             }
             why = w;
         }
-        rows.push(Row { src: f.src.clone(), code: g, why, hunks,
+        // the findings view (M8 / M9 / M10): a byte match whose reference φ contradicts, at the site (the bytes are
+        // equal at this layout only, docs/mental-model.md §8.3); the positional pairing is exact there. Elsewhere
+        // the difference is the experiment's failing line (the alignment pairs reordered code crosswise).
+        if is_byte && g == "draft" {
+            let name = f.src.s("symbol").unwrap_or("");
+            for (r, l) in chk.firsts().into_iter().zip(&lines) {
+                let site = lo + r.off as i64;
+                out.finding("error", r.rule, site, site + 4, format!("{name} at {lo:#x}: {l}"), &f.src.by);
+            }
+        }
+        let open = chk.open_lines(&phi, lo as u32);
+        rows.push(Row { src: f.src.clone(), code: g, why, hunks, open,
                         dist: json!({"ins": dist_ins, "bytes": nbytes, "size": size, "orig": orig_size, "extent": extent, "slot": slot}) });
     }
     HELD.with(|h| *h.borrow_mut() = (held.0, used));
     for (s, reason) in &missing {
         let orig = walk.get(&s.lo).map(|w| json!(w.hi - s.lo)).unwrap_or(Value::Null);
-        rows.push(Row { src: s.clone(), code: "draft".into(), why: vec![format!("B3 draft: {reason}")], hunks: json!({}),
+        rows.push(Row { src: s.clone(), code: "draft".into(), why: vec![format!("B3 draft: {reason}")], hunks: json!({}), open: vec![],
                         dist: json!({"ins": null, "bytes": null, "size": null, "orig": orig}) });
     }
     rows.sort_by_key(|r| r.src.lo); // stable
@@ -361,6 +405,9 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                            "outcome": r.code, "tag": tag, "failing": r.why, "dist": r.dist});
         if r.hunks.as_object().is_some_and(|h| !h.is_empty()) {
             e["hunks"] = r.hunks.clone();
+        }
+        if !r.open.is_empty() {
+            e["open"] = json!(r.open);
         }
         if let Some(calls) = lint.as_ref().filter(|c| !c.is_empty()) {
             e["consistency"] = json!(calls);

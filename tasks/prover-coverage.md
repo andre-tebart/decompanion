@@ -25,7 +25,10 @@ duplicated test. Each one claims "same dataflow, other allocation, scheduling or
   2. affine induction correspondences (x = a*y + c at loop heads), plus relocation binding with another addend
      (sym+0x48);
   3. the x87 stack carried across blocks;
-  4. commuting stores to provably disjoint addresses within a block (a store never commutes with a call);
+  4. commuting stores to provably disjoint addresses within a block (a store never commutes with a call). A shape
+     function whose named references cross is shape only with a proof (grade::code_grade): sv_CameraToObject,
+     sv_FlyCameraToObject, ai_AimCannon, he_Unk53f270 on gildegold 05bbe07 wait on this (normalized-alignment
+     pairs them right as well);
   5. one side's duplicated test or threaded jump (a block paired with a path);
   6. switch tables, flags across blocks, `rep scasb`.
 - Test inputs: ls_ReadSceneRecords, sv_DrawNamePlates, gm_TakeOverCharacter, ai_TrustedOfTwo, gm_SpawnCharacter,

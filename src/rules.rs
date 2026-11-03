@@ -307,111 +307,6 @@ fn m_match(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     Ok(())
 }
 
-/// Python's repr of a bytes object: b'..' (b".." when it holds ' and no "), \\ \t \n \r and the quote escaped,
-/// printable ASCII as is, every other byte \xhh.
-fn py_bytes(b: &[u8]) -> String {
-    let q = if b.contains(&b'\'') && !b.contains(&b'"') { b'"' } else { b'\'' };
-    let mut s = String::from("b");
-    s.push(q as char);
-    for &c in b {
-        match c {
-            b'\\' => s.push_str("\\\\"),
-            b'\t' => s.push_str("\\t"),
-            b'\n' => s.push_str("\\n"),
-            b'\r' => s.push_str("\\r"),
-            _ if c == q => {
-                s.push('\\');
-                s.push(c as char);
-            }
-            0x20..=0x7e => s.push(c as char),
-            _ => s.push_str(&format!("\\x{:02x}", c)),
-        }
-    }
-    s.push(q as char);
-    s
-}
-
-fn latin1(b: &[u8]) -> String {
-    b.iter().map(|&c| c as char).collect()
-}
-
-/// compare.aligned_sites: the offsets of `sites` ((offset, width) of our relocated fields) whose instruction
-/// starts at the same offset with the same size on both sides and agrees in every unmasked byte (all of them for
-/// a match).
-pub fn aligned_sites(ours: &[u8], mask: &[u8], orig: &[u8], va: u32, matched: bool, sites: &[(u32, u32)])
-    -> std::collections::HashSet<u32> {
-    if matched {
-        return sites.iter().map(|s| s.0).collect();
-    }
-    let lines = crate::dis::lengths(ours, va);
-    let theirs: HashMap<u32, u32> = crate::dis::lengths(orig, va).into_iter().map(|(a, n)| (a - va, n)).collect();
-    let starts: Vec<u32> = lines.iter().map(|l| l.0 - va).collect();
-    let mut out = std::collections::HashSet::new();
-    for &(off, width) in sites {
-        let i = starts.partition_point(|&s| s <= off);
-        if i == 0 {
-            continue;
-        }
-        let (o, n) = (starts[i - 1], lines[i - 1].1);
-        if off + width > o + n || theirs.get(&o) != Some(&n) {
-            continue;
-        }
-        if (o..o + n).all(|k| {
-            let k = k as usize;
-            mask.get(k).copied().unwrap_or(0) != 0 || ours.get(k) == orig.get(k)
-        }) {
-            out.insert(off);
-        }
-    }
-    out
-}
-
-/// M9 / M10: the string literals and floating constants a compiled function references at its `aligned` sites
-/// whose bytes the original does not hold where its site refers to: (site, width, rule, message). G.grade reads it
-/// too: a byte match whose literal differs is no byte.
-pub(crate) fn constant_mismatches(img: &crate::pe::Image, x: &Compiled, aligned: &std::collections::HashSet<u32>)
-    -> Vec<(u32, u32, &'static str, String)> {
-    let va = x.src.lo as u32;
-    let (obj, _) = &*x.obj;
-    let unit = x.src.s("unit").unwrap_or("");
-    let mut out = vec![];
-    for (off, r) in &x.code.relocs {
-        let Some(target) = obj.symbol_at(r.symbol_index) else { continue };
-        let (kind, width) = r.kind_width();
-        if !(kind == crate::coff::ABSOLUTE || kind == crate::coff::RELATIVE) || !aligned.contains(off) {
-            continue;
-        }
-        let Some(k) = target.constant() else { continue };
-        let Some(data) = (if target.secnum > 0 { obj.sections.get(target.secnum as usize) } else { None }).and_then(|s| s.data.as_ref()) else {
-            continue;
-        };
-        let site = va.wrapping_add(*off);
-        let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(x.code.secnum, r)) else { continue };
-        let mut lit: &[u8] = data.get(target.value as usize..).unwrap_or(&[]);
-        if k == "string" {
-            if let Some(z) = lit.iter().position(|&c| c == 0) {
-                lit = &lit[..z + 1];
-            }
-        }
-        let have = img.bytes(to, lit.len());
-        if *have != *lit {
-            let mut hint = String::new();
-            let body = latin1(&lit[..lit.len().saturating_sub(1)]).replace('\\', "/");
-            if k == "string" && body.starts_with(&format!("src/{unit}/")) {
-                let z = img.bytes(to, 260);
-                let z = latin1(z.split(|&c| c == 0).next().unwrap_or(&[]));
-                hint = format!("; the unit's original file name? dcp decl add \"{:#010x} file tu={unit} path={z} -- ...\"", to);
-            }
-            let what = if k == "string" { "literal" } else { "constant" };
-            let msg = format!("{} at {:#x}: our {what} {} differs from the original's bytes {} at {:#x}{hint}",
-                              x.src.s("symbol").unwrap_or(""), x.src.lo, py_bytes(&lit[..lit.len().min(40)]),
-                              py_bytes(&have[..have.len().min(40)]), to);
-            out.push((site, width, if k == "string" { "M9" } else { "M10" }, msg));
-        }
-    }
-    out
-}
-
 /// The original's absolute memory operands inside a function of ours [lo, lo + len) whose instruction holds no
 /// relocated field of ours: (site, size, the address it refers to). `refs`: the walk's operand references (the
 /// instruction's range, its target); `fields`: our relocated fields (offset, width) in the function.
@@ -448,55 +343,6 @@ fn m_ref_missing(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                          format!("{} at {lo:#x}: the instruction at {a:#x} holds {to:#x} as a constant where the original refers to {what}: \
                                   write the object, not its address (the bytes match at this layout only)", x.src.s("symbol").unwrap_or("")),
                          &x.src.by, &by);
-        }
-    }
-    Ok(())
-}
-
-/// M8 / M9 / M10 (M8.reloc): each relocation of ours whose site lines up with the original's code, resolved against
-/// the image: a registered symbol the original's site does not refer to (M8), a literal or a floating constant
-/// whose bytes the original does not hold there (M9 / M10: constant_mismatches).
-fn m8_reloc(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let img = image(&ctx.image)?;
-    let (funcs, _) = compiled_functions(ctx, db)?;
-    let phi = phi_of(ctx, db)?;
-    for x in &funcs {
-        if !(x.c.matched() || (x.c.abs_image.is_some() && x.c.aid_ok())) {
-            continue;
-        }
-        let va = x.src.lo as u32;
-        let orig = img.bytes(va, x.code.data.len());
-        let sites: Vec<(u32, u32)> = x.code.relocs.iter().map(|(off, r)| (*off, r.kind_width().1)).collect();
-        let aligned = aligned_sites(&x.code.data, &x.code.mask, &orig, va, x.c.matched(), &sites);
-        for (site, width, rule, msg) in constant_mismatches(&img, x, &aligned) {
-            out.finding("error", rule, site as i64, (site + width) as i64, msg, &x.src.by);
-        }
-        let (obj, _) = &*x.obj;
-        let symbol = x.src.s("symbol").unwrap_or("");
-        for (off, r) in &x.code.relocs {
-            let Some(target) = obj.symbol_at(r.symbol_index) else { continue };
-            let (kind, width) = r.kind_width();
-            if !(kind == crate::coff::ABSOLUTE || kind == crate::coff::RELATIVE) || !aligned.contains(off) {
-                continue;
-            }
-            if !target.named() || target.constant().is_some() {
-                continue;
-            }
-            let site = va.wrapping_add(*off);
-            let Some(to) = r.resolve(site, &img.bytes(site, width as usize), obj.addend(x.code.secnum, r)) else { continue };
-            let linker = target.name.strip_prefix("__imp_").unwrap_or(&target.name);
-            let cname = crate::coff::undecorate(linker);
-            let Some(regs) = phi.of(&cname) else { continue };
-            if regs.is_empty() || regs.contains_key(&(to as i64)) {
-                continue;
-            }
-            let (b, lvl) = regs.iter().next().unwrap();
-            let others = phi.names_at(to as i64).into_iter().collect::<Vec<_>>().join(", ");
-            let others = if others.is_empty() { "nothing registered".to_string() } else { others };
-            let sev = if lvl.is_top() { "bug" } else { "error" };
-            let msg = format!("{symbol} at {:#x}: our object references {cname} (registered at {:#x}) where the original's site \
-                               refers to {:#x} ({others})", x.src.lo, b, to);
-            out.finding(sev, "M8", site as i64, (site + width) as i64, msg, &x.src.by);
         }
     }
     Ok(())
@@ -1174,7 +1020,6 @@ pub(crate) fn dispatch(ctx: &Ctx) -> Result<Out> {
         "L8.leak" => crate::layout::l8_leak(ctx, db, &mut out),
         "M.bytes.declared" => crate::layout::m_bytes_declared(ctx, db, &mut out),
         "M.match" => m_match(ctx, db, &mut out),
-        "M8.reloc" => m8_reloc(ctx, db, &mut out),
         "M.ref.missing" => m_ref_missing(ctx, db, &mut out),
         "M.lint" => m_lint(ctx, db, &mut out),
         "M.data.site" => m_data_site(ctx, db, &mut out),
@@ -1295,27 +1140,6 @@ mod tests_ref_missing {
 
 #[cfg(test)]
 mod tests_aligned {
-    /// M8.reloc's line-up of a relocation site of ours with the original's code.
-    #[test]
-    fn aligned_sites() {
-        let ours = b"\x55\x8b\xec\xe8\x00\x00\x00\x00\x5d\xc3"; // push ebp; mov ebp,esp; call f; pop ebp; ret
-        let mask = [0u8, 0, 0, 0, 1, 1, 1, 1, 0, 0];
-        let aligned = |orig: &[u8]| -> Vec<u32> {
-            let matched = (0..ours.len()).all(|k| mask[k] != 0 || ours[k] == orig[k]);
-            let mut v: Vec<u32> = super::aligned_sites(ours, &mask, orig, 0x1000, matched, &[(4, 4)]).into_iter().collect();
-            v.sort();
-            v
-        };
-        // a draft whose call sits where the original's does: the site lines up although the function differs
-        assert_eq!(aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5e\xc3"), [4]);
-        // one more instruction before the call (push ecx): the original's bytes at our site are no call target
-        assert!(aligned(b"\x55\x8b\xec\x51\xe8\x10\x00\x00\x00\xc3").is_empty());
-        // the same size and offset but another instruction (mov eax, imm32): no line-up either
-        assert!(aligned(b"\x55\x8b\xec\xb8\x10\x00\x00\x00\x5d\xc3").is_empty());
-        // a match lines up everywhere
-        assert_eq!(aligned(b"\x55\x8b\xec\xe8\x10\x00\x00\x00\x5d\xc3"), [4]);
-    }
-
     /// D8 against the play-session crashes: a save header declared one int that the original's reader fills up to
     /// +0xfc, its fields drafted as globals of their own; a table declared short of the loop's bound.
     #[test]

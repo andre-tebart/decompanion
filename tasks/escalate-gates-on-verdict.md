@@ -1,7 +1,7 @@
 # Escalate gates on the verdict, not on prose
 
 - **Priority:** P1 · **Size:** S · **Root:** R1
-- **Depends on:** branch-targets-as-cut-points (otherwise escalate refuses on false positives), ref-check-in-object-experiment
+- **Depends on:** branch-targets-as-cut-points (otherwise escalate refuses on false positives)
 
 ## Problem
 
@@ -16,13 +16,14 @@
   - the size rule;
   - `equiv::witness`;
   - two prose regexes (`only_missing_statements`, `admits_unread`).
-  It does not check branches, literals or switch tables, though `asmcmd::reading` holds all of them.
+  It does not check branches or switch tables, though `asmcmd::reading` holds them. (Reference and literal
+  differences, the reference check's, refuse since that check landed: `rd.ref_lines` with `grade::code_grade`.)
 - The printed size is `la.len() - tails` (queues.rs:741-742). The tail adjustment goes only into the stored reason.
 
 ## Task
 
-- Refuse on any remaining *concrete* difference from the one verdict: witness, real branch differences, literal
-  mismatches, switch table entries.
+- Refuse on any remaining *concrete* difference from the one verdict: witness, real branch differences, switch table
+  entries (the references and literals already refuse).
 - Each is explained only through the existing `--divergence-explained`.
 - The refusal prints the diffclass summary and the raw counts: "ours 544, +15 for shared tails = 559, limit 12".
 - `only_missing_statements` names the clause it matched, as `admits_unread` already does.

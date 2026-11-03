@@ -87,6 +87,10 @@ fn function_lines(out: &mut Vec<String>, r: &Row, verbose: bool) {
                       ("readability", vt(r.get("readability"))), ("tag", s(level)), ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
     if verbose {
         out.extend(failing(r).iter().map(|x| format!("  {x}")));
+        // the references φ cannot decide: not checked (the reference check, refcheck.rs)
+        if let Some(Value::Array(o)) = r.get("open") {
+            out.extend(o.iter().filter_map(|x| x.as_str()).map(|x| format!("  open: {x}")));
+        }
         // the consistency convention (§8.8): calls without a declaration, the experiment's side
         if let Some(Value::Array(c)) = r.get("consistency") {
             let calls: Vec<&str> = c.iter().filter_map(|x| x.as_str()).collect();
@@ -197,14 +201,25 @@ fn tables_tokens(t: &crate::diffclass::Tables) -> String {
     record(&[("tables", s(if t.diffs.is_empty() { "equal" } else { "differ" })), ("entries", Tok::I(t.entries)), ("index_bytes", Tok::I(t.bytes))])
 }
 
+/// The reference check's differences as asmdiff and diffclass print them: `literal:` for a string or a floating
+/// constant (M9 / M10), `ref:` for a named object (M8); `shape`: the verdict stands (the named references cross,
+/// a proof shows the effects the same).
+fn ref_lines(r: &crate::asmcmd::Reading, shape: bool) -> Vec<String> {
+    r.ref_lines.iter().map(|l| {
+        let what = if l.starts_with("M8") { "ref" } else { "literal" };
+        let why = if shape { "the references cross: the proof shows the effects the same" } else { "a meaning difference: draft" };
+        format!("  {what}: {l} ({why})")
+    }).collect()
+}
+
 /// asmdiff's diff: (the differing lines, the frames when aligned, the printed lines). a / b the texts compared, pa /
 /// pb the texts printed (named with --symbols); same(i, j): the named lines i and j refer to the same addresses or
 /// literals under other names (Reading::same_values).
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b: &[String], sa: &[Shape], sb: &[Shape], pa: &[String], pb: &[String],
-              plain: bool, all: bool, same: &dyn Fn(usize, usize) -> bool, addresses: &dyn Fn(usize, usize) -> Option<String>)
-              -> (usize, Option<(i64, i64)>, Vec<String>) {
+              plain: bool, all: bool, same: &dyn Fn(usize, usize) -> bool, addresses: &dyn Fn(usize, usize) -> Option<String>,
+              refs: &dyn Fn(usize) -> Option<String>) -> (usize, Option<(i64, i64)>, Vec<String>) {
     // the frames differ: align with the stack offsets masked; an aligned pair that differs only by the shift is equal
     let frame = if plain { None } else { crate::shape::frame_delta(sa, sb) };
     let ops = match frame {
@@ -213,10 +228,13 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
     };
     use crate::difflib::Tag;
     // an aligned pair: 0 the same text, 1 the same text naming other symbols (--symbols), 4 the same text naming
-    // the same addresses or literals by other names, 2 shifted by the frame, 3 differing
+    // the same addresses or literals by other names, 2 shifted by the frame, 3 differing, 5 the same text whose
+    // reference the reference check finds another (refcheck.rs: whatever the names print)
     let kind = |i: usize, j: usize| -> u8 {
         if a[i] == b[j] {
-            if pa[i] == pb[j] {
+            if refs(i).is_some() {
+                5
+            } else if pa[i] == pb[j] {
                 0
             } else if same(i, j) {
                 4
@@ -234,6 +252,7 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
         None => crate::diffclass::distance(a, b),
     };
     let mut out = vec![];
+    let mut crossed = 0;
     for (tag, i1, i2, j1, j2) in ops {
         if tag == Tag::Equal {
             // runs of lines that print alike (equal or shifted by the frame: folded when long); a line whose names
@@ -252,6 +271,10 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
                         format!("!  {:#010x}  {}   | {}{at}", la[k].addr, pa[k], pb[j1 + k - i1])
                     })),
                     4 => out.extend((i..e).map(|k| format!("=  {:#010x}  {}   | {}", la[k].addr, pa[k], pb[j1 + k - i1]))),
+                    5 => {
+                        crossed += e - i;
+                        out.extend((i..e).map(|k| format!("!  {:#010x}  {}   | {}   ({})", la[k].addr, pa[k], pb[j1 + k - i1], refs(k).unwrap_or_default())));
+                    }
                     3 => {
                         out.extend((i..e).map(|k| format!("-  {:#010x}  {}", la[k].addr, pa[k])));
                         out.extend((i..e).map(|k| format!("+  {:#010x}  {}", lb[j1 + k - i1].addr, pb[j1 + k - i1])));
@@ -270,7 +293,7 @@ fn diff_lines(la: &[crate::x86::Line], lb: &[crate::x86::Line], a: &[String], b:
         out.extend((i1..i2).map(|i| format!("-  {:#010x}  {}", la[i].addr, pa[i])));
         out.extend((j1..j2).map(|j| format!("+  {:#010x}  {}", lb[j].addr, pb[j])));
     }
-    (n, frame, out)
+    (n + crossed, frame, out)
 }
 
 /// `dcp asmdiff`: the instruction diff of one function, ours ('-') against the original ('+'), both listed at the
@@ -366,7 +389,13 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     let same = |i: usize, j: usize| img.as_ref().is_some_and(|img| r.same_values(img, i, j));
     // a window (--changed, --at) cuts the whole listing; one side (--side) prints its own lines in its own order
     let windowed = view.changed || view.at.is_some();
-    let (n, frame, mut body) = diff_lines(&r.la, &r.lb, &a, &b, &ka, &kb, pa, pb, plain, all || windowed, &same, &|i, j| r.addresses(i, j));
+    // our lines whose reference the check finds another: what each refers to on both sides
+    let mut crossed: std::collections::HashMap<u32, Vec<String>> = Default::default();
+    for x in r.refs.differs() {
+        crossed.entry(x.ins).or_default().push(format!("{}: {}", x.rule, x.pair()));
+    }
+    let refs = |i: usize| crossed.get(&r.la[i].addr).map(|v| v.join("; "));
+    let (n, frame, mut body) = diff_lines(&r.la, &r.lb, &a, &b, &ka, &kb, pa, pb, plain, all || windowed, &same, &|i, j| r.addresses(i, j), &refs);
     if let Some(side) = &view.side {
         body = if side == "ours" {
             r.la.iter().zip(pa).map(|(l, t)| format!("   {:#010x}  {t}", l.addr)).collect()
@@ -397,6 +426,13 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     if let Some(t) = &r.tables {
         head += &format!("  {}", tables_tokens(t));
     }
+    // the reference check: concrete differences (counted in `differing` too) and the references φ cannot decide
+    let nref = r.refs.differs().count();
+    let nopen = r.refs.open().count();
+    if nref > 0 || nopen > 0 {
+        head += &format!("  {}", record(&[("refs_differ", Tok::I(nref as i64)), ("refs_open", Tok::I(nopen as i64))]));
+    }
+    let open_lines: Vec<String> = r.open_lines.iter().map(|l| format!("  open: {l}")).collect();
     let mut out = vec![head];
     if let Some((fa, fb)) = frame {
         out.push(format!("  frame: ours {fa:#x}, the original's {fb:#x}: stack offsets aligned, a line that differs only by the shift counts \
@@ -409,6 +445,13 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
     if !ca.is_empty() || !cb.is_empty() {
         let list = |c: &[(String, usize)]| if c.is_empty() { "none".to_string() } else { c.iter().map(|(n, k)| format!("{n} x{k}")).collect::<Vec<_>>().join(", ") };
         out.push(format!("  calls differ: ours {} | the original {}", list(&ca), list(&cb)));
+    }
+    let proved = matches!(r.proof.0, crate::equiv::Outcome::Equal { .. });
+    out.extend(ref_lines(&r, crate::grade::code_grade(false, r.verdict.shape, proved, &r.refs) == "shape"));
+    out.extend(open_lines);
+    if !crossed.is_empty() {
+        out.push("  refs: '!' on an equal line: the original's field refers to another object or other bytes than ours (ours | the \
+                  original's); the listing reads both as X".into());
     }
     if r.named.is_some() {
         out.push("  symbols: ours by our relocations, the original's by the ledger; '!' the same instruction naming another symbol \
@@ -431,13 +474,12 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
     let (la, lb) = (&r.la, &r.lb);
     let row = r.row.as_object().cloned().unwrap_or_default();
     let v = &r.verdict;
-    // the code grade G.grade gives: the shape classes or a proof, and no literal of ours the original lacks
+    // the code grade G.grade gives (grade::code_grade): the shape classes or a proof, and every reference of ours
+    // the original's (the reference check, refcheck.rs)
     let proved = matches!(r.proof.0, crate::equiv::Outcome::Equal { .. });
-    let verdict = match (v.shape, proved, r.literals.is_empty()) {
-        (_, _, false) => "draft",
-        (true, _, true) => "shape",
-        (false, true, true) => "shape (proved)",
-        (false, false, true) => "draft",
+    let verdict = match crate::grade::code_grade(false, v.shape, proved, &r.refs) {
+        "shape" if !v.shape || r.refs.named_differs() => "shape (proved)",
+        g => g,
     };
     let mut out = vec![record(&[("fn", Tok::I(int(&row, "addr"))), ("name", vt(row.get("name"))), ("ours", Tok::I(la.len() as i64)),
                                 ("original", Tok::I(lb.len() as i64)), ("hunks", Tok::I(r.hunks.len() as i64)), ("differing", Tok::I(v.distance as i64)),
@@ -468,7 +510,8 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
         }
     }
     out.push(format!("  summary: {}", v.summary()));
-    out.extend(r.literals.iter().map(|l| format!("  literal: {l} (a meaning difference: draft)")));
+    out.extend(ref_lines(&r, verdict != "draft"));
+    out.extend(r.open_lines.iter().map(|l| format!("  open: {l}")));
     let (proof, unbound) = &r.proof;
     let base = int(&row, "addr") as u32;
     out.push(format!("  proof: {}{}", proof.summary(base),
@@ -774,12 +817,18 @@ mod tests {
         let (lb, b) = f("0xc8", "0xcc", "0x78", "mov dword ptr [esp + 0x14], 0");
         let sh = |l: &[crate::x86::Line]| l.iter().map(|x| x.shape.clone()).collect::<Vec<_>>();
         let (sa, sb) = (sh(&la), sh(&lb));
-        let (n, frame, out) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, false, true, &|_, _| false, &|_, _| None);
+        let (n, frame, out) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, false, true, &|_, _| false, &|_, _| None, &|_| None);
         assert_eq!((n, frame), (2, Some((0xcc, 0xc8))));
         assert_eq!(out.iter().filter(|l| l.starts_with('-') || l.starts_with('+')).collect::<Vec<_>>(),
                    ["-  0x00001008  mov dword ptr [esp + 0x14], ecx", "+  0x00001008  mov dword ptr [esp + 0x14], 0"]);
         assert!(out.contains(&"~  0x00001001  mov eax, dword ptr [esp + 0xd0]".to_string()) && out.contains(&"   0x00001003  mov ecx, 3".to_string()));
-        let (n, frame, _) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, true, true, &|_, _| false, &|_, _| None);
+        let (n, frame, _) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, true, true, &|_, _| false, &|_, _| None, &|_| None);
         assert_eq!((n, frame), (10, None)); // --plain: the shifted lines differ
+        // the reference check finds the call's target another: `!` on the equal line, counted (a match-base report:
+        // a wrong callee or literal behind X folded into the equal run)
+        let refs = |i: usize| (i == 7).then(|| "M8: f 0x401000 | 0x402000".to_string());
+        let (n, _, out) = diff_lines(&la, &lb, &a, &b, &sa, &sb, &a, &b, false, false, &|_, _| false, &|_, _| None, &refs);
+        assert_eq!(n, 3);
+        assert!(out.contains(&"!  0x00001007  call X   | call X   (M8: f 0x401000 | 0x402000)".to_string()), "{out:?}");
     }
 }

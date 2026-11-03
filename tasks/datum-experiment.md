@@ -18,7 +18,8 @@ The data rules only prove, never refute:
 ## Task
 
 - The datum's experiment is equal or not equal at the declared address, with relocated fields and padding masked, and
-  the reference check from ref-check-in-object-experiment applied to relocated fields.
+  the reference check (refcheck.rs: the sites at their offsets, as `sites_matched`, then `check` against φ) applied
+  to relocated fields.
 - Grade it, and let M1 see data falls.
 
 ## Rejected

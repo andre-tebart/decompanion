@@ -736,6 +736,18 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
                     }
                 }
                 let proved = matches!(rd.proof.0, crate::equiv::Outcome::Equal { .. });
+                // the reference check (refcheck.rs): a reference of ours the original's field does not make, unless
+                // the references only cross and the proof shows the effects the same (the grade is shape then)
+                if !rd.ref_lines.is_empty() && crate::grade::code_grade(false, rd.verdict.shape, proved, &rd.refs) != "shape" {
+                    let more = if rd.ref_lines.len() > 1 { format!(" (and {} more)", rd.ref_lines.len() - 1) } else { String::new() };
+                    match divergence_explained.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                        None => return Ok((vec![], Some(format!(
+                            "refused: a reference differs: {}{more}; another object or other literal bytes than the original's is a meaning \
+                             difference, and fixing it is base work (dcp diffclass {name}; a difference that is none: --divergence-explained \"why\")",
+                            rd.ref_lines[0])), 1)),
+                        Some(x) => why = format!("{why} (references: {}{more}, explained: {x})", rd.ref_lines[0]),
+                    }
+                }
                 if let (true, Some((o, t, _))) = (proved, size_unexplained(ours, orig)) {
                     why = format!("{why} (size: {o} vs {t} instructions, the behaviour proved the same)");
                 } else if let Some((o, t, allow)) = size_unexplained(ours, orig) {

@@ -6,7 +6,8 @@
 
 - `fopen` is placed where `_wfopen` is. The two have the same code but different callees (`__openfile` /
   `__wopenfile`).
-- `atoi` stays unnamed.
+- `atoi` stays unnamed. The reference check lists it open in 51 functions on gildegold 05bbe07 (`srand` 6,
+  `stricmp` 5): their references are not checked until the member is placed.
 
 Placed-member claims carry **reproduced** support. By the model, a wrong one is a rule bug.
 

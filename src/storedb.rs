@@ -208,6 +208,15 @@ pub(crate) fn make_current(db: &Connection, main: &str, rule: &str, place: &str,
     Ok(run_id)
 }
 
+/// The current runs of rules the core no longer has (a rule removed or renamed): no longer current, so that their
+/// claims and findings leave the answers and the gate. Returns how many.
+pub fn st_retire(path: &str, live: &[&str]) -> Result<usize> {
+    with_db(path, |db| {
+        let q = format!("UPDATE run SET current=0 WHERE current=1 AND rule NOT IN ({})", vec!["?"; live.len()].join(","));
+        db.execute(&q, rusqlite::params_from_iter(live.iter()))
+    })
+}
+
 /// (facts, ms) of a run.
 pub fn st_run_stats(path: &str, run_id: i64) -> Result<(i64, i64)> {
     with_db(path, |db| {
@@ -303,5 +312,27 @@ mod tests {
         assert_eq!((runs, blobs, schema.as_str(), lint.as_str()), (0, 1, crate::store::SCHEMA_VERSION, "x"));
         crate::forget_conn(&path);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tests_retire {
+    use crate::rules::testkit::Kit;
+    use serde_json::json;
+
+    /// A rule the core no longer has (M8.reloc, folded into G.grade) leaves the current runs: its findings must not
+    /// stay in the gate.
+    #[test]
+    fn retire_runs_of_rules_gone() {
+        let k = Kit::new(&crate::pe::testpe::build(None));
+        k.put("L.src", &[(0x1000, 0x1001, "name", json!({"name": "f", "origin": "source"}), crate::store::DECLARED)]);
+        k.put("M8.reloc", &[(0x1000, 0x1001, "name", json!({"name": "g", "origin": "source"}), crate::store::DECLARED)]);
+        let current = || super::st_findings(&k.db, None, None).unwrap().len() + crate::with_db(&k.db, |db| {
+            db.query_row("SELECT COUNT(*) FROM run WHERE current=1", [], |r| r.get::<_, i64>(0))
+        }).unwrap() as usize;
+        assert_eq!(current(), 2);
+        assert_eq!(super::st_retire(&k.db, &["L.src", "G.grade"]).unwrap(), 1);
+        assert_eq!(current(), 1);
+        assert_eq!(super::st_retire(&k.db, &["L.src"]).unwrap(), 0);
     }
 }

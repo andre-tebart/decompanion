@@ -1,7 +1,6 @@
 # Meaning differences are concrete differences
 
 - **Priority:** P1 · **Size:** M · **Root:** R2
-- **Depends on:** ref-check-in-object-experiment
 
 ## Problem
 
@@ -14,7 +13,8 @@
 ## Root cause
 
 diffclass classes are fill / order / regs / slots / frame / tail / branch / code. `equiv::witness` (2843815) catches
-only "a call or global store one side never refers to".
+only "a call or global store one side never refers to". The reference check (refcheck.rs) covers our relocated
+fields only: a non-relocated immediate, and an address used as a value, are outside it.
 
 ## Task
 

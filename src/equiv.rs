@@ -2210,139 +2210,75 @@ pub(crate) fn literal(obj: &crate::coff::Obj, s: u32) -> Option<Vec<u8>> {
             Some(u64::from_str_radix(hex, 16).ok()?.to_le_bytes()[..n].to_vec())
         }
         _ => {
-            let d = obj.sections.get(sym.secnum as usize)?.data.as_ref()?;
+            // an uninitialized section (VC6 puts "" in .bss): zeros, the string is its terminator
+            let Some(d) = obj.sections.get(sym.secnum as usize)?.data.as_ref() else { return Some(vec![0]) };
             let lit = d.get(sym.value as usize..)?;
             Some(lit[..lit.iter().position(|&c| c == 0).map(|z| z + 1).unwrap_or(lit.len())].to_vec())
         }
     }
 }
 
-/// Our relocations at instructions that line up with the original's (the listings' equal lines and same-shape
-/// lines of equal-length hunks), each resolved against the original's field there: (the symbol, the address the
-/// original's field refers to, our instruction's address).
-fn aligned_sites(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
-                 la: &[crate::x86::Line], lb: &[crate::x86::Line]) -> Vec<(u32, u32, u32)> {
-    use crate::difflib::{opcodes, Tag};
-    let (cd, _) = code.code();
-    let ta: Vec<&str> = la.iter().map(|l| l.text.as_str()).collect();
-    let tb: Vec<&str> = lb.iter().map(|l| l.text.as_str()).collect();
-    let mut pairs: Vec<(usize, usize)> = vec![];
-    for (tag, i1, i2, j1, j2) in opcodes(&ta, &tb) {
-        if tag == Tag::Equal || i2 - i1 == j2 - j1 {
-            pairs.extend((0..i2 - i1).map(|k| (i1 + k, j1 + k)).filter(|&(i, j)| la[i].shape.mn == lb[j].shape.mn));
-        }
-    }
-    let mut out = vec![];
-    for (i, j) in pairs {
-        let (ia, ib) = (la[i].addr, lb[j].addr);
-        let o = ia - va;
-        let rs: Vec<&(u32, crate::coff::Reloc)> = code.relocs.iter().filter(|(off, _)| o <= *off && *off < o + la[i].size).collect();
-        if rs.is_empty() {
-            continue;
-        }
-        let (Some(x), Some(y)) = (dis::decode(&cd[o as usize..(o + la[i].size).min(cd.len() as u32) as usize], ia).into_iter().next(),
-                                  dis::decode(&img.read(ib, lb[j].size as usize), ib).into_iter().next()) else { continue };
-        for (off, r) in rs {
-            let Some(kind) = x.field_at(off - o) else { continue };
-            let f = match kind {
-                dis::FieldKind::Disp => y.disp,
-                dis::FieldKind::Imm => y.imm,
-                dis::FieldKind::Imm2 => y.imm2,
-                dis::FieldKind::Branch => y.branch,
-            };
-            if f.size != 4 {
-                continue;
-            }
-            let site = ib + f.at as u32;
-            let addend = obj.addend(code.secnum, r);
-            if let Some(s) = r.resolve(site, &img.bytes(site, 4), addend) {
-                out.push((r.symbol_index, s, ia));
-            }
-        }
-    }
-    out
-}
-
-/// Our literals (strings, floating constants) whose bytes the original holds nowhere it refers to, though an
-/// instruction of ours that references one lines up with one of the original's: (our instruction's address, the
-/// literal's symbol, its bytes, the original's bytes at the aligned site's address). A literal the original holds
-/// at any address its code names (an immediate, a displacement) is not one: reordered pushes pair literals
-/// crosswise.
-pub fn literal_mismatches(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
-                          la: &[crate::x86::Line], lb: &[crate::x86::Line], theirs: &[u8]) -> Vec<(u32, String, Vec<u8>, Vec<u8>)> {
-    let mut refs = None;
-    let mut out: Vec<(u32, String, Vec<u8>, Vec<u8>)> = vec![];
-    for (sym, s, at) in aligned_sites(obj, code, img, va, la, lb) {
-        let Some(lit) = literal(obj, sym) else { continue };
-        if img.in_image(s) && *img.bytes(s, lit.len()) == *lit {
-            continue;
-        }
-        let refs = refs.get_or_insert_with(|| acts(theirs, va).1);
-        if refs.iter().any(|&r| img.in_image(r) && *img.bytes(r, lit.len()) == *lit) {
-            continue;
-        }
-        let name = obj.symbol_at(sym).map(|x| x.name.clone()).unwrap_or_default();
-        let have = if img.in_image(s) { img.bytes(s, lit.len()).to_vec() } else { vec![] };
-        if !out.iter().any(|o| o.1 == name) {
-            out.push((at, name, lit, have));
-        }
-    }
-    out
-}
-
-/// Our function's code with each relocated field holding the address the original's field holds where the two
-/// instructions line up (aligned_sites): a symbol's address is learned at its aligned sites, and the same symbol
-/// must get the same address at every one; a symbol that never lines up (or gets two addresses) gets one the
-/// original cannot hold. Returns the code and how many relocations stayed unbound.
-///
-/// `by_name`: a symbol no site binds may still get its address from the ledger (a name it places at one address).
+/// Our function's code with each relocated field holding the address its object has in the original: φ's where φ
+/// knows our symbol (the reference check, refcheck.rs, compares it with the original's field); a literal, or a
+/// symbol φ says nothing about (open), the address the original's field holds at its aligned sites (`sites`),
+/// the same at every one, a literal only where the original holds its bytes and φ gives no datum of ours there;
+/// any other symbol an address the original cannot hold. Returns the code and how many relocations stayed unbound.
 pub fn bind(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, img: &crate::pe::Image, va: u32,
-            la: &[crate::x86::Line], lb: &[crate::x86::Line], by_name: Option<&dyn Fn(&str) -> Option<u32>>) -> (Vec<u8>, usize) {
+            sites: &[crate::refcheck::Site], refs: &crate::refcheck::Refs, phi: &crate::phi::Phi) -> (Vec<u8>, usize) {
+    use crate::refcheck::Target;
     let (cd, _) = code.code();
     let mut bound: HashMap<u32, Option<u32>> = HashMap::new();
-    for (sym, s, _) in aligned_sites(obj, code, img, va, la, lb) {
-        // a literal binds only where the original holds its bytes (else the two loads differ in value)
-        let ok = literal(obj, sym).is_none_or(|b| img.in_image(s) && *img.bytes(s, b.len()) == *b);
-        let e = bound.entry(sym).or_insert(Some(s));
-        if *e != Some(s) || !ok {
+    let mut by_phi: BTreeSet<u32> = BTreeSet::new();
+    // per symbol: what it refers to and φ's addresses (its first relocation's)
+    let mut targets: HashMap<u32, (&Target, &[i64])> = HashMap::new();
+    for (k, (_, r)) in code.relocs.iter().enumerate() {
+        targets.entry(r.symbol_index).or_insert((&refs.targets[k], &refs.expect[k]));
+    }
+    // φ first: the symbol's address there (of several, the one an aligned site of the original refers to)
+    for (&s, &(t, expect)) in &targets {
+        let Target::Name { delta, .. } = t else { continue };
+        let Some(&first) = expect.first() else { continue };
+        let seen = sites.iter().filter(|x| code.relocs[x.k].1.symbol_index == s).find_map(|x| {
+            let a = x.to.wrapping_sub(obj.addend(code.secnum, &code.relocs[x.k].1)).wrapping_add(*delta);
+            expect.contains(&(a as i64)).then_some(a as i64)
+        });
+        bound.insert(s, Some((seen.unwrap_or(first) as u32).wrapping_sub(*delta)));
+        by_phi.insert(s);
+    }
+    // the rest learn from the aligned sites
+    for x in sites {
+        let r = &code.relocs[x.k].1;
+        let s = r.symbol_index;
+        if by_phi.contains(&s) {
+            continue;
+        }
+        let a = x.to.wrapping_sub(obj.addend(code.secnum, r));
+        let ok = match targets.get(&s).map(|t| t.0) {
+            Some(Target::Lit { bytes, delta, .. }) => {
+                let at = a.wrapping_add(*delta);
+                img.in_image(at) && *img.bytes(at, bytes.len()) == **bytes && crate::refcheck::datum_at(phi, at as i64).is_none()
+            }
+            // a label of our own section (a switch table): the tables compare checks it
+            _ => true,
+        };
+        let e = bound.entry(s).or_insert(Some(a));
+        if *e != Some(a) || !ok {
             *e = None; // two addresses for one symbol, or a literal's other bytes: no binding
         }
     }
-    // two symbols at one address: an aligned site paired a call or a load with another one (reordered calls);
-    // neither binding is trusted (an alias, two names of one address, loses its binding: the proof fails safe)
-    // (a symbol's name: one literal or function may be referenced through two symbol entries)
+    // two learned symbols at one address: an aligned site paired a call or a load with another one (reordered
+    // calls); neither binding is trusted (a symbol's name: one literal or function may be referenced through two
+    // symbol entries). φ's addresses stand: two names of one address are an alias.
     let name = |s: u32| obj.symbol_at(s).map(|x| x.name.clone());
-    let clash = |bound: &HashMap<u32, Option<u32>>| -> BTreeSet<u32> {
-        let mut by: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (&s, a) in bound {
-            if let Some(a) = a {
-                by.entry(*a).or_default().push(s);
-            }
+    let mut by: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&s, a) in &bound {
+        if let Some(a) = a {
+            by.entry(*a).or_default().push(s);
         }
-        by.into_values().filter(|v| v.iter().map(|&s| name(s)).collect::<BTreeSet<_>>().len() > 1).flatten().collect()
-    };
-    for s in clash(&bound) {
-        bound.insert(s, None);
     }
-    let mut named: BTreeSet<u32> = BTreeSet::new();
-    if let Some(f) = by_name {
-        for (_, r) in &code.relocs {
-            if matches!(bound.get(&r.symbol_index), Some(Some(_))) {
-                continue;
-            }
-            // a literal (??_C@, __real@) has no name of its own in the ledger
-            let Some(sym) = obj.symbol_at(r.symbol_index).filter(|s| s.constant().is_none()) else { continue };
-            let cname = crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name));
-            if let Some(a) = f(&cname) {
-                bound.insert(r.symbol_index, Some(a));
-                named.insert(r.symbol_index);
-            }
-        }
-        // a name's address held by a symbol only a site bound: the name wins
-        for s in clash(&bound) {
-            if !named.contains(&s) {
-                bound.insert(s, None);
-            }
+    for v in by.into_values().filter(|v| v.iter().map(|&s| name(s)).collect::<BTreeSet<_>>().len() > 1) {
+        for s in v.into_iter().filter(|s| !by_phi.contains(s)) {
+            bound.insert(s, None);
         }
     }
     let mut out = cd.to_vec();

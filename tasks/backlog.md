@@ -16,7 +16,6 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 1 | [ref-check-in-object-experiment](ref-check-in-object-experiment.md): one reference check through φ in the object experiment | M | |
 | 2 | [branch-targets-as-cut-points](branch-targets-as-cut-points.md): branch targets mapped through the alignment | M | |
 | 3 | [prover-stop-reason-names-effects](prover-stop-reason-names-effects.md): the prover names the real effect pair | S | |
 | 4 | [one-call-set-comparison](one-call-set-comparison.md): one call set, counts on both sides | S | |
@@ -27,7 +26,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 9 | [source-file-without-unit-finding](source-file-without-unit-finding.md): a source file without a unit is ill-formed | S-M | |
 | 10 | [ill-formed-is-error](ill-formed-is-error.md): ill-formed ids gate; C.name.alias covers every name | S-M | |
 | 11 | [data-extent-fallback](data-extent-fallback.md): no one-byte data owners | S-M | |
-| 12 | [containment-check](containment-check.md): references and views stay inside their object | M | 1 |
+| 12 | [containment-check](containment-check.md): references and views stay inside their object | M | |
 | 13 | [library-placement-checks-targets](library-placement-checks-targets.md): library placement checks member targets | M | |
 
 ## P1
@@ -40,7 +39,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 17 | [small-correctness-fixes](small-correctness-fixes.md): refs `comment=`, disasm args, garbled sentence, client.rs:1, tables in disasm | S | |
 | 18 | [not-found-explains](not-found-explains.md): "unknown name" prints the ill-formed or compile cause | S | |
 | 19 | [freshness-visible](freshness-visible.md): quiet builds say what they compiled; code hash on grade | S | |
-| 20 | [escalate-gates-on-verdict](escalate-gates-on-verdict.md): escalate refuses on concrete differences, not prose | S | 1, 2 |
+| 20 | [escalate-gates-on-verdict](escalate-gates-on-verdict.md): escalate refuses on concrete differences, not prose | S | 2 |
 | 21 | [trial-and-scoped-edit](trial-and-scoped-edit.md): `dcp fn NAME --replace FILE [--trial]` | M | 7 |
 | 22 | [readers-use-answer-table](readers-use-answer-table.md): one owner lookup for every reader; φ ranking | M | |
 | 23 | [b1-evidence-from-alignment](b1-evidence-from-alignment.md): B1 evidence from the alignment, two tail messages | M | |
@@ -52,8 +51,8 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 29 | [exceptions-must-discriminate](exceptions-must-discriminate.md): trial-build without each `@original` | M | 21 |
 | 30 | [m1-names-cause](m1-names-cause.md): M1 and the wrap name the changed headers and include chain | S-M | |
 | 31 | [frame-slot-annotation](frame-slot-annotation.md): entry-relative slots and arguments in disasm and asmdiff | M | |
-| 32 | [diffclass-meaning-classes](diffclass-meaning-classes.md): `const` and `addrval` as concrete differences | M | 1 |
-| 33 | [datum-experiment](datum-experiment.md): the datum object experiment, graded, seen by M1 | M | 1 |
+| 32 | [diffclass-meaning-classes](diffclass-meaning-classes.md): `const` and `addrval` as concrete differences | M | |
+| 33 | [datum-experiment](datum-experiment.md): the datum object experiment, graded, seen by M1 | M | |
 | 34 | [normalized-alignment](normalized-alignment.md): align on keys with registers and slots masked | L | 2 |
 | 35 | [gap-data-through-data-fix](gap-data-through-data-fix.md): `data fix` splits gap blocks and drops unused externs | M-L | 7 |
 | 36 | [headers-conflicts-scope](headers-conflicts-scope.md): duplicates anywhere; the trial drops superseded declarations | M | 6, 7 |
@@ -70,7 +69,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 42 | [signature-claims-from-call-sites](signature-claims-from-call-sites.md): derived signature claims from I's call sites | M-L | 14 |
 | 43 | [m7-names-callee](m7-names-callee.md): M7 names the callee and the declaration in scope | S-M | |
 | 44 | [function-order-check](function-order-check.md): function source order against address order | S | |
-| 45 | [pooled-literal-owner](pooled-literal-owner.md): pooled toolchain literals as a derived owner | M | 1 |
+| 45 | [pooled-literal-owner](pooled-literal-owner.md): pooled toolchain literals as a derived owner | M | |
 | 46 | [witness-unmapped-callee](witness-unmapped-callee.md): a call to an H function without φ is a concrete difference | S-M | |
 | 47 | [duplicate-definitions-and-stray-markers](duplicate-definitions-and-stray-markers.md): one name in two units; stray markers | S | |
 | 48 | [compile-diagnostics-as-findings](compile-diagnostics-as-findings.md): every compile diagnostic as a finding | M | 15 |

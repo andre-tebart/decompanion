@@ -147,6 +147,15 @@ and dcp diffclass / dcp escalate through the same map, so the proof is one: on t
 more functions shape, and dcp diffclass's verdict (`shape`, `shape (proved)`, `draft` with a `literal:` line)
 equals the grade on all 1816 draft and shape functions.
 
+G.grade 13 (refcheck.rs, the reference check of the object experiment): the binding no longer learns a symbol's
+address from the original's aligned site where φ knows it; every reference binds at φ's address, and only literals
+and symbols φ says nothing about (open, listed) learn from the sites. The check compares each aligned field with
+φ(our symbol), or a literal's bytes, for every function (byte, shape, prover, draft); a named reference that differs
+is draft unless the prover shows the effects the same. names::unique_addrs and equiv::literal_mismatches are gone.
+On the gildegold 05bbe07 clone: no byte function falls, 19 shape functions to draft (about 11 real: wrong
+`txt_Ptrs` indices, a wrong buffer, a reversed float sum, a double for the original's float, a wrong callee the
+learned binding had proved), 4 drafts to shape (proved with φ's addresses).
+
 The same functions were shape by the classes too: the listings compare relocated fields as X, and M9 / M10
 (constant_mismatches) run on byte matches only. G.grade 10 checks every shape function's literals at its
 aligned sites (equiv::literal_mismatches; a literal the original holds at any address its code names is not

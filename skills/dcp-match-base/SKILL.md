@@ -66,6 +66,10 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   `regs=...`). Views: `--changed` (only the differing lines, `--context N` around each), `--at 0xADDR` (a
   window, `--context N` each way), `--side ours|original` (one side alone, in its own order); `returns=2/5` in
   the head when the sides return from different numbers of places (merged or duplicated tails).
+  The reference check runs in every view: an equal line whose relocated field refers to another object, or to
+  other literal bytes, than the original's is `!` with both targets (`(M8: g_a 0x770ae0 | 0x770ae4)`), counted in
+  `differing=` and in the head's `refs_differ=`; `ref:` / `literal:` lines name each difference, `refs_open=` the
+  references whose symbol has no address yet (no address comment or declaration: not checked).
   `--symbols` prints the call targets, data and string literals by name instead of `X`; `!` marks an equal
   instruction that names another symbol or literal than the original's (a wrong callee, datum or string); `=`
   one that names the same address or literal by another name (an alias, `sym+off` for a bare address: no
@@ -124,16 +128,25 @@ missing or extra statement, a wrong type (signed / unsigned compare, `char` vs `
 wrong offset), a call with the wrong arguments, a loop of another form. Stop when only `fill` / `order` / `regs`
 / `slots` / `sib` / `fpu` / `frame` / `tail` hunks remain: that is shape (B2). Reconstructing missing statements is always base
 work, however long.
-- A function whose hunks are all explained is still draft when a string or floating constant it references is not
-  the original's (`B2 shape: M9 at +0x..: our literal ... is nowhere the original refers to (its bytes there:
-  ...)`, M10 for a constant): fix the text or the constant (a missing prefix, `1e-7` where the original has
-  `1e-7f`, a wrong value); the listings show both as `X`, `dcp asmdiff NAME --symbols` shows them.
+- Every reference is checked, whatever the hunks (the listings read both sides' addresses as `X`): each relocated
+  field of ours at an instruction that lines up must refer to where φ puts our object (its address comment or
+  declaration), a string or floating constant to the same bytes. A byte or shape function is draft when one does
+  not, and a draft lists them first:
+  `M8 at +0x2a: ours refers to g_a (0x770ae0), the original's field to 0x770ae4 (g_b)` (another object, element or
+  field: two loads swapped, a wrong index), `M9 at +0x..: our literal "a\\b" where the original's field refers to
+  "ab" at 0x...` (M10 for a constant: a missing prefix, `1e-7` where the original has `1e-7f`, a wrong value). A
+  byte match with such a difference is also an M8 / M9 / M10 error of `dcp check`: equal bytes at this layout only.
+  Named references that only cross (two independent stores in the other order) stay shape when the prover shows the
+  effects the same. Not checked, listed as `open:` (`dcp grade NAME`, asmdiff, diffclass): a symbol without an
+  address (give it its address comment), and `our literal ... where the original refers to the datum NAME`: either
+  the original loads that object (write it, not the literal: a buffer the code changes, a `const` of the unit's), or
+  NAME's address comment names a literal of the original (VC6's pooled `1.0f`, the `""` in .bss): decide which.
 - Shape can also come from a proof: `B2 shape: the same behaviour, proved (N block pairs); the hunks: ...` means
   the prover showed our code doing what the original does (the same calls, stores, branches and returns) although
   `code` hunks remain. Such a function is done for the experiment; only readability may be left. `dcp diffclass
   NAME` prints the prover's `proof:` line on any function (where it stops, when it does not show it); its
-  `verdict=` is the code grade `dcp build` gives (`shape (proved)` for a proof, `draft` with a `literal:` line for
-  a string or constant the original does not have).
+  `verdict=` is the code grade `dcp build` gives (`shape (proved)` for a proof, `draft` with a `ref:` / `literal:`
+  line for a reference or a string or constant the original does not have).
 - Note `dist` before an edit; after `dcp build`, `dcp grade NAME`: when the distance grew and the
   edit corrected no meaning, revert it (Edit back, or `git checkout -- <file>`). A meaning fix that costs
   distance is kept: say why in the commit message.
@@ -265,8 +278,9 @@ allocation really causes it (extra saved registers, spills you have read in the 
 `--size-explained "why"` (kept in the reason); a function whose behaviour the prover shows the same (`proof:
 equal` in `dcp diffclass NAME`) is not held to the size. It refuses too on a concrete difference: a call or a
 store to a global that one side has and the other never refers to (`differs:` in `dcp diffclass NAME`, e.g.
-`the original +0x67 calls 0x5de518 (_ftol); ours never refers to it`). That is a meaning difference (a missing
-call or assignment, a wrong type converted); fix it. Only when you have read that it is none (the call reached
+`the original +0x67 calls 0x5de518 (_ftol); ours never refers to it`), or a reference of ours the original's field
+does not make (`ref:` / `literal:` in `dcp diffclass NAME`). That is a meaning difference (a missing call or
+assignment, a wrong type converted, a wrong object, index or literal); fix it. Only when you have read that it is none (the call reached
 another way), say why: `--divergence-explained "why"` (kept in the reason). A function you raise to shape + readable that still carries a
 stale `@deep` / `@stuck` tag: `dcp escalate NAME --clear`, build again.
 

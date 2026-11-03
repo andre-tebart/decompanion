@@ -17,5 +17,6 @@ These are decisions for docs/mental-model.md that the triage surfaced. The code 
 3. **Signature claims.** signature-claims-from-call-sites would be the first concrete step on "types are questions"
    (§10). Decide its place in `store::Question` and its support level (derived).
 4. **The held-verdict cache** in grade.rs (`HELD`) needed a key fix in b49c0ea. It is the kind of special-invalidation
-   cache AGENTS.md accepts only as a last resort. Once ref-check-in-object-experiment and trials-use-grade-verdict
-   have unified the verdict, check whether it is still needed.
+   cache AGENTS.md accepts only as a last resort. Its key now also holds φ's addresses of every relocation's object
+   (the prover binds through φ); the reference check runs on every run, outside it. Once trials-use-grade-verdict
+   has unified the verdict, check whether it is still needed.

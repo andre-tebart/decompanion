@@ -12,9 +12,9 @@ rises.
 
 - `trial_grades` (headers.rs:1083-1090) grades byte by compare, otherwise by `FunctionCompare.verdict.shape`. It skips
   three things G.grade does:
-  - the prover;
-  - the literal check;
-  - the `names::unique_addrs` binding (4aae6cc).
+  - the prover (binding through φ, equiv::bind);
+  - the reference check (refcheck.rs: every relocated field against φ, literals by their bytes);
+  - the code grade from both (`grade::code_grade`).
 - A fall is measured against the current row's code (headers.rs:1214-1215), never against the baseline.
 - `data fix` (datafix.rs:747) has its own byte-only trial.
 

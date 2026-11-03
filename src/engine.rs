@@ -297,6 +297,12 @@ impl<'a> Engine<'a> {
             results.push(Result_ { rule: r.id, ran: true, ms: t0.elapsed().as_millis() as i64, facts: nf, conflicts: nc, ms_run, ms_rec,
                                    ..Default::default() });
         }
+        // a full refresh that recorded runs: the runs of rules the core no longer has stop being current (M8.reloc's
+        // findings, now G.grade's, would otherwise stay in the gate)
+        if ids.is_none() && results.iter().any(|r| r.ran) {
+            let live: Vec<&str> = crate::registry::RULES.iter().map(|r| r.id).collect();
+            crate::storedb::st_retire(&self.db, &live)?;
+        }
         Ok(results)
     }
 }

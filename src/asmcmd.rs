@@ -25,9 +25,12 @@ pub struct Reading {
     /// a concrete difference (equiv::witness: a call or a global store one side has and the other never refers
     /// to), said with the ledger's name of its address
     pub witness: Option<String>,
-    /// our literals and floating constants the original does not hold (grade::literal_lines: G.grade's check,
-    /// which keeps a shape function at draft)
-    pub literals: Vec<String>,
+    /// the reference check (refcheck.rs, G.grade's): each of our relocations at an aligned instruction against
+    /// φ, a literal by its bytes
+    pub refs: crate::refcheck::Check,
+    /// its concrete differences, one line each (`M8 at +0x1c: ...`), and the references φ says nothing about
+    pub ref_lines: Vec<String>,
+    pub open_lines: Vec<String>,
 }
 
 /// What one of our X fields refers to, for comparing it with the original's number: the addresses its symbol
@@ -429,36 +432,37 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
              Some(values))
         }
     };
+    // φ: the one --symbols built, else the ledger's names (names::NAME_RULES, as G.grade reads them)
+    let built_phi;
+    let phi: &crate::phi::Phi = match names {
+        Some(n) => &n.phi,
+        None => {
+            built_phi = crate::timing::phase("r.phi", || crate::names::ledger_phi(&db))?;
+            &built_phi
+        }
+    };
+    let sites = crate::refcheck::sites_aligned(&code, &img, a as u32, &fc.la, &fc.lb);
+    let refs_of = crate::refcheck::Refs::new(&obj, &code, phi);
+    let refs = crate::refcheck::check(&obj, &code, &img, &sites, &refs_of, phi);
+    let ref_lines = refs.lines(phi, a as u32, Some(&unit));
+    let open_lines = refs.open_lines(phi, a as u32);
     let mut witness = None;
     let proof = crate::timing::phase("r.proof", || -> Result<_, Error> { Ok({
-        let (mut ours, mut unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb, None);
-        // the ledger's names, built only when needed: relocations no aligned site binds, a witness to name
-        let built = std::cell::OnceCell::new();
-        let ledger = || names.or_else(|| {
-            built.get_or_init(|| p.target(None).ok().and_then(|t| crate::names::Names::build(&db, &p.main_uri(), &t.path).ok())).as_ref()
-        });
-        if unbound > 0 {
-            // through the ledger's names at one address, as G.grade binds them (names::unique_addrs)
-            if let Ok(at) = crate::names::ledger_addrs(&db) {
-                let f = |n: &str| at.get(n).copied();
-                (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &fc.la, &fc.lb, Some(&f));
-            }
-        }
+        let (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &sites, &refs_of, phi);
         if let Some(dir) = std::env::var_os("DCP_EQUIV_DUMP") {
             // the prover's inputs, for its corpus test (equiv::tests::corpus)
             let grade = row["grade"].as_str().or(row["outcome"].as_str()).unwrap_or("?");
             crate::equiv::dump(std::path::Path::new(&dir), &name, grade, a as u32, &ours, &data, unbound);
         }
         if let Some(w) = crate::equiv::witness(&ours, &data, a as u32, unbound) {
-            let name = ledger().and_then(|n| n.names_at(w.addr as i64).into_iter().next());
+            let name = phi.names_at(w.addr as i64).into_iter().next();
             let (who, other) = if w.ours { ("ours", "the original") } else { ("the original", "ours") };
             witness = Some(format!("{who} +{:#x} {} {:#x}{}; {other} never refers to it", w.at - a as u32, w.what, w.addr,
                                    name.map(|n| format!(" ({n})")).unwrap_or_default()));
         }
         (crate::timing::phase("r.prove", || crate::equiv::prove(&ours, &data, a as u32)), unbound)
     }) })?;
-    let literals = crate::grade::literal_lines(&obj, &code, &img, a as u32, &fc.la, &fc.lb, &data);
-    Ok(Ok(Reading { row, fc, named, values, proof, witness, literals }))
+    Ok(Ok(Reading { row, fc, named, values, proof, witness, refs, ref_lines, open_lines }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points
