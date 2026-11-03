@@ -819,7 +819,7 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     for (unit, (a, n)) in &not_run {
         let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };
-        out.finding("error", "M1", at, at + 1, format!("unit {unit} has no object (M.compile): {n} baseline function(s) have no experiment,                                                         their grades are not checked (baseline ledger/grades.tsv)"), "");
+        out.finding("error", "M1", at, at + 1, format!("unit {unit} has no object (M.compile): {n} baseline function(s) have no experiment, their grades are not checked (baseline ledger/grades.tsv)"), "");
     }
     // the debt (§8.6): every declared regression is listed, never a gate failure, while the target holds no more
     // than the gate's max_debt of them (when [gate] max_debt sets one)
