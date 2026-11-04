@@ -109,7 +109,7 @@ pub static CHECKS: &[(&str, Category)] = &[
     ("M.compile.stale", Category::Stale),
     ("M.lint.stale", Category::Stale),
     ("S.extent.overrun", Category::Stale),       // a declared overrun (an exception) whose instruction proves no extent
-    ("M2.stale", Category::Stale),               // a byte + readable function's @deep / @stuck tag (the build clears it)
+    ("M2.stale", Category::Stale),               // a byte + readable function's @deep / @stuck tag, a shape + readable one's @hard (the build clears it)
     // regressions
     ("M1", Category::Debt),
     ("M1.debt", Category::Debt),

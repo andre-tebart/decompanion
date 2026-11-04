@@ -160,10 +160,14 @@ pub enum Cmd {
         #[arg(value_name = "NAME|UNIT|ADDR")]
         what: Option<String>,
     },
-    /// the next functions of the base (default), deep or names queue
+    /// the next functions of the base (default), deep or names queue; each with its tier (easy or hard: which
+    /// worker it is for, `[queue]` of the configuration)
     Next {
         #[arg(long)]
         base: bool,
+        /// only the base items of this tier (a deep or names item is hard)
+        #[arg(long, value_parser = ["easy", "hard"])]
+        tier: Option<String>,
         #[arg(long)]
         deep: bool,
         #[arg(long)]
@@ -213,12 +217,16 @@ pub enum Cmd {
         #[arg(long)]
         all: bool,
     },
-    /// write `@deep why` into a function's address comment (--clear removes the tag)
+    /// write `@deep why` into a function's address comment (--clear removes the tag); with --hard, `@hard why`
     Escalate {
         name: String,
         why: Option<String>,
         #[arg(long)]
         clear: bool,
+        /// hand base work up to a stronger worker: the function stays in the base queue, in the hard tier (what was
+        /// tried and what is left, in the reason); shape + readable clears the tag
+        #[arg(long, conflicts_with_all = ["size_explained", "divergence_explained"])]
+        hard: bool,
         /// escalate although the instruction count differs from the original's beyond what allocation explains
         /// (max(12, 1/100 of the original's)): why allocation causes it (kept in the reason)
         #[arg(long, value_name = "WHY")]

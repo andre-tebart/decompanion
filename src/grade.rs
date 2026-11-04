@@ -456,7 +456,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             }
         }
         let has = |k: &str| v.get(k).is_some_and(|x| !x.is_null());
-        let tag = if has("stuck") { "stuck" } else if has("deep") { "deep" } else { "" };
+        let tag = if has("stuck") { "stuck" } else if has("deep") { "deep" } else if has("hard") { "hard" } else { "" };
         // the experiment: its outcome, what failed (B1..B3), the distance; the calls the consistency convention
         // (docs/mental-model.md §8.8, M7) finds without a declaration belong to it, not to readability
         let mut e = json!({"of": "function", "name": v["symbol"], "unit": v["unit"], "file": v["file"], "comment": comment,
@@ -470,10 +470,14 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if let Some(calls) = lint.as_ref().filter(|c| !c.is_empty()) {
             e["consistency"] = json!(calls);
         }
-        if has("deep") && has("stuck") {
-            out.finding("error", "M2", s.lo, s.lo + 1, format!("{name}: carries both @deep and @stuck"), &s.by);
+        let levels: Vec<&str> = ["deep", "stuck", "hard"].into_iter().filter(|k| has(k)).collect();
+        if levels.len() > 1 {
+            out.finding("error", "M2", s.lo, s.lo + 1, format!("{name}: carries more than one level tag (@{})", levels.join(", @")), &s.by);
         } else if !tag.is_empty() && r.code == "byte" && q == "readable" {
             out.finding("warn", "M2.stale", s.lo, s.lo + 1, format!("{name}: byte + readable, its @{tag} tag is stale (dcp build clears it)"), &s.by);
+        } else if tag == "hard" && r.code != "draft" && q == "readable" {
+            // @hard is base work for a stronger worker: shape + readable ends it
+            out.finding("warn", "M2.stale", s.lo, s.lo + 1, format!("{name}: {} + readable, its @hard tag is stale (dcp build clears it)", r.code), &s.by);
         }
         // a passing byte experiment reproduces; anything less rests on the address comment
         out.claim(s.lo, s.lo + 1, "experiment", e, if r.code == "byte" { REPRODUCED } else { DECLARED });

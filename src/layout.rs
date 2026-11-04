@@ -1155,8 +1155,8 @@ type Addrs = Vec<(Option<String>, i64)>;
 /// srcscan's items L.src reads: every function, datum, view, error of the scan.
 #[derive(Default, Clone)]
 pub(crate) struct ScanItems {
-    // file, line, comment line, end line, unit, name, static, addrs, deep, stuck, rough, what
-    pub(crate) fns: Vec<(String, i64, i64, i64, String, String, bool, Addrs, Option<String>, Option<String>, bool, String)>,
+    // file, line, comment line, end line, unit, name, static, addrs, (deep, stuck, hard), rough, what
+    pub(crate) fns: Vec<(String, i64, i64, i64, String, String, bool, Addrs, (Option<String>, Option<String>, Option<String>), bool, String)>,
     // file, line, unit, name, kind, static, addrs
     pub(crate) datas: Vec<(String, i64, String, String, String, bool, Addrs, i64)>, // .., the type's size (0: unknown)
     // file, line, unit, name, container, offset, alias, addrs
@@ -1205,7 +1205,7 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         }
     };
     let decl = |out: &mut Out, a: i64, kind: &str, v: serde_json::Value, by: &str, reason: &str| out.declared(a, a + 1, kind, v, by, reason);
-    for (file, line, cline, end, unit, name, stat, addrs, deep, stuck, rough, what) in &sc.fns {
+    for (file, line, cline, end, unit, name, stat, addrs, (deep, stuck, hard), rough, what) in &sc.fns {
         let by = format!("src:{file}:{cline}");
         unknown_prefix(out, addrs, &by);
         let Some(a) = address_for(addrs, cur, &default) else { continue };
@@ -1220,6 +1220,9 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         }
         if let Some(s) = stuck {
             v["stuck"] = serde_json::json!(s);
+        }
+        if let Some(h) = hard {
+            v["hard"] = serde_json::json!(h);
         }
         if *rough {
             v["rough"] = serde_json::json!(true);

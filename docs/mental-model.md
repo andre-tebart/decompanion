@@ -175,6 +175,21 @@ Layout comes first for a reason:
   exist in H.
 - **Totality shows the gaps.** Once φ covers every byte, what is unexplained is visible.
 
+**Queues and tiers.** Match work is handed out as queues over the grades: the base queue (the meaning: every
+function below shape + readable), the deep queue (allocation and scheduling: below byte, or tagged `@deep` /
+`@stuck`), the names queue. A queue item is no claim: it is a view of C that says who should edit H next. Each
+base item also has a **tier**, easy or hard, so that weaker workers take the easy work and stronger workers the
+rest:
+
+- **Easy** is a prediction from the grade alone: readability-only work on a function of modest size, or a code
+  draft of a short function that is already close to the original (`[queue] easy_max_bytes`, `easy_max_dist`,
+  `easy_read_max_bytes`).
+- **Hard** is everything else, and every function a worker *handed up* with `@hard why`: base work that this
+  worker could not finish. The tag corrects the prediction from the outcome. It keeps the function in the base
+  queue, and shape + readable ends it. Every deep item is hard.
+- The prediction is checked against outcomes: each wrap counts the functions raised and the hand-ups
+  (`@hard`, `@deep`, `@stuck`). The bounds are tuned from those counts, not guessed.
+
 ## 8. Examples
 
 ### 8.1 Names do not become claims
@@ -398,6 +413,7 @@ The source names the model's concepts, and the command line speaks them:
 | a reference the byte comparison cannot see (8.3) | `A1` (a cast the source scan sees), `M.ref.missing` (an absolute operand our bytes hold as a constant), `M8` / `M9` / `M10` (the reference check's findings on a byte match: our reference against the original's target through φ, a literal by its bytes), `D6` | `dcp findings --category contradiction` |
 | readability (§9) | `readability.rs` (Q1..Q6, Q8), `G.grade`'s `readability` row, apart from the experiment | `dcp grade`: `readability=` |
 | an exception | `exceptions.rs`: `@original why`, `@vc6 why` with their reasons; `0xADDR overrun -- why` in decl/text.dcl (an instruction of I has no line in H) | `dcp exceptions` |
+| a queue item and its tier (§7) | `queues::queue` (base / deep / names), `queues::tier` with `queues::Tiers` (`[queue]`); the `@hard` tag (`level` hard: still base work) | `dcp next [--deep\|--names] [--tier easy\|hard]` (`tier=` per item, `easy=` / `hard=` counts); `dcp escalate NAME --hard "why"`; the wrap's `hand-ups:` line |
 | debt, a witness | the accepted column of `ledger/grades.tsv` (`queues::Debt`: the grade before and now, the witness commit, why, what it waits for); `M1.debt` lists them and bounds them by `[gate] max_debt` | `dcp debt add NAME --to G --why W --waits-for X`, `dcp debt list` |
 
 What the code does not do yet:

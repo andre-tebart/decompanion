@@ -976,7 +976,7 @@ pub fn fn_command(p: &crate::project::Project, key: &str) -> Result<Out> {
         return Ok((vec![], Some(not_found(p, format!("no function {key} in the sources (target {})", p.target_name))?), 1));
     }
     let mut out = vec![];
-    for ((file, _, unit, name, addrs, ..), (.., comment_line, _, end_line, _)) in hits {
+    for ((file, _, unit, name, addrs, ..), (_, _, _, comment_line, _, end_line, ..)) in hits {
         let text = crate::fsmemo::read_text(&py_path(&format!("{root}/{file}"))).map_err(err)?;
         let lines: Vec<&str> = text.split('\n').collect();
         let last = if *end_line > 0 { *end_line as usize } else { lines.len() };

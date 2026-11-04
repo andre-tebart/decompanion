@@ -169,12 +169,12 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::matchcmd::grade_command(&p, what, &lint)?;
             Ok(io.report("grade", &l, e.as_deref(), c))
         }
-        Cmd::Next { base, deep, names, n, unit, shard } => {
+        Cmd::Next { base, tier, deep, names, n, unit, shard } => {
             let _ = base;
             let (p, _) = build_target(io, sel, None, true, false)?;
             current_lint(io, &p)?;
             let which = if deep { "deep" } else if names { "names" } else { "base" };
-            let (l, e, c) = crate::matchcmd::next_command(&p, which, shard, unit, n)?;
+            let (l, e, c) = crate::matchcmd::next_command(&p, which, tier.as_deref(), shard, unit, n)?;
             Ok(io.report("next", &l, e.as_deref(), c))
         }
         Cmd::Asmdiff { name, regs, all, symbols, plain, changed, at, context, side } => {
@@ -188,7 +188,8 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::matchcmd::diffclass_command(&p, &name, all)?;
             Ok(io.report("diffclass", &l, e.as_deref(), c))
         }
-        Cmd::Escalate { name, why, clear, size_explained, divergence_explained } => level(io, sel, "deep", &name, why, clear, size_explained, divergence_explained),
+        Cmd::Escalate { name, why, clear, hard, size_explained, divergence_explained } =>
+            level(io, sel, if hard { "hard" } else { "deep" }, &name, why, clear, size_explained, divergence_explained),
         Cmd::Stuck { name, why, clear } => level(io, sel, "stuck", &name, why, clear, None, None),
         Cmd::Promote { accept_falls } => promote(io, sel, accept_falls),
         Cmd::Debt { sub: DebtCmd::Add { name, to, readability, why, waits_for } } => {

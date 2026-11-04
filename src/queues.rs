@@ -3,10 +3,14 @@
 //!
 //! Queues (units are the separated game units of L.unit.extent, a unit's functions the grade facts of its
 //! functions):
-//!   base   every function below shape + readable without a level tag. Every code draft comes before any
-//!          readability-only work: first the draft functions, units with the fewest drafts first, then the
-//!          functions at shape / byte that are not readable, units with the fewest such functions first; address
-//!          order inside a unit.
+//!   base   every function below shape + readable without a @deep / @stuck tag (a @hard one is base work). Every
+//!          code draft comes before any readability-only work: first the draft functions, units with the fewest
+//!          drafts first, then the functions at shape / byte that are not readable, units with the fewest such
+//!          functions first; address order inside a unit.
+//! Tiers (docs/mental-model.md §7): every base item is easy or hard, for workers of different strength. Easy: a
+//! readability-only item of an original at most `[queue] easy_read_max_bytes`, or a code draft of an original at
+//! most `easy_max_bytes` whose instruction distance is at most `easy_max_dist`. Everything else is hard, and so
+//! is every function a worker handed up with @hard (`dcp escalate --hard`), and every deep item.
 //!   deep   every function with @deep or @stuck, plus every function below byte + readable of a unit whose base
 //!          work is done. Units by the total distance (differing instructions) of their items, smallest first;
 //!          inside a unit the closest function first; @stuck functions after everything else. An escalated function
@@ -114,12 +118,40 @@ fn q_only(r: &Row) -> bool {
     matches!(s(r, "level"), "deep" | "stuck") && s(r, "code") == "byte" && s(r, "readability") != "readable"
 }
 
+/// A @deep or @stuck tag: the function left the base queue (a @hard one did not).
 fn has_level(r: &Row) -> bool {
-    r.get("level").is_some_and(|v| !matches!(v, Value::Null) && v.as_str() != Some("") && v.as_bool() != Some(false))
+    r.get("level").is_some_and(|v| !matches!(v, Value::Null) && v.as_str() != Some("") && v.as_str() != Some("hard") && v.as_bool() != Some(false))
 }
 
 fn dist(r: &Row) -> i64 {
     r.get("dist").and_then(|d| d.get("ins")).and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+/// The bounds of the easy tier (`[queue]` of the configuration, module docstring).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tiers {
+    pub max_bytes: i64,
+    pub max_dist: i64,
+    pub read_max_bytes: i64,
+}
+
+impl Default for Tiers {
+    /// First guesses, to be tuned against the wraps' tier lines: a short function whose draft is already close, or
+    /// the naming and typing of a function of up to 1 KiB.
+    fn default() -> Tiers {
+        Tiers { max_bytes: 256, max_dist: 24, read_max_bytes: 1024 }
+    }
+}
+
+/// The tier of a queue item: "easy" or "hard" (module docstring).
+pub fn tier(r: &Row, t: &Tiers) -> &'static str {
+    let orig = r.get("dist").and_then(|d| d.get("orig")).and_then(|v| v.as_i64());
+    let easy = s(r, "level") != "hard" && match (s(r, "section"), orig) {
+        ("read", Some(o)) => o <= t.read_max_bytes,
+        ("draft", Some(o)) => o <= t.max_bytes && r.get("dist").and_then(|d| d.get("ins")).and_then(|v| v.as_i64()).is_none_or(|d| d <= t.max_dist),
+        _ => false,
+    };
+    if easy { "easy" } else { "hard" }
 }
 
 /// The shard of a unit among n: rendezvous hashing of its start address.
@@ -487,6 +519,7 @@ mod tests {
             (lo, hi, "unit", json!({"tu": tu, "status": status, "start_support": "declared", "end_support": "declared", "start_by": "x", "end_by": "y"}), crate::store::DECLARED)
         }).collect();
         let funcs = [(0x1000, "a1", "a", "draft", "draft", "", 9), (0x1100, "a2", "a", "draft", "readable", "", 3), (0x1200, "a3", "a", "shape", "draft", "", 2),
+                     (0x1300, "a4", "a", "draft", "draft", "hard", 5),
                      (0x2000, "b1", "b", "draft", "draft", "", 50), (0x2100, "b2", "b", "byte", "readable", "", 0),
                      (0x3000, "c1", "c", "shape", "readable", "", 7), (0x3100, "c2", "c", "byte", "draft", "deep", 0),
                      (0x3200, "c3", "c", "draft", "draft", "stuck", 4), (0x4000, "o1", "open", "draft", "draft", "", 1)];
@@ -502,8 +535,9 @@ mod tests {
             queue(&k.db, which, shard, None).unwrap().iter().map(|r| (s(r, "name").to_string(), s(r, "section").to_string())).collect()
         };
         let pairs = |v: &[(&str, &str)]| -> Vec<(String, String)> { v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
-        // every code draft first (unit b has 1 draft, a has 2), then the readability work; the open unit is left out
-        assert_eq!(names("base", None), pairs(&[("b1", "draft"), ("a1", "draft"), ("a2", "draft"), ("a3", "read")]));
+        // every code draft first (unit b has 1 draft, a has 3: a @hard one stays base work), then the readability
+        // work; the open unit is left out
+        assert_eq!(names("base", None), pairs(&[("b1", "draft"), ("a1", "draft"), ("a2", "draft"), ("a4", "draft"), ("a3", "read")]));
         // c has no base item left: its byte work (c1) first, the Q-only c2 waits, the stuck c3 last
         assert_eq!(names("deep", None), pairs(&[("c1", "deep"), ("c3", "stuck")]));
         assert_eq!(names("names", None).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["c2"]);
@@ -512,6 +546,26 @@ mod tests {
         let mut all: Vec<String> = names("base", None).into_iter().map(|x| x.0).collect();
         all.sort();
         assert_eq!(got, all);
+    }
+
+    #[test]
+    fn tiers() {
+        let t = Tiers { max_bytes: 100, max_dist: 10, read_max_bytes: 400 };
+        let row = |section: &str, level: &str, orig: Option<i64>, ins: Option<i64>| -> Row {
+            serde_json::json!({"section": section, "level": level, "dist": {"orig": orig, "ins": ins}}).as_object().unwrap().clone()
+        };
+        // a short draft already close is easy; too long, too far or of unknown size is hard
+        assert_eq!(tier(&row("draft", "", Some(100), Some(10)), &t), "easy");
+        assert_eq!(tier(&row("draft", "", Some(101), Some(0)), &t), "hard");
+        assert_eq!(tier(&row("draft", "", Some(60), Some(11)), &t), "hard");
+        assert_eq!(tier(&row("draft", "", None, None), &t), "hard");
+        // a draft without an object (no distance) is judged by its size alone
+        assert_eq!(tier(&row("draft", "", Some(60), None), &t), "easy");
+        // readability-only work up to its own bound
+        assert_eq!(tier(&row("read", "", Some(400), Some(90)), &t), "easy");
+        assert_eq!(tier(&row("read", "", Some(401), Some(0)), &t), "hard");
+        // a function handed up with @hard is hard whatever its size
+        assert_eq!(tier(&row("draft", "hard", Some(10), Some(0)), &t), "hard");
     }
 
     #[test]
@@ -609,12 +663,12 @@ t	0x10001010	g	u	shape	readable
 // ------------------------------------------------------------------------------------------------ the level ladder
 
 /// Write `@<level> reason` into the address comment of a function (the comment that starts on `line` of `rel`),
-/// replacing a @deep or @stuck tag already there; no level removes either tag. What was done.
+/// replacing a @deep, @stuck or @hard tag already there; no level removes it. What was done.
 pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str>, line: i64) -> Result<String, String> {
     use std::sync::LazyLock;
     // the tag and its reason run to the end of the comment (written last, below): a reason may hold `*`, `/`, `(...)`
     // and line breaks
-    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:\A|\s)\s*@(deep|stuck)\b").unwrap());
+    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:\A|\s)\s*@(deep|stuck|hard)\b").unwrap());
     let path = crate::project::py_path(&format!("{root}/{rel}"));
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?.replace("\r\n", "\n");
     let src = crate::readability::Source::new(&text);
@@ -626,12 +680,12 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
     };
     let raw: String = tx[*cs..*ce].iter().collect();
     let tag = TAG.captures(body);
-    let old = tag.as_ref().map(|c| if &c[1] == "deep" { "@deep" } else { "@stuck" });
+    let old = tag.as_ref().map(|c| format!("@{}", &c[1]));
     let cut = tag.as_ref().and_then(|c| c.get(0)).map(|m| m.start()).unwrap_or(body.len());
     let stripped = body[..cut].trim_end_matches(crate::srcscan::py_space).to_string();
     let (new_body, action) = match level {
         None => match old {
-            None => return Ok("no @deep or @stuck tag".into()),
+            None => return Ok("no @deep, @stuck or @hard tag".into()),
             Some(o) => (stripped, format!("{o} removed")),
         },
         Some(l) => {
@@ -691,16 +745,18 @@ fn comment_line(r: &Row) -> i64 {
     r.get("comment").and_then(|v| v.as_i64()).filter(|&c| c != 0).unwrap_or(1)
 }
 
-/// Remove the level tag of every function that reached byte + readable; one line per change.
+/// Remove the level tag of every function that reached byte + readable, and the @hard tag of every function that
+/// reached shape + readable; one line per change.
 pub fn grades_auto_clear(p: &crate::project::Project) -> Result<Vec<String>> {
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];
     for r in function_grades(&p.store_path())?.iter() {
         let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let level = r.get("level").is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
-        if level && s("code") == "byte" && s("readability") == "readable" {
+        let done = if s("level") == "hard" { s("code") != "draft" } else { s("code") == "byte" };
+        if level && done && s("readability") == "readable" {
             let action = set_level(&root, &s("file"), None, None, comment_line(&r)).map_err(Error::value)?;
-            out.push(format!("auto-clear {}: {} is byte + readable, {action}", s("file"), s("name")));
+            out.push(format!("auto-clear {}: {} is {} + readable, {action}", s("file"), s("name"), s("code")));
         }
     }
     Ok(out)
@@ -741,6 +797,10 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
         let why = why.unwrap_or_default();
         if why.trim().is_empty() {
             return Ok((vec![], Some("a reason is required".into()), 1));
+        }
+        if level == "hard" && s("code") != "draft" && s("readability") == "readable" {
+            return Ok((vec![], Some(format!("refused: {name} is {} + readable, no base work is left to hand up (dcp escalate {name} \"why\" for the deep queue)",
+                                            s("code"))), 1));
         }
         if level == "deep" && only_missing_statements(&why) {
             return Ok((vec![], Some("refused: the reason names only missing statements; reconstruction is base work (say which leads were tried and what \
@@ -832,7 +892,14 @@ mod level_tests {
             let f = &part.functions[0];
             assert_eq!((f.1 .1.as_deref(), f.1 .0.as_deref(), f.0 .6.as_str(), f.1 .3), (Some("every lead tried"), None, "does it", 3));
         }
-        assert_eq!(set_level(&root, "src/u.c", None, None, 3).unwrap(), "@stuck removed");
+        // @hard: handed to a stronger worker, read back as the function's hard reason
+        assert_eq!(set_level(&root, "src/u.c", Some("hard"), Some("the switch is still a chain of ifs"), 3).unwrap(), "@stuck -> @hard");
+        let text = crate::edit::read(&format!("{root}/src/u.c"));
+        if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &text) {
+            let f = &part.functions[0];
+            assert_eq!((f.1 .7.as_deref(), f.1 .1.as_deref(), f.0 .6.as_str()), (Some("the switch is still a chain of ifs"), None, "does it"));
+        }
+        assert_eq!(set_level(&root, "src/u.c", None, None, 3).unwrap(), "@hard removed");
         assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n");
         // a reason with `*`, `/`, `(...)` and a line break, on a comment of several lines: escalate, replace, clear
         // gives the comment back exactly (a match-base report: clear stopped at the first `*` and left the rest)

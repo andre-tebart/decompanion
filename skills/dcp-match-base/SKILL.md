@@ -1,6 +1,7 @@
 ---
 name: dcp-match-base
-description: Run one match-base session of a decompanion project - take functions from the base queue (dcp next) one at a time and raise each to shape + readable by reading the original and fixing the C's meaning, or hand it to the deep queue with a reason (dcp escalate). A session is 8 functions raised or escalated. Use when the user says "match-base", "/match-base", "dcp-match-base", "base pass" or "raise the base grades".
+description: Run one match-base session of a decompanion project - take functions from the base queue (dcp next) one at a time and raise each to shape + readable by reading the original and fixing the C's meaning, or hand it to the deep queue with a reason (dcp escalate), or up to a stronger worker (dcp escalate --hard). Option tier=easy|hard|all picks the items by tier. A session is 8 functions raised or escalated. Use when the user says "match-base", "/match-base", "dcp-match-base", "base pass" or "raise the base grades".
+argument-hint: "[tier=all|easy|hard]"
 ---
 
 # Match-base session: 8 functions, the main checkout
@@ -10,6 +11,11 @@ has only register / stack-slot / scheduling differences left (or it is byte-iden
 the C without the disassembly. You get there by reading the original and fixing what the C *means*. Byte
 identity is welcome when it comes, but allocation, scheduling and generated variant rounds are deep work (the
 deep queue, `dcp next --deep`), not this session's.
+
+Tier: `$ARGUMENTS` (`tier=easy`, `tier=hard` or `tier=all`; nothing given is `all`). Every base item is
+`tier=easy` or `tier=hard` (`dcp next` prints it). With `tier=easy` or `tier=hard`, every `dcp next` in this
+session is `dcp next --tier easy` / `--tier hard`, and you take only that tier's items. With `tier=all`, you take
+the queue as it comes.
 
 Hard rules
 - Every tool is `dcp ...` from the project root (`--target NAME` for a target other than the first).
@@ -46,15 +52,16 @@ Hard rules
    revert), commit, start again; an `obligation=toolchain.*` / `obligation=libs.archives` line is a human
    decision: stop and hand it to the user. A match-base session is counted in functions (section 4), not
    minutes.
-2. `dcp next` - the base queue, first item first. Read the lead comment of its unit's `src/<unit>.c` (its
+2. `dcp next` (with `--tier T` for a tier option) - the base queue, first item first. Read the lead comment of its unit's `src/<unit>.c` (its
    `Open:` lines).
 
 ## 2. Work loop: one function at a time, always the first item
 
 `dcp next` -> read the function against the original -> fix the meaning -> `dcp build` ->
-`dcp grade NAME` -> commit -> next. Never skip an item: one you cannot raise is escalated (section 3).
+`dcp grade NAME` -> commit -> next. Never skip an item: one you cannot raise is escalated (section 3) or
+handed up (section 3a).
 
-The item line: `next=0xADDR name=... unit=... section=draft|read experiment=... readability=... gates=B3,Q2,...
+The item line: `next=0xADDR name=... unit=... section=draft|read tier=easy|hard experiment=... readability=... gates=B3,Q2,...
 dist='N ins / M bytes, size ours vs original'`. `section=draft`: the experiment is below shape; `section=read`: the
 experiment is shape or byte, only readability is missing. `gates=` names the failing rules.
 
@@ -309,24 +316,35 @@ assignment, a wrong type converted, a wrong object, index or literal); fix it. O
 another way), say why: `--divergence-explained "why"` (kept in the reason). A function you raise to shape + readable that still carries a
 stale `@deep` / `@stuck` tag: `dcp escalate NAME --clear`, build again.
 
+## 3a. Handing up to a stronger worker (`@hard`)
+In an easy-tier session (`tier=easy`), take an item you cannot raise to shape + readable as base work that is too
+hard for this session, not as a deep item: run `dcp escalate NAME --hard "why"`, build, commit
+`<unit>: <name> -> hard (match-base)`. The function stays in the base queue, in the hard tier, for a stronger
+worker. That worker starts from your reason, so make it precise: what you read and fixed, which leads you tried,
+and the exact remaining hunks (`asmdiff` lines). Hand up only after a real attempt: read the whole function
+against the original, and fix what you can before handing it up. When the deep queue fits (only allocation or
+scheduling is left), escalate to deep instead (section 3). A hard-tier or `tier=all` session hands up nothing:
+it raises the item or escalates it to deep. Shape + readable clears a stale `@hard` tag at the next build.
+
 ## 4. When to stop
-A session is **8 functions** raised to shape + readable (or byte + readable) or escalated, then the wrap-up.
+A session is **8 functions** raised to shape + readable (or byte + readable), escalated or handed up, then the
+wrap-up. When the session's tier is empty (`nothing in the easy tier of the base queue`), wrap up early.
 Never stop early: a hard function is escalated, not a reason to end; a long queue is not a reason to end;
-"it feels long" is no clock. One raise or one escalation is one commit: count the commits and stop at 8
-(escalations count). A reconstruction of a big function (~1000 instructions, missing statements) may take most
+"it feels long" is no clock. One raise, escalation or hand-up is one commit: count the commits and stop at 8
+(escalations and hand-ups count). A reconstruction of a big function (~1000 instructions, missing statements) may take most
 of a session; that is expected base work, not a reason to escalate it.
 
 ## 5. Wrap up
 1. Keep the function in progress if it builds and nothing got worse (but by an accepted fall, 2.6), else
    revert; `dcp build` exits 0.
 2. `dcp session wrap`: builds, links, checks every target, promotes the grade baseline and prints the
-   computed report (errors, byte and readable counts before -> after, `grades changed` per function, renames,
-   the next item). It must say `gate: ok`. It promotes nothing while src/, include/ or decl/ hold uncommitted
+   computed report (errors, byte and readable counts before -> after, `grades changed` per function with its
+   `hand-ups:` line, renames, the next item). It must say `gate: ok`. It promotes nothing while src/, include/ or decl/ hold uncommitted
    changes (`promote=refused  dirty=N`: a grade needs its commit): commit the last function first.
 3. Rewrite the lead comment of every unit you touched to its current state (a few lines): what the unit is,
    then one `Open:` line per unit-level question still open (head conflicts, data owners). Drop what is
    settled; never add a dated or "this session" line. Escalated functions carry their reason in their tag,
    what a function does goes into its address comment, types and names into the code.
 4. Commit: `git add -A && git commit -m "session: match-base wrap (<units>)"` (the baseline).
-5. Final message: the report's first lines (byte / readable before -> after), each function raised or
-   escalated with its new grade, the renames, the next `dcp next` item. Stop.
+5. Final message: the session's tier, the report's first lines (byte / readable before -> after), the
+   `hand-ups:` line, each function raised, escalated or handed up with its new grade, the renames, the next `dcp next` item. Stop.

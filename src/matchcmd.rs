@@ -154,7 +154,7 @@ pub fn grade_command(p: &crate::project::Project, what: Option<String>, lint: &s
 }
 
 /// `dcp next`: the next functions of a queue (base, deep, names), of a shard (`--shard k/N`, else .dcp/shard).
-pub fn next_command(p: &crate::project::Project, which: &str, shard: Option<String>, unit: Option<String>, n: usize) -> Result<Out> {
+pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>, shard: Option<String>, unit: Option<String>, n: usize) -> Result<Out> {
     let db = opened(p)?;
     let text = match shard.filter(|x| !x.is_empty()) {
         Some(x) => Some(x),
@@ -164,18 +164,24 @@ pub fn next_command(p: &crate::project::Project, which: &str, shard: Option<Stri
         Ok(x) => x.flatten(),
         Err(e) => return Ok((vec![], Some(e), 2)),
     };
-    let items = queues::queue(&db, which, shard, unit.as_deref())?;
+    let all = queues::queue(&db, which, shard, unit.as_deref())?;
+    let t = p.tiers();
+    let tiered: Vec<(&Row, &str)> = all.iter().map(|r| (r, if which == "base" { queues::tier(r, &t) } else { "hard" })).collect();
+    let easy = tiered.iter().filter(|x| x.1 == "easy").count() as i64;
+    let items: Vec<(&Row, &str)> = tiered.into_iter().filter(|x| tier.is_none_or(|w| w == x.1)).collect();
     let sh = shard.map(|(k, n)| format!("{k}/{n}"));
-    let mut out = vec![record(&[("target", s(p.target_name.clone())), ("queue", s(which)), ("items", Tok::I(items.len() as i64)), ("shard", os(sh.clone())),
-                                ("unit", os(unit))])];
-    for r in items.iter().take(n) {
+    let mut out = vec![record(&[("target", s(p.target_name.clone())), ("queue", s(which)), ("tier", os(tier.map(str::to_string))),
+                                ("items", Tok::I(items.len() as i64)), ("easy", Tok::I(easy)), ("hard", Tok::I(all.len() as i64 - easy)),
+                                ("shard", os(sh.clone())), ("unit", os(unit))])];
+    for (r, tr) in items.iter().take(n) {
         let g = gates(r).join(",");
         out.push(record(&[("next", Tok::I(int(r, "addr"))), ("name", vt(r.get("name"))), ("unit", vt(r.get("queue_unit"))), ("section", vt(r.get("section"))),
-                          ("experiment", vt(r.get("code"))), ("readability", vt(r.get("readability"))), ("gates", os(Some(g).filter(|g| !g.is_empty()))),
-                          ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
+                          ("tier", s(*tr)), ("experiment", vt(r.get("code"))), ("readability", vt(r.get("readability"))),
+                          ("gates", os(Some(g).filter(|g| !g.is_empty()))), ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
     }
     if items.is_empty() {
-        out.push(format!("nothing in the {which} queue{}", sh.map(|x| format!(" of shard {x}")).unwrap_or_default()));
+        let of = tier.map(|w| format!("{w} tier of the ")).unwrap_or_default();
+        out.push(format!("nothing in the {of}{which} queue{}", sh.map(|x| format!(" of shard {x}")).unwrap_or_default()));
     }
     Ok((out, None, 0))
 }

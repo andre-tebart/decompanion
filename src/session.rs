@@ -314,6 +314,32 @@ fn grade_changes(root: &str, base: &str, target: &str, rows: &[Map<String, Value
     out
 }
 
+/// The wrap's hand-up line of a target's grade changes (the tier bounds are tuned against it, docs/mental-model.md
+/// §7): the functions raised to shape + readable, and those that gained a @hard / @deep / @stuck tag.
+fn handups(ch: &[(i64, String, String, Option<String>, Option<String>)]) -> String {
+    // a grade text: "code+readability[ level]"
+    let parse = |g: &Option<String>| -> (String, String, String) {
+        let g = g.clone().unwrap_or_default();
+        let (grade, level) = g.split_once(' ').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or((g.clone(), String::new()));
+        let (code, rd) = grade.split_once('+').map(|(a, b)| (a.to_string(), b.to_string())).unwrap_or_default();
+        (code, rd, level)
+    };
+    let up = |c: &str, r: &str| !c.is_empty() && c != "draft" && r == "readable";
+    let (mut raised, mut gained) = (0, std::collections::BTreeMap::<String, usize>::new());
+    for (_, _, _, b, a) in ch {
+        let (bc, br, bl) = parse(b);
+        let (ac, ar, al) = parse(a);
+        if a.is_some() && !up(&bc, &br) && up(&ac, &ar) {
+            raised += 1;
+        }
+        if !al.is_empty() && al != bl {
+            *gained.entry(al).or_default() += 1;
+        }
+    }
+    let n = |k: &str| gained.get(k).copied().unwrap_or(0);
+    format!("hand-ups: raised to shape + readable {raised}, @hard {}, @deep {}, @stuck {}", n("hard"), n("deep"), n("stuck"))
+}
+
 /// `dcp session wrap`'s report (written to build/session/report.md too): `targets` are (name, project, link ok or
 /// None when skipped, the undrafted externals), `states` the gate's states now, `promoted` what promote printed.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -364,6 +390,7 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
         let ch: Vec<_> = grade_changes(root, base, name, &rows).into_iter().filter(|x| !drafted_at.contains(&x.0) || x.3.is_some()).collect();
         graded_units.extend(ch.iter().map(|x| x.1.clone()));
         out.push(format!("grades changed ({name}): {}", ch.len()));
+        out.push(format!("  {}", handups(&ch)));
         for (a, unit, fname, b, aft) in ch {
             out.push(format!("  {}  {unit:<16} {fname}: {} -> {}", fmt_addr(a), b.unwrap_or_else(|| "new".into()), aft.unwrap_or_else(|| "gone".into())));
         }
@@ -455,6 +482,11 @@ mod tests {
             (0x401000, "u".to_string(), "f".to_string(), some("draft+draft"), some("shape+readable")),
             (0x401080, "u".to_string(), "h".to_string(), some("draft+draft"), None), // gone since the base
             (0x4010c0, "u".to_string(), "k".to_string(), None, some("draft+draft deep"))]); // new, escalated
+        let ch = [(1, String::new(), "f".to_string(), some("draft+draft"), some("shape+readable")),
+                  (2, String::new(), "g".to_string(), some("draft+draft"), some("draft+draft hard")),
+                  (3, String::new(), "h".to_string(), some("draft+draft hard"), some("shape+readable")),
+                  (4, String::new(), "k".to_string(), some("shape+draft"), some("shape+draft deep"))];
+        assert_eq!(handups(&ch), "hand-ups: raised to shape + readable 2, @hard 1, @deep 1, @stuck 0");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

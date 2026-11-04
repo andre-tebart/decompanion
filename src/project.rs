@@ -186,6 +186,16 @@ impl Project {
         self.cfg.get("gate").and_then(|g| g.get("max_debt")).and_then(|v| v.as_integer()).unwrap_or(-1)
     }
 
+    /// The easy tier's bounds (crate::queues, docs/mental-model.md §7): `[queue] easy_max_bytes`, `easy_max_dist`,
+    /// `easy_read_max_bytes`, each the default when not set.
+    pub fn tiers(&self) -> crate::queues::Tiers {
+        let d = crate::queues::Tiers::default();
+        let q = self.cfg.get("queue");
+        let int = |k: &str, or: i64| q.and_then(|g| g.get(k)).and_then(|v| v.as_integer()).unwrap_or(or);
+        crate::queues::Tiers { max_bytes: int("easy_max_bytes", d.max_bytes), max_dist: int("easy_max_dist", d.max_dist),
+                               read_max_bytes: int("easy_read_max_bytes", d.read_max_bytes) }
+    }
+
     /// [toolchain] plugin, else the only registered toolchain plugin.
     pub fn toolchain_key(&self) -> String {
         let k = self.tc_str("plugin");

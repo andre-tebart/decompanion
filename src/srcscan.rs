@@ -36,10 +36,11 @@ static ONE_ADDR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:([A-Za-z][A-
 pub(crate) static UNLINKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\A\s*unlinked\b\s*,?\s*(.*)").unwrap());
 // a level tag's reason runs to the next tag or the comment's end, over line breaks (dcp escalate wraps a long one
 // onto lines of its own: queues.rs wrap_tag); its white space runs read as one space
-static DEEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@deep\b\s*(.*?)\s*(?:\*/|@stuck\b|@rough\b|\z)").unwrap());
-static STUCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@stuck\b\s*(.*?)\s*(?:\*/|@deep\b|@rough\b|\z)").unwrap());
+static DEEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@deep\b\s*(.*?)\s*(?:\*/|@stuck\b|@hard\b|@rough\b|\z)").unwrap());
+static STUCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@stuck\b\s*(.*?)\s*(?:\*/|@deep\b|@hard\b|@rough\b|\z)").unwrap());
+static HARD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@hard\b\s*(.*?)\s*(?:\*/|@deep\b|@stuck\b|@rough\b|\z)").unwrap());
 static ROUGH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@rough\b").unwrap());
-static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@(?:deep|stuck|rough)\b").unwrap());
+static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@(?:deep|stuck|hard|rough)\b").unwrap());
 static DESCRIBED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\A\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)").unwrap());
 static MORE_ADDRS: LazyLock<Regex> =
@@ -100,7 +101,7 @@ fn literal_value(s: &str) -> Option<u64> {
     }
 }
 
-/// text before the first @deep / @stuck / @rough
+/// text before the first @deep / @stuck / @hard / @rough
 fn before_tags(s: &str) -> &str {
     TAGS.find(s).map(|m| &s[..m.start()]).unwrap_or(s)
 }
@@ -294,7 +295,7 @@ impl<'a> Src<'a> {
     }
 }
 
-// (file, line, unit, name, addrs, unlinked, what), (deep, stuck, rough, comment line, static, end line, targets)
+// (file, line, unit, name, addrs, unlinked, what), (deep, stuck, rough, comment line, static, end line, targets, hard)
 /// The function definitions with a body of a file's model: name -> start line, column, end line, column (the last
 /// one with a body; G.grade's readability).
 pub(crate) type Defs = HashMap<String, (i64, i64, Option<i64>, Option<i64>)>;
@@ -383,7 +384,7 @@ pub(crate) fn defs(r: &ScanRef) -> Result<HashMap<String, Defs>> {
     Ok(pieces(&r.pieces)?.iter().map(|p| (p.rel.clone(), p.defs.clone())).collect())
 }
 
-pub(crate) type FnRow = ((String, i64, String, String, Addrs, bool, String), (Option<String>, Option<String>, bool, i64, bool, i64, Vec<String>));
+pub(crate) type FnRow = ((String, i64, String, String, Addrs, bool, String), (Option<String>, Option<String>, bool, i64, bool, i64, Vec<String>, Option<String>));
 pub(crate) type DataRow = (String, i64, String, String, String, Addrs, bool, bool, i64); // .., static, the type's size (0: unknown)
 pub(crate) type ViewRow = (String, i64, String, String, String, u64, Addrs, bool);
 pub(crate) type ErrRow = (String, i64, String, String);
@@ -477,9 +478,10 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         let what = py_strip(&SPACES.replace_all(before_tags(what), " ")).to_string();
         let deep = DEEP.captures(body).map(|c| SPACES.replace_all(py_strip(&c[1]), " ").into_owned());
         let stuck = STUCK.captures(body).map(|c| SPACES.replace_all(py_strip(&c[1]), " ").into_owned());
+        let hard = HARD.captures(body).map(|c| SPACES.replace_all(py_strip(&c[1]), " ").into_owned());
         let unlinked = um.is_some() && addrs.is_empty();
         functions.push(((rel.to_string(), line, unit.clone(), fname, addrs, unlinked, what),
-                        (deep, stuck, ROUGH.is_match(body), sf.line_of(sf.comments[k].0), fstatic, end.map(|e| e.0).unwrap_or(0), ts)));
+                        (deep, stuck, ROUGH.is_match(body), sf.line_of(sf.comments[k].0), fstatic, end.map(|e| e.0).unwrap_or(0), ts, hard)));
     }
     // the addresses the file's comments describe (Q6): a unit file's only by its definitions' address comments (a
     // declaration in a unit file is a copy), any other file's by every comment (frontend::context keeps a header's
@@ -626,7 +628,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         ptrcasts: ptrcasts.iter().map(|x| (x.0.clone(), x.1, x.2.clone(), format!("{:x}", x.3))).collect(),
         data: data.iter().map(|d| (d.0.clone(), d.1, d.4.clone(), d.3.clone(), ad(&d.5))).collect(),
         items: crate::layout::ScanItems {
-            fns: functions.iter().map(|(a, b)| (a.0.clone(), a.1, b.3, b.5, a.2.clone(), a.3.clone(), b.4, ad(&a.4), b.0.clone(), b.1.clone(), b.2, a.6.clone())).collect(),
+            fns: functions.iter().map(|(a, b)| (a.0.clone(), a.1, b.3, b.5, a.2.clone(), a.3.clone(), b.4, ad(&a.4), (b.0.clone(), b.1.clone(), b.7.clone()), b.2, a.6.clone())).collect(),
             datas: data.iter().map(|d| (d.0.clone(), d.1, d.2.clone(), d.3.clone(), d.4.clone(), d.7, ad(&d.5), d.8)).collect(),
             views: vrows.iter().map(|v| (v.0.clone(), v.1, v.2.clone(), v.3.clone(), v.4.clone(), v.5 as i64, v.7, ad(&v.6))).collect(),
             errors: errors.iter().map(|e| (e.2.clone(), e.0.clone(), e.1, e.3.clone())).collect(),

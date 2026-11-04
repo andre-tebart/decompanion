@@ -390,7 +390,7 @@ fn address_for(addrs: &[(Option<String>, u64)], target: &str, default: &str) -> 
 /// does not hold it (its `#if` on the DCP_TARGET_<name> macros).
 fn guards(functions: &[&srcscan::FnRow], targets: &[String]) -> Vec<srcscan::ErrRow> {
     let mut out = vec![];
-    for ((file, line, _, name, addrs, unlinked, _), (.., ts)) in functions.iter().map(|f| (&f.0, &f.1)) {
+    for ((file, line, _, name, addrs, unlinked, _), (_, _, _, _, _, _, ts, _)) in functions.iter().map(|f| (&f.0, &f.1)) {
         if *unlinked || ts.is_empty() || addrs.iter().any(|(t, _)| t.as_ref().is_some_and(|t| !targets.contains(t))) {
             continue;
         }

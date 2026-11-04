@@ -285,7 +285,7 @@ impl Ctx<'_> {
     fn spans(&self) -> Spans {
         let default = self.p.targets[0].name.clone();
         let mut by: HashMap<String, Vec<(i64, i64, i64)>> = HashMap::new();
-        for ((file, _, _, _, addrs, _, _), (_, _, _, comment_line, _, end_line, _)) in self.scan.functions() {
+        for ((file, _, _, _, addrs, _, _), (_, _, _, comment_line, _, end_line, ..)) in self.scan.functions() {
             if let Some((_, a)) = addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == self.p.target_name) {
                 by.entry(file.clone()).or_default().push((*comment_line, *end_line, *a as i64));
             }
