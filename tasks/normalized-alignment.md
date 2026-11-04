@@ -40,7 +40,7 @@
 
 ## Model
 
-§1: φ inside a function is the alignment.
+§4: the alignment is part of the experiment, one per function; every reader of a pair reads it.
 
 ## Reports
 

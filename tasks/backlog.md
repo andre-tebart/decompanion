@@ -23,6 +23,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
+| 61 | [model-code-mismatches](model-code-mismatches.md): every place the code departs from the model, with the decisions it needs | L | |
 | 14 | [model-decisions](model-decisions.md): M7's status, `@original` evidence, signature claims, the held-verdict cache | S | |
 | 15 | [output-convention](output-convention.md): verdict, failures and named changes by default; full state behind `-v` | M-L | |
 | 16 | [show-computed-findings](show-computed-findings.md): build, grade and rename show the findings they computed | S | 15 (the delta) |

@@ -36,7 +36,7 @@ places where they diverge:
 - M8 fails where grade says byte.
 - "calls differ: the original none" appears where the original makes the call.
 
-**Root fix:** one in-function correspondence (φ inside the function is the alignment, §1) and one verdict function.
+**Root fix:** one alignment per function (§4: part of the experiment) and one verdict function.
 Everything else reads them: grade, asmdiff, diffclass, escalate, the trials and the M8 findings view. The positional
 compare stays only as the byte pass/fail criterion.
 

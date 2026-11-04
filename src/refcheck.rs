@@ -1,7 +1,7 @@
 //! The reference check of the object experiment (docs/mental-model.md §4, §8.4): a relocated field's value is
 //! masked by the compare, so the experiment checks instead that the field refers to the same thing on both sides.
 //! For each relocation of ours whose instruction lines up with the original's (a byte match: every one, at its
-//! offset; else the instruction alignment's pairs, the one φ inside the function), the address the original's
+//! offset; else the instruction alignment's pairs, the function's one alignment, §4), the address the original's
 //! field refers to is compared with φ(our symbol):
 //!
 //! - equal: the reference is reproduced;
