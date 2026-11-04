@@ -262,8 +262,20 @@ impl Bench {
         let walk: HashMap<i64, i64> = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |f| {
             f.s("skind") == Some("func") && matches!(&*f.rule, "S.codewalk" | "L.src.extent")
         }))?.iter().map(|f| (f.lo, f.hi)).collect();
+        // the next start as M.match reads it (rules::compiled_functions): the starts of the rules M.match needs, not
+        // an analyzer's (gildegold: Ghidra's start inside ord_HandleMessageRecord cut its compare short, byte read
+        // as shape)
+        let needed: Vec<String> = crate::engine::resolve_needs(crate::engine::rule("M.match")?)?.iter().map(|s| s.to_string()).collect();
+        let mut starts: Vec<i64> = crate::with_db(&db, |c| {
+            let mut v = store::los(c, &db, "start", &needed, |_| true)?;
+            v.extend(store::los(c, &db, "symbol", &needed, |f| matches!(f.s("skind"), Some("func" | "thunk")) && f.support > store::OPEN)?);
+            Ok(v)
+        })?;
+        starts.extend(img.sections.iter().filter(|x| x.holds_code()).map(|x| x.end() as i64));
+        starts.sort_unstable();
+        starts.dedup();
         Ok(Bench { phi: crate::names::ledger_phi(&db)?, fills: fill_forms.iter().cloned().collect(), forms: crate::compare::fill_order(&fill_forms),
-                   align: tc.function_alignment() as i64, starts: crate::asmcmd::all_starts(&db, &img)?, relocs, walk, img })
+                   align: tc.function_alignment() as i64, starts, relocs, walk, img })
     }
 
     /// One function's code grade as G.grade gives it.
