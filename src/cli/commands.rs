@@ -163,6 +163,14 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             io.say(&lines.join("\n"));
             Ok(status)
         }
+        Cmd::Headers(HeadersArgs { sub: HeadersCmd::Probe(HeadersProbeArgs { units, dry_run }) }) => {
+            let (p, _) = build_target(io, sel, None, true, false)?;
+            let (lines, status) = crate::tiebreak::probe_command(&p, units, dry_run)?;
+            if !dry_run {
+                refresh(io, &p, false, false)?;
+            }
+            Ok(io.report("headers probe", &lines, None, status))
+        }
         Cmd::Grade(GradeArgs { what }) => {
             let (p, _) = build_target(io, sel, None, true, false)?;
             let lint = current_lint(io, &p)?;
@@ -524,6 +532,13 @@ fn build(io: &mut Io, sel: &Sel, all_targets: bool, force: bool, units: bool, va
         let (lines, bad) = crate::clicmd::build_summary(&p, (rep.units, rep.compiled, rep.removed, rep.ms), units)?;
         io.report("build", &lines, None, 0);
         failed = failed || bad;
+        // the units of functions that fell without a probe record: probed for tie-breaks (tiebreak.rs), so that M1
+        // tells a declaration-set move from a fall
+        let probed = crate::tiebreak::probe_falls(&p)?;
+        io.report("build", &probed.iter().map(|l| format!("  {l}")).collect::<Vec<_>>(), None, 0);
+        if !probed.is_empty() {
+            refresh(io, &p, false, false)?;
+        }
         let cleared = crate::queues::grades_auto_clear(&p)?;
         let cl: Vec<String> = cleared.iter().map(|l| format!("  {l}")).collect();
         io.report("build", &cl, None, 0);

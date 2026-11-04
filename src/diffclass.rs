@@ -169,7 +169,9 @@ fn classify(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: us
     if multiset_eq(&a, &b) {
         return ("order".into(), "same instructions, other order".into());
     }
-    shape::explain(&a, &b, at).or_else(|| tail(la, lb, at, i1, i2, j1, j2)).unwrap_or(("code".into(), String::new()))
+    shape::explain(&a, &b, at).or_else(|| tail(la, lb, at, i1, i2, j1, j2))
+        .or_else(|| shape::dataflow(&shapes(&la[i1.saturating_sub(16)..i1]), &a, &shapes(&lb[j1.saturating_sub(16)..j1]), &b, at))
+        .unwrap_or(("code".into(), String::new()))
 }
 
 /// The block a jump goes to: from line t to its first ret or jmp (at most 16 lines), None when it runs on.
@@ -409,7 +411,7 @@ struct Piece {
     inside: Inside,
 }
 
-/// The cut correspondence of one function's two listings (§1: inside a function φ is the alignment). A cut is a
+/// The cut correspondence of one function's two listings (§4: the alignment, one per function). A cut is a
 /// place between instructions, cut k before line k (k = len: the end); a jump target is a cut. The equal runs and
 /// the hunks of the alignment are pieces in a row on both sides; a cut corresponds:
 /// - at a piece's boundary, always (an empty side's one cut with both of the other side's);

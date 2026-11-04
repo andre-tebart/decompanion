@@ -179,7 +179,8 @@ pub enum Role {
     /// φ: an object of H (or of the toolchain's libraries, or a name the image itself holds) at an address of I
     /// (`name`): phi.rs
     Phi,
-    /// an experiment's result over one object (`experiment`: G.grade, the outcome byte / shape / draft)
+    /// an experiment's result over one object (`experiment`: G.grade, the outcome byte / shape / draft; `tiebreak`:
+    /// M.tiebreak, the declaration-set probe of a function, tiebreak.rs)
     Experiment,
     /// H against its own standard (`readability`: G.grade), no claim about I (§9)
     Readability,
@@ -192,7 +193,7 @@ pub enum Role {
 pub fn role(kind: &str) -> Role {
     match kind {
         "name" => Role::Phi,
-        "experiment" => Role::Experiment,
+        "experiment" | "tiebreak" => Role::Experiment,
         "readability" => Role::Readability,
         "build" => Role::Build,
         "evidence" => Role::Aux,

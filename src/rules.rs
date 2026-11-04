@@ -1155,6 +1155,7 @@ pub(crate) fn dispatch(ctx: &Ctx) -> Result<Out> {
         "L13.data.code" => crate::layout::l13_data_code(ctx, db, &mut out),
         "L.unit.extent" => crate::layout::l_unit_extent(ctx, db, &mut out),
         "M1.baseline" => crate::layout::m1_baseline(ctx, db, &mut out),
+        "M.tiebreak" => crate::tiebreak::m_tiebreak(ctx, db, &mut out),
         "G.grade" => crate::grade::g_grade(ctx, db, &mut out),
         "L1.src.start" => crate::layout::l1_src_start(ctx, db, &mut out),
         "L.src" => crate::layout::l_src(ctx, db, &mut out),

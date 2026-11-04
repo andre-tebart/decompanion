@@ -196,6 +196,9 @@ pub enum HeadersCmd {
     /// what including headers into a unit's head region collides with (a trial parse; nothing is written without
     /// --write)
     Conflicts(HeadersConflictsArgs),
+    /// which functions VC6's tie-breaks move by the declaration set alone: each unit compiled with unused typedefs
+    /// before its text and graded; recorded in ledger/tiebreak.tsv (every unit when none is named)
+    Probe(HeadersProbeArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -890,6 +893,16 @@ pub struct HeadersConflictsArgs {
     /// first statement using a name the headers declare when that comes first)
     #[arg(long, value_name = "LINE")]
     pub at: Option<i64>,
+}
+
+/// `HeadersCmd::Probe`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct HeadersProbeArgs {
+    #[arg(value_name = "UNIT")]
+    pub units: Vec<String>,
+    /// probe and report, write nothing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 /// `TargetCmd::List`'s arguments (its own type: clap builds and reads them in a function of their own).

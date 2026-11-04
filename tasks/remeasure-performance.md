@@ -25,7 +25,9 @@ Measure with dcp-bench and DCP_TIMING on gildegold:
 - the 19.7 s single-unit build after `escalate`;
 - `headers conflicts --trial` on f3gm (reported at 1-2 minutes; it now grades every function with the prover and
   the reference check, as G.grade does, and nothing is held between runs); likewise `data fix --write`'s trial;
-- the first-use cost of `dump` and `why`.
+- the first-use cost of `dump` and `why`;
+- the tie-break probe (tiebreak.rs: five compiles per unit, in parallel): `dcp headers probe` over every unit, and
+  the build after a header change that makes functions fall (it probes up to four fallen units without a record).
 
 File a task for each result that misses the budget.
 

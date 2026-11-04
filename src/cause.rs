@@ -20,6 +20,7 @@ static INCLUDE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"(
 /// uncommitted (differs from HEAD: in a worker's loop almost always the trigger).
 pub struct Changes {
     pub since: String,
+    rev: String, // the full commit (git show reads the base's texts)
     files: HashMap<String, bool>,
 }
 
@@ -69,7 +70,7 @@ impl Changes {
         };
         let mut files: HashMap<String, bool> = diff.into_iter().map(|f| { let u = dirty.contains(&f); (f, u) }).collect();
         files.extend(untracked.into_iter().map(|f| (f, true)));
-        Some(Changes { since: short, files })
+        Some(Changes { since: short, rev: revs.first().map(|s| s.to_string()).unwrap_or_else(|| rev.to_string()), files })
     }
 
     /// The changes since the commit that last wrote the baseline ledger/grades.tsv; since HEAD when the baseline
@@ -82,7 +83,12 @@ impl Changes {
 
     #[cfg(test)]
     fn of(since: &str, files: &[(&str, bool)]) -> Changes {
-        Changes { since: since.into(), files: files.iter().map(|(f, u)| (norm(f), *u)).collect() }
+        Changes { since: since.into(), rev: since.into(), files: files.iter().map(|(f, u)| (norm(f), *u)).collect() }
+    }
+
+    /// A file's text at the base (project-relative), None when the base has no such file or outside git.
+    pub fn text_at(&self, root: &str, file: &str) -> Option<String> {
+        git(root, &["show", &format!("{}:{}", self.rev, file.replace('\\', "/"))]).map(|t| t.replace("\r\n", "\n"))
     }
 
     /// What changed of the inputs of the unit compiled from `file` (project-relative).

@@ -716,6 +716,200 @@ pub fn explain(xa: &[Shape], xb: &[Shape], context: &[Shape]) -> Option<(String,
     None
 }
 
+// ------------------------------------------------------------------------------------------------ dataflow
+
+/// A value of the dataflow comparison: a register's value where the window starts, a number, a memory read at an
+/// address, a part of a value (`Low`: the low 16 bits / the low byte / the high byte, gpr_part's numbering), or a
+/// value whose part was overwritten (`Set`: the old value, the part, the part's new value).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Val {
+    In(u8),
+    N(Num),
+    Load(u8, Box<Val>),
+    Addr(Reg, Vec<Val>, Num),
+    Scaled(Box<Val>, u8),
+    Low(Box<Val>, u8),
+    Set(Box<Val>, u8, Box<Val>),
+}
+
+impl Val {
+    fn renamed(&self, m: &[u8; 8]) -> Val {
+        match self {
+            Val::In(g) => Val::In(m[*g as usize]),
+            Val::N(n) => Val::N(*n),
+            Val::Load(s, a) => Val::Load(*s, Box::new(a.renamed(m))),
+            Val::Addr(seg, terms, d) => {
+                let mut t: Vec<Val> = terms.iter().map(|x| x.renamed(m)).collect();
+                t.sort();
+                Val::Addr(*seg, t, *d)
+            }
+            Val::Scaled(v, s) => Val::Scaled(Box::new(v.renamed(m)), *s),
+            Val::Low(v, p) => Val::Low(Box::new(v.renamed(m)), *p),
+            Val::Set(v, p, x) => Val::Set(Box::new(v.renamed(m)), *p, Box::new(x.renamed(m))),
+        }
+    }
+
+    fn inputs(&self, out: &mut BTreeSet<u8>) {
+        match self {
+            Val::In(g) => {
+                out.insert(*g);
+            }
+            Val::N(_) => {}
+            Val::Load(_, a) | Val::Scaled(a, _) | Val::Low(a, _) => a.inputs(out),
+            Val::Addr(_, t, _) => t.iter().for_each(|x| x.inputs(out)),
+            Val::Set(v, _, x) => {
+                v.inputs(out);
+                x.inputs(out);
+            }
+        }
+    }
+}
+
+/// What a run of `mov`, `cmp` and `test` lines does: the stores (address, size, value), the flag tests (mnemonic,
+/// operand values) in order, and the register file at its end. None for any other instruction.
+#[allow(clippy::type_complexity)]
+fn dataflow_of(lines: &[Shape]) -> Option<(Vec<(Val, u8, Val)>, Vec<(&'static str, Vec<Val>)>, [Val; 8])> {
+    let mut regs: [Val; 8] = std::array::from_fn(|g| Val::In(g as u8));
+    let (mut stores, mut tests) = (vec![], vec![]);
+    let addr = |regs: &[Val; 8], seg: Reg, base: Reg, index: Reg, scale: u8, disp: Num| -> Option<Val> {
+        let mut terms = vec![];
+        for (r, s) in [(base, 1u8), (index, scale)] {
+            if r == Reg::None {
+                continue;
+            }
+            let (g, part) = dis::gpr_part(r)?;
+            if part != 0 {
+                return None;
+            }
+            let v = regs[g as usize].clone();
+            terms.push(if s > 1 { Val::Scaled(Box::new(v), s) } else { v });
+        }
+        terms.sort();
+        Some(Val::Addr(seg, terms, disp))
+    };
+    let read = |regs: &[Val; 8], o: &Opnd| -> Option<Val> {
+        Some(match *o {
+            Opnd::Imm(n) => Val::N(n),
+            Opnd::Reg(r) => {
+                let (g, part) = dis::gpr_part(r)?;
+                let v = &regs[g as usize];
+                match v {
+                    _ if part == 0 => v.clone(),
+                    Val::Set(_, p, x) if *p == part => (**x).clone(),
+                    _ => Val::Low(Box::new(v.clone()), part),
+                }
+            }
+            Opnd::Mem { seg, size, base, index, scale, disp } => Val::Load(size, Box::new(addr(regs, seg, base, index, scale, disp)?)),
+        })
+    };
+    for s in lines {
+        if s.rep != 0 {
+            return None;
+        }
+        match (s.mn, s.ops.as_slice()) {
+            ("mov", [dst, src]) => {
+                let v = read(&regs, src)?;
+                match *dst {
+                    Opnd::Reg(r) => {
+                        let (g, part) = dis::gpr_part(r)?;
+                        let old = &regs[g as usize];
+                        regs[g as usize] = if part == 0 { v } else { Val::Set(Box::new(old.clone()), part, Box::new(v)) };
+                    }
+                    Opnd::Mem { seg, size, base, index, scale, disp } => stores.push((addr(&regs, seg, base, index, scale, disp)?, size, v)),
+                    Opnd::Imm(_) => return None,
+                }
+            }
+            ("cmp" | "test", [a, b]) => tests.push((s.mn, vec![read(&regs, a)?, read(&regs, b)?])),
+            _ => return None,
+        }
+    }
+    Some((stores, tests, regs))
+}
+
+/// The dataflow class of a hunk the renamings and orders do not explain: both sides `mov`, `cmp` and `test` lines
+/// only, with the run of such lines that precedes each (at most 16, as many on both sides) as their common start,
+/// that store the same values to the same places, test the same values in the same order and end with the same
+/// values in the registers, under one bijective renaming of the registers where the run starts. The registers
+/// that hold each value, and the order of the loads and stores, are the allocation's: gildegold
+/// ai_TutorialInitChapter3 stores three float constants through [esi+0x64] with the constants loaded into
+/// permuted registers in another order. A load reads a value of the address alone (the two sides read the same
+/// addresses; which store it follows is the order's).
+pub fn dataflow(pre_a: &[Shape], xa: &[Shape], pre_b: &[Shape], xb: &[Shape], context: &[Shape]) -> Option<(String, String)> {
+    let eligible = |s: &Shape| matches!(s.mn, "mov" | "cmp" | "test") && s.rep == 0;
+    if xa.is_empty() || xb.is_empty() || !xa.iter().chain(xb).all(eligible) || xa.len() + xb.len() > 64 {
+        return None;
+    }
+    let run = |pre: &[Shape]| pre.iter().rev().take(16).take_while(|s| eligible(s)).count();
+    let k = run(pre_a).min(run(pre_b));
+    let window = |pre: &[Shape], x: &[Shape]| -> Vec<Shape> { pre[pre.len() - k..].iter().chain(x).cloned().collect() };
+    let (sa, ta, ra) = dataflow_of(&window(pre_a, xa))?;
+    let (sb, tb, rb) = dataflow_of(&window(pre_b, xb))?;
+    if sa.len() != sb.len() || ta.len() != tb.len() || (sa.is_empty() && ta.is_empty()) {
+        return None;
+    }
+    let allowed = allowed_for(context);
+    let mut ins = BTreeSet::new();
+    for (a, _, v) in &sa {
+        a.inputs(&mut ins);
+        v.inputs(&mut ins);
+    }
+    for (_, vs) in &ta {
+        vs.iter().for_each(|v| v.inputs(&mut ins));
+    }
+    ra.iter().for_each(|v| v.inputs(&mut ins));
+    // the renamed registers: the inputs a renaming may exchange; every other register keeps its name
+    let free: Vec<u8> = ins.iter().copied().filter(|g| allowed & 1 << g != 0).collect();
+    if free.len() > 7 {
+        return None;
+    }
+    let sorted = |mut v: Vec<(Val, u8, Val)>| {
+        v.sort();
+        v
+    };
+    let sb = sorted(sb);
+    let mut regs_b: Vec<&Val> = rb.iter().collect();
+    regs_b.sort();
+    let fits = |m: &[u8; 8]| -> bool {
+        sorted(sa.iter().map(|(a, s, v)| (a.renamed(m), *s, v.renamed(m))).collect()) == sb
+            && ta.iter().zip(&tb).all(|(x, y)| x.0 == y.0 && x.1.iter().map(|v| v.renamed(m)).collect::<Vec<_>>() == y.1)
+            && {
+                // the register file at the end, as a multiset: which register holds a value is the allocation's
+                let mut r: Vec<Val> = ra.iter().map(|v| v.renamed(m)).collect();
+                r.sort();
+                r.iter().zip(&regs_b).all(|(x, y)| x == *y) && ra[ESP as usize].renamed(m) == rb[ESP as usize]
+            }
+    };
+    // a bijection of the free inputs onto the allowed registers, the identity first
+    let targets: Vec<u8> = (0..8u8).filter(|g| allowed & 1 << g != 0).collect();
+    let mut m: [u8; 8] = std::array::from_fn(|g| g as u8);
+    fn search(k: usize, free: &[u8], targets: &[u8], used: &mut u8, m: &mut [u8; 8], fits: &dyn Fn(&[u8; 8]) -> bool) -> bool {
+        if k == free.len() {
+            return fits(m);
+        }
+        let g = free[k];
+        for &t in std::iter::once(&g).chain(targets.iter().filter(|&&t| t != g)) {
+            if *used & 1 << t != 0 {
+                continue;
+            }
+            *used |= 1 << t;
+            m[g as usize] = t;
+            if search(k + 1, free, targets, used, m, fits) {
+                return true;
+            }
+            *used &= !(1 << t);
+        }
+        m[g as usize] = g;
+        false
+    }
+    let mut used = 0u8;
+    if !search(0, &free, &targets, &mut used, &mut m, &fits) {
+        return None;
+    }
+    let renamed: Vec<String> = free.iter().filter(|&&g| m[g as usize] != g).map(|&g| format!("{}->{}", name(g), name(m[g as usize]))).collect();
+    let how = if renamed.is_empty() { String::new() } else { format!(", where it starts {}", renamed.join(" ")) };
+    Some(("order".into(), format!("the same stores of the same values, other registers and order (dataflow{how})")))
+}
+
 // ------------------------------------------------------------------------------------------------ frames
 
 fn frame_size(lines: &[Shape]) -> Option<i64> {
@@ -1030,6 +1224,34 @@ mod tests {
         // a register and its part are not one name (gildegold ai_Unk5a91c0: `mov esi, eax` against `mov si, ax`
         // passed as a renaming while the text mapped si to esi)
         assert!(!one_renaming(&parse_all(&["mov esi, eax", "ret"]), &parse_all(&["mov si, ax", "ret"])));
+    }
+
+    #[test]
+    fn same_stores_through_permuted_registers() {
+        // gildegold ai_TutorialInitChapter3: three float constants stored through [esi+0x64], the constants loaded
+        // into permuted registers in another order (ecx and edi exchanged where the hunk starts)
+        let pre = parse_all(&["mov ebx, 0x428e0000", "mov eax, dword ptr [esi + 0x64]"]);
+        let ours = parse_all(&["mov dword ptr [eax + 0x78], edi", "mov edx, dword ptr [esi + 0x64]", "mov edi, 0x447f0000", "mov dword ptr [edx + 0x7c], ecx",
+                               "mov eax, dword ptr [esi + 0x64]", "mov ecx, 0x442f0000", "mov edx, 0x44670000", "mov dword ptr [eax + 0x80], ebx",
+                               "mov ax, word ptr [X]", "cmp ax, 0x320"]);
+        let orig = parse_all(&["mov dword ptr [eax + 0x78], ecx", "mov ecx, dword ptr [esi + 0x64]", "mov dword ptr [ecx + 0x7c], edi",
+                               "mov edx, dword ptr [esi + 0x64]", "mov ecx, 0x442f0000", "mov edi, 0x447f0000", "mov dword ptr [edx + 0x80], ebx",
+                               "mov ax, word ptr [X]", "cmp ax, 0x320", "mov edx, 0x44670000"]);
+        assert_eq!(explain(&ours, &orig, &ours), None);
+        let (c, n) = dataflow(&pre, &ours, &pre, &orig, &ours).unwrap();
+        assert!(c == "order" && n.contains("ecx->edi edi->ecx"), "{c} {n}");
+        // another value stored is no allocation
+        let mut other = orig.clone();
+        other[5] = parse("mov edi, 0x447e0000");
+        assert_eq!(dataflow(&pre, &ours, &pre, &other, &ours), None);
+        // nor another register left holding a value the code after reads
+        let mut left = orig.clone();
+        left[9] = parse("mov edx, 0x44670001");
+        assert_eq!(dataflow(&pre, &ours, &pre, &left, &ours), None);
+        // an instruction that computes is outside the class
+        let mut add = orig.clone();
+        add[4] = parse("add ecx, 0x442f0000");
+        assert_eq!(dataflow(&pre, &ours, &pre, &add, &ours), None);
     }
 
     #[test]

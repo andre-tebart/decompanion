@@ -179,7 +179,17 @@ pub fn queue(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str
 }
 
 fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&str>) -> Result<Vec<Row>> {
-    let rows = function_grades(db)?;
+    // the code grade of the work is the source-proven one (tiebreak.rs): what a tie-break sensitive function's text
+    // reaches under some declaration set; the gap to its built grade is its unit's (G.tiebreak), no queue item
+    let rows: Vec<Row> = function_grades(db)?.iter().map(|r| match r.get("proven").and_then(|v| v.as_str()) {
+        Some(p) => {
+            let mut r = r.clone();
+            let built = r.insert("code".into(), Value::from(p));
+            r.insert("built".into(), built.unwrap_or(Value::Null));
+            r
+        }
+        None => r.clone(),
+    }).collect();
     let mut by_unit: Vec<(String, Vec<&Row>)> = vec![];
     // a function not run (its unit has no object) is no work item: M.compile is
     for r in rows.iter().filter(|r| s(r, "code") != crate::grade::NOT_RUN) {
@@ -217,7 +227,10 @@ fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&st
     for (tu, lo, _) in &units {
         let rs = of(tu).unwrap();
         let base_left = rs.iter().any(|r| below_shape(r) && !has_level(r));
-        let all: Vec<&Row> = rs.iter().copied().filter(|r| matches!(s(r, "level"), "deep" | "stuck") || (!base_left && below_byte(r))).collect();
+        // a proven byte + readable function is done whatever its tag says (the tag stays: tiebreak.rs)
+        let proven_done = |r: &Row| r.contains_key("built") && !below_byte(r);
+        let all: Vec<&Row> = rs.iter().copied().filter(|r| (matches!(s(r, "level"), "deep" | "stuck") && !proven_done(r)) || (!base_left && below_byte(r)))
+            .collect();
         let byte_items: Vec<&Row> = all.iter().copied().filter(|r| !q_only(r)).collect();
         let mut items: Vec<&Row> = if which == "names" {
             all.iter().copied().filter(|r| q_only(r)).collect()
@@ -452,15 +465,31 @@ pub fn not_run(db: &str) -> Result<Vec<(String, usize)>> {
     Ok(out)
 }
 
-/// The falls of a target's function grades against a baseline text.
-pub fn regressions(target: &str, db: &str, text: &str) -> Result<Vec<String>> {
+/// The falls of a target's function grades against a baseline text. A code fall the declaration set made (a
+/// tie-break sensitive function whose own text is the same since the baseline's commit: tiebreak.rs) is none when
+/// `root` is given (the baseline is the checkout's ledger/grades.tsv).
+pub fn regressions(root: Option<&str>, target: &str, db: &str, text: &str) -> Result<Vec<String>> {
     let mut base: Vec<(i64, Entry)> = parse_baseline(text).into_iter().filter(|x| x.0 .0 == target).map(|x| (x.0 .1, x.1)).collect();
     base.sort_by_key(|x| x.0);
     let now: std::collections::HashMap<i64, Row> = function_grades(db)?.iter().cloned().map(|r| (r["addr"].as_i64().unwrap_or(0), r)).collect();
     let mut out = vec![];
+    let mut changes: Option<Option<crate::cause::Changes>> = None;
+    let mut files: Option<HashMap<String, crate::compile::TuKeys>> = None;
     for (a, r) in base {
-        let n = now.get(&a).map(|x| (s(x, "code"), s(x, "readability")));
+        let row = now.get(&a);
+        let n = row.map(|x| (s(x, "code"), s(x, "readability")));
         for what in falls(&r, n) {
+            let tb = row.and_then(|x| x.get("tiebreak")).filter(|t| t.get("sensitive").and_then(|v| v.as_bool()) == Some(true));
+            if let (Some(tb), true, Some(root)) = (tb, what.starts_with("code "), root) {
+                let ch = changes.get_or_insert_with(|| crate::cause::Changes::since_baseline(root));
+                let fs = files.get_or_insert_with(|| crate::compile::tu_keys(db).unwrap_or_default());
+                let unit = row.map(|x| s(x, "unit")).unwrap_or("");
+                if let (Some(ch), Some(k)) = (ch.as_ref(), fs.get(unit)) {
+                    if crate::tiebreak::declaration_move(root, ch, tb, &k.amalg).is_some() {
+                        continue;
+                    }
+                }
+            }
             out.push(format!("{a:#010x} {}: {what}", r.name));
         }
     }
@@ -491,7 +520,7 @@ pub fn grades_accept(text: &str, target: &str, addr: i64, code: &str, readabilit
 }
 
 pub fn grades_regressions(target: &str, db: &str, text: &str) -> Result<Vec<String>> {
-    regressions(target, db, text)
+    regressions(None, target, db, text)
 }
 
 /// The short hash of HEAD ('-' outside a git checkout).
@@ -746,7 +775,7 @@ fn comment_line(r: &Row) -> i64 {
 }
 
 /// Remove the level tag of every function that reached byte + readable, and the @hard tag of every function that
-/// reached shape + readable; one line per change.
+/// reached shape + readable; one line per change. A tie-break sensitive function keeps its tag (tiebreak.rs).
 pub fn grades_auto_clear(p: &crate::project::Project) -> Result<Vec<String>> {
     let root = p.root.to_string_lossy().into_owned();
     let mut out = vec![];
@@ -754,7 +783,9 @@ pub fn grades_auto_clear(p: &crate::project::Project) -> Result<Vec<String>> {
         let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
         let level = r.get("level").is_some_and(|v| !v.is_null() && v.as_str() != Some(""));
         let done = if s("level") == "hard" { s("code") != "draft" } else { s("code") == "byte" };
-        if level && done && s("readability") == "readable" {
+        // a byte reached through the declaration set proves nothing about the source (tiebreak.rs): its tag stays
+        let tiebreak = r.get("tiebreak").and_then(|t| t.get("sensitive")).and_then(|v| v.as_bool()) == Some(true);
+        if level && done && s("readability") == "readable" && !tiebreak {
             let action = set_level(&root, &s("file"), None, None, comment_line(&r)).map_err(Error::value)?;
             out.push(format!("auto-clear {}: {} is {} + readable, {action}", s("file"), s("name"), s("code")));
         }

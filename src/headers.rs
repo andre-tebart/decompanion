@@ -1104,51 +1104,14 @@ fn resolve_header(root: &str, h: &str) -> Option<String> {
 fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Result<Vec<TrialGrade>, String>> {
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    let tools = crate::vc6::Tools::of(p);
-    if !tools.available() {
-        return Ok(Err("the toolchain is not available".into()));
-    }
-    let flags = crate::plan::compile_flags(p, &unit.target, &unit.unit).map_err(err)?;
-    let (src, obj) = (format!("build/trial/{}-headers.c", unit.unit), format!("build/obj/trial/{}-headers.obj", unit.unit));
-    let full = |r: &str| py_path(&format!("{root}/{r}"));
-    for r in [&src, &obj] {
-        if let Some(d) = Path::new(&full(r)).parent() {
-            let _ = std::fs::create_dir_all(d);
-        }
-    }
-    let _ = std::fs::remove_file(full(&obj));
-    std::fs::write(full(&src), text).map_err(err)?;
-    let res = tools.compile(&src, &obj, &flags, &["include".to_string()], &root).map_err(err)?;
-    let data = std::fs::read(full(&obj));
-    for r in [&src, &obj] {
-        let _ = std::fs::remove_file(full(r));
-    }
-    if !res.ok {
-        return Ok(Err(res.diags.iter().find(|d| d.severity == "error").map(|d| format!("{}({}): {} {}", d.file, d.line, d.code, d.message))
-            .unwrap_or_else(|| "does not compile".into())));
-    }
-    let o = crate::coff::Obj::parse(&data.map_err(err)?).map_err(err)?;
-    let index = o.function_index();
-    let img = crate::image(&p.target(None).map_err(err)?.path)?;
-    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| err("no toolchain"))?;
-    let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
-    let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
-    let forms = crate::compare::fill_order(&fill_forms);
-    let env = crate::diffclass::Env { img: &img, range: (img.base as i64, img.end() as i64), fills: &fills, forms: &forms };
-    let phi = crate::names::ledger_phi(&db)?;
-    let g = crate::grade::Grader { env, phi: &phi, align: tc.function_alignment() as i64 };
-    let starts = crate::asmcmd::all_starts(&db, &img)?;
-    let relocs: Option<Vec<u32>> = if img.relocations().is_empty() {
-        None
-    } else {
-        let mut v: Vec<u32> = crate::with_db(&db, |c| store::claims_of(c, &db, "ref", None, |f| f.s("rkind") == Some("reloc")))?.iter().map(|f| f.lo as u32).collect();
-        v.sort_unstable();
-        (!v.is_empty()).then_some(v)
+    let job = crate::tiebreak::Job { unit, tag: "headers".into(), prefix: String::new(), text: text.to_string() };
+    let o = match crate::tiebreak::compile(p, std::slice::from_ref(&job))?.pop() {
+        Some(Ok(o)) => o,
+        Some(Err(e)) => return Ok(Err(e)),
+        None => return Ok(Err("does not compile".into())),
     };
-    // the walk's or the source extent's end of each function (G.grade's extent)
-    let walk: HashMap<i64, i64> = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |f| {
-        f.s("skind") == Some("func") && matches!(&*f.rule, "S.codewalk" | "L.src.extent")
-    }))?.iter().map(|f| (f.lo, f.hi)).collect();
+    let index = o.function_index();
+    let bench = crate::tiebreak::Bench::of(p)?;
     let base: HashMap<i64, String> = crate::queues::parse_baseline(&crate::fsmemo::read_text(&py_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default())
         .into_iter().filter(|x| x.0 .0 == p.target_name).map(|x| (x.0 .1, x.1.code)).collect();
     let mut out = vec![];
@@ -1156,14 +1119,10 @@ fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Resul
         let (a, name) = (r["addr"].as_i64().unwrap_or(0), r["name"].as_str().unwrap_or("").to_string());
         let now = r["code"].as_str().unwrap_or("").to_string();
         let baseline = base.get(&a).cloned();
-        let Some(&k) = index.get(&name) else {
-            out.push(TrialGrade { addr: a, name, now, baseline, trial: "none".into() });
-            continue;
+        let trial = match index.get(&name) {
+            None => "none".to_string(),
+            Some(&k) => bench.grade(&o, &o.function_code(k), a).to_string(),
         };
-        let code = o.function_code(k);
-        let next = starts.get(starts.partition_point(|&x| x <= a)).copied().unwrap_or(img.end() as i64) as u32;
-        let matched = crate::compare::compare(&img, &code, a as u32, relocs.as_deref(), next, &forms).matched();
-        let trial = g.grade(&o, &code, a, next, walk.get(&a).copied(), matched).to_string();
         out.push(TrialGrade { addr: a, name, now, baseline, trial });
     }
     out.sort_by_key(|t| t.addr);

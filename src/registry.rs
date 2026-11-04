@@ -113,6 +113,8 @@ pub static CHECKS: &[(&str, Category)] = &[
     // regressions
     ("M1", Category::Debt),
     ("M1.debt", Category::Debt),
+    ("M1.tiebreak", Category::Debt),             // functions the declaration set moved (tie-break sensitive, their own text the same): no fall
+    ("G.tiebreak", Category::Gap),               // a unit whose tie-break functions reach a better grade under a probe: its declaration set is not yet the original's
 ];
 
 /// The category of a finding's check id.
@@ -254,21 +256,39 @@ pub static RULES: &[RuleDef] = &[
 function's experiment). Reported at the address\nof the function whose span holds the diagnostic's line (the image base when none does). A lint run whose units'\ntexts differ from today's units is stale: a warning, M.lint.stale (`dcp lint`; `dcp check` lints first). Native:\nnative/dcp_core/src/rules.rs m_lint.",
     },
     RuleDef {
-        id: "G.grade", version: "17", max_support: REPRODUCED, phase: "G", loader: false,
+        id: "G.grade", version: "18", max_support: REPRODUCED, phase: "G", loader: false,
         needs: &["L.src", "M.match", "L.unit.extent", "L.src.extent", "S.sections", "S.relocs", "S.codewalk", "S.crt.code", "S.thunk", "S.exports", "S.entry",
-                 "L.decl", "S.imports", "S.lib.data", "S.crt.refs", "S.crt.data", "S.entry.user"], outputs: &["experiment", "readability"], inputs: &["objects", "src", "lint"],
+                 "L.decl", "S.imports", "S.lib.data", "S.crt.refs", "S.crt.data", "S.entry.user", "M.tiebreak"], outputs: &["experiment", "readability"], inputs: &["objects", "src", "lint"],
         doc: "The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8\nand the unit grades of rules/grade.py's module docstring), as `grade` facts: a function's at its address\n{of: function, name, unit, file, code, readability, level (deep / stuck from the address comment's tag, ''\nfor base), failing (the failing rules with evidence), dist (differing instructions, differing bytes, our\nsize, the original's code size without its switch tables, the extent and the slot the diff read: a report,\nnot a gate; `dcp asmdiff` / `dcp diffclass` read the same extent and slot), hunks, open}; a unit's over its extent {of: unit, code,\nreadability, functions, named_by}. A function's grade fact is proven when its code is byte, else declared (its\naddress comment is the premise).\nThe object experiment tests the bytes and the targets of the references (docs/mental-model.md §4): the\nreference check (refcheck.rs) takes each relocation of ours whose instruction lines up with the original's (a\nbyte match, M.match: every one at its offset; else the listings' alignment: the equal lines, the same-mnemonic\nlines of a hunk of equal length) and compares the address the original's field refers to with φ(our symbol)\n(the name claims of names::NAME_RULES, all needed; a placeholder name's spelled address when φ has none), a\nstring literal or a floating constant by its bytes (at an address φ gives one of our data objects, no\nplaceholder: open, the datum or the literal, two declarations contradict; it binds only in read-only data). Equal: the reference is reproduced; different: a\nconcrete difference naming both targets (M8 another object, M9 a string, M10 a constant; a pair by position\nagrees when the original's side of the hunk refers to the target: reordered code); φ undefined: open, listed\n(open), not failing. Byte: the bytes match (M.match) and no reference differs. Shape: the shape classes, a\nproof or a byte match explain the code and no literal differs; a named reference that differs only with a\nproof (the prover, equiv.rs, binds every reference through φ, learning only literals and open symbols from the\naligned sites: the fields cross, the effects are the same). Else draft: B1 / B2 name each difference first (at\nmost 8), B3 the meaning difference or the unexplained hunks. A byte match with a difference left is an M8 / M9 /\nM10 error at the site (the findings view: equal bytes at this layout only). Containment (§8.7): a reference of ours
 at sym + N outside sym's declared size (sizeof, the front end's, on φ's name claim; one past the end is inside),
 in an absolute memory operand without a register or an immediate more than one object size past either\nend (the compiler's loop pointers reach one element past), is an M.contain error at the site whatever
-the bytes compare: no address of sym (a constant spelled `&sym + N`), it moves with sym when relinked. dcp asmdiff / dcp diffclass / dcp\nescalate read the same check, and diffclass's verdict is this grade. Q7 is evaluated only for the units whose\ntext the last `dcp lint` parsed (the store meta `lint`). Native: src/grade.rs (refcheck.rs, diffclass.rs,\nequiv.rs, readability.rs, x86.rs).",
+the bytes compare: no address of sym (a constant spelled `&sym + N`), it moves with sym when relinked. dcp asmdiff / dcp diffclass / dcp\nescalate read the same check, and diffclass's verdict is this grade.
+The declaration-set probe (M.tiebreak, tiebreak.rs): a function's fresh probe record is its experiment's `tiebreak`;
+a sensitive one whose best grade under the probes is above its built grade has `proven` (the source-proven grade:
+the queues' code grade), never an M2.stale (its tag stays: a byte through the declaration set proves nothing of its
+source), and its unit a G.tiebreak gap, a warning: the unit's declaration set is not yet the original's. Q7 is evaluated only for the units whose\ntext the last `dcp lint` parsed (the store meta `lint`). Native: src/grade.rs (refcheck.rs, diffclass.rs,\nequiv.rs, readability.rs, x86.rs).",
     },
     RuleDef {
-        id: "M1.baseline", version: "4", max_support: REPRODUCED, phase: "M1", loader: false,
-        needs: &["G.grade"], outputs: &[], inputs: &["baseline", "config", "src"],
+        id: "M.tiebreak", version: "1", max_support: DERIVED, phase: "M", loader: false,
+        needs: &["L.src"], outputs: &["tiebreak"], inputs: &["tiebreak", "src", "targets"],
+        doc: "The declaration-set probes of ledger/tiebreak.tsv (written by `dcp headers probe` and by `dcp build` for the
+units of functions that fell below the baseline without a record; never by hand): the unit compiled as the
+build compiles it and with unused typedefs before its text, each function graded (tiebreak.rs). A record of the
+current target whose function (L.src) still has the text it was probed with (comments and whitespace runs aside)
+is a derived `tiebreak` claim at the function {name, unit, file, comment, end, sensitive (its bytes change under
+a probe: VC6 breaks its allocation's ties by the declaration set), best (the best grade under the control and
+the probes: the source-proven grade), witness (each compile's grade, `*` where the bytes differ)}; a record
+whose text changed is stale and gives none (the next fall probes again). Native: tiebreak.rs.",
+    },
+    RuleDef {
+        id: "M1.baseline", version: "5", max_support: REPRODUCED, phase: "M1", loader: false,
+        needs: &["G.grade"], outputs: &[], inputs: &["baseline", "config", "src", "tiebreak"],
         doc: "M1: every function of the current target in the grade baseline (ledger/grades.tsv, written only by `dcp\npromote`, lowered for one function only by `dcp debt add`) keeps its grades: experiment byte -> shape / draft\nand shape -> draft are falls, readable -> draft is a fall, and a function the baseline grades that has no\ngrade now fell too. Each fall is an error (an unexplained regression) and names its cause candidates (cause.rs): what its unit
 compiles from that changed since the commit that last wrote the baseline (the unit's own text, each changed header
 of its include closure with the include chain), or that nothing did (a rule or prover change, another object's
-φ). A function the baseline does not list\ncannot fall. A declared regression is debt (docs/mental-model.md §8.6): the entry holds the grade it fell to,\nits accepted column names the grade before, the last witness commit, why and what it waits for; M1.debt lists\neach (a warning) and is an error when the target holds more than [gate] max_debt of them (no bound unless set). Native:\nlayout.rs.",
+φ). A tie-break sensitive function (its experiment's `tiebreak`, M.tiebreak) whose code fell while its own text is
+the same as at the baseline's commit and its unit's compile inputs changed is no fall: the declaration set moved it
+(M1.tiebreak, a warning, one per changed header set: `tie-break: N functions moved (HEADERS)`). A function the baseline does not list\ncannot fall. A declared regression is debt (docs/mental-model.md §8.6): the entry holds the grade it fell to,\nits accepted column names the grade before, the last witness commit, why and what it waits for; M1.debt lists\neach (a warning) and is an error when the target holds more than [gate] max_debt of them (no bound unless set). Native:\nlayout.rs.",
     },
     RuleDef {
         id: "L.decl", version: "6", max_support: DECLARED, phase: "L", loader: true,

@@ -866,13 +866,13 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         .map_err(err)?.into_iter().map(|f| (f.lo, f)).collect();
     // the baseline functions whose experiment did not run (their unit has no object), per unit: (first address, count)
     let mut not_run: std::collections::BTreeMap<String, (i64, usize)> = std::collections::BTreeMap::new();
-    // (at, address, name, unit, what fell)
-    let mut fell: Vec<(i64, i64, &str, &str, String)> = vec![];
+    // (at, address, name, unit, what fell, the probe record of a code fall)
+    let mut fell: Vec<(i64, i64, &str, &str, String, Option<&serde_json::Value>)> = vec![];
     for (a, r) in &base {
         let (name, code, readability) = (&r[2], &r[4], &r[5]);
-        let mut falls = vec![];
+        let mut falls: Vec<(String, Option<&serde_json::Value>)> = vec![];
         match now.get(a) {
-            None => falls.push(format!("graded {code} + {readability} in the baseline, no grade now (its source is gone?)")),
+            None => falls.push((format!("graded {code} + {readability} in the baseline, no grade now (its source is gone?)"), None)),
             // the premise is missing, not the grade: no fall (docs/mental-model.md §4), one line per unit below
             Some(g) if g.s("outcome") == Some(crate::grade::NOT_RUN) => {
                 let e = not_run.entry(g.s("unit").unwrap_or("").to_string()).or_insert((*a, 0));
@@ -882,28 +882,43 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 let nc = g.s("outcome").unwrap_or("");
                 if let (Some(b), Some(n)) = (rank(code), rank(nc)) {
                     if n < b {
-                        falls.push(format!("code {code} -> {nc}"));
+                        falls.push((format!("code {code} -> {nc}"), g.value.get("tiebreak")));
                     }
                 }
                 if readability == "readable" && read.get(a).and_then(|q| q.s("grade")) != Some("readable") {
-                    falls.push("readability readable -> draft".to_string());
+                    falls.push(("readability readable -> draft".to_string(), None));
                 }
             }
         }
         let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };
-        fell.extend(falls.into_iter().map(|what| (at, *a, name.as_str(), r[3].as_str(), what)));
+        fell.extend(falls.into_iter().map(|(what, tb)| (at, *a, name.as_str(), r[3].as_str(), what, tb)));
     }
     // the cause candidates (cause.rs): what each fallen unit compiles from that changed since the
     // baseline's commit; git is read only when something fell
     let changes = if fell.is_empty() { None } else { crate::cause::Changes::since_baseline(&ctx.root) };
     let mut causes: HashMap<&str, Option<String>> = HashMap::new();
-    for (at, a, name, unit, what) in &fell {
+    let unit_file = |unit: &str| -> Option<String> { db.query_row("SELECT amalg FROM tu WHERE unit=?", [unit], |r| r.get(0)).ok() };
+    // the code falls of tie-break sensitive functions whose own text is the same: the declaration set moved them
+    // (tiebreak.rs), one line per changed header set and no fall
+    let mut moved: std::collections::BTreeMap<String, (i64, Vec<String>)> = std::collections::BTreeMap::new();
+    for (at, a, name, unit, what, tb) in &fell {
+        if let (Some(ch), Some(tb), Some(file)) = (changes.as_ref(), tb, unit_file(unit)) {
+            if let Some(label) = crate::tiebreak::declaration_move(&ctx.root, ch, tb, &file) {
+                let e = moved.entry(label).or_insert((*at, vec![]));
+                e.1.push(format!("{name} ({})", what.trim_start_matches("code ")));
+                continue;
+            }
+        }
         let cause = changes.as_ref().and_then(|ch| causes.entry(unit).or_insert_with(|| {
-            let file: Option<String> = db.query_row("SELECT amalg FROM tu WHERE unit=?", [unit], |r| r.get(0)).ok();
-            file.map(|f| ch.of_unit(&ctx.root, &f).text(&ch.since, 3))
+            unit_file(unit).map(|f| ch.of_unit(&ctx.root, &f).text(&ch.since, 3))
         }).clone());
         let cause = cause.map(|c| format!("; {c}")).unwrap_or_default();
         out.finding("error", "M1", *at, at + 1, format!("{name} at {a:#x}: {what}{cause} (baseline ledger/grades.tsv)"), "");
+    }
+    for (label, (at, names)) in &moved {
+        let since = changes.as_ref().map(|c| c.since.as_str()).unwrap_or("-");
+        out.finding("warn", "M1.tiebreak", *at, at + 1, format!("{} (tie-break sensitive by the probe, their own text the same since {since}: \
+                                                                 no fall, no debt; ledger/tiebreak.tsv)", crate::tiebreak::moved_line(label, names)), "");
     }
     for (unit, (a, n)) in &not_run {
         let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };

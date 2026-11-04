@@ -396,7 +396,18 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
         out.push(format!("  {}", handups(&ch)));
         let files = if ch.is_empty() { HashMap::new() } else { crate::compile::tu_keys(&tp.store_path()).unwrap_or_default() };
         let mut causes: HashMap<String, String> = HashMap::new();
+        let by_addr: HashMap<i64, &Map<String, Value>> = rows.iter().map(|r| (r.get("addr").and_then(|v| v.as_i64()).unwrap_or(0), r)).collect();
+        // the grade changes the declaration set made (tie-break sensitive, their own text the same: tiebreak.rs), one
+        // line per changed header set
+        let mut moved: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
         for (a, unit, fname, b, aft) in ch {
+            if let (Some(bg), Some(ag), Some(k), Some(tb)) = (&b, &aft, files.get(&unit), by_addr.get(&a).and_then(|r| r.get("tiebreak"))) {
+                let ch = changes.get_or_insert_with(|| crate::cause::Changes::since(root, base));
+                if let Some(label) = ch.as_ref().and_then(|ch| crate::tiebreak::declaration_move(root, ch, tb, &k.amalg)) {
+                    moved.entry(label).or_default().push(format!("{fname} ({bg} -> {ag})"));
+                    continue;
+                }
+            }
             let cause = match (&b, &aft, files.get(&unit)) {
                 (Some(_), Some(_), Some(k)) => {
                     let ch = changes.get_or_insert_with(|| crate::cause::Changes::since(root, base));
@@ -407,6 +418,7 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
             out.push(format!("  {}  {unit:<16} {fname}: {} -> {}{}", fmt_addr(a), b.unwrap_or_else(|| "new".into()), aft.unwrap_or_else(|| "gone".into()),
                              cause.map(|c| format!("; {c}")).unwrap_or_default()));
         }
+        out.extend(moved.iter().map(|(label, names)| format!("  {}", crate::tiebreak::moved_line(label, names))));
     }
     let other: Vec<&String> = c.names.iter().filter(|l| !l.contains(" unit ")).collect();
     out.push(format!("renames: {}", other.len()));

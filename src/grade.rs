@@ -262,6 +262,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     for f in symbols.iter().filter(|f| f.s("skind") == Some("func") && matches!(&*f.rule, "S.codewalk" | "L.src.extent")) {
         walk.insert(f.lo, f.clone());
     }
+    // the declaration-set probes (M.tiebreak): each fresh record, by address
+    let tiebreak: HashMap<i64, Rc<Claim>> = store::claims(db, &ctx.db, "tiebreak", &ctx.needed, |_| true).map_err(err)?.into_iter().map(|f| (f.lo, f)).collect();
     let range = (img.base as i64, img.end() as i64);
     let fills: HashSet<Vec<u8>> = ctx.fill_forms.iter().cloned().collect();
     let forms = crate::compare::fill_order(&ctx.fill_forms);
@@ -409,6 +411,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     let mut used_files: HashMap<String, Rc<FileHeld>> = HashMap::new();
     let mut per_unit: HashMap<String, Vec<(String, String)>> = HashMap::new(); // unit -> (code, readability)
+    // unit -> the tie-break functions a probe raises: (address, name, built, best)
+    let mut raised: HashMap<String, Vec<(i64, String, String, String)>> = HashMap::new();
     for r in &rows {
         let s = &r.src;
         let v = &s.value;
@@ -470,9 +474,22 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if let Some(calls) = lint.as_ref().filter(|c| !c.is_empty()) {
             e["consistency"] = json!(calls);
         }
+        // the declaration-set probe: a sensitive function's best grade under the probes is its source-proven one
+        let tb = tiebreak.get(&s.lo).filter(|t| t.s("name") == Some(name));
+        let sensitive = tb.is_some_and(|t| t.value["sensitive"].as_bool() == Some(true));
+        if let Some(t) = tb {
+            e["tiebreak"] = t.value.clone();
+            let best = t.s("best").unwrap_or("");
+            if sensitive && r.code != NOT_RUN && CODE.contains(&best) && rank(best) > rank(&r.code) {
+                e["proven"] = json!(best);
+                raised.entry(unit.clone()).or_default().push((s.lo, name.to_string(), r.code.clone(), best.to_string()));
+            }
+        }
         let levels: Vec<&str> = ["deep", "stuck", "hard"].into_iter().filter(|k| has(k)).collect();
         if levels.len() > 1 {
             out.finding("error", "M2", s.lo, s.lo + 1, format!("{name}: carries more than one level tag (@{})", levels.join(", @")), &s.by);
+        } else if sensitive {
+            // a byte reached through the declaration set proves nothing about the source: the tag stays
         } else if !tag.is_empty() && r.code == "byte" && q == "readable" {
             out.finding("warn", "M2.stale", s.lo, s.lo + 1, format!("{name}: byte + readable, its @{tag} tag is stale (dcp build clears it)"), &s.by);
         } else if tag == "hard" && r.code != "draft" && q == "readable" {
@@ -500,6 +517,14 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         };
         out.claim(u.lo, u.hi, "experiment", json!({"of": "unit", "unit": tu, "outcome": code, "functions": fs.len(), "named_by": named_v}),
                   u.support.min(DECLARED));
+        if let Some(fs) = raised.get(tu) {
+            // the remaining gap is the unit's: its declaration set gives these functions less than their text can
+            let names: Vec<String> = fs.iter().take(6).map(|f| format!("{} {} -> {}", f.1, f.2, f.3)).collect();
+            let more = if fs.len() > 6 { format!(" (+{})", fs.len() - 6) } else { String::new() };
+            out.finding("warn", "G.tiebreak", u.lo, u.hi, format!("unit {tu}: declaration set not yet the original's: {} tie-break function(s) reach a \
+                better grade under a no-meaning probe than as built: {}{more} (the headers' declarations, their order or count; the re-match pass \
+                runs them last; dcp headers probe {tu})", fs.len(), names.join(", ")), &u.by);
+        }
         out.claim(u.lo, u.hi, "readability", json!({"of": "unit", "unit": tu, "grade": if readable { "readable" } else { "draft" }}),
                   u.support.min(DECLARED));
     }

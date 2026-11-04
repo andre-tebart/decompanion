@@ -74,6 +74,7 @@ mod session;
 mod setup;
 mod srcscan;
 mod store;
+mod tiebreak;
 mod tomledit;
 mod toolchain;
 mod units;

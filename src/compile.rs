@@ -363,7 +363,7 @@ pub fn ensure(p: &Project, force: bool, jobs: Option<usize>) -> Result<Report, S
 }
 
 /// f over the items on n threads, results in the items' order.
-fn run_threads<T: Sync, R: Send>(n: usize, items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+pub(crate) fn run_threads<T: Sync, R: Send>(n: usize, items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let out: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
     std::thread::scope(|s| {

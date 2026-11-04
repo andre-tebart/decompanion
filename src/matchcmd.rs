@@ -595,7 +595,7 @@ pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> 
     }
     for p in projects {
         let db = opened(p)?;
-        falls.extend(queues::regressions(&p.target_name, &db, &old)?);
+        falls.extend(queues::regressions(Some(root), &p.target_name, &db, &old)?);
         targets.push((p.target_name.clone(), db));
     }
     if !falls.is_empty() && !accept_falls {

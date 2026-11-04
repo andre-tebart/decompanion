@@ -16,7 +16,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 59 | [declaration-set-tiebreaks](declaration-set-tiebreaks.md): probe VC6 tie-break sensitivity, attribute falls to the unit, no auto-clear on them | M | |
+| 60 | [tiebreak-probe-positions](tiebreak-probe-positions.md): probes after each header guard and member splits (d3_CloneObject, ai_Unk483a60) | M | |
 | 57 | [d1-padding-decided](d1-padding-decided.md): D1 decides alignment padding instead of warning | S-M | |
 
 ## P1

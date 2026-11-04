@@ -467,6 +467,10 @@ impl Project {
                 let p = py_path(&format!("{root}/ledger/grades.tsv"));
                 if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }
             }
+            "tiebreak" => {
+                let p = py_path(&format!("{root}/{}", crate::tiebreak::LEDGER));
+                if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }
+            }
             "objects" | "probe" | "lint" | "drafts" => {
                 let path = self.store_path();
                 let main = self.main_uri();
