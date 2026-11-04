@@ -16,13 +16,14 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
+| 30 | [m1-names-cause](m1-names-cause.md): M1 and the wrap name the changed headers and include chain | S-M | |
+| 59 | [declaration-set-tiebreaks](declaration-set-tiebreaks.md): probe VC6 tie-break sensitivity, attribute falls to the unit, no auto-clear on them | M | 30 |
 | 57 | [d1-padding-decided](d1-padding-decided.md): D1 decides alignment padding instead of warning | S-M | |
 
 ## P1
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 59 | [declaration-set-tiebreaks](declaration-set-tiebreaks.md): VC6 tie-breaks named in M1, their hunks as allocation | M | |
 | 14 | [model-decisions](model-decisions.md): M7's status, `@original` evidence, signature claims, the held-verdict cache | S | |
 | 15 | [output-convention](output-convention.md): verdict, failures and named changes by default; full state behind `-v` | M-L | |
 | 16 | [show-computed-findings](show-computed-findings.md): build, grade and rename show the findings they computed | S | 15 (the delta) |
@@ -39,7 +40,6 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 27 | [session-progress-from-tool](session-progress-from-tool.md): `done=N/8` from the tool, not from commits | S | |
 | 28 | [consistency-at-uses](consistency-at-uses.md): type agreement at uses; stale casts and exceptions | M | 14 |
 | 29 | [exceptions-must-discriminate](exceptions-must-discriminate.md): trial-build without each `@original` | M | 21 |
-| 30 | [m1-names-cause](m1-names-cause.md): M1 and the wrap name the changed headers and include chain | S-M | |
 | 31 | [frame-slot-annotation](frame-slot-annotation.md): entry-relative slots and arguments in disasm and asmdiff | M | |
 | 32 | [diffclass-meaning-classes](diffclass-meaning-classes.md): `const` and `addrval` as concrete differences | M | |
 | 33 | [datum-experiment](datum-experiment.md): the datum object experiment, graded, seen by M1 | M | |
