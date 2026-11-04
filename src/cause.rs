@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn chains_and_text() {
-        let dir = std::env::temp_dir().join(format!("dcp-cause-{}", std::process::id()));
+        let dir = crate::testkit::scratch("cause");
         let _ = std::fs::remove_dir_all(&dir);
         let root = dir.to_string_lossy().into_owned();
         for (f, t) in [("src/a.c", "#include \"a.h\"\n#include \"local.h\"\n"), ("src/local.h", ""), ("include/a.h", "#include \"t.h\"\n#include <stdio.h>\n"),

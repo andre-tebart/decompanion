@@ -579,7 +579,7 @@ void f(void)
 
     #[test]
     fn write_in_place_and_append() {
-        let dir = std::env::temp_dir().join(format!("dcp-write-{}", std::process::id()));
+        let dir = crate::testkit::scratch("write");
         let p = dir.join("f.txt").to_string_lossy().into_owned();
         write(&p, "a longer first text\n").unwrap();
         write(&p, "short\n").unwrap(); // shrunk: no tail of the old text stays
@@ -594,7 +594,7 @@ void f(void)
     fn head_edits() {
         assert_eq!(guard("d3.io-x"), "D3_IO_X_H");
         assert!(declared_in("int f(void);", "f") && declared_in("extern int x[3];", "x") && !declared_in("/* f( */ int g;", "f"));
-        let dir = std::env::temp_dir().join(format!("dcp-edit-{}", std::process::id()));
+        let dir = crate::testkit::scratch("edit");
         let p = dir.join("u.c").to_string_lossy().into_owned();
         write(&p, "/* u: the unit\n   more */\nint a;\n").unwrap();
         assert!(ensure_include(&p, "#include \"u.h\"", None).unwrap());

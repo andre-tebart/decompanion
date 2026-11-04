@@ -835,7 +835,7 @@ mod tests {
     /// promote refuses grades of uncommitted source (src/, include/, decl/); the ledger's own changes do not count.
     #[test]
     fn promote_refuses_dirty_source() {
-        let d = std::env::temp_dir().join(format!("dcp-promote-dirty-{}", std::process::id()));
+        let d = crate::testkit::scratch("promote-dirty");
         let _ = std::fs::remove_dir_all(&d);
         let root = d.to_string_lossy().replace('\\', "/");
         let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&d).output().unwrap().status.success());

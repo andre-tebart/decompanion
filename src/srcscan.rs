@@ -646,7 +646,7 @@ pub(crate) mod tests {
 
     pub(crate) fn scan_alone(rel: &str, text: &str) -> Option<FilePart> {
         crate::frontend::library(None)?;
-        let root = std::env::temp_dir().join(format!("dcp-srcscan-{}", std::process::id()));
+        let root = crate::testkit::scratch("srcscan");
         std::fs::create_dir_all(&root).unwrap();
         let r = root.to_string_lossy().into_owned();
         let front = crate::frontend::Front::of(&r).unwrap();

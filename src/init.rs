@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn adds_a_target_to_the_single_table_form() {
-        let d = std::env::temp_dir().join(format!("dcp-init-{}", std::process::id()));
+        let d = crate::testkit::scratch("init");
         std::fs::create_dir_all(&d).unwrap();
         let bin = d.join("game.exe");
         std::fs::write(&bin, crate::pe::testpe::build(None)).unwrap();

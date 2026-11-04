@@ -587,7 +587,7 @@ mod tests {
 
     #[test]
     fn load_order_duplicates_targets() {
-        let dir = std::env::temp_dir().join(format!("dcp-decl-{}", std::process::id()));
+        let dir = crate::testkit::scratch("decl");
         std::fs::create_dir_all(dir.join("decl")).unwrap();
         std::fs::write(dir.join("decl/text.dcl"), "# c\n0x20 start -- b\n0x10 start -- a\n0x10 start -- dup\nxbox:0x5 start -- t\n0x30 frob -- x\n").unwrap();
         let root = dir.to_string_lossy().into_owned();
@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn load_and_insert() {
-        let dir = std::env::temp_dir().join(format!("dcp-decl2-{}", std::process::id()));
+        let dir = crate::testkit::scratch("decl2");
         std::fs::create_dir_all(dir.join("decl")).unwrap();
         let t: Vec<String> = vec!["tiny".into(), "other".into()];
         std::fs::write(dir.join("decl/text.dcl"), "# comment\n\n0x10002000 start -- b\n0x10001000 start -- a: out of order\n0x10002000 start -- again\n\

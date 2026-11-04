@@ -1103,7 +1103,7 @@ mod tests {
     use super::*;
 
     fn tree(name: &str, files: &[(&str, &str)]) -> (String, Files) {
-        let root = std::env::temp_dir().join(format!("dcp-datafix-{name}-{}", std::process::id()));
+        let root = crate::testkit::scratch(&format!("datafix-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         for (rel, text) in files {
             let p = root.join(rel);

@@ -481,7 +481,7 @@ mod tests {
         assert_eq!(t.archive_spec("libcmt"), "{toolchain.root}/VC98/Lib/LIBCMT.LIB");
         assert_eq!(t.archive_spec("LIBC.LIB"), "{toolchain.root}/VC98/Lib/LIBC.LIB");
         assert_eq!(t.archive_spec("C:\\x\\my.lib"), "C:/x/my.lib");
-        let d = std::env::temp_dir().join(format!("dcp-tc-{}", std::process::id()));
+        let d = crate::testkit::scratch("tc");
         std::fs::create_dir_all(d.join("VC98/Bin")).unwrap();
         let mut res = vec![0u8; 8];
         res.extend(FIXED_FILE_INFO);

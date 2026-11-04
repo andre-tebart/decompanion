@@ -568,7 +568,7 @@ mod tests {
     use super::*;
 
     fn project(toml: &str) -> Result<Project, String> {
-        let d = std::env::temp_dir().join(format!("dcp-project-{}-{}", std::process::id(), sha_hex(toml.as_bytes())));
+        let d = crate::testkit::scratch(&format!("project-{}", sha_hex(toml.as_bytes())));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(CONFIG_NAME), toml).unwrap();
         let p = Project::open(&d, None, "core");

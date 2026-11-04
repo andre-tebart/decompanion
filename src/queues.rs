@@ -880,7 +880,7 @@ mod level_tests {
         assert_eq!(size_unexplained(1205, 1226), Some((1205, 1226, 12))); // main_Unk5384e0, 4277 vs 4402 bytes
         assert_eq!((size_unexplained(3030, 3000), size_unexplained(3031, 3000)), (None, Some((3031, 3000, 30))));
         assert_eq!(admits_unread("bpp is not read; cm_SendMoveGoodsUnchecked's slots; read to the end, only ebx/esi left"), None);
-        let dir = std::env::temp_dir().join(format!("dcp-level-{}", std::process::id()));
+        let dir = crate::testkit::scratch("level");
         let root = dir.to_string_lossy().into_owned();
         crate::edit::write(&format!("{root}/src/u.c"), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n").unwrap();
         assert!(set_level(&root, "src/u.c", Some("deep"), Some("the data comment"), 1).is_err());

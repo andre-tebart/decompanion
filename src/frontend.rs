@@ -543,7 +543,7 @@ mod tests {
 
     /// A source tree in a fresh temporary directory: (path, text) files; its root.
     fn tree(name: &str, files: &[(&str, &str)]) -> String {
-        let d = std::env::temp_dir().join(format!("dcp-front-{name}-{}", std::process::id()));
+        let d = crate::testkit::scratch(&format!("front-{name}"));
         let _ = std::fs::remove_dir_all(&d);
         for (rel, text) in files {
             let p = d.join(rel);

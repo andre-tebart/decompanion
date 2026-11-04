@@ -231,10 +231,22 @@ pub(crate) fn with_db<T>(path: &str, f: impl FnOnce(&mut Connection) -> rusqlite
     CONNS.with(|c| {
         let mut map = c.borrow_mut();
         if !map.contains_key(path) {
+            // a store's directory (build/) is made with its first connection
+            if let Some(d) = std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()) {
+                std::fs::create_dir_all(d).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
+            }
             let db = Connection::open(path).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
+            // - a new store is switched to WAL without a sync (an empty store lost to a crash is made again); an
+            //   existing one is WAL already, the switch writes nothing
+            // - closing leaves the WAL as it is: a checkpoint on close is a full checkpoint with an fsync, paid by
+            //   every command run outside the daemon (and each thread that ends) although durability does not need
+            //   it; the writers' automatic checkpoints keep the WAL bounded, and a store is copied through SQLite
+            //   (VACUUM INTO), never as the file alone
             db.busy_timeout(std::time::Duration::from_secs(10))
+                .and_then(|_| db.pragma_update(None, "synchronous", "OFF"))
                 .and_then(|_| db.pragma_update(None, "journal_mode", "WAL"))
                 .and_then(|_| db.pragma_update(None, "synchronous", "NORMAL"))
+                .and_then(|_| db.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true))
                 .map_err(|e| Error::runtime(format!("{path}: {e}")))?;
             map.insert(path.to_string(), db);
         }
@@ -266,6 +278,18 @@ pub(crate) fn compile_threads<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R
 /// Close this thread's connection to a store (its file is replaced or removed).
 pub(crate) fn forget_conn(path: &str) {
     CONNS.with(|c| c.borrow_mut().remove(path));
+}
+
+/// Close this thread's connections to the stores below a directory (it is about to be removed); nothing when the
+/// thread's connections are gone already (the thread is ending).
+pub fn forget_conns_under(dir: &std::path::Path) {
+    let norm = |p: &str| p.replace('/', "\\").to_lowercase();
+    let dir = norm(&dir.to_string_lossy());
+    let _ = CONNS.try_with(|c| {
+        if let Ok(mut m) = c.try_borrow_mut() {
+            m.retain(|p, _| !norm(p).starts_with(&dir));
+        }
+    });
 }
 
 /// The store's native connection for code that reports Python errors itself (a native rule).

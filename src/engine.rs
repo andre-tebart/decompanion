@@ -44,8 +44,28 @@ pub fn resolve_needs(r: &RuleDef) -> Result<Vec<&'static str>> {
     Ok(out)
 }
 
-/// Rules in dependency order (Kahn, the ready ones sorted by id), restricted to `ids` and everything they need.
+/// Every rule's resolved needs (resolve_needs), computed once: the registry is static.
+fn needs(r: &RuleDef) -> Result<&'static [&'static str]> {
+    type All = std::result::Result<HashMap<&'static str, Vec<&'static str>>, String>;
+    static ALL: std::sync::OnceLock<All> = std::sync::OnceLock::new();
+    let all = ALL.get_or_init(|| RULES.iter().map(|x| resolve_needs(x).map(|n| (x.id, n)).map_err(|e| e.to_string())).collect());
+    match all {
+        Ok(m) => Ok(m.get(r.id).map(|v| v.as_slice()).unwrap_or(&[])),
+        Err(e) => Err(rule_err(e.clone())),
+    }
+}
+
+/// Rules in dependency order (Kahn, the ready ones sorted by id), restricted to `ids` and everything they need. The
+/// order of every rule is computed once: the registry is static.
 pub fn order(ids: Option<&[String]>) -> Result<Vec<&'static RuleDef>> {
+    static ALL: std::sync::OnceLock<std::result::Result<Vec<&'static RuleDef>, String>> = std::sync::OnceLock::new();
+    match ids {
+        None => ALL.get_or_init(|| order_of(None).map_err(|e| e.to_string())).clone().map_err(rule_err),
+        Some(_) => order_of(ids),
+    }
+}
+
+fn order_of(ids: Option<&[String]>) -> Result<Vec<&'static RuleDef>> {
     let mut wanted: HashSet<&'static str> = HashSet::new();
     match ids {
         None => wanted.extend(RULES.iter().map(|r| r.id)),
@@ -53,14 +73,14 @@ pub fn order(ids: Option<&[String]>) -> Result<Vec<&'static RuleDef>> {
             let mut stack: Vec<&'static str> = ids.iter().map(|i| rule(i).map(|r| r.id)).collect::<Result<_>>()?;
             while let Some(i) = stack.pop() {
                 if wanted.insert(i) {
-                    stack.extend(resolve_needs(rule(i)?)?);
+                    stack.extend(needs(rule(i)?)?.iter().copied());
                 }
             }
         }
     }
     let mut deps: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
     for &i in &wanted {
-        deps.insert(i, resolve_needs(rule(i)?)?.into_iter().filter(|d| wanted.contains(d)).collect());
+        deps.insert(i, needs(rule(i)?)?.iter().copied().filter(|d| wanted.contains(d)).collect());
     }
     let (mut done, mut out) = (HashSet::new(), vec![]);
     while !deps.is_empty() {
@@ -159,11 +179,12 @@ impl<'a> Engine<'a> {
         Ok(self.project.input_hash(name).map_err(Error::config)?.unwrap_or_default())
     }
 
-    fn run_key(&self, r: &RuleDef, code: &str, needed: &[&str]) -> Result<String> {
+    /// The key of a rule's run: its code, version, the image, the plugins, the output of every rule it needs (`outs`:
+    /// the out_hash of each rule's current run) and its named inputs.
+    fn run_key(&self, r: &RuleDef, code: &str, needed: &[&str], outs: &HashMap<String, String>) -> Result<String> {
         let mut parts = vec![code.to_string(), r.version.to_string(), self.input_hash_of("image")?, self.input_hash_of("plugins")?];
         for n in needed {
-            let cur = crate::storedb::st_current_run(&self.db, n)?;
-            let Some((_, _, out)) = cur else { return Err(rule_err(format!("{} needs {n}, which has no current run", r.id))) };
+            let Some(out) = outs.get(*n) else { return Err(rule_err(format!("{} needs {n}, which has no current run", r.id))) };
             parts.push(format!("{n}={out}"));
         }
         for name in r.inputs {
@@ -246,9 +267,9 @@ impl<'a> Engine<'a> {
         Ok(Rc::new(x))
     }
 
-    fn make_current_if(&self, r: &RuleDef, place: &str, run_id: i64) -> Result<()> {
-        let cur = crate::storedb::st_current_run(&self.db, r.id)?;
-        if cur.is_none_or(|c| c.0 != run_id) || place != "main" {
+    /// Make the run current unless it is already (`was`: the rule's current run id before this refresh).
+    fn make_current_if(&self, r: &RuleDef, place: &str, run_id: i64, was: Option<i64>) -> Result<()> {
+        if was != Some(run_id) || place != "main" {
             crate::storedb::st_make_current(&self.db, &self.main, r.id, place, run_id)?;
         }
         Ok(())
@@ -257,45 +278,14 @@ impl<'a> Engine<'a> {
     /// Bring the rules (all, or `ids` and what they need) up to date.
     pub fn run(&mut self, ids: Option<&[String]>, force: bool) -> Result<Vec<Result_>> {
         crate::storedb::st_open(&self.db, &self.main)?;
+        // each rule's current run, read once: the engine is the store's one writer during a refresh, and each rule's
+        // step names the output of the run it makes current (its needs come before it in the order)
+        let was = crate::storedb::st_current_runs(&self.db)?;
+        let mut outs: HashMap<String, String> = was.iter().map(|(rule, (_, out))| (rule.clone(), out.clone())).collect();
         let mut results = vec![];
         for r in order(ids)? {
-            let needed = resolve_needs(r)?;
-            let inputs: Vec<String> = r.inputs.iter().map(|s| s.to_string()).collect();
-            let waits = self.project.waiting_for(&inputs).map_err(Error::config)?;
-            let code = self.code_hash(r)?;
-            if !waits.is_empty() {
-                let mut parts = vec![code.clone(), r.version.to_string(), "waiting".into()];
-                parts.extend(waits.iter().cloned());
-                let ih = sha256_parts(&parts);
-                if let Some((place, run_id, _)) = crate::storedb::st_find_run(&self.db, &self.main, r.id, &ih)? {
-                    self.make_current_if(r, &place, run_id)?;
-                    results.push(Result_ { rule: r.id, waiting: waits, ..Default::default() });
-                    continue;
-                }
-                with_db(&self.db, |db| write_run(db, &self.db, r.id, r.version, &code, &ih, &[], &[], 0, true))?;
-                results.push(Result_ { rule: r.id, ran: true, waiting: waits, ..Default::default() });
-                continue;
-            }
-            let ih = self.run_key(r, &code, &needed)?;
-            let found = if force { None } else { crate::storedb::st_find_run(&self.db, &self.main, r.id, &ih)? };
-            if let Some((place, run_id, _)) = found {
-                self.make_current_if(r, &place, run_id)?;
-                results.push(Result_ { rule: r.id, ..Default::default() });
-                continue;
-            }
-            let t0 = std::time::Instant::now();
-            let inputs = self.inputs(r)?;
-            let ctx = Ctx {
-                rule: r.id.into(), version: r.version.into(), code_hash: code, input_hash: ih, db: self.db.clone(), main: self.main.clone(),
-                needed: needed.iter().map(|s| s.to_string()).collect(), root: self.project.root.to_string_lossy().into_owned(),
-                image: self.project.target(None).map_err(Error::config)?.path.clone(),
-                fill_forms: crate::toolchain::of(&inputs.toolchain).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default(),
-                record: true,
-                shortcuts: std::env::var_os("DCP_NO_SHORTCUTS").is_none_or(|v| v.is_empty()), inputs,
-            };
-            let (nf, nc, _, ms_run, ms_rec) = run_native(r, &ctx)?;
-            results.push(Result_ { rule: r.id, ran: true, ms: t0.elapsed().as_millis() as i64, facts: nf, conflicts: nc, ms_run, ms_rec,
-                                   ..Default::default() });
+            let out = self.step(r, force, was.get(r.id).map(|c| c.0), &outs, &mut results)?;
+            outs.insert(r.id.to_string(), out);
         }
         // a full refresh that recorded runs: the runs of rules the core no longer has stop being current (M8.reloc's
         // findings, now G.grade's, would otherwise stay in the gate)
@@ -304,6 +294,49 @@ impl<'a> Engine<'a> {
             crate::storedb::st_retire(&self.db, &live)?;
         }
         Ok(results)
+    }
+
+    /// One rule of a refresh: made current from a run with its inputs, else run and recorded; the out_hash of the run
+    /// now current. `was`: its current run id before this refresh.
+    fn step(&mut self, r: &'static RuleDef, force: bool, was: Option<i64>, outs: &HashMap<String, String>, results: &mut Vec<Result_>) -> Result<String> {
+        let needed = needs(r)?;
+        let inputs: Vec<String> = r.inputs.iter().map(|s| s.to_string()).collect();
+        let waits = self.project.waiting_for(&inputs).map_err(Error::config)?;
+        let code = self.code_hash(r)?;
+        if !waits.is_empty() {
+            let mut parts = vec![code.clone(), r.version.to_string(), "waiting".into()];
+            parts.extend(waits.iter().cloned());
+            let ih = sha256_parts(&parts);
+            if let Some((place, run_id, out)) = crate::storedb::st_find_run(&self.db, &self.main, r.id, &ih)? {
+                self.make_current_if(r, &place, run_id, was)?;
+                results.push(Result_ { rule: r.id, waiting: waits, ..Default::default() });
+                return Ok(out);
+            }
+            let (_, out) = with_db(&self.db, |db| write_run(db, &self.db, r.id, r.version, &code, &ih, &[], &[], 0, true))?;
+            results.push(Result_ { rule: r.id, ran: true, waiting: waits, ..Default::default() });
+            return Ok(out);
+        }
+        let ih = self.run_key(r, &code, needed, outs)?;
+        let found = if force { None } else { crate::storedb::st_find_run(&self.db, &self.main, r.id, &ih)? };
+        if let Some((place, run_id, out)) = found {
+            self.make_current_if(r, &place, run_id, was)?;
+            results.push(Result_ { rule: r.id, ..Default::default() });
+            return Ok(out);
+        }
+        let t0 = std::time::Instant::now();
+        let inputs = self.inputs(r)?;
+        let ctx = Ctx {
+            rule: r.id.into(), version: r.version.into(), code_hash: code, input_hash: ih, db: self.db.clone(), main: self.main.clone(),
+            needed: needed.iter().map(|s| s.to_string()).collect(), root: self.project.root.to_string_lossy().into_owned(),
+            image: self.project.target(None).map_err(Error::config)?.path.clone(),
+            fill_forms: crate::toolchain::of(&inputs.toolchain).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default(),
+            record: true,
+            shortcuts: std::env::var_os("DCP_NO_SHORTCUTS").is_none_or(|v| v.is_empty()), inputs,
+        };
+        let (nf, nc, out, ms_run, ms_rec) = run_native(r, &ctx)?;
+        results.push(Result_ { rule: r.id, ran: true, ms: t0.elapsed().as_millis() as i64, facts: nf, conflicts: nc, ms_run, ms_rec,
+                               ..Default::default() });
+        Ok(out)
     }
 }
 
@@ -342,7 +375,7 @@ mod tests {
 
     #[test]
     fn runs_are_keyed_by_their_inputs() {
-        let d = std::env::temp_dir().join(format!("dcp-engine-{}", std::process::id()));
+        let d = crate::testkit::scratch("engine");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("net.dll"), crate::pe::testpe::build(None)).unwrap();
         std::fs::write(d.join("decompanion.toml"), "[[target]]\nname = \"net\"\npath = \"net.dll\"\n").unwrap();

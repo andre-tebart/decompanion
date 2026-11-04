@@ -471,7 +471,7 @@ mod tests {
     /// session's base commit.
     #[test]
     fn grades_against_the_base() {
-        let dir = std::env::temp_dir().join(format!("dcp-session-{}", std::process::id()));
+        let dir = crate::testkit::scratch("session");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("ledger")).unwrap();
         let root = dir.to_string_lossy().into_owned();

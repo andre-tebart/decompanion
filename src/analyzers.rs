@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn batch_decompile_shape() {
-        let dir = std::env::temp_dir().join(format!("dcp-az-{}", std::process::id()));
+        let dir = crate::testkit::scratch("az");
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("batch.json");
         std::fs::write(&f, r#"{"subject": {"digest": {"sha256": "ab"}}, "normalized_result": {"items": [

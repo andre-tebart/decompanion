@@ -236,6 +236,8 @@ impl RunClaims {
 thread_local! {
     // store path -> (run id, run time) -> its facts
     static MEM: RefCell<HashMap<String, HashMap<(i64, u64), Rc<RunClaims>>>> = RefCell::new(HashMap::new());
+    // store path -> (the current runs, as runs_key lists them, at the last read; those runs with their facts)
+    static LISTED: RefCell<HashMap<String, (Vec<(i64, u64)>, Vec<Rc<RunClaims>>)>> = RefCell::new(HashMap::new());
     // (store path, what) -> (the current runs it was made of, the value)
     static MADE: RefCell<HashMap<(String, String), (Vec<(i64, u64)>, Rc<dyn std::any::Any>)>> = RefCell::new(HashMap::new());
 }
@@ -305,11 +307,25 @@ pub(crate) fn put_run(db_path: &str, run_id: i64, at: f64, run: RunClaims) {
         let held = m.entry(db_path.to_string()).or_default();
         held.retain(|k, _| k.0 != run_id);
         held.insert((run_id, at.to_bits()), Rc::new(run));
-    })
+    });
+    LISTED.with(|l| l.borrow_mut().remove(db_path));
 }
 
-/// The current runs of the store in run order, each with its facts (loaded if memory does not hold it yet).
+/// The current runs of the store in run order, each with its facts (loaded if memory does not hold it yet). Every
+/// read lists the current runs; when they are the ones of the last read (runs_key: a run's facts never change under
+/// its (id, time)), the runs of that read are the answer, else memory is brought to the listed runs.
 fn current(db: &Connection, db_path: &str) -> rusqlite::Result<Vec<Rc<RunClaims>>> {
+    let key = runs_key(db)?;
+    if let Some(out) = LISTED.with(|l| l.borrow().get(db_path).filter(|e| e.0 == key).map(|e| e.1.clone())) {
+        return Ok(out);
+    }
+    let out = current_load(db, db_path)?;
+    LISTED.with(|l| l.borrow_mut().insert(db_path.to_string(), (key, out.clone())));
+    Ok(out)
+}
+
+/// current's full read: the current runs with their rules, memory brought to them.
+fn current_load(db: &Connection, db_path: &str) -> rusqlite::Result<Vec<Rc<RunClaims>>> {
     let runs: Vec<(i64, String, f64)> = {
         let mut st = db.prepare_cached("SELECT id, rule, at FROM run WHERE current=1 ORDER BY id")?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;

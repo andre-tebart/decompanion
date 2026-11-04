@@ -107,9 +107,6 @@ pub fn st_findings(path: &str, severity: Option<String>, rules: Option<Vec<Strin
 /// compiled units, the analyzer's drafts and other blobs); an error for a store of an unknown schema. The main
 /// checkout's store attached when `main` (a file: URI) is given.
 pub fn st_open(path: &str, main: &str) -> Result<()> {
-    if let Some(d) = std::path::Path::new(path).parent() {
-        std::fs::create_dir_all(d).map_err(|e| Error::runtime(format!("{path}: {e}")))?;
-    }
     let v = with_db(path, |db| {
         let mut v: Option<String> = match db.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r.get(0)).optional() {
             Ok(v) => v,
@@ -162,6 +159,16 @@ pub fn st_main_meta(path: &str, main: &str, key: &str) -> Result<Option<String>>
 pub fn st_current_run(path: &str, rule: &str) -> Result<Option<(i64, String, String)>> {
     with_db(path, |db| {
         db.query_row("SELECT id, input_hash, out_hash FROM run WHERE rule=? AND current=1", [rule], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()
+    })
+}
+
+/// Every rule's current run: rule -> (id, out_hash). One query for a refresh's run keys (each rule's key names the
+/// output of every rule it needs).
+pub fn st_current_runs(path: &str) -> Result<std::collections::HashMap<String, (i64, String)>> {
+    with_db(path, |db| {
+        let mut st = db.prepare("SELECT rule, id, out_hash FROM run WHERE current=1")?;
+        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?))))?;
+        rows.collect()
     })
 }
 
@@ -286,7 +293,7 @@ mod tests {
     /// A store of schema 1 opens as schema 2: its runs are gone (the rules recompute them), what no rule makes stays.
     #[test]
     fn schema_1_store_keeps_its_blobs_and_units() {
-        let dir = std::env::temp_dir().join(format!("dcp-schema1-{}", std::process::id()));
+        let dir = crate::testkit::scratch("schema1");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("old.sqlite").to_string_lossy().into_owned();
         let _ = std::fs::remove_file(&path);

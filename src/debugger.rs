@@ -836,7 +836,7 @@ mod tests {
         assert!(s.at(0x59e010, true).is_none() && s.at(0x59e010, false).is_some());
         assert!(s.at(0x400fff, false).is_none());
         assert_eq!(s.code_range(), Some((0x401000, 0x401091)));
-        let p = std::env::temp_dir().join(format!("dcp-syms-{}.tsv", std::process::id()));
+        let p = crate::testkit::scratch("syms").join("syms.tsv");
         let ps = p.to_string_lossy().into_owned();
         write_symbols(&ps, "k1", &symbols(MAP, |_| None, |_, _| None)).unwrap();
         assert_eq!((symbols_key(&ps), Symbols::load(&ps).rows.len()), ("k1".to_string(), 5));
@@ -858,7 +858,7 @@ mod tests {
     #[test]
     #[ignore = "e2e: VC6, starts processes"]
     fn debugged_crash_and_handled_exception() {
-        let dir = std::env::temp_dir().join(format!("dcp-debugger-{}", std::process::id()));
+        let dir = crate::testkit::scratch("debugger");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let crash = vc6_exe(&dir, "crash", "int *p;\nint deref(int k) { return p[k]; }\nint main(void) { return deref(16); }\n");

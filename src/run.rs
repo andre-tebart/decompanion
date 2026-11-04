@@ -639,7 +639,7 @@ seconds = 20
 
     #[test]
     fn staging() {
-        let base = std::env::temp_dir().join(format!("dcp-run-stage-{}", std::process::id()));
+        let base = crate::testkit::scratch("run-stage");
         let _ = std::fs::remove_dir_all(&base);
         let (orig, other, dir) = (base.join("orig"), base.join("other"), base.join("run"));
         for d in [orig.join("Data"), orig.join("Movie"), other.join("Data"), dir.clone()] {

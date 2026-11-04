@@ -1407,7 +1407,7 @@ mod tests {
         if frontend::library(None).is_none() {
             return;
         }
-        let root = std::env::temp_dir().join(format!("dcp-headers-{}", std::process::id()));
+        let root = crate::testkit::scratch("headers");
         std::fs::create_dir_all(&root).unwrap();
         let r = root.to_string_lossy().into_owned();
         let x = Texts { root: r.clone(), front: Front::of(&r).unwrap(), scan: None };
@@ -1447,7 +1447,7 @@ extern int x;
         if frontend::library(None).is_none() {
             return;
         }
-        let root = std::env::temp_dir().join(format!("dcp-phi-breaks-{}", std::process::id()));
+        let root = crate::testkit::scratch("phi-breaks");
         std::fs::create_dir_all(&root).unwrap();
         let r = root.to_string_lossy().into_owned();
         let x = Texts { root: r.clone(), front: Front::of(&r).unwrap(), scan: None };
@@ -1477,7 +1477,7 @@ extern int x;
         if frontend::library(None).is_none() {
             return;
         }
-        let root = std::env::temp_dir().join(format!("dcp-decls-{}", std::process::id()));
+        let root = crate::testkit::scratch("decls");
         std::fs::create_dir_all(&root).unwrap();
         let r = root.to_string_lossy().into_owned();
         let x = Texts { root: r.clone(), front: Front::of(&r).unwrap(), scan: None };

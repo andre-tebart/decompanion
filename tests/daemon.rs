@@ -11,9 +11,7 @@ fn dcp(root: &Path, args: &[&str]) -> (i32, String, String) {
 }
 
 fn project(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("dcp-daemon-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    dcp::testkit::make_project(&d.join("proj"), false)
+    dcp::testkit::make_project(&dcp::testkit::scratch(&format!("daemon-{name}")).join("proj"), false)
 }
 
 fn stop(root: &Path) {

@@ -12,6 +12,56 @@ const RELOC: u32 = 0x3000;
 pub const RICH_TINY: &[(u32, u32, u32)] = &[(0x30, 9044, 3), (0x0a, 8047, 5), (0x04, 8447, 1)];
 pub const RICH_OTHER: &[(u32, u32, u32)] = &[(0x30, 9044, 2), (0x0a, 8047, 5), (0x1c, 9178, 1), (0x04, 8447, 2), (0x13, 9049, 1)];
 
+/// A test's directory of its own, empty: `name` and a number below the test run's own directory (the system's
+/// temporary directory, then dcp-tests-<pid>); no two calls share one, so tests running in parallel never touch each
+/// other's. It goes when the thread that made it ends (libtest runs each test on a thread of its own, so
+/// the tests remove theirs in parallel), what is left with the run's directory when the process exits; a run's
+/// directory left behind (killed, crashed) goes with the first test directory of a later run, once an hour old.
+pub fn scratch(name: &str) -> PathBuf {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let root = ROOT.get_or_init(|| {
+        let tmp = std::env::temp_dir();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for e in std::fs::read_dir(&tmp).into_iter().flatten().flatten() {
+            let stale = e.file_name().to_string_lossy().strip_prefix("dcp-tests-").is_some_and(|pid| pid.parse::<u32>().is_ok_and(|p| p != std::process::id()))
+                && e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < old);
+            if stale {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+        extern "C" fn remove_root() {
+            if let Some(r) = ROOT.get() {
+                let _ = std::fs::remove_dir_all(r);
+            }
+        }
+        unsafe extern "C" {
+            fn atexit(f: extern "C" fn()) -> std::ffi::c_int;
+        }
+        unsafe { atexit(remove_root) };
+        tmp.join(format!("dcp-tests-{}", std::process::id()))
+    });
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let d = root.join(format!("{name}-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    std::fs::create_dir_all(&d).unwrap();
+    MADE.with(|m| m.borrow_mut().0.push(d.clone()));
+    d
+}
+
+/// The test directories this thread made, removed when it ends (its store connections closed first: Windows does
+/// not remove an open file).
+struct Made(Vec<PathBuf>);
+
+impl Drop for Made {
+    fn drop(&mut self) {
+        for d in &self.0 {
+            crate::forget_conns_under(d);
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+}
+
+thread_local!(static MADE: std::cell::RefCell<Made> = const { std::cell::RefCell::new(Made(Vec::new())) });
+
 pub fn posix(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }

@@ -465,7 +465,7 @@ mod real_tests {
         }
         let img = crate::pe::Image::parse(std::fs::read(EXE).unwrap()).unwrap();
         let imports: Vec<crate::pe::Import> = img.imports().into_iter().filter(|i| i.dll.eq_ignore_ascii_case("mss32.dll")).collect();
-        let dir = std::env::temp_dir().join(format!("dcp-implib-{}", std::process::id()));
+        let dir = crate::testkit::scratch("implib");
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("mss32.lib").to_string_lossy().into_owned();
         let tools = Tools { root: Some(ROOT.into()), extra_include: vec![], extra_lib: vec![] };

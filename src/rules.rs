@@ -1194,14 +1194,14 @@ pub(crate) mod testkit {
 
     impl Kit {
         pub fn new(image: &[u8]) -> Kit {
-            let dir = std::env::temp_dir().join(format!("dcp-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            let dir = crate::testkit::scratch(&format!("kit-{}", N.fetch_add(1, Ordering::Relaxed)));
             std::fs::create_dir_all(&dir).unwrap();
             let img = dir.join("image.dll");
             std::fs::write(&img, image).unwrap();
-            let db = dir.join("store.sqlite");
-            let c = Connection::open(&db).unwrap();
-            c.execute_batch(crate::store::SCHEMA).unwrap();
-            Kit { db: db.to_string_lossy().into_owned(), image: img.to_string_lossy().into_owned(), dir }
+            // the store as the core opens one (with_db: WAL), not SQLite's defaults (a rollback journal, a sync each write)
+            let db = dir.join("store.sqlite").to_string_lossy().into_owned();
+            crate::with_db(&db, |c| c.execute_batch(crate::store::SCHEMA)).unwrap();
+            Kit { db, image: img.to_string_lossy().into_owned(), dir }
         }
 
         pub fn ctx(&self, rule: &str, needed: &[&str], extra: &str) -> Ctx {

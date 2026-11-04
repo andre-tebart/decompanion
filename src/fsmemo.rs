@@ -12,20 +12,26 @@
 //!   only when the stamp is equal and the file was last modified more than RACY_NS before it was hashed (git's
 //!   racy-clean rule: a write within the same clock tick as the hash could keep the stamp). DCP_NO_STAMPS=1 turns
 //!   the persisted hashes off; `dcp build --force` and `dcp setup --force` drop them (forget_all).
+//! - An entry is a fact about one file (its absolute path), whichever project hashed it: the entries of every
+//!   attached project are one map. A project's file persists the entries hashed while it was attached (the thread's
+//!   project; a thread a command spawned: the project attached last), and only a project with new entries is
+//!   written. A process serves one project (the daemon) or several at once (the tests): attaching one never writes
+//!   another's file.
+//! - The lock guards the memo only: every stat, listing, read and hash runs outside it.
 //!
 //! The stamps decide nothing on their own beyond "this file did not change": every input hash is still the
 //! content hash of the files.
 
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const STAMPS_VERSION: &str = "dcp-stamps 3";
 const RACY_NS: i128 = 2_000_000_000;
-/// The tests that count reads hold it exclusively; the command-line tests hold it shared (they attach their projects
-/// to the one memo of the process).
+/// The tests that count reads hold it exclusively; the command-line tests hold it shared (their projects share the
+/// one memo of the process).
 #[cfg(test)]
 pub(crate) static EXCLUSIVE: std::sync::RwLock<()> = std::sync::RwLock::new(());
 #[cfg(test)]
@@ -38,11 +44,20 @@ struct State {
     bytes: HashMap<String, (Stamp, Arc<Vec<u8>>)>,
     sha: HashMap<String, (Stamp, String)>,
     seen: HashMap<String, Stamp>,
-    disk: HashMap<String, (Stamp, String, i128)>, // path -> stamp, sha256, hashed at (ns)
-    disk_path: Option<PathBuf>,
-    dirty: bool,
-    epoch: u64,
+    disk: HashMap<String, (Stamp, String, i128)>, // path -> stamp, sha256, hashed at (ns): every attached project's
+    roots: HashMap<PathBuf, Persisted>,           // a project's stamps.tsv -> what it persists
+    last: Option<PathBuf>,                        // the stamps.tsv attached last
+    epoch: u64,                                   // a stamp taken before the current epoch began is not kept
 }
+
+/// What one project's stamps.tsv persists: the paths of its entries, and whether it has entries not yet written.
+#[derive(Default)]
+struct Persisted {
+    paths: HashSet<String>,
+    dirty: bool,
+}
+
+thread_local!(static ATTACHED: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) });
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     static S: OnceLock<Mutex<State>> = OnceLock::new();
@@ -61,13 +76,22 @@ fn now_ns() -> i128 {
     ns(Ok(SystemTime::now()))
 }
 
-fn stamp_of(st: &mut State, path: &str) -> std::io::Result<Stamp> {
-    if let Some(s) = st.seen.get(path) {
-        return Ok(*s);
-    }
+/// The file's stamp of this epoch (a stat when it has none yet; the stat outside the lock, kept only when no new
+/// epoch began meanwhile).
+fn stamp_of(path: &str) -> std::io::Result<Stamp> {
+    let epoch = {
+        let st = state();
+        if let Some(s) = st.seen.get(path) {
+            return Ok(*s);
+        }
+        st.epoch
+    };
     let m = std::fs::metadata(path)?;
     let s = (m.len(), ns(m.modified()));
-    st.seen.insert(path.to_string(), s);
+    let mut st = state();
+    if st.epoch == epoch {
+        st.seen.insert(path.to_string(), s);
+    }
     Ok(s)
 }
 
@@ -113,7 +137,7 @@ pub fn walk(base: &str, patterns: &[String]) -> Vec<(String, String)> {
         rel: String,
         path: String,
     }
-    fn rec(st: &mut State, d: &Path, parts: &[String], rel: &str, found: &mut Vec<Found>) {
+    fn rec(d: &Path, parts: &[String], rel: &str, found: &mut Vec<Found>, stamps: &mut Vec<(String, Stamp)>) {
         let Ok(it) = std::fs::read_dir(d) else { return };
         for e in it.flatten() {
             let Ok(ft) = e.file_type() else { continue };
@@ -122,7 +146,7 @@ pub fn walk(base: &str, patterns: &[String]) -> Vec<(String, String)> {
             let mut p = parts.to_vec();
             p.push(name.to_lowercase());
             if ft.is_dir() {
-                rec(st, &path, &p, &format!("{rel}{name}/"), found);
+                rec(&path, &p, &format!("{rel}{name}/"), found, stamps);
             } else {
                 // a symlink counts when it leads to a file (DirEntry.is_file follows it)
                 let m = if ft.is_symlink() { std::fs::metadata(&path) } else { e.metadata() };
@@ -131,13 +155,18 @@ pub fn walk(base: &str, patterns: &[String]) -> Vec<(String, String)> {
                     continue;
                 }
                 let ps = path.to_string_lossy().into_owned();
-                st.seen.insert(ps.clone(), (m.len(), ns(m.modified())));
+                stamps.push((ps.clone(), (m.len(), ns(m.modified()))));
                 found.push(Found { parts: p, rel: format!("{rel}{name}"), path: ps });
             }
         }
     }
-    let mut found = vec![];
-    rec(&mut state(), Path::new(base), &[], "", &mut found);
+    let (mut found, mut stamps) = (vec![], vec![]);
+    let epoch = state().epoch;
+    rec(Path::new(base), &[], "", &mut found, &mut stamps);
+    let mut st = state();
+    if st.epoch == epoch {
+        st.seen.extend(stamps);
+    }
     found.sort_by(|a, b| (&a.parts, &a.rel, &a.path).cmp(&(&b.parts, &b.rel, &b.path)));
     let mut out = vec![];
     for pat in patterns {
@@ -148,15 +177,14 @@ pub fn walk(base: &str, patterns: &[String]) -> Vec<(String, String)> {
 }
 
 pub fn read_bytes(path: &str) -> std::io::Result<Arc<Vec<u8>>> {
-    let mut st = state();
-    let stamp = stamp_of(&mut st, path)?;
-    if let Some((s, b)) = st.bytes.get(path) {
+    let stamp = stamp_of(path)?;
+    if let Some((s, b)) = state().bytes.get(path) {
         if *s == stamp {
             return Ok(b.clone());
         }
     }
     let data = Arc::new(std::fs::read(path)?);
-    st.bytes.insert(path.to_string(), (stamp, data.clone()));
+    state().bytes.insert(path.to_string(), (stamp, data.clone()));
     Ok(data)
 }
 
@@ -169,10 +197,9 @@ pub fn read_text(path: &str) -> std::io::Result<String> {
 
 /// The hex sha256 of the file's bytes.
 pub fn sha256(path: &str) -> std::io::Result<String> {
-    let stamp;
+    let stamp = stamp_of(path)?;
     {
         let mut st = state();
-        stamp = stamp_of(&mut st, path)?;
         if let Some((s, h)) = st.sha.get(path) {
             if *s == stamp {
                 return Ok(h.clone());
@@ -189,11 +216,14 @@ pub fn sha256(path: &str) -> std::io::Result<String> {
     let h = hex(&Sha256::digest(&*read_bytes(path)?));
     #[cfg(test)]
     READS.with(|r| r.set(r.get() + 1));
+    let to = ATTACHED.with(|a| a.borrow().clone());
     let mut st = state();
     st.sha.insert(path.to_string(), (stamp, h.clone()));
-    if st.disk_path.is_some() {
+    if let Some(root) = to.or_else(|| st.last.clone()).filter(|r| st.roots.contains_key(r)) {
         st.disk.insert(path.to_string(), (stamp, h.clone(), now_ns()));
-        st.dirty = true;
+        let r = st.roots.get_mut(&root).unwrap();
+        r.paths.insert(path.to_string());
+        r.dirty = true;
     }
     Ok(h)
 }
@@ -231,19 +261,22 @@ pub fn tree_hash(dirs: &[String], patterns: &[String]) -> std::io::Result<String
 
 // ------------------------------------------------------------------------------------------------ the persisted hashes
 
-/// Use the persisted hashes of the project at root (once per process and root).
+/// Use the persisted hashes of the project at root: its file is read once per process, and this thread's new
+/// hashes are persisted there.
 pub fn attach(root: &str) {
     if std::env::var_os("DCP_NO_STAMPS").is_some_and(|v| !v.is_empty()) || std::env::var_os("DCP_NO_SHORTCUTS").is_some_and(|v| !v.is_empty()) {
         return;
     }
     let path = Path::new(root).join("build").join("cache").join("stamps.tsv");
-    if state().disk_path.as_deref() == Some(path.as_path()) {
-        return;
+    ATTACHED.with(|a| *a.borrow_mut() = Some(path.clone()));
+    {
+        let mut st = state();
+        st.last = Some(path.clone());
+        if st.roots.contains_key(&path) {
+            return;
+        }
     }
-    flush();
-    let mut st = state();
-    st.disk.clear();
-    st.dirty = false;
+    let mut entries = vec![];
     if let Ok(text) = std::fs::read_to_string(&path) {
         let mut lines = text.lines();
         if lines.next() == Some(STAMPS_VERSION) {
@@ -251,35 +284,58 @@ pub fn attach(root: &str) {
                 let f: Vec<&str> = l.split('\t').collect();
                 if f.len() == 5 {
                     if let (Ok(size), Ok(m), Ok(at)) = (f[1].parse(), f[2].parse(), f[4].parse()) {
-                        st.disk.insert(f[0].to_string(), ((size, m), f[3].to_string(), at));
+                        entries.push((f[0].to_string(), ((size, m), f[3].to_string(), at)));
                     }
                 }
             }
         }
     }
-    st.disk_path = Some(path);
+    let mut st = state();
+    if st.roots.contains_key(&path) {
+        return; // another thread read it meanwhile
+    }
+    let mut r = Persisted::default();
+    for (p, e) in entries {
+        r.paths.insert(p.clone());
+        // the later hash of a file another project's file also holds stays
+        if st.disk.get(&p).is_none_or(|d| d.2 < e.2) {
+            st.disk.insert(p, e);
+        }
+    }
+    st.roots.insert(path, r);
 }
 
-/// Write the persisted hashes when they changed (atomically: another process may read them meanwhile).
+/// Write the persisted hashes of each project with new entries (atomically: another process may read them meanwhile).
 pub fn flush() {
-    let mut st = state();
-    let Some(path) = st.disk_path.clone() else { return };
-    if !st.dirty {
-        return;
+    let mut out: Vec<(PathBuf, String)> = vec![];
+    {
+        let mut st = state();
+        let State { roots, disk, .. } = &mut *st;
+        for (path, r) in roots.iter_mut().filter(|(_, r)| r.dirty) {
+            let mut text = String::from(STAMPS_VERSION);
+            text.push('\n');
+            let mut rows: Vec<(&String, &(Stamp, String, i128))> = r.paths.iter().filter_map(|p| disk.get(p).map(|e| (p, e))).collect();
+            rows.sort_by(|a, b| a.0.cmp(b.0));
+            for (p, ((size, m), h, at)) in rows {
+                text.push_str(&format!("{p}\t{size}\t{m}\t{h}\t{at}\n"));
+            }
+            r.dirty = false;
+            out.push((path.clone(), text));
+        }
     }
-    let mut out = String::from(STAMPS_VERSION);
-    out.push('\n');
-    let mut rows: Vec<_> = st.disk.iter().collect();
-    rows.sort_by(|a, b| a.0.cmp(b.0));
-    for (p, ((size, m), h, at)) in rows {
-        out.push_str(&format!("{p}\t{size}\t{m}\t{h}\t{at}\n"));
-    }
-    let tmp = path.with_file_name(format!("stamps.tsv.{}.tmp", std::process::id()));
-    let ok = path.parent().map(|d| std::fs::create_dir_all(d).is_ok()).unwrap_or(false)
-        && std::fs::write(&tmp, out).is_ok()
-        && std::fs::rename(&tmp, &path).is_ok();
-    if ok {
-        st.dirty = false;
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    for (path, text) in out {
+        // a temporary file of its own per write: two threads never write one file, a rename moves a whole one
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = path.with_file_name(format!("stamps.tsv.{}.{n}.tmp", std::process::id()));
+        let ok = path.parent().map(|d| std::fs::create_dir_all(d).is_ok()).unwrap_or(false)
+            && std::fs::write(&tmp, text).is_ok()
+            && std::fs::rename(&tmp, &path).is_ok();
+        if !ok {
+            if let Some(r) = state().roots.get_mut(&path) {
+                r.dirty = true;
+            }
+        }
     }
 }
 
@@ -290,7 +346,10 @@ pub fn forget_all() {
     st.sha.clear();
     st.seen.clear();
     st.disk.clear();
-    st.dirty = st.disk_path.is_some();
+    for r in st.roots.values_mut() {
+        r.paths.clear();
+        r.dirty = true;
+    }
 }
 
 #[cfg(test)]
@@ -309,7 +368,7 @@ mod tests {
     #[test]
     fn walk_order_and_reads() {
         let _x = EXCLUSIVE.write().unwrap_or_else(|e| e.into_inner());
-        let d = std::env::temp_dir().join(format!("dcp-fsmemo-{}", std::process::id()));
+        let d = crate::testkit::scratch("fsmemo");
         std::fs::create_dir_all(d.join("Sub")).unwrap();
         std::fs::write(d.join("b.c"), "x\r\ny").unwrap();
         std::fs::write(d.join("A.h"), "").unwrap();
@@ -337,7 +396,7 @@ mod tests {
     #[test]
     fn persisted_hash_trusted_only_for_an_old_unchanged_stamp_and_racy_entries_hashed_again() {
         let _x = EXCLUSIVE.write().unwrap_or_else(|e| e.into_inner());
-        let root = std::env::temp_dir().join(format!("dcp-stamps-{}", std::process::id()));
+        let root = crate::testkit::scratch("stamps");
         std::fs::create_dir_all(root.join("src")).unwrap();
         let f = root.join("src").join("a.c");
         let fs = f.to_string_lossy().into_owned();
@@ -347,8 +406,7 @@ mod tests {
         let h1 = sha256(&fs).unwrap();
         flush();
         // a new process: the memo is gone, the persisted hash answers without a read
-        forget_all();
-        state().disk_path = None;
+        *state() = State::default();
         attach(&root.to_string_lossy());
         let n = reads();
         assert_eq!(sha256(&fs).unwrap(), h1);
@@ -368,13 +426,13 @@ mod tests {
         let n = reads();
         sha256(&fs).unwrap();
         assert!(reads() > n);
-        state().disk_path = None;
+        *state() = State::default();
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn walk_lists_like_rglob() {
-        let d = std::env::temp_dir().join(format!("dcp-rglob-{}", std::process::id()));
+        let d = crate::testkit::scratch("rglob");
         for rel in ["b/z.c", "a/y.h", "a/x.c", "A2/w.C", "c.txt"] {
             let p = d.join(rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();

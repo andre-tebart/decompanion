@@ -27,7 +27,7 @@ static N: AtomicUsize = AtomicUsize::new(0);
 
 /// A fresh empty directory for one test.
 pub fn tmp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("dcp-cli-{}-{}-{name}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let d = crate::testkit::scratch(&format!("cli-{}-{name}", N.fetch_add(1, Ordering::Relaxed)));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
