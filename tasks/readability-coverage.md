@@ -9,8 +9,9 @@ Outside the model (§9). These are cheap once consistency-at-uses has enabled mo
 - **Q2:** `dcp grade NAME` prints the full Q2 list, labelled by kind (callee placeholder, field, local), without a new
   `--all` flag. Today it is cut at 8 (readability.rs:357-361). Add a union-alias hint. Macro names that spell an
   address count as placeholders.
-- **Q4:** count `(char *)&obj + N`; today only the `*(T *)` regex and raw macros count (readability.rs:374-383). The
-  message mentions the struct-array view.
+- **Q4:** ~~count `(char *)&obj + N`~~ done: offset pointers count (`readability::offset_pointers`: `(T *)((char *)p
+  + N)`, `(T *)(p + N)`, `(char *)p + N`; a typed pointer one past itself is exempt). Left: the message mentions the
+  struct-array view.
 - **Lint hints:** `-Wtautological-constant-out-of-range-compare`, `-Wunknown-escape-sequence`, and a duplicated
   identical address comment under Q6.
 

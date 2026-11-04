@@ -197,8 +197,10 @@ work, however long.
   `error=` record with exit 1 and nothing written: read it, never assume the rename happened. A view
   (`ai_Unk7603a0B`) keeps its name when its datum is renamed (the note lists it): rename it on its own.
   Locals and parameters: edit the function.
-- Q3 address literals and Q4 raw access (`*(T *)(p + 0x1c)`, macros built on such casts): a typed field, a
-  struct, the symbol (see the hard rule on addresses). A datum the unit reads as another type is a view macro
+- Q3 address literals and Q4 raw access (`*(T *)(p + 0x1c)`, macros built on such casts, and the same access in
+  two steps: an offset pointer `T *x = (T *)((char *)e + 0xc2)`, `(T *)(ev + 4)`, `(char *)obj + 8`): a typed
+  field, a struct, the symbol (see the hard rule on addresses). Moving the offset into a local is no fix; add
+  the field to the struct (a union member at its offset when the record is kind-specific). A datum the unit reads as another type is a view macro
   with the address comment on its line: `#define NAME (*(T *)&datum)  /* 0xADDR */`, or
   `(*(T *)((char *)&datum + OFF))` for a part of it (`(*(T *)(array + N))` too when `array` is declared as an
   array in the macro's file: its name is its address, N counts elements). `(*(T *)datum)` / `(*(T *)(ptr + N))`

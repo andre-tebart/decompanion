@@ -108,6 +108,34 @@ macro_rules! re {
 
 re!(deref_cast_re, r"\*\s*\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*(?:\s+[A-Za-z_]\w*)*\s*\*+\s*(?:const\s*)?\)");
 
+// Q4's offset pointers: a pointer made from an object plus a byte offset, the raw access spelt in two steps
+// (`T *p = (T *)((char *)e + 0xc2); *p`, `(T *)(ev + 4)`, `(char *)&obj + 8`): cast to a pointer of (an object,
+// itself maybe cast: group 1) plus a literal (group 2), or a byte pointer of an object plus a literal
+re!(offset_cast_re, r"\(\s*(?:const\s+|volatile\s+|unsigned\s+|signed\s+|struct\s+|union\s+|enum\s+)*[A-Za-z_]\w*\s*\*+\s*\)\s*\(\s*(\(\s*(?:const\s+|unsigned\s+|signed\s+)*[A-Za-z_]\w*\s*\*+\s*\)\s*)?&?\s*[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*\s*\+\s*(0[xX][0-9a-fA-F]+|\d+)[uUlL]*\s*\)");
+re!(byte_offset_re, r"\(\s*(?:const\s+)?(?:unsigned\s+|signed\s+)?char\s*\*\s*\)\s*&?\s*[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*\s*\+\s*(?:0[xX][0-9a-fA-F]+|\d+)");
+
+/// The offset pointers of a function's code (offset_cast_re, byte_offset_re) that no `*(T *)` dereference already
+/// counts: a cast right after a `*` is that dereference, a byte offset inside a cast one is the same access. A
+/// typed pointer one past itself (`(char *)(hdr + 1)`, the payload after a header) is no offset.
+fn offset_pointers(code: &str) -> usize {
+    let mut spans: Vec<(usize, usize)> = vec![];
+    let mut n = 0;
+    for c in offset_cast_re().captures_iter(code) {
+        let m = c.get(0).unwrap();
+        spans.push((m.start(), m.end()));
+        let past_one = c.get(1).is_none() && literal_value(&c[2]) == Some(1);
+        if !past_one && !code[..m.start()].trim_end().ends_with('*') {
+            n += 1;
+        }
+    }
+    for m in byte_offset_re().find_iter(code) {
+        if !spans.iter().any(|&(a, b)| a <= m.start() && m.end() <= b) {
+            n += 1;
+        }
+    }
+    n
+}
+
 const Q4_VIEW: &str = "a typed field, struct or symbol instead; a datum read as another type is a view: \
 `#define NAME (*(T *)&datum)  /* 0xADDR */`, `(*(T *)((char *)&datum + OFF))` or `(*(T *)(array + N))` with the address comment \
 on its line; `(*(T *)datum)` reads through the datum's value and stays raw";
@@ -372,12 +400,16 @@ pub fn readability(src: Option<&Source>, f: &Fn, addr: i64, cx: &Context) -> (St
         fails.push(format!("Q3 addresses: {}", lits[..lits.len().min(6)].join(", ")));
     }
     let casts = deref_cast_re().find_iter(&code).count();
+    let offsets = offset_pointers(&code);
     let mut macros: Vec<&str> = words.iter().copied().filter(|w| cx.raw.contains(*w)).collect::<HashSet<_>>().into_iter().collect();
     macros.sort();
-    if casts > 0 || !macros.is_empty() {
+    if casts > 0 || offsets > 0 || !macros.is_empty() {
         let mut parts = vec![];
         if casts > 0 {
             parts.push(format!("{casts} x `*(T *)`"));
+        }
+        if offsets > 0 {
+            parts.push(format!("{offsets} x offset pointer `(T *)((char *)p + N)`"));
         }
         parts.extend(macros.iter().map(|m| format!("macro {m}")));
         fails.push(format!("Q4 raw access: {} ({Q4_VIEW})", parts.join(", ")));
@@ -413,4 +445,25 @@ pub fn readability(src: Option<&Source>, f: &Fn, addr: i64, cx: &Context) -> (St
         fails.push("Q6 described: no text after the address at the definition, nor at the declaration in its owner header (include/<unit>.h)".into());
     }
     (if fails.is_empty() { "readable" } else { "draft" }.into(), fails)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn q4_offset_pointers() {
+        // a match-base session's spellings: the raw access in two steps
+        assert_eq!(offset_pointers("unsigned short *goodId = (unsigned short *)((char *)e + 0xc2); r = f(*goodId);"), 1);
+        assert_eq!(offset_pointers("int *handle = (int *)((char *)e + 0xb0); duration = (int *)(r + 4);"), 2);
+        assert_eq!(offset_pointers("unsigned char *stepCount = (unsigned char *)e + 0xba;"), 1);
+        assert_eq!(offset_pointers("p = (AITIME *)(e->rec + 0x10); q = (char *)&obj + 8;"), 2);
+        // a dereference cast is counted by `*(T *)` already, its operand is no second access
+        assert_eq!(offset_pointers("x = *(int *)(ev + 0x84) + *(short *)((char *)&obj + 2);"), 0);
+        // typed accesses and pointer arithmetic without a cast stay readable
+        assert_eq!(offset_pointers("e->end = ai_Time; p = list + 4; q = (char *)name; n = (int)(a + 4);"), 0);
+        // the payload after a header: a typed pointer one past itself
+        assert_eq!(offset_pointers("slot = (int *)(p + 1); d->data = (char *)(d + 1); v->items = (SBDATA *)(v + 1);"), 0);
+        assert_eq!(offset_pointers("s = (char *)((char *)map + 1);"), 1);
+    }
 }
