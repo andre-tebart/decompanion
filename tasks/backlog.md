@@ -22,6 +22,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
+| 59 | [declaration-set-tiebreaks](declaration-set-tiebreaks.md): VC6 tie-breaks named in M1, their hunks as allocation | M | |
 | 14 | [model-decisions](model-decisions.md): M7's status, `@original` evidence, signature claims, the held-verdict cache | S | |
 | 15 | [output-convention](output-convention.md): verdict, failures and named changes by default; full state behind `-v` | M-L | |
 | 16 | [show-computed-findings](show-computed-findings.md): build, grade and rename show the findings they computed | S | 15 (the delta) |
