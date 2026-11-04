@@ -16,8 +16,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 30 | [m1-names-cause](m1-names-cause.md): M1 and the wrap name the changed headers and include chain | S-M | |
-| 59 | [declaration-set-tiebreaks](declaration-set-tiebreaks.md): probe VC6 tie-break sensitivity, attribute falls to the unit, no auto-clear on them | M | 30 |
+| 59 | [declaration-set-tiebreaks](declaration-set-tiebreaks.md): probe VC6 tie-break sensitivity, attribute falls to the unit, no auto-clear on them | M | |
 | 57 | [d1-padding-decided](d1-padding-decided.md): D1 decides alignment padding instead of warning | S-M | |
 
 ## P1

@@ -385,14 +385,27 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
     }
     let drafted_at: HashSet<i64> = c.drafted.iter().map(|d| d.1).collect();
     let mut graded_units: HashSet<String> = HashSet::new();
+    // the cause candidates of each grade change (cause.rs): what its unit compiles from that changed since the base;
+    // git is read once, and only when a grade changed
+    let mut changes: Option<Option<crate::cause::Changes>> = None;
     for (name, tp, _, _) in &targets {
         let rows = crate::queues::function_grades(&tp.store_path())?;
         let ch: Vec<_> = grade_changes(root, base, name, &rows).into_iter().filter(|x| !drafted_at.contains(&x.0) || x.3.is_some()).collect();
         graded_units.extend(ch.iter().map(|x| x.1.clone()));
         out.push(format!("grades changed ({name}): {}", ch.len()));
         out.push(format!("  {}", handups(&ch)));
+        let files = if ch.is_empty() { HashMap::new() } else { crate::compile::tu_keys(&tp.store_path()).unwrap_or_default() };
+        let mut causes: HashMap<String, String> = HashMap::new();
         for (a, unit, fname, b, aft) in ch {
-            out.push(format!("  {}  {unit:<16} {fname}: {} -> {}", fmt_addr(a), b.unwrap_or_else(|| "new".into()), aft.unwrap_or_else(|| "gone".into())));
+            let cause = match (&b, &aft, files.get(&unit)) {
+                (Some(_), Some(_), Some(k)) => {
+                    let ch = changes.get_or_insert_with(|| crate::cause::Changes::since(root, base));
+                    ch.as_ref().map(|ch| causes.entry(unit.clone()).or_insert_with(|| ch.of_unit(root, &k.amalg).text(&ch.since, 3)).clone())
+                }
+                _ => None,
+            };
+            out.push(format!("  {}  {unit:<16} {fname}: {} -> {}{}", fmt_addr(a), b.unwrap_or_else(|| "new".into()), aft.unwrap_or_else(|| "gone".into()),
+                             cause.map(|c| format!("; {c}")).unwrap_or_default()));
         }
     }
     let other: Vec<&String> = c.names.iter().filter(|l| !l.contains(" unit ")).collect();

@@ -263,9 +263,12 @@ in an absolute memory operand without a register or an immediate more than one o
 the bytes compare: no address of sym (a constant spelled `&sym + N`), it moves with sym when relinked. dcp asmdiff / dcp diffclass / dcp\nescalate read the same check, and diffclass's verdict is this grade. Q7 is evaluated only for the units whose\ntext the last `dcp lint` parsed (the store meta `lint`). Native: src/grade.rs (refcheck.rs, diffclass.rs,\nequiv.rs, readability.rs, x86.rs).",
     },
     RuleDef {
-        id: "M1.baseline", version: "3", max_support: REPRODUCED, phase: "M1", loader: false,
-        needs: &["G.grade"], outputs: &[], inputs: &["baseline", "config"],
-        doc: "M1: every function of the current target in the grade baseline (ledger/grades.tsv, written only by `dcp\npromote`, lowered for one function only by `dcp debt add`) keeps its grades: experiment byte -> shape / draft\nand shape -> draft are falls, readable -> draft is a fall, and a function the baseline grades that has no\ngrade now fell too. Each fall is an error (an unexplained regression). A function the baseline does not list\ncannot fall. A declared regression is debt (docs/mental-model.md §8.6): the entry holds the grade it fell to,\nits accepted column names the grade before, the last witness commit, why and what it waits for; M1.debt lists\neach (a warning) and is an error when the target holds more than [gate] max_debt of them (no bound unless set). Native:\nlayout.rs.",
+        id: "M1.baseline", version: "4", max_support: REPRODUCED, phase: "M1", loader: false,
+        needs: &["G.grade"], outputs: &[], inputs: &["baseline", "config", "src"],
+        doc: "M1: every function of the current target in the grade baseline (ledger/grades.tsv, written only by `dcp\npromote`, lowered for one function only by `dcp debt add`) keeps its grades: experiment byte -> shape / draft\nand shape -> draft are falls, readable -> draft is a fall, and a function the baseline grades that has no\ngrade now fell too. Each fall is an error (an unexplained regression) and names its cause candidates (cause.rs): what its unit
+compiles from that changed since the commit that last wrote the baseline (the unit's own text, each changed header
+of its include closure with the include chain), or that nothing did (a rule or prover change, another object's
+φ). A function the baseline does not list\ncannot fall. A declared regression is debt (docs/mental-model.md §8.6): the entry holds the grade it fell to,\nits accepted column names the grade before, the last witness commit, why and what it waits for; M1.debt lists\neach (a warning) and is an error when the target holds more than [gate] max_debt of them (no bound unless set). Native:\nlayout.rs.",
     },
     RuleDef {
         id: "L.decl", version: "6", max_support: DECLARED, phase: "L", loader: true,

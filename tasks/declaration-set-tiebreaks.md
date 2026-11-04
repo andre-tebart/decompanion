@@ -1,6 +1,6 @@
 # Declaration-set tie-breaks: measure them, attribute them to the unit
 
-- **Priority:** P0 (interrupts the workflow) · **Size:** M · **Depends on:** 30 (m1-names-cause) for the attribution line
+- **Priority:** P0 (interrupts the workflow) · **Size:** M
 
 ## Problem
 
@@ -37,7 +37,7 @@ shifts share one cause; here the cause can be measured before it fires.
   It goes stale when the function's text changes; the next fall re-probes.
 - **Attribute the fall:** a `tiebreak` function that moves after a declaration change that leaves its own text
   unchanged gets no M1 fall line and needs no debt item. M1 and the wrap print one line per changed header instead:
-  `tie-break: N functions moved (ai_types.h)`, using 30's include-set intersection to name the header.
+  `tie-break: N functions moved (ai_types.h)`, named by cause.rs (the changed headers of the unit's include closure, with the chain, the uncommitted ones first).
 - **Grade stays honest:** byte / shape / draft as built, no tolerance. The function's best grade under the probes is
   recorded as its source-proven grade. The remaining gap is a unit-level finding ("declaration set not yet the
   original's"), not base or deep queue work: `tiebreak` functions at source-proven byte leave both queues.
@@ -48,6 +48,10 @@ shifts share one cause; here the cause can be measured before it fires.
   nothing about its source.
 - **First check:** run the probe on gildegold's four functions. If one typedef already moves all four, the count
   drives the tie-break; if only some names do, it is a hash and the probe family needs more variants.
+  - First sighting (2026-11-04, gildegold 98e0c0f3): `typedef int __dcp_probe_1;` after ai_types.h's guard raised
+    ai_TutorialInitChapter2 from shape (its debt grade) to byte; Chapter3 stayed draft. The same line in d3_fl.h left
+    d3_CloneObject at byte. One typedef is not enough for every function: the family needs more variants (two,
+    three, other names), and a probe must also look for raises, not only falls.
 
 ## Endgame
 

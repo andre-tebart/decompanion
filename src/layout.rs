@@ -866,6 +866,8 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         .map_err(err)?.into_iter().map(|f| (f.lo, f)).collect();
     // the baseline functions whose experiment did not run (their unit has no object), per unit: (first address, count)
     let mut not_run: std::collections::BTreeMap<String, (i64, usize)> = std::collections::BTreeMap::new();
+    // (at, address, name, unit, what fell)
+    let mut fell: Vec<(i64, i64, &str, &str, String)> = vec![];
     for (a, r) in &base {
         let (name, code, readability) = (&r[2], &r[4], &r[5]);
         let mut falls = vec![];
@@ -889,9 +891,19 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             }
         }
         let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };
-        for what in falls {
-            out.finding("error", "M1", at, at + 1, format!("{name} at {:#x}: {what} (baseline ledger/grades.tsv)", a), "");
-        }
+        fell.extend(falls.into_iter().map(|what| (at, *a, name.as_str(), r[3].as_str(), what)));
+    }
+    // the cause candidates (cause.rs): what each fallen unit compiles from that changed since the
+    // baseline's commit; git is read only when something fell
+    let changes = if fell.is_empty() { None } else { crate::cause::Changes::since_baseline(&ctx.root) };
+    let mut causes: HashMap<&str, Option<String>> = HashMap::new();
+    for (at, a, name, unit, what) in &fell {
+        let cause = changes.as_ref().and_then(|ch| causes.entry(unit).or_insert_with(|| {
+            let file: Option<String> = db.query_row("SELECT amalg FROM tu WHERE unit=?", [unit], |r| r.get(0)).ok();
+            file.map(|f| ch.of_unit(&ctx.root, &f).text(&ch.since, 3))
+        }).clone());
+        let cause = cause.map(|c| format!("; {c}")).unwrap_or_default();
+        out.finding("error", "M1", *at, at + 1, format!("{name} at {a:#x}: {what}{cause} (baseline ledger/grades.tsv)"), "");
     }
     for (unit, (a, n)) in &not_run {
         let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };

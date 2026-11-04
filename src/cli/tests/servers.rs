@@ -202,7 +202,7 @@ fn match_server() {
     write(&d, "src/dllmain.c", &good.replace("!= (unsigned long)-1", "== 0"));
     let (code, out) = dcp(&d, &["check"]);
     write(&d, "src/dllmain.c", &good);
-    assert!(code == 1 && out.contains("M1") && out.contains("Init"), "{out}");
+    assert!(code == 1 && out.contains("M1") && out.contains("Init") && out.contains("its unit src/dllmain.c changed"), "{out}");
     assert_eq!(dcp(&d, &["check"]).0, 0);
     // the probe
     let (code, out) = dcp(&d, &["toolchain", "probe"]);
