@@ -59,7 +59,8 @@ Hard rules
 
 `dcp next` -> read the function against the original -> fix the meaning -> `dcp build` ->
 `dcp grade NAME` -> commit -> next. Never skip an item: one you cannot raise is escalated (section 3) or
-handed up (section 3a).
+handed up (section 3a). An item that is not a function of its own (a false start, a wrong end) is a layout error:
+fix it (2.7), do not match it and do not escalate it.
 
 The item line: `next=0xADDR name=... unit=... section=draft|read tier=easy|hard experiment=... readability=... gates=B3,Q2,...
 dist='N ins / M bytes, size ours vs original'`. `section=draft`: the experiment is below shape; `section=read`: the
@@ -302,6 +303,39 @@ checkout; `--readability draft` when readability fell too): it lowers that one f
 max_debt` items when it sets one. `dcp debt list` shows them all: walk them once the structure settles (many share one
 cause). Commit `ledger/grades.tsv` with the change. `dcp promote` (and the wrap) raise entries only and refuse a
 fall no debt item covers.
+
+### 2.7 Layout errors: a false start, a wrong end (fix them when you meet them)
+The function boundaries come from the layout pass and can be wrong. A wrong boundary is base work: fix it in the
+session that meets it (the item itself or a function you read for it). Never match code against a wrong boundary,
+and never escalate or hand up an item because of one. Fixing a boundary also fixes the drafts on both sides of it.
+- **A false start** (the item is really part of the function before it: a switch case, a shared return tail or
+  cleanup block, the code in front of a jump table). Read these before you decide:
+  - `dcp refs 0xADDR`: no `call` and no pointer reference to the start, only `tail` / `operand` refs from a
+    single function (its jumps into the range, its `jmp [eax*4 + table]` operand).
+  - `dcp disasm 0xADDR`: no prologue. It reads callee-saved registers (`esi`, `edi`, `ebx`, `ebp`) it never set,
+    and it leaves through the other function's epilogue (the same `pop`s and the same `add esp, N` as that
+    function's `sub esp, N`).
+  - `dcp dump` of the jump table after the code: the start is one of its entries.
+  - The analyzer's name in `dcp refs` (`analyzer=ghidra draft=caseD_..` / `LAB_..`) is a hint, not evidence.
+  The fix: delete the false function, its address comment and any prototype of it. Write its code as what it is
+  (the `case` arm in the owner's `switch`, the shared tail as the owner's statements), and correct the owner's
+  address comment and description (its real end, `..` up to and including its jump table). `dcp why 0xADDR` must
+  then show the owner as `owner` of the old start. Check other comments that name the false start or attribute
+  its table to another function, and correct them.
+- **A missing start** (two functions in one: our function goes on past a `ret` into code that something else
+  `call`s, `dcp refs` of that address shows `call` refs). Split it: give the second function its own address comment
+  and definition right after the first, in the unit's TU order.
+- **A wrong end** (`B1 ... the original continues after our end: 0x..`, and the code past it is reached only from
+  this function): it is still this function's code. Reconstruct it in this function. It is not a new function.
+- **The baseline**: a deleted false start keeps its entry in `ledger/grades.tsv`, and `dcp check` fails on it
+  (`M1 0xADDR <name> ... no grade now (its source is gone?)`). Commit the fix first. Then run `dcp check` and make
+  sure that the removed address(es) are the only M1 lines. Only then run `dcp promote --accept-falls` and commit
+  `ledger/grades.tsv` (`ledger: drop the false start <name> (part of <owner>)`). Any other M1 line means a real fall:
+  fix it first, and never accept it this way.
+- **The counting**: a layout fix and the owner's reconstruction are one item of the 8, committed as `<unit>: <owner>
+  takes in the false start 0xADDR (layout fix)`, with the evidence in the message. Raise the owner as far as the
+  session allows. If it stays below shape, escalate it or hand it up (3, 3a) like any other function. The layout fix
+  itself is never handed up.
 
 ## 3. Escalation to the deep queue
 When only allocation or scheduling is left (`regs`, `slots`, `order` hunks the classes do not explain away, or
