@@ -1,7 +1,7 @@
 ---
 name: dcp-match-base-loop
-description: Orchestrate repeated match-base sessions of a decompanion project - each iteration starts a fresh worker agent on the dcp-match-base skill; with reporting on (reports=on; off by default), it sends a fix worker into the decompanion repo when the worker hits a critical dcp tooling bug, then collects the worker's tooling feedback and files it as markdown in decompanion's bug-reports/ and improvement-reports/. Options: easy=MODEL and hard=MODEL route the base queue's easy tier to one model and its hard tier to another (tiers=off: one worker for the whole queue); reports=on|off. Use when the user says "match-base loop", "/match-base-loop", "dcp-match-base-loop", "loop match-base" or "run the match-base workers in a loop".
-argument-hint: "[easy=MODEL] [hard=MODEL] [tiers=on|off] [reports=off|on]"
+description: Orchestrate repeated match-base sessions of a decompanion project - each iteration starts a fresh worker agent on the dcp-match-base skill; with reporting on (reports=on; off by default), it sends a fix worker into the decompanion repo when the worker hits a critical dcp tooling bug, then collects the worker's tooling feedback and files it as markdown in decompanion's bug-reports/ and improvement-reports/. Options: easy=MODEL and hard=MODEL route the base queue's easy tier to one model and its hard tier to another (tiers=off: one worker for the whole queue); order=easy|hard picks which tier goes first; reports=on|off. Use when the user says "match-base loop", "/match-base-loop", "dcp-match-base-loop", "loop match-base" or "run the match-base workers in a loop".
+argument-hint: "[easy=MODEL] [hard=MODEL] [tiers=on|off] [order=easy|hard] [reports=off|on]"
 ---
 
 # Match-base loop: you orchestrate, the workers decompile
@@ -21,6 +21,8 @@ Given after the skill name (`/dcp-match-base-loop easy=haiku hard=opus reports=o
   and every function an easy worker handed up with `@hard`).
 - `tiers=on` (the default) or `tiers=off`. With `off`, every worker takes the whole queue (`tier=all`) on the
   `hard` model, as before tiers existed.
+- `order=easy` (the default) or `order=hard`: which tier the loop works first (see Choosing the tier).
+  Ignored with `tiers=off`.
 
 - `reports=off` (the default, also when no option is given): no reporting at all. Workers are not asked to stop
   on dcp bugs, no fix worker runs, no feedback is asked for and nothing is filed in decompanion. Each iteration
@@ -29,19 +31,23 @@ Given after the skill name (`/dcp-match-base-loop easy=haiku hard=opus reports=o
   repairs it in decompanion, and after each session the worker's feedback is filed (steps 3 to 5, Filing).
 
 The user may switch an option during the loop ("reports off", "easy workers on haiku", "use opus for hard"). It
-applies from the next worker on. State the options in your first message of the loop: the reporting mode and
-the model of each tier.
+applies from the next worker on ("hard items first" switches to `order=hard`). State the options in your first
+message of the loop: the reporting mode, the model of each tier and the order.
 
 ## Choosing the tier (tiers=on)
 
 Before each iteration, run `dcp next` once yourself (from the project root). Its first line counts the base
-queue by tier: `queue=base ... items=N easy=E hard=H`. Then:
-- `E > 0`: an easy iteration: the `easy` model, `tier=easy`.
-- `E = 0` and `H > 0`: a hard iteration: the `hard` model, `tier=hard`.
+queue by tier: `queue=base ... items=N easy=E hard=H`. The iteration's tier is the first tier in the order
+that still has items:
+- `order=easy` (the default): `E > 0` → easy; else `H > 0` → hard.
+- `order=hard`: `H > 0` → hard; else `E > 0` → easy.
 - `items=0`: the base queue is empty. Stop the loop and tell the user (the deep queue, `dcp next --deep`, is
   not this loop's).
-Easy work therefore goes first, and the hard workers pick up what is left, including the easy workers'
-hand-ups. That is the only `dcp` command you run; you still do no decompilation yourself.
+An easy iteration runs on the `easy` model with `tier=easy`, a hard one on the `hard` model with `tier=hard`.
+With `order=easy` the hard workers pick up what is left, including the easy workers' hand-ups. With
+`order=hard` the hard tier is worked down first; an easy worker's hand-ups put items back into it, so the
+next iteration is hard again until `H = 0`. The order is decided anew before each iteration. That is the only
+`dcp` command you run; you still do no decompilation yourself.
 
 Locations
 - Project: the current working directory (e.g. gildegold), the main checkout the workers use.
