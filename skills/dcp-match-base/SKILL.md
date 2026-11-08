@@ -338,6 +338,12 @@ and never escalate or hand up an item because of one. Fixing a boundary also fix
   itself is never handed up.
 
 ## 3. Escalation to the deep queue
+**Readability is never escalated.** A function whose `dcp grade` shows any Q1..Q8 gate, or `readability=draft`, is
+base work whatever its experiment: fix the name, the type, the view or the comment here. `dcp escalate` and
+`dcp escalate --hard` are for a function that already reads clean; checking `gates=` for a `Q` rule before you
+escalate is not optional (the user requires every Q gate to be solved by base workers, and a deep worker does
+not read C for meaning).
+
 When only allocation or scheduling is left (`regs`, `slots`, `order` hunks the classes do not explain away, or
 the code is shape and only byte identity is missing), or a generated variant round would be needed:
 `dcp escalate NAME "why"`, build, commit `<unit>: <name> -> deep (match-base)`. The reason lists what was
