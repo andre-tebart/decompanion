@@ -2242,12 +2242,15 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
                 if ta != tb || *ta == 0 {
                     return unknown(if *ta == 0 || *tb == 0 { "a switch table's jump (not followed yet)" } else { "a jump out of the function to another place" }.into(), a, b);
                 }
-                // every register the same on both sides
+                // the callee-saved registers the same on both sides: the target is a function of the C calling
+                // conventions (cdecl, stdcall; gildegold has no fastcall or thiscall), which reads its arguments from
+                // the stack and treats eax, ecx and edx as scratch (bug-reports/prover-tail-jmp-offset.md: init_Betrieb's
+                // `add ecx, edx; lea edi, [ecx+0x2e]` against `lea edi, [ecx+edx+0x2e]` leaves another ecx at the jump)
                 let same = |g: u8| {
                     let at = |side: u8| next.pairs.iter().find(|p| p.0 == side && p.1 == Loc::Reg(g)).map(|p| (p.2, p.3));
                     at(0).is_some() && at(0) == at(1)
                 };
-                if !(0..8u8).filter(|&g| g != ESP).all(same) || ra.sp != rb.sp {
+                if ![3u8, 5, 6, 7].into_iter().all(same) || ra.sp != rb.sp {
                     return unknown("a jump out of the function with other registers or stack".into(), a, b);
                 }
                 // the FPU stack is the target's argument as well (`jmp _ftol` converts st0)
@@ -2621,6 +2624,21 @@ mod tests {
         };
         assert!(matches!(prove(&ftol(0x600000), &ftol(0x600000), va), Outcome::Equal { .. }));
         assert!(!matches!(prove(&ftol(0x600000), &ftol(0x600008), va), Outcome::Equal { .. }));
+    }
+
+    #[test]
+    fn a_tail_call_ignores_the_scratch_registers() {
+        let va = 0x401000;
+        // `mov REG, 1; jmp 0x500000` (5 + 5 bytes)
+        let tail = |reg: u8| {
+            let mut c = vec![0xb8 + reg, 1, 0, 0, 0, 0xe9];
+            c.extend(0x500000u32.wrapping_sub(va + 10).to_le_bytes());
+            c
+        };
+        // ecx against edx: scratch at the jump
+        assert!(matches!(prove(&tail(1), &tail(2), va), Outcome::Equal { .. }));
+        // ecx against esi: a callee-saved register the caller sees
+        assert!(!matches!(prove(&tail(1), &tail(6), va), Outcome::Equal { .. }));
     }
 
     #[test]
