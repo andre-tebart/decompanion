@@ -42,7 +42,7 @@ that still has items:
 - `order=easy` (the default): `E > 0` → easy; else `H > 0` → hard.
 - `order=hard`: `H > 0` → hard; else `E > 0` → easy.
 - `items=0`: the base queue is empty. Stop the loop and tell the user (the deep queue, `dcp next --deep`, is
-  not this loop's).
+  not this loop's: its workers run the dcp-match-deep skill).
 An easy iteration runs on the `easy` model with `tier=easy`, a hard one on the `hard` model with `tier=hard`.
 With `order=easy` the hard workers pick up what is left, including the easy workers' hand-ups. With
 `order=hard` the hard tier is worked down first; an easy worker's hand-ups put items back into it, so the

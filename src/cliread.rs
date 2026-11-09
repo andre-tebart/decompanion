@@ -323,6 +323,24 @@ fn disasm_ours(r: &Reader, key: &str, lv: &ListingView) -> Result<Out> {
     let code = obj.function_code(k);
     let relocs: BTreeMap<u32, String> = code.relocs.iter()
         .map(|(off, rel)| (*off, obj.symbol_at(rel.symbol_index).map(|s| crate::coff::undecorate(&s.name)).unwrap_or_else(|| "?".into()))).collect();
+    // each relocated field as the C names it: the object (a section symbol plus an addend: the datum at that offset)
+    // and the offset into it, written over the field's number (bug-reports/disasm-ours-placeholder-addresses.md:
+    // `[0x6b58] ; reloc txt_Ptrs` read as an address of the original's)
+    let named: BTreeMap<u32, (u32, String)> = code.relocs.iter().map(|(off, rel)| {
+        let value = obj.addend(code.secnum, rel);
+        let label = match crate::refcheck::target(&obj, &code, rel) {
+            crate::refcheck::Target::Name { name, delta } => {
+                let within = value.wrapping_sub(delta) as i32;
+                match within {
+                    0 => name,
+                    w if w < 0 => format!("{name}-{:#x}", -(w as i64)),
+                    w => format!("{name}+{w:#x}"),
+                }
+            }
+            _ => relocs.get(off).cloned().unwrap_or_else(|| "?".into()),
+        };
+        (*off, (value, label))
+    }).collect();
     let lines = r.disasm(&code.data, addr)?;
     let mut out = vec![record(&[("target", s(r.p.target_name.clone())), ("ours", s(name)), ("unit", s(unit)), ("at", Tok::I(addr)),
                                 ("size", Tok::I(code.data.len() as i64)), ("relocations", Tok::I(relocs.len() as i64)), ("code", os(row["code"].as_str()))])];
@@ -331,12 +349,58 @@ fn disasm_ours(r: &Reader, key: &str, lv: &ListingView) -> Result<Out> {
             continue;
         }
         let o = (la as i64 - addr) as u32;
-        let hit: Vec<&str> = relocs.range(o..o + size).map(|x| x.1.as_str()).collect();
-        let tail = if hit.is_empty() { String::new() } else { format!("   ; reloc {}", hit.join(", ")) };
         let bytes = &code.data[o as usize..((o + size) as usize).min(code.data.len())];
+        let ins = crate::dis::decode(bytes, la).into_iter().next();
+        let mut text = text;
+        let mut unnamed: Vec<&str> = vec![];
+        for (off, (value, label)) in named.range(o..o + size) {
+            // the field inside the brackets (a displacement) or outside (an immediate)
+            let in_mem = ins.as_ref().is_some_and(|i| i.disp.size == 4 && o + i.disp.at as u32 == *off);
+            match name_field(&text, in_mem, *value, label) {
+                Some(t) => text = t,
+                None => unnamed.push(label),
+            }
+        }
+        let tail = if unnamed.is_empty() { String::new() } else { format!("   ; reloc {}", unnamed.join(", ")) };
         out.push(format!("{}{tail}{}", lv.line(la as i64, bytes, &text), if fill { "   ; fill" } else { "" }));
     }
     Ok((out, None))
+}
+
+/// An instruction's text with the number of a relocated field (`value`, inside the brackets when `in_mem`, else the
+/// last outside them) replaced by `label`; None when the number is not found.
+fn name_field(text: &str, in_mem: bool, value: u32, label: &str) -> Option<String> {
+    let forms = [format!("{value:#x}"), value.to_string(), format!("-{:#x}", (value as i32).unsigned_abs())];
+    let (lo, hi) = match (text.find('['), text.rfind(']')) {
+        (Some(a), Some(b)) if a < b => (a, b),
+        _ if in_mem => return None,
+        _ => (0, 0),
+    };
+    // the number tokens of the text: (start, end)
+    let tokens: Vec<(usize, usize)> = {
+        let b = text.as_bytes();
+        let mut v = vec![];
+        let mut k = 0;
+        while k < b.len() {
+            let start_ok = k == 0 || !(b[k - 1].is_ascii_alphanumeric() || b[k - 1] == b'_' || b[k - 1] == b'@' || b[k - 1] == b'?');
+            if start_ok && (b[k].is_ascii_digit() || (b[k] == b'-' && b.get(k + 1).is_some_and(|c| c.is_ascii_digit()))) {
+                let s = k;
+                k += 1;
+                while k < b.len() && (b[k].is_ascii_alphanumeric()) {
+                    k += 1;
+                }
+                v.push((s, k));
+            } else {
+                k += 1;
+            }
+        }
+        v
+    };
+    let pick = tokens.iter().rev().find(|(s, e)| {
+        let inside = *s > lo && *e <= hi;
+        inside == in_mem && forms.iter().any(|f| f == &text[*s..*e])
+    })?;
+    Some(format!("{}{label}{}", &text[..pick.0], &text[pick.1..]))
 }
 
 // ------------------------------------------------------------------------------------------------ dump
@@ -838,6 +902,16 @@ pub fn skeleton_lines(p: &Project, a: i64) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relocated_fields_named() {
+        assert_eq!(name_field("mov eax, dword ptr [esi*4 + 0x6b58]", true, 0x6b58, "txt_Ptrs").as_deref(), Some("mov eax, dword ptr [esi*4 + txt_Ptrs]"));
+        // the immediate, not the displacement of the same value
+        assert_eq!(name_field("mov dword ptr [0], 0", false, 0, "g_x+0x4").as_deref(), Some("mov dword ptr [0], g_x+0x4"));
+        assert_eq!(name_field("mov dword ptr [0], 0", true, 0, "g_y").as_deref(), Some("mov dword ptr [g_y], 0"));
+        assert_eq!(name_field("push 0xa", false, 10, "init_PlayerProfile+0xa").as_deref(), Some("push init_PlayerProfile+0xa"));
+        assert_eq!(name_field("push eax", false, 10, "x"), None);
+    }
 
     #[test]
     fn listing_views() {

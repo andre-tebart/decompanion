@@ -157,7 +157,8 @@ fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, 
            phi: &Phi) -> Judged {
     let fc = diffclass::FunctionCompare::new(env, obj, code, lo, o);
     let sites = crate::refcheck::sites_aligned(code, env.img, lo, &fc.la, &fc.lb);
-    let crossed = crate::refcheck::check(obj, code, env.img, &sites, refs, phi).named_differs();
+    let theirs = env.img.read(lo, o.code.max(0) as usize);
+    let crossed = crate::refcheck::check(obj, code, env.img, &sites, refs, phi).settle_calls(obj, code, refs, &theirs, lo).named_differs();
     // slot pairing by object (tasks/slot-pairing-by-object.md): another element of a paired local array
     let slots = crate::timing::phase("g.slotmap", || crate::slotmap::check(code.code().0, &env.img.read(lo, o.code.max(0) as usize), lo, &fc.la, &fc.lb));
     let proof = if fc.verdict.shape && !crossed {
@@ -228,6 +229,7 @@ impl Grader<'_> {
             crate::refcheck::check(obj, code, self.env.img, &sites, &refs, self.phi)
         } else {
             crate::refcheck::check(obj, code, self.env.img, &judged().1, &refs, self.phi)
+                .settle_calls(obj, code, &refs, &self.env.img.read(lo as u32, o.code.max(0) as usize), lo as u32)
         };
         decide(matched, &chk, judged)
     }
@@ -319,6 +321,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             crate::refcheck::check(&f.obj.0, &f.code, &img, &h.matched_sites, &refs[i], &phi)
         } else {
             crate::refcheck::check(&f.obj.0, &f.code, &img, &judged().1, &refs[i], &phi)
+                .settle_calls(&f.obj.0, &f.code, &refs[i], &img.read(lo as u32, h.o.code.max(0) as usize), lo as u32)
         });
         // the reference census (tasks/reference-census.md): the objects one side refers to and the other never
         // does, whatever the alignment; no byte match only (equal bytes refer alike)

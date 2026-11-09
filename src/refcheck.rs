@@ -492,7 +492,69 @@ pub fn check(obj: &Obj, code: &FunctionCode, img: &crate::pe::Image, sites: &[Si
     Check { refs }
 }
 
+/// Each call's target in order: ours as φ's addresses of the relocated callee (a direct call's or an import's
+/// `call [__imp_X]`), the original's as the address it calls (or the import slot it calls through). None when a call
+/// of ours has no callee φ places (a call through a register, our own section, a symbol φ does not know).
+fn call_sequences(obj: &Obj, code: &FunctionCode, refs_of: &Refs, theirs: &[u8], va: u32) -> Option<(Vec<Vec<i64>>, Vec<i64>)> {
+    let (cd, _) = code.code();
+    let by_off: std::collections::HashMap<u32, usize> = code.relocs.iter().enumerate().map(|(k, (off, _))| (*off, k)).collect();
+    let mut ours = vec![];
+    for i in crate::dis::decode(cd, va) {
+        if i.flow != crate::dis::Flow::Call {
+            continue;
+        }
+        let o = i.addr - va;
+        let field = if i.branch.size == 4 { Some(o + i.branch.at as u32) } else if i.disp.size == 4 { Some(o + i.disp.at as u32) } else { None };
+        let k = by_off.get(&field?)?;
+        let addend = obj.addend(code.secnum, &code.relocs[*k].1);
+        let expect = match &refs_of.targets[*k] {
+            Target::Name { delta, .. } if !refs_of.expect[*k].is_empty() => {
+                // a call's field: the callee's start (rel32: the addend is -4 past it, ignored), an import's slot
+                let within = if i.branch.size == 4 { 0 } else { addend.wrapping_sub(*delta) as i32 as i64 };
+                refs_of.expect[*k].iter().map(|a| a + within).collect()
+            }
+            _ => return None,
+        };
+        ours.push(expect);
+    }
+    let mut orig = vec![];
+    for i in crate::dis::decode(theirs, va) {
+        if i.flow != crate::dis::Flow::Call {
+            continue;
+        }
+        let o = (i.addr - va) as usize;
+        let t = match i.target {
+            Some(t) => t as i64,
+            None if i.disp.size == 4 && i.ops.iter().any(|x| x.typ == crate::dis::OpType::Mem && x.base == crate::dis::Reg::None && x.index == crate::dis::Reg::None) => {
+                let at = o + i.disp.at as usize;
+                u32::from_le_bytes(theirs.get(at..at + 4)?.try_into().ok()?) as i64
+            }
+            None => return None,
+        };
+        orig.push(t);
+    }
+    Some((ours, orig))
+}
+
 impl Check {
+    /// The named differences at calls left out when both functions call the same callees in the same order
+    /// (bug-reports/false-m8-from-misaligned-calls.md: register-rotated hunks paired `call _strupr` with the
+    /// original's `call sprintf` although both sides make the same calls): the alignment paired different calls, the
+    /// calls themselves agree. `theirs`: the original's code at `va`.
+    pub fn settle_calls(mut self, obj: &Obj, code: &FunctionCode, refs_of: &Refs, theirs: &[u8], va: u32) -> Check {
+        let (cd, _) = code.code();
+        let calls: std::collections::HashSet<u32> = crate::dis::decode(cd, va).into_iter().filter(|i| i.flow == crate::dis::Flow::Call).map(|i| i.addr).collect();
+        if !self.refs.iter().any(|r| r.differs() && r.rule == "M8" && calls.contains(&r.ins)) {
+            return self;
+        }
+        let Some((ours, orig)) = call_sequences(obj, code, refs_of, theirs, va) else { return self };
+        if ours.len() != orig.len() || ours.iter().zip(&orig).any(|(e, t)| !e.contains(t)) {
+            return self;
+        }
+        self.refs.retain(|r| !(r.differs() && r.rule == "M8" && calls.contains(&r.ins)));
+        self
+    }
+
     /// The concrete differences.
     pub fn differs(&self) -> impl Iterator<Item = &Ref> {
         self.refs.iter().filter(|r| r.differs())

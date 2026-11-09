@@ -301,7 +301,7 @@ fn unlinked_helper_builds_without_a_grade() {
     let (_, out) = dcp(&t, &["layout", "units", "-v"]);
     assert!(out.contains("unlinked=twice  file=src/net.c"), "{out}");
     let (code, out) = dcp(&t, &["disasm", "--ours", "get"]);
-    assert!(code == 0 && out.contains("ours=get") && out.contains("relocations=1") && out.contains("; reloc counter"), "{out}");
+    assert!(code == 0 && out.contains("ours=get") && out.contains("relocations=1") && out.contains("dword ptr [counter]"), "{out}");
 }
 
 fn git(root: &Path, args: &[&str]) {

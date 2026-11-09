@@ -204,6 +204,11 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::matchcmd::diffclass_command(&p, &name, all)?;
             Ok(io.report("diffclass", &l, e.as_deref(), c))
         }
+        Cmd::Frame(FrameArgs { name }) => {
+            let (p, _) = build_target(io, sel, None, true, false)?;
+            let (l, e, c) = crate::matchcmd::frame_command(&p, &name)?;
+            Ok(io.report("frame", &l, e.as_deref(), c))
+        }
         Cmd::Escalate(EscalateArgs { name, why, clear, hard, size_explained, divergence_explained }) =>
             level(io, sel, if hard { "hard" } else { "deep" }, &name, why, clear, size_explained, divergence_explained),
         Cmd::Stuck(StuckArgs { name, why, clear }) => level(io, sel, "stuck", &name, why, clear, None, None),
@@ -286,6 +291,11 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         Cmd::Layout(LayoutArgs { sub }) => layout(io, sel, sub),
         Cmd::Build(BuildArgs { all_targets, force, units, variant }) => build(io, sel, all_targets, force, units, variant),
         Cmd::Unit(UnitArgs { sub }) => unit(io, sel, sub),
+        Cmd::Try(TryArgs { name, file, move_line, to, apply }) => {
+            let (p, _) = build_target(io, sel, None, true, false)?;
+            let (lines, status) = crate::variants::try_command(&p, &name, file.as_deref(), move_line, to.as_deref(), apply.as_deref())?;
+            Ok(io.report("try", &lines, None, status))
+        }
         Cmd::Fn(FnArgs { key }) => {
             let p = open(sel, None)?;
             let (l, e, c) = crate::clicmd::fn_command(&p, &key)?;
@@ -695,6 +705,7 @@ pub(crate) fn guidance(kind: Option<&str>) -> String {
     match kind {
         Some("layout") => format!("gate: ok. The {clock}."),
         Some("match-base") => format!("gate: ok. This is {functions}."),
+        Some("match-deep") => "gate: ok. A match-deep session is counted in items (the skill's count, each within its time budget), not                                minutes: `dcp next --deep` for the first item".to_string(),
         _ => format!("gate: ok. A layout session: {clock}. A match-base session: counted in functions, not minutes (`dcp next`)."),
     }
 }

@@ -68,6 +68,9 @@ pub enum Cmd {
     Asmdiff(AsmdiffArgs),
     /// the hunk classes of one function's instruction diff
     Diffclass(DiffclassArgs),
+    /// both stack frames of one function: each slot as `[esp+X]` after the prologue with its size and use, the
+    /// original's slots the alignment pairs it with, the slots one side shares, the holes
+    Frame(FrameArgs),
     /// write `@deep why` into a function's address comment (--clear removes the tag); with --hard, `@hard why`
     Escalate(EscalateArgs),
     /// write `@stuck why` into a function's address comment (--clear removes the tag)
@@ -95,6 +98,9 @@ pub enum Cmd {
     Unit(UnitArgs),
     /// print one function of the sources (its address comment to the end of its definition)
     Fn(FnArgs),
+    /// source variants of one function, each compiled in a scratch copy of its unit and graded: one row per variant
+    /// (grade, distance, hunk classes, a code hash); nothing written unless --apply names a variant
+    Try(TryArgs),
     /// the original's instructions with the ledger's names (--ours NAME: our compiled function)
     Disasm(DisasmArgs),
     /// the original's bytes: hex and latin-1, strings, dwords, floats, with the symbols of each row
@@ -551,6 +557,12 @@ pub struct DiffclassArgs {
     pub all: bool,
 }
 
+/// `Cmd::Frame`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct FrameArgs {
+    pub name: String,
+}
+
 /// `Cmd::Escalate`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct EscalateArgs {
@@ -682,7 +694,7 @@ pub struct FnArgs {
 pub struct DisasmArgs {
     #[arg(value_name = "ADDR|NAME")]
     pub addr: Option<String>,
-    #[arg(value_name = "LEN|..END", allow_hyphen_values = true)]
+    #[arg(value_name = "LEN|..END", allow_negative_numbers = true)]
     pub len: Option<String>,
     /// disassemble our compiled function from its unit's object
     #[arg(long, value_name = "NAME")]
@@ -925,6 +937,26 @@ pub struct HeadersSampleArgs {
     pub dry_run: bool,
 }
 
+/// `Cmd::Try`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct TryArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// the variants file: `### label` lines, each followed by the function's whole text or by `<<<` old `===` new
+    /// `>>>` blocks (each old text once in the function)
+    #[arg(value_name = "FILE")]
+    pub file: Option<String>,
+    /// generate variants: move this file line (a declaration inside the function) ...
+    #[arg(long, value_name = "LINE")]
+    pub move_line: Option<i64>,
+    /// ... before each file line of A..B
+    #[arg(long, value_name = "A..B")]
+    pub to: Option<String>,
+    /// write this variant into the source instead of trying the variants
+    #[arg(long, value_name = "LABEL")]
+    pub apply: Option<String>,
+}
+
 /// `TargetCmd::List`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct TargetListArgs {
@@ -1030,8 +1062,9 @@ pub struct UnitRenameArgs {
 /// `SessionCmd::Start`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct SessionStartArgs {
-    /// the session's kind: the guidance after the gate (layout: the clock; match-base: counted in functions)
-    #[arg(long, value_parser = ["layout", "match-base"])]
+    /// the session's kind: the guidance after the gate (layout: the clock; match-base, match-deep: counted in
+    /// functions)
+    #[arg(long, value_parser = ["layout", "match-base", "match-deep"])]
     pub kind: Option<String>,
 }
 

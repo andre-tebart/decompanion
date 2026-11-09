@@ -287,6 +287,23 @@ impl Bench {
         let matched = crate::compare::compare(img, code, a as u32, self.relocs.as_deref(), next, &self.forms).matched();
         g.grade(o, code, a, next, self.walk.get(&a).copied(), matched)
     }
+
+    /// One function's distance from the original as `dcp grade` reads it: (differing instructions on both sides,
+    /// differing bytes with the size difference, the hunk classes).
+    pub(crate) fn distance(&self, o: &Obj, code: &FunctionCode, a: i64) -> (usize, usize, String) {
+        let img = &*self.img;
+        let env = crate::diffclass::Env { img, range: (img.base as i64, img.end() as i64), fills: &self.fills, forms: &self.forms };
+        let next = self.starts.get(self.starts.partition_point(|&x| x <= a)).copied().unwrap_or(img.end() as i64) as u32;
+        let c = crate::compare::compare(img, code, a as u32, self.relocs.as_deref(), next, &self.forms);
+        let (cd, cm) = code.code();
+        let size = crate::diffclass::code_size(&env, cd, cm, a as u32);
+        let extent = self.walk.get(&a).map(|h| h - a).unwrap_or(size);
+        let orig = crate::diffclass::original(&env, a as u32, extent, extent.max(next as i64 - a), self.align);
+        let n = size.min(orig.code);
+        let bytes = c.diffs.iter().filter(|&&k| (k as i64) < n).count() + (size - orig.code).unsigned_abs() as usize;
+        let fc = crate::diffclass::FunctionCompare::new(&env, o, code, a as u32, &orig);
+        (fc.verdict.distance, bytes, fc.verdict.summary_without_branches())
+    }
 }
 
 /// One compile of a trial: the unit, a tag naming the file, the lines before the text, the text.
@@ -726,7 +743,7 @@ fn sample_text(lines: &[&str], places: &[Place], mems: &[Member], picks: &[Pick]
 
 /// The code of a compiled function with what a declaration set may move (the relocated fields masked, the
 /// compiler's numbered names by kind): two samples with the same key have the same code.
-fn code_key(o: &Obj, c: &FunctionCode) -> (Vec<u8>, Vec<(u32, String)>) {
+pub(crate) fn code_key(o: &Obj, c: &FunctionCode) -> (Vec<u8>, Vec<(u32, String)>) {
     let syms = c.relocs.iter().map(|(off, r)| {
         let n = o.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default();
         (*off, if n.starts_with('$') { n.trim_end_matches(|ch: char| ch.is_ascii_digit()).to_string() } else { n })

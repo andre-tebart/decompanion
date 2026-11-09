@@ -123,24 +123,13 @@ fn array_of(bases: &BTreeSet<i32>, slot: i32) -> Option<i32> {
     bases.range(..=slot).next_back().copied()
 }
 
-/// The check over a function: our code and the original's at `va`, and the two listings the alignment reads.
-pub fn check(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> Vec<SlotDiff> {
+/// The aligned pairs of stack operands: (our instruction, ours, the original's, the hunk). The listings are aligned
+/// with each stack operand read as its entry-relative slot, so two frames of other sizes (and other push depths)
+/// line up where they address the same slot; `[esp + 0x2c]` on both sides is no pair when the frames differ.
+fn aligned_pairs(ia: &[Ins], ib: &[Ins], da: &HashMap<u32, i32>, db: &HashMap<u32, i32>, la: &[Line], lb: &[Line]) -> Vec<(u32, Access, Access, usize)> {
     use crate::difflib::{opcodes, Tag};
-    let (ia, ib) = (dis::decode(ours, va), dis::decode(theirs, va));
-    let (Some(da), Some(db)) = (depths(&ia, va), depths(&ib, va)) else { return vec![] };
     let by = |ins: &[Ins]| -> HashMap<u32, usize> { ins.iter().enumerate().map(|(k, i)| (i.addr, k)).collect() };
-    let (ka, kb) = (by(&ia), by(&ib));
-    // every array base of each side (the whole function, paired or not)
-    let bases_of = |ins: &[Ins], d: &HashMap<u32, i32>| -> BTreeSet<i32> {
-        ins.iter().filter_map(|i| d.get(&i.addr).map(|&x| accesses(i, x))).flatten().filter(|a| a.base && a.slot < 0).map(|a| a.slot).collect()
-    };
-    let (ba, bb) = (bases_of(&ia, &da), bases_of(&ib, &db));
-    if ba.is_empty() || bb.is_empty() {
-        return vec![];
-    }
-    // the aligned pairs of stack operands: (our instruction, ours, the original's). The listings are aligned with
-    // each stack operand read as its entry-relative slot, so two frames of other sizes (and other push depths)
-    // line up where they address the same slot; `[esp + 0x2c]` on both sides is no pair when the frames differ.
+    let (ka, kb) = (by(ia), by(ib));
     let key = |l: &Line, ins: &[Ins], k: &HashMap<u32, usize>, d: &HashMap<u32, i32>| -> String {
         let acc = k.get(&l.addr).and_then(|&x| d.get(&ins[x].addr).map(|&dx| accesses(&ins[x], dx))).unwrap_or_default();
         match (acc.first(), l.text.find('['), l.text.find(']')) {
@@ -150,8 +139,8 @@ pub fn check(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
             _ => l.text.clone(),
         }
     };
-    let ka_keys: Vec<String> = la.iter().map(|l| key(l, &ia, &ka, &da)).collect();
-    let kb_keys: Vec<String> = lb.iter().map(|l| key(l, &ib, &kb, &db)).collect();
+    let ka_keys: Vec<String> = la.iter().map(|l| key(l, ia, &ka, da)).collect();
+    let kb_keys: Vec<String> = lb.iter().map(|l| key(l, ib, &kb, db)).collect();
     let ta: Vec<&str> = ka_keys.iter().map(|s| s.as_str()).collect();
     let tb: Vec<&str> = kb_keys.iter().map(|s| s.as_str()).collect();
     // (our instruction, ours, the original's, the hunk)
@@ -172,6 +161,22 @@ pub fn check(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
             }
         }
     }
+    pairs
+}
+
+/// The check over a function: our code and the original's at `va`, and the two listings the alignment reads.
+pub fn check(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> Vec<SlotDiff> {
+    let (ia, ib) = (dis::decode(ours, va), dis::decode(theirs, va));
+    let (Some(da), Some(db)) = (depths(&ia, va), depths(&ib, va)) else { return vec![] };
+    // every array base of each side (the whole function, paired or not)
+    let bases_of = |ins: &[Ins], d: &HashMap<u32, i32>| -> BTreeSet<i32> {
+        ins.iter().filter_map(|i| d.get(&i.addr).map(|&x| accesses(i, x))).flatten().filter(|a| a.base && a.slot < 0).map(|a| a.slot).collect()
+    };
+    let (ba, bb) = (bases_of(&ia, &da), bases_of(&ib, &db));
+    if ba.is_empty() || bb.is_empty() {
+        return vec![];
+    }
+    let pairs = aligned_pairs(&ia, &ib, &da, &db, la, lb);
     // the base pairs: our array -> the original's (the first pairing; a base paired two ways is no evidence)
     let mut base_to: HashMap<i32, Option<i32>> = HashMap::new();
     for &(_, p, q, _) in &pairs {
@@ -237,11 +242,186 @@ pub fn check(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
     out
 }
 
+// ------------------------------------------------------------------------------------------------ the frame view
+
+/// One stack slot of a side: the widest access, the reads and writes, an array base.
+#[derive(Clone, Debug, Default)]
+struct Slot {
+    size: u8,
+    reads: usize,
+    writes: usize,
+    base: bool,
+}
+
+/// The mnemonics whose first operand they write (a memory destination: a store).
+const STORES: &[&str] = &["mov", "fstp", "fst", "fistp", "fist", "fnstsw", "fnstcw", "pop", "inc", "dec", "add", "sub", "and", "or", "xor", "neg",
+                          "not", "shl", "shr", "sar", "adc", "sbb", "movsb", "movsd", "stosd", "stosb"];
+
+type Slots = std::collections::BTreeMap<i32, Slot>;
+
+/// The slots of one side by entry-relative offset, esp after the prologue (the saves pushed, `sub esp, N`, in either
+/// order; `[esp + X]` in the body at that depth is the slot depth + X), and the saved registers' slots.
+fn slots(ins: &[Ins], d: &HashMap<u32, i32>) -> (Slots, i32, BTreeSet<i32>) {
+    let mut body = 0;
+    let mut saves = BTreeSet::new();
+    for i in ins {
+        let esp0 = i.ops.first().is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::ESP);
+        let reg0 = i.ops.first().is_some_and(|o| o.typ == OpType::Reg);
+        match i.mn {
+            "push" if reg0 => {}
+            "sub" if esp0 => {}
+            // `mov eax, N; call __chkstk` (a frame beyond a page)
+            "mov" if reg0 && i.ops.get(1).is_some_and(|o| o.typ == OpType::Imm) => {}
+            "call" if body == 0 => {}
+            _ => break,
+        }
+        if let Some(&x) = d.get(&(i.addr + i.size)) {
+            if i.mn == "push" {
+                saves.insert(x);
+            }
+            body = body.min(x);
+        }
+    }
+    let mut out = Slots::new();
+    for i in ins {
+        let Some(&dx) = d.get(&i.addr) else { continue };
+        for (k, o) in i.ops.iter().enumerate() {
+            if o.typ != OpType::Mem || o.base != Reg::ESP {
+                continue;
+            }
+            if saves.contains(&(dx + o.disp as i32)) {
+                continue;
+            }
+            let s = out.entry(dx + o.disp as i32).or_default();
+            s.size = s.size.max(o.size);
+            if i.mn == "lea" || o.index != Reg::None {
+                s.base = true;
+            } else if k == 0 && STORES.contains(&i.mn) {
+                s.writes += 1;
+            } else {
+                s.reads += 1;
+            }
+        }
+    }
+    (out, body, saves)
+}
+
+/// `dcp frame NAME`'s lines (improvement-reports/frame-slot-map-command.md): both frames' slots as `[esp + X]` at the
+/// body's depth (after the prologue), each with its size, its reads and writes, whether it is an array base (its
+/// address taken or indexed), and the original's slots the alignment pairs it with; the slots of one side paired with
+/// several of the other (locals that share a slot on one side only), and the holes (bytes of the locals no access
+/// touches, an array up to the next slot).
+pub fn frame(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> Vec<String> {
+    let (ia, ib) = (dis::decode(ours, va), dis::decode(theirs, va));
+    let (Some(da), Some(db)) = (depths(&ia, va), depths(&ib, va)) else {
+        return vec!["the stack depth is not followed through one of the two functions (an ebp frame, or esp written another way): no frame view".into()];
+    };
+    let ((sa, body_a, saves_a), (sb, body_b, saves_b)) = (slots(&ia, &da), slots(&ib, &db));
+    let pairs = aligned_pairs(&ia, &ib, &da, &db, la, lb);
+    let mut to: HashMap<i32, std::collections::BTreeMap<i32, usize>> = HashMap::new();
+    let mut from: HashMap<i32, std::collections::BTreeMap<i32, usize>> = HashMap::new();
+    for (_, p, q, _) in &pairs {
+        *to.entry(p.slot).or_default().entry(q.slot).or_default() += 1;
+        *from.entry(q.slot).or_default().entry(p.slot).or_default() += 1;
+    }
+    // a slot as the body reads it: `[esp+0x10]`, the return address's place, an argument
+    let at = |slot: i32, body: i32| -> String {
+        if slot >= 4 {
+            format!("arg+{:#x}", slot - 4)
+        } else if slot >= 0 {
+            "ret".into()
+        } else {
+            format!("[esp+{:#x}]", slot - body)
+        }
+    };
+    let fmt_slot = |s: &Slot| -> String {
+        let mut v = vec![];
+        if s.base {
+            v.push("array".to_string());
+        }
+        if s.reads > 0 {
+            v.push(format!("r{}", s.reads));
+        }
+        if s.writes > 0 {
+            v.push(format!("w{}", s.writes));
+        }
+        v.join(" ")
+    };
+    let (va_saves, vb_saves) = (saves_a.len() as i32 * 4, saves_b.len() as i32 * 4);
+    let mut out = vec![format!("frame: ours {:#x} bytes of locals ({} saved registers), the original {:#x} ({}){}",
+                               -body_a - va_saves, saves_a.len(), -body_b - vb_saves, saves_b.len(),
+                               if body_a == body_b { String::new() } else { format!("; the original's esp {:+#x} from ours", body_b - body_a) })];
+    out.push(format!("  {:<14} {:>5}  {:<14} the original's slots paired (times)", "ours", "size", "use"));
+    for (slot, s) in &sa {
+        let paired = to.get(slot).map(|m| m.iter().map(|(q, n)| format!("{} ({n})", at(*q, body_b))).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| "-".into());
+        let mark = match to.get(slot) {
+            Some(m) if m.len() > 1 => "   <- several",
+            Some(m) if m.keys().next().is_some_and(|q| at(*q, body_b) != at(*slot, body_a)) => "   <- moved",
+            _ => "",
+        };
+        out.push(format!("  {:<14} {:>5}  {:<14} {paired}{mark}", at(*slot, body_a), format!("{:#x}", s.size), fmt_slot(s)));
+    }
+    let lone: Vec<String> = sb.iter().filter(|(q, _)| !from.contains_key(q)).map(|(q, s)| format!("{} {:#x} {}", at(*q, body_b), s.size, fmt_slot(s))).collect();
+    if !lone.is_empty() {
+        out.push(format!("  the original's slots no slot of ours pairs with: {}", lone.join("; ")));
+    }
+    // a slot of the original paired with several of ours: the original shares it between locals ours keeps apart
+    for (q, m) in from.iter().filter(|(_, m)| m.len() > 1).collect::<std::collections::BTreeMap<_, _>>() {
+        let ours: Vec<String> = m.iter().map(|(p, n)| format!("{} ({n})", at(*p, body_a))).collect();
+        out.push(format!("  shared in the original: {} pairs with ours {}: one slot for locals whose lifetimes do not overlap", at(*q, body_b), ours.join(", ")));
+    }
+    for (p, m) in to.iter().filter(|(_, m)| m.len() > 1).collect::<std::collections::BTreeMap<_, _>>() {
+        let theirs: Vec<String> = m.iter().map(|(q, n)| format!("{} ({n})", at(*q, body_b))).collect();
+        out.push(format!("  shared in ours: {} pairs with the original's {}", at(*p, body_a), theirs.join(", ")));
+    }
+    // the holes: the bytes of the locals (body .. the saves) no slot covers; an array runs to the next slot
+    let holes = |sl: &Slots, body: i32, saves: &BTreeSet<i32>| -> Vec<String> {
+        // the locals' bytes: body .. the entry, the saved registers' slots left out
+        let mut covered: BTreeSet<i32> = saves.iter().flat_map(|&x| x..x + 4).collect();
+        let keys: Vec<i32> = sl.keys().copied().filter(|&k| k >= body && k < 0).collect();
+        for (n, &k) in keys.iter().enumerate() {
+            let s = &sl[&k];
+            let end = if s.base { keys.get(n + 1).copied().unwrap_or(0).min(saves.range(k..).next().copied().unwrap_or(0)) } else { k + s.size.max(1) as i32 };
+            covered.extend(k..end);
+        }
+        let mut v = vec![];
+        let mut x = body;
+        while x < 0 {
+            if covered.contains(&x) {
+                x += 1;
+                continue;
+            }
+            let s = x;
+            while x < 0 && !covered.contains(&x) {
+                x += 1;
+            }
+            v.push(format!("[esp+{:#x}..{:#x})", s - body, x - body));
+        }
+        v
+    };
+    let (ha, hb) = (holes(&sa, body_a, &saves_a), holes(&sb, body_b, &saves_b));
+    out.push(format!("  holes: ours {}; the original {}", if ha.is_empty() { "none".into() } else { ha.join(" ") },
+                     if hb.is_empty() { "none".into() } else { hb.join(" ") }));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const VA: u32 = 0x401000;
+
+    #[test]
+    fn the_frame_view_pairs_slots() {
+        // ours reads element 0x44 of the array, the original element 0: the load's slot pairs elsewhere
+        let (a, b) = (f(0x44, true), f(0, true));
+        let v = frame(&a, &b, VA, &lines(&a), &lines(&b));
+        let text = v.join("\n");
+        assert!(v[0].starts_with("frame: ours 0x60 bytes of locals (0 saved registers), the original 0x60 (0)"), "{text}");
+        assert!(text.contains("[esp+0x10]") && text.contains("array"), "{text}");
+        assert!(text.contains("[esp+0x54]") && text.contains("<- moved"), "{text}");
+        assert!(text.contains("holes: ours"), "{text}");
+    }
 
     fn lines(code: &[u8]) -> Vec<Line> {
         let fills: std::collections::HashSet<Vec<u8>> = [vec![0xccu8]].into_iter().collect();

@@ -76,6 +76,7 @@ mod setup;
 mod srcscan;
 mod store;
 mod tiebreak;
+mod variants;
 mod tomledit;
 mod toolchain;
 mod units;

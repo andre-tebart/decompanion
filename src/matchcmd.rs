@@ -199,8 +199,14 @@ pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>
                                 ("shard", os(sh.clone())), ("unit", os(unit))])];
     for (r, tr) in items.iter().take(n) {
         let g = gates(r).join(",");
+        // why a deep item is there (improvement-reports/deep-queue-untagged-items.md): its tag (the reason and the
+        // earlier workers' notes are in it), or `untagged` (below byte in a unit whose base work is done: no notes)
+        let why = (which == "deep").then(|| match r.get("level").and_then(|v| v.as_str()).filter(|l| !l.is_empty()) {
+            Some(l) => format!("@{l}"),
+            None => "untagged".to_string(),
+        });
         out.push(record(&[("next", Tok::I(int(r, "addr"))), ("name", vt(r.get("name"))), ("unit", vt(r.get("queue_unit"))), ("section", vt(r.get("section"))),
-                          ("tier", s(*tr)), ("experiment", vt(r.get("code"))), ("readability", vt(r.get("readability"))),
+                          ("tier", s(*tr)), ("why", os(why)), ("experiment", vt(r.get("code"))), ("readability", vt(r.get("readability"))),
                           ("gates", os(Some(g).filter(|g| !g.is_empty()))), ("risk", os(r.get("risk").and_then(|v| v.as_str()).map(str::to_string))),
                           ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
     }
@@ -507,6 +513,19 @@ const HUNK_LINES: usize = 8;
 
 /// `dcp diffclass`: the hunks of one function's instruction diff with their classes (diffclass.rs); a `code` hunk
 /// with its lines, the first HUNK_LINES of each side and how many more (`all`: every line).
+/// `dcp frame NAME`: both stack frames side by side (slotmap::frame).
+pub fn frame_command(p: &crate::project::Project, name: &str) -> Result<Out> {
+    let r = match reading(p, name, "frame", false)? {
+        Ok(r) => r,
+        Err(o) => return Ok(o),
+    };
+    let row = r.row.as_object().cloned().unwrap_or_default();
+    let a = int(&row, "addr");
+    let mut out = vec![record(&[("fn", Tok::I(a)), ("name", vt(row.get("name"))), ("code", vt(row.get("code")))])];
+    out.extend(crate::slotmap::frame(&r.code.0, &r.code.1, a as u32, &r.la, &r.lb));
+    Ok((out, None, 0))
+}
+
 pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> Result<Out> {
     let r = match reading(p, name, "diffclass", false)? {
         Ok(r) => r,

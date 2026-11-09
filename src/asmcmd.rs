@@ -40,6 +40,8 @@ pub struct Reading {
     /// the reference census (refcheck::census, tasks/reference-census.md): an object one side refers to and the
     /// other never refers into, one line each
     pub census: Vec<String>,
+    /// our code (the function's bytes, relocated fields as compiled) and the original's at the function's address
+    pub code: (Vec<u8>, Vec<u8>),
 }
 
 /// What one of our X fields refers to, for comparing it with the original's number: the addresses its symbol
@@ -433,7 +435,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
     };
     let sites = crate::refcheck::sites_aligned(&code, &img, a as u32, &fc.la, &fc.lb);
     let refs_of = crate::refcheck::Refs::new(&obj, &code, phi);
-    let refs = crate::refcheck::check(&obj, &code, &img, &sites, &refs_of, phi);
+    let refs = crate::refcheck::check(&obj, &code, &img, &sites, &refs_of, phi).settle_calls(&obj, &code, &refs_of, &data, a as u32);
     let ref_lines = refs.lines(phi, a as u32, Some(&unit));
     let open_lines = refs.open_lines(phi, a as u32);
     let outside = refs_of.outside.iter().map(|o| (a as u32 + o.off, o.line())).collect();
@@ -460,7 +462,8 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
         calls = (diff.into_iter().map(|(t, x, y)| (named(t), x, y)).collect(), unbound);
         (crate::timing::phase("r.prove", || crate::equiv::prove(&ours, &data, a as u32)), unbound)
     }) })?;
-    Ok(Ok(Reading { row, fc, named, values, proof, witness, calls, refs, ref_lines, open_lines, outside, census }))
+    let code = (code.code().0.to_vec(), data.clone());
+    Ok(Ok(Reading { row, fc, named, values, proof, witness, calls, refs, ref_lines, open_lines, outside, census, code }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points

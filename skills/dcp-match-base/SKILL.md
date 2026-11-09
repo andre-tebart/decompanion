@@ -118,6 +118,10 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
 - `dcp disasm 0xADDR` - the original code (`--ours NAME`: ours from its object; `--no-bytes`, `--range +0x200..+0x400`);
   `dcp dump 0xADDR [LEN]` - its constants and strings.
 - `dcp refs NAME|0xADDR` - every use and declaration: the callers say what a parameter means.
+- `dcp try NAME FILE` - source variants of the function (`### label`, then the whole function or `<<<` old `===`
+  new `>>>` blocks), each compiled in a scratch copy of its unit and graded, one row each; nothing written
+  (`--apply LABEL` writes one). Quicker than edit-build-grade when you compare two or three readings.
+- `dcp frame NAME` - both stack frames: which slot of ours pairs with which of the original's, shared slots, holes.
 - `dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
 - `dcp why 0xADDR|NAME` - everything the ledger knows about an address or a function / data name, by question (section,
   owner, start, unit, ref, toolchain): the answer first, the claims stacked under it; then φ there (the objects of H
