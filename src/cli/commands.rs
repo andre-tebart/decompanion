@@ -171,6 +171,14 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             }
             Ok(io.report("headers probe", &lines, None, status))
         }
+        Cmd::Headers(HeadersArgs { sub: HeadersCmd::Sample(HeadersSampleArgs { name, n, seed, dry_run }) }) => {
+            let (p, _) = build_target(io, sel, None, true, false)?;
+            let (lines, status) = crate::tiebreak::sample_command(&p, &name, n, seed, dry_run)?;
+            if !dry_run {
+                refresh(io, &p, false, false)?;
+            }
+            Ok(io.report("headers sample", &lines, None, status))
+        }
         Cmd::Grade(GradeArgs { what }) => {
             let (p, _) = build_target(io, sel, None, true, false)?;
             let lint = current_lint(io, &p)?;

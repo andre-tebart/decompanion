@@ -894,6 +894,13 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
                                              whole function is base work: finish it, then escalate what is left")), 1));
         }
         let mut why = why;
+        // the declaration set's part, as measured (tiebreak.rs): whether respelling the function can still help
+        if matches!(level, "deep" | "stuck") && s("code") != "byte" {
+            if let Some(l) = crate::matchcmd::tiebreak_line(r.get("tiebreak"), &s("code"), name) {
+                let short = l.split(';').next().unwrap_or(&l).split(':').take(2).collect::<Vec<_>>().join(":");
+                why = format!("{why} ({short})");
+            }
+        }
         if level == "deep" && s("code") != "byte" {
             // a function without an object (no reading) has no size to judge
             if let Ok(rd) = crate::asmcmd::reading(p, r.clone(), None)? {

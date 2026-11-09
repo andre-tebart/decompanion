@@ -149,8 +149,32 @@ pub fn grade_command(p: &crate::project::Project, what: Option<String>, lint: &s
         hs.sort_by_key(|x| -x.1);
         out.push(format!("  hunks: {}", hs.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ")));
     }
+    // the declaration set's part (tiebreak.rs): measured, or how to measure it while code is left to match
+    if let Some(l) = tiebreak_line(r.get("tiebreak"), st(&r, "code"), &what) {
+        out.push(format!("  {l}"));
+    }
     out.push(format!("  ({lint})"));
     Ok((out, None, 0))
+}
+
+/// The declaration set's part of a function's grade (tiebreak.rs), one line: sensitive (its code moves with the
+/// declaration set: respelling it is a lottery), insensitive under the sampler (what is left is in its text),
+/// insensitive under the four probes only (weak: sample it), or not measured. None for a byte function without a
+/// record.
+pub fn tiebreak_line(t: Option<&Value>, code: &str, name: &str) -> Option<String> {
+    match t.filter(|t| t.is_object()) {
+        Some(t) => {
+            let (sens, best, witness) = (t["sensitive"].as_bool().unwrap_or(false), t["best"].as_str().unwrap_or(""), t["witness"].as_str().unwrap_or(""));
+            let sampled = witness.starts_with("sample");
+            Some(match (sens, sampled) {
+                (true, _) => format!("tiebreak: sensitive: the declaration set moves this function's code; best {best} ({witness})"),
+                (false, true) => format!("tiebreak: insensitive: what is left is in the function's text; best {best} ({witness})"),
+                (false, false) => format!("tiebreak: insensitive under the four probes only, best {best}: dcp headers sample {name} for a measurement"),
+            })
+        }
+        None if code != "byte" => Some(format!("tiebreak: not measured (dcp headers sample {name})")),
+        None => None,
+    }
 }
 
 /// `dcp next`: the next functions of a queue (base, deep, names), of a shard (`--shard k/N`, else .dcp/shard).

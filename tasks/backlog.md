@@ -16,7 +16,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 
 | # | Task | Size | Depends on |
 |---|---|---|---|
-| 60 | [tiebreak-probe-positions](tiebreak-probe-positions.md): probes after each header guard and member splits (d3_CloneObject, ai_Unk483a60) | M | |
+| 60 | [tiebreak-sampler](tiebreak-sampler.md): `dcp headers sample NAME`: sensitive or not, its proven grade (replaces tiebreak-probe-positions) | M | |
 | 57 | [d1-padding-decided](d1-padding-decided.md): D1 decides alignment padding instead of warning | S-M | |
 | 62 | [stale-object-after-header-change](stale-object-after-header-change.md): a header edit leaves a unit's object stale (false M1, the probe refuses) | S-M | |
 | 63 | [reference-census](reference-census.md): the objects each side refers to, whatever the alignment; crossed M8 said so | M | |

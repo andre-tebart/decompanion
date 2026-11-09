@@ -199,6 +199,10 @@ pub enum HeadersCmd {
     /// which functions VC6's tie-breaks move by the declaration set alone: each unit compiled with unused typedefs
     /// before its text and graded; recorded in ledger/tiebreak.tsv (every unit when none is named)
     Probe(HeadersProbeArgs),
+    /// whether the declaration set moves one function: its unit preprocessed and compiled N times with unused
+    /// declarations at random file-scope places before it; sensitive or not, the best grade (its source-proven one),
+    /// recorded in ledger/tiebreak.tsv
+    Sample(HeadersSampleArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -901,6 +905,22 @@ pub struct HeadersProbeArgs {
     #[arg(value_name = "UNIT")]
     pub units: Vec<String>,
     /// probe and report, write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// `HeadersCmd::Sample`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct HeadersSampleArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// how many samples (compiles of the unit)
+    #[arg(long, default_value_t = 32)]
+    pub n: usize,
+    /// the seed of the samples (the same seed gives the same samples)
+    #[arg(long, default_value_t = 1)]
+    pub seed: u64,
+    /// sample and report, write nothing
     #[arg(long)]
     pub dry_run: bool,
 }

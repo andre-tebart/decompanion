@@ -539,9 +539,407 @@ pub fn probe_falls(p: &Project) -> Result<Vec<String>> {
     Ok(out)
 }
 
+// ------------------------------------------------------------------------------------------------ the sampler
+
+/// A small deterministic generator (xorshift64): the same seed gives the same samples.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0.max(1);
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n.max(1) as u64) as usize
+    }
+}
+
+/// A place of a preprocessed text where a declaration may go: the line index, and the file and line the `#line`
+/// directives in force give that line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub at: usize,
+    pub file: String,
+    pub line: i64,
+}
+
+/// The places of a preprocessed text (CL /E's output) at file scope: the start of a line at brace and parenthesis
+/// depth 0 whose previous significant line ended a declaration (`;`, `}`) or was a directive. A place inside a K&R
+/// parameter list passes this test; a sample that does not compile is dropped, so the test only has to be cheap.
+pub fn places(lines: &[&str]) -> Vec<Place> {
+    let (mut out, mut depth, mut file, mut line, mut ended) = (vec![], 0i64, String::new(), 0i64, true);
+    for (k, l) in lines.iter().enumerate() {
+        let t = l.trim();
+        if let Some(rest) = t.strip_prefix("#line") {
+            let mut parts = rest.trim().splitn(2, ' ');
+            line = parts.next().and_then(|n| n.parse().ok()).unwrap_or(line);
+            if let Some(f) = parts.next() {
+                file = f.trim().trim_matches('"').replace("\\\\", "\\");
+            }
+            ended = true;
+            continue;
+        }
+        if depth == 0 && ended && !t.is_empty() && !t.starts_with('{') {
+            out.push(Place { at: k, file: file.clone(), line });
+        }
+        if t.starts_with('#') {
+            ended = true;
+        } else if !t.is_empty() {
+            // braces and parentheses outside string and character literals
+            let (mut q, mut esc) = (None::<char>, false);
+            for ch in t.chars() {
+                match (q, ch) {
+                    (Some(_), _) if esc => esc = false,
+                    (Some(_), '\\') => esc = true,
+                    (Some(c), x) if x == c => q = None,
+                    (Some(_), _) => {}
+                    (None, '"' | '\'') => q = Some(ch),
+                    (None, '{' | '(') => depth += 1,
+                    (None, '}' | ')') => depth -= 1,
+                    _ => {}
+                }
+            }
+            ended = depth == 0 && (t.ends_with(';') || t.ends_with('}'));
+        }
+        line += 1;
+    }
+    out
+}
+
+/// The no-meaning declarations a sample inserts: unused, of every kind the compiler numbers (a type, a struct tag, a
+/// function, a variable), each under a name of its own.
+fn decl(kind: usize, name: &str) -> String {
+    match kind % 4 {
+        0 => format!("typedef int {name};"),
+        1 => format!("struct {name} {{ int {name}_m; }};"),
+        2 => format!("int {name}(void);"),
+        _ => format!("extern int {name};"),
+    }
+}
+
+const KINDS: [&str; 4] = ["typedef", "struct", "prototype", "extern"];
+
+/// A member of a type definition a sample may change without changing the layout: a padding array (`char pad..[N]`,
+/// N >= 2: split in two) or a union (a one-byte member added). Its line index and the parts of its line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Member {
+    Pad { at: usize, head: String, name: String, n: usize, rest: String },
+    Union { at: usize },
+}
+
+impl Member {
+    fn at(&self) -> usize {
+        match self {
+            Member::Pad { at, .. } | Member::Union { at } => *at,
+        }
+    }
+}
+
+/// The members a sample may change: padding arrays (a name starting with `pad`: never used by name) and unions,
+/// both inside a type definition (brace depth above 0).
+pub fn members(lines: &[&str]) -> Vec<Member> {
+    static PAD: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(\s*(?:unsigned\s+)?char\s+)(pad\w*)\[(0x[0-9a-fA-F]+|\d+)\];(.*)$").unwrap()
+    });
+    let (mut out, mut depth) = (vec![], 0i64);
+    for (k, l) in lines.iter().enumerate() {
+        let t = l.trim();
+        if t.starts_with('#') {
+            continue;
+        }
+        if depth > 0 {
+            if let Some(c) = PAD.captures(l) {
+                let n = match c[3].strip_prefix("0x") {
+                    Some(h) => usize::from_str_radix(h, 16).unwrap_or(0),
+                    None => c[3].parse().unwrap_or(0),
+                };
+                if n >= 2 {
+                    out.push(Member::Pad { at: k, head: c[1].to_string(), name: c[2].to_string(), n, rest: c[4].to_string() });
+                }
+            }
+            if t == "union {" || (t.starts_with("union ") && t.ends_with('{')) {
+                out.push(Member::Union { at: k });
+            }
+        }
+        depth += t.matches('{').count() as i64 - t.matches('}').count() as i64;
+    }
+    out
+}
+
+/// One change of a sample: `what` below KINDS.len() a declaration of that kind before place `idx`; KINDS.len() the
+/// member `idx` changed (a padding array split after 1 + k % (N-1) bytes, a union given a one-byte member).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pick {
+    pub what: usize,
+    pub idx: usize,
+    pub k: usize,
+}
+
+/// The text of one sample. Every line keeps its number: a declaration goes in with a `#line` after it, a member
+/// change stays on its line.
+fn sample_text(lines: &[&str], places: &[Place], mems: &[Member], picks: &[Pick], tag: &str) -> String {
+    let mut before: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut replace: HashMap<usize, String> = HashMap::new();
+    for (j, pk) in picks.iter().enumerate() {
+        let nm = format!("__dcp_{tag}_{j}");
+        if pk.what < KINDS.len() {
+            let pl = &places[pk.idx];
+            let d = format!("{}\n#line {} \"{}\"", decl(pk.what, &nm), pl.line, pl.file.replace('\\', "\\\\"));
+            before.entry(pl.at).or_default().push(d);
+            continue;
+        }
+        match &mems[pk.idx] {
+            Member::Pad { at, head, name, n, rest } => {
+                // one in three: the array wrapped in a struct of its own (a member's type changed, the layout not:
+                // gildegold ai_Unk483a60 moved when AIBLD.workSet went from char[0x10] to a record); else split
+                if pk.k % 3 == 0 {
+                    replace.insert(*at, format!("{}struct {{ char {nm}[{n}]; }} {name};{rest}", head.trim_end().trim_end_matches("char").trim_end_matches("unsigned").to_string() + " "));
+                } else {
+                    let k = 1 + pk.k % (n - 1);
+                    replace.insert(*at, format!("{head}{name}[{k}]; char {nm}[{}];{rest}", n - k));
+                }
+            }
+            Member::Union { at } => {
+                let l = replace.get(at).cloned().unwrap_or_else(|| lines[*at].to_string());
+                replace.insert(*at, format!("{l} char {nm};"));
+            }
+        }
+    }
+    let mut out = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum::<usize>() + 256);
+    for (k, l) in lines.iter().enumerate() {
+        if let Some(ds) = before.get(&k) {
+            for d in ds {
+                out.push_str(d);
+                out.push('\n');
+            }
+        }
+        out.push_str(replace.get(&k).map(|x| x.as_str()).unwrap_or(l));
+        out.push('\n');
+    }
+    out
+}
+
+/// The code of a compiled function with what a declaration set may move (the relocated fields masked, the
+/// compiler's numbered names by kind): two samples with the same key have the same code.
+fn code_key(o: &Obj, c: &FunctionCode) -> (Vec<u8>, Vec<(u32, String)>) {
+    let syms = c.relocs.iter().map(|(off, r)| {
+        let n = o.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default();
+        (*off, if n.starts_with('$') { n.trim_end_matches(|ch: char| ch.is_ascii_digit()).to_string() } else { n })
+    }).collect();
+    (c.data.iter().zip(&c.mask).map(|(b, m)| if *m != 0 { 0 } else { *b }).collect(), syms)
+}
+
+/// What `dcp headers sample` found for one function.
+pub struct Sampled {
+    pub rec: Record,
+    pub built: String,
+    pub compiled: usize,
+    pub failed: usize,
+    /// the codegens seen: (grade, how many samples, the first sample's description), the control's first
+    pub codegens: Vec<(String, usize, String)>,
+}
+
+/// `dcp headers sample NAME`: the function's unit preprocessed once, compiled as it is (the control: it must give
+/// the build's grade) and `n` times with 1..3 no-meaning declarations at random file-scope places before the
+/// function (unused typedefs, struct tags, prototypes, externs; every line keeping its number). The function is
+/// tie-break sensitive when its code moves in any sample; its best grade over the samples is its source-proven one
+/// (a declaration set exists under which its text gives it). The record goes to ledger/tiebreak.tsv.
+pub fn sample_function(p: &Project, name: &str, n: usize, seed: u64) -> Result<std::result::Result<Sampled, String>> {
+    let root = p.root.to_string_lossy().into_owned();
+    let db = p.store_path();
+    let rows = crate::queues::function_grades(&db)?;
+    let Some(row) = rows.iter().find(|r| r["name"].as_str() == Some(name)) else { return Ok(Err(format!("no graded function {name} (dcp build first)"))) };
+    let (a, unit, built) = (row["addr"].as_i64().unwrap_or(0), row["unit"].as_str().unwrap_or("").to_string(), row["code"].as_str().unwrap_or("").to_string());
+    let plan = crate::plan::plan(p).map_err(err)?;
+    let Some(t) = plan.iter().find(|t| t.unit == unit) else { return Ok(Err(format!("no unit {unit} in target {}", p.target_name))) };
+    let srcs: HashMap<i64, (String, i64, i64)> = crate::with_db(&db, |c| store::claims_of(c, &db, "source", None, |f| &*f.rule == "L.src" && f.s("what") == Some("func")))?
+        .iter().map(|f| (f.lo, (f.s("file").unwrap_or("").to_string(), f.value["comment"].as_i64().unwrap_or(0), f.value["end"].as_i64().unwrap_or(0)))).collect();
+    let Some((file, comment, end)) = srcs.get(&a).cloned() else { return Ok(Err(format!("{name} has no source span"))) };
+    let Some(text) = fn_text(&root, &file, comment, end) else { return Ok(Err(format!("{name}: its text is not readable"))) };
+    // the unit preprocessed as the trial compiles it (its directory, then include/)
+    let tools = crate::vc6::Tools::of(p);
+    let flags = crate::plan::compile_flags(p, &t.target, &t.unit).map_err(err)?;
+    let mut dirs = vec![];
+    if let Some((d, _)) = t.file.rsplit_once('/') {
+        dirs.push(d.replace('/', "\\"));
+    }
+    dirs.push("include".to_string());
+    let expanded = match tools.preprocess(&t.file.replace('/', "\\"), &flags, &dirs, &root).map_err(err)? {
+        Ok(x) => x.replace("\r\n", "\n"),
+        Err(e) => return Ok(Err(format!("the unit does not preprocess: {}", e.lines().next().unwrap_or("")))),
+    };
+    let lines: Vec<&str> = expanded.lines().collect();
+    // the places before the function's definition (its comment line in its own file)
+    let unit_file = t.file.replace('/', "\\").to_lowercase();
+    let all = places(&lines);
+    let def = all.iter().position(|pl| pl.file.to_lowercase().ends_with(&unit_file) && pl.line >= comment).unwrap_or(all.len());
+    let cands: Vec<Place> = all[..def].to_vec();
+    if cands.is_empty() {
+        return Ok(Err(format!("no file-scope place before {name} in the preprocessed unit")));
+    }
+    // the members of the type definitions before the function
+    let mems: Vec<Member> = members(&lines).into_iter().filter(|m| cands.last().is_some_and(|c| m.at() < c.at)).collect();
+    let mut rng = Rng(seed ^ (a as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    // each sample 1..3 changes: a declaration at a place, or (one in three, when there are members) a member
+    let samples: Vec<Vec<Pick>> = (0..n).map(|_| (0..1 + rng.below(3)).map(|_| {
+        if !mems.is_empty() && rng.below(3) == 0 {
+            Pick { what: KINDS.len(), idx: rng.below(mems.len()), k: rng.below(1 << 16) }
+        } else {
+            Pick { what: rng.below(KINDS.len()), idx: rng.below(cands.len()), k: 0 }
+        }
+    }).collect()).collect();
+    let mut jobs = vec![Job { unit: t, tag: "sctl".into(), prefix: String::new(), text: expanded.clone() }];
+    for (k, s) in samples.iter().enumerate() {
+        jobs.push(Job { unit: t, tag: format!("s{k}"), prefix: String::new(), text: sample_text(&lines, &cands, &mems, s, &format!("s{k}")) });
+    }
+    let objs = compile(p, &jobs)?;
+    let bench = Bench::of(p)?;
+    let control = match &objs[0] {
+        Err(e) => return Ok(Err(format!("the preprocessed unit does not compile: {e}"))),
+        Ok(o) => o,
+    };
+    let Some(&k0) = control.function_index().get(name) else { return Ok(Err(format!("{name} is not in the compiled unit"))) };
+    let c0 = control.function_code(k0);
+    let g0 = bench.grade(control, &c0, a);
+    if g0 != built {
+        return Ok(Err(format!("the preprocessed unit does not reproduce the build ({name} built {built}, preprocessed {g0}): dcp build, then sample again")));
+    }
+    let where_at = |at: usize| -> String {
+        // the file and line the #line directives give a line index
+        cands.iter().rev().find(|c| c.at <= at).map(|c| format!("{}:{}", c.file.replace('\\', "/"), c.line + (at - c.at) as i64)).unwrap_or_default()
+    };
+    let describe = |s: &[Pick]| -> String {
+        s.iter().map(|pk| {
+            if pk.what < KINDS.len() {
+                let pl = &cands[pk.idx];
+                format!("{} before {}:{}", KINDS[pk.what], pl.file.replace('\\', "/"), pl.line)
+            } else {
+                match &mems[pk.idx] {
+                    Member::Pad { at, name, n, .. } if pk.k % 3 == 0 => format!("{name}[{n:#x}] wrapped in a struct near {}", where_at(*at)),
+                    Member::Pad { at, name, n, .. } => format!("{name}[{n:#x}] split after {:#x} near {}", 1 + pk.k % (n - 1), where_at(*at)),
+                    Member::Union { at } => format!("a union member near {}", where_at(*at)),
+                }
+            }
+        }).collect::<Vec<_>>().join(", ")
+    };
+    let key0 = code_key(control, &c0);
+    let mut seen: Vec<((Vec<u8>, Vec<(u32, String)>), String, usize, String)> = vec![(key0, g0.to_string(), 0, "the build's declarations".into())];
+    let (mut compiled, mut failed) = (0usize, 0usize);
+    for (k, o) in objs[1..].iter().enumerate() {
+        let Ok(o) = o else {
+            failed += 1;
+            continue;
+        };
+        let Some(&j) = o.function_index().get(name) else {
+            failed += 1;
+            continue;
+        };
+        compiled += 1;
+        let c = o.function_code(j);
+        let key = code_key(o, &c);
+        match seen.iter_mut().find(|x| x.0 == key) {
+            Some(x) => x.2 += 1,
+            None => {
+                let g = bench.grade(o, &c, a);
+                seen.push((key, g.to_string(), 1, format!("s{k}: {}", describe(&samples[k]))));
+            }
+        }
+    }
+    let sensitive = seen.len() > 1;
+    let best = seen.iter().map(|x| x.1.as_str()).max_by_key(|g| rank(g)).unwrap_or(g0).to_string();
+    let codegens: Vec<(String, usize, String)> = seen.into_iter().map(|x| (x.1, x.2, x.3)).collect();
+    let witness = format!("sample n={n} seed={seed} compiled={compiled} codegens={} best={best}", codegens.len());
+    let rec = Record { target: p.target_name.clone(), addr: a, name: name.into(), unit, text: text_hash(&text), sensitive, best, witness };
+    Ok(Ok(Sampled { rec, built, compiled, failed, codegens }))
+}
+
+/// `dcp headers sample NAME [--n N] [--seed S] [--dry-run]`: the lines and the exit status. The record replaces the
+/// function's record in ledger/tiebreak.tsv; an earlier probe's better grade is kept (proof is proof).
+pub fn sample_command(p: &Project, name: &str, n: usize, seed: u64, dry: bool) -> Result<(Vec<String>, i32)> {
+    use crate::cliread::{fmt_addr, record, Tok};
+    let s = |x: &str| Tok::S(x.to_string());
+    let r = match sample_function(p, name, n, seed)? {
+        Err(e) => return Ok((vec![record(&[("name", s(name)), ("error", s(&e))])], 1)),
+        Ok(r) => r,
+    };
+    let root = p.root.to_string_lossy().into_owned();
+    let mut rec = r.rec.clone();
+    let old = read(&root).into_iter().find(|x| x.target == rec.target && x.addr == rec.addr && x.text == rec.text);
+    if let Some(o) = &old {
+        rec.sensitive |= o.sensitive;
+        if rank(&o.best) > rank(&rec.best) {
+            rec.best = o.best.clone();
+        }
+    }
+    let verdict = if !r.rec.sensitive {
+        format!("insensitive: {} samples, one codegen: the declaration set does not move this function; what is left is in its text", r.compiled)
+    } else if rank(&rec.best) > rank(&r.built) {
+        format!("tie-break sensitive, and a declaration set gives {}: its source-proven grade (the deep queue counts it so)", rec.best)
+    } else {
+        format!("tie-break sensitive ({} codegens in {} samples), none better than built: the declaration set decides its allocation; park it for \
+                 the unit's declaration pass rather than respell it", r.codegens.len(), r.compiled)
+    };
+    let mut out = vec![record(&[("fn", s(&fmt_addr(r.rec.addr))), ("name", s(name)), ("unit", s(&r.rec.unit)), ("built", s(&r.built)),
+                                ("samples", Tok::I(n as i64)), ("compiled", Tok::I(r.compiled as i64)), ("failed", Tok::I(r.failed as i64)),
+                                ("sensitive", s(if r.rec.sensitive { "yes" } else { "no" })), ("codegens", Tok::I(r.codegens.len() as i64)),
+                                ("best", s(&rec.best))])];
+    for (g, k, what) in &r.codegens {
+        out.push(format!("  codegen {g}: {k} sample(s); first: {what}"));
+    }
+    out.push(verdict);
+    if dry {
+        out.push("(--dry-run: nothing written)".into());
+    } else {
+        let mut recs: Vec<Record> = read(&root).into_iter().filter(|x| !(x.target == rec.target && x.addr == rec.addr)).collect();
+        recs.push(rec);
+        recs.sort_by(|x, y| (&x.target, x.addr).cmp(&(&y.target, y.addr)));
+        let path = ledger_path(&root);
+        if let Some(d) = Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        crate::edit::write(&path, &render(&recs)).map_err(Error::value)?;
+        p.forget_input("tiebreak");
+        out.push(format!("written to {LEDGER}"));
+    }
+    Ok((out, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampler_places_and_texts() {
+        let text = "#line 1 \"src\\\\u.c\"\n#line 1 \"include\\\\a.h\"\ntypedef int A;\nstruct S {\n  int x;\n};\n#line 3 \"src\\\\u.c\"\nint f(a)\nint a;\n{\n  return a;\n}\n";
+        let lines: Vec<&str> = text.lines().collect();
+        let ps = places(&lines);
+        // file scope: `typedef`, `struct`, `int f(a)`; not a K&R parameter after an unended line, not a body's `{`,
+        // nothing inside braces
+        assert_eq!(ps.iter().map(|p| (p.at, p.file.as_str(), p.line)).collect::<Vec<_>>(),
+                   [(2, "include\\a.h", 1), (3, "include\\a.h", 2), (7, "src\\u.c", 3)]);
+        let picks = [Pick { what: 0, idx: 1, k: 0 }, Pick { what: 2, idx: 2, k: 0 }];
+        let s = sample_text(&lines, &ps, &[], &picks, "t");
+        // a padding array split and a union member, each on its own line
+        let ty = ["struct T {", "  int a;", "  char pad4[0x8];", "  union {", "    int u;", "  };", "};"];
+        let ms = members(&ty);
+        assert_eq!(ms.len(), 2, "{ms:?}");
+        let t3 = sample_text(&ty, &[], &ms, &[Pick { what: KINDS.len(), idx: 0, k: 3 }], "w");
+        assert!(t3.contains("  struct { char __dcp_w_0[8]; } pad4;
+"), "{t3}");
+        let t2 = sample_text(&ty, &[], &ms, &[Pick { what: KINDS.len(), idx: 0, k: 2 }, Pick { what: KINDS.len(), idx: 1, k: 0 }], "m");
+        assert!(t2.contains("  char pad4[3]; char __dcp_m_0[5];\n") && t2.contains("  union { char __dcp_m_1;\n"), "{t2}");
+        assert!(s.contains("typedef int A;\ntypedef int __dcp_t_0;\n#line 2 \"include\\\\a.h\"\nstruct S {"), "{s}");
+        assert!(s.contains("int __dcp_t_1(void);\n#line 3 \"src\\\\u.c\"\nint f(a)"), "{s}");
+        let mut r = Rng(7);
+        let v: Vec<usize> = (0..5).map(|_| r.below(10)).collect();
+        let mut r2 = Rng(7);
+        assert_eq!(v, (0..5).map(|_| r2.below(10)).collect::<Vec<_>>());
+    }
 
     #[test]
     fn normalized_text() {

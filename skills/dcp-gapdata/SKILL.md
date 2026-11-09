@@ -169,6 +169,9 @@ in `ledger/tiebreak.tsv`: commit it). A function whose own text did not change a
 probe is no fall: M1 prints `tie-break: N functions moved (UNIT)`, and promote takes it. Keep the change. Any
 other M1 is a wrong owner, size or access: fix it or undo the move; never `dcp debt add` for it in this session.
 
+`dcp headers sample NAME` measures one function more widely than the unit probe (random unused declarations
+and layout-preserving member changes inside the include chain); use it when a fall is not explained by the probe.
+
 ## 6. Wrap up
 1. Keep the group in progress only if it builds and checks clean; else revert it.
 2. `dcp session wrap`: builds, links, checks, promotes the grade baseline and prints the report. It must say

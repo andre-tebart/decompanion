@@ -345,7 +345,17 @@ escalate is not optional (the user requires every Q gate to be solved by base wo
 not read C for meaning).
 
 When only allocation or scheduling is left (`regs`, `slots`, `order` hunks the classes do not explain away, or
-the code is shape and only byte identity is missing), or a generated variant round would be needed:
+the code is shape and only byte identity is missing), measure first whether the declaration set decides it:
+`dcp headers sample NAME` (32 compiles of the unit with unused declarations and layout-preserving member changes,
+a few seconds; `--n 128` for more). `dcp grade NAME` then shows a `tiebreak:` line:
+- **sensitive, best byte**: a declaration set gives the original's bytes from your text. The function is proven
+  byte and leaves the queues; commit `ledger/tiebreak.tsv` and move on.
+- **sensitive, best below byte**: its allocation follows the declaration set; respelling it is a lottery. Escalate
+  now (the reason gets `(tiebreak: sensitive)` by itself); it waits for its unit's declaration pass.
+- **insensitive**: what is left is in the function's text. Try the spellings you have; then escalate (the reason
+  gets `(tiebreak: insensitive)`) with what you tried.
+
+Then, or when a generated variant round would be needed:
 `dcp escalate NAME "why"`, build, commit `<unit>: <name> -> deep (match-base)`. The reason lists what was
 read and tried and the exact remaining hunk (`asmdiff` lines). `dcp escalate` refuses a reason that only names
 missing statements, and one that admits a part not read against the original yet (not reconciled / checked /
@@ -357,8 +367,10 @@ allocation really causes it (extra saved registers, spills you have read in the 
 `--size-explained "why"` (kept in the reason); a function whose behaviour the prover shows the same (`proof:
 equal` in `dcp diffclass NAME`) is not held to the size. It refuses too on a concrete difference: a call or a
 store to a global that one side has and the other never refers to (`differs:` in `dcp diffclass NAME`, e.g.
-`the original +0x67 calls 0x5de518 (_ftol); ours never refers to it`), or a reference of ours the original's field
-does not make (`ref:` / `literal:` in `dcp diffclass NAME`). That is a meaning difference (a missing call or
+`the original +0x67 calls 0x5de518 (_ftol); ours never refers to it`), a reference of ours the original's field
+does not make (`ref:` / `literal:` in `dcp diffclass NAME`), a branch whose targets do not correspond (without a
+proof), or a census line (`census:` in `dcp grade NAME`: an object or a literal one side refers to and the other
+never does). The refusal lists them all. That is a meaning difference (a missing call or
 assignment, a wrong type converted, a wrong object, index or literal); fix it. Only when you have read that it is none (the call reached
 another way), say why: `--divergence-explained "why"` (kept in the reason). A function you raise to shape + readable that still carries a
 stale `@deep` / `@stuck` tag: `dcp escalate NAME --clear`, build again.
