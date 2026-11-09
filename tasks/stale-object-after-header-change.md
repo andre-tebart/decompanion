@@ -24,6 +24,17 @@ not exist, or accepts a witness against a wrong build.
   or the content hash is stale (the persisted stamps: fsmemo's racy-clean rule, the daemon's memo across epochs), or
   the object was right and the control compile differs for another reason (the parallel preprocess beside the compile).
 
+## Repro attempt (2026-11-09, decompanion 08e7c40 + census)
+
+Not reproduced. In a gildegold worktree at 44092cea~1, with the main.h hunk of 44092cea only, both with `--no-daemon`
+and through a daemon: `he` was recompiled (16 of 93 units) and `he_PostEvent67` stayed byte. The one function that
+moved, `ai_TutorialInitChapter2` (sv_t, byte -> shape), is a declaration-set tie-break, and G.tiebreak names it.
+Ruled out by reading compile.rs: the include paths are resolved to absolute paths (vc6::include_files), and a
+recompile stores a fresh include set, and a header that starts including another one is itself in the old set,
+so every unit that reads it recompiles and stores the new set. Still open: a state the report's worker had that
+the commits do not hold (uncommitted edits, an interrupted build). The next report has to carry `dcp build` output and the unit's `tu` row
+(include_hash before and after).
+
 ## Task
 
 1. Reproduce in a gildegold worktree (repro in the report: 44092cea~1, a declaration-only main.h edit, `dcp build`,

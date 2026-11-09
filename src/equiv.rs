@@ -2471,7 +2471,8 @@ mod tests {
     }
 
     /// The negative control: every function of the corpus proved equal, with our code changed at one place at a
-    /// time (an immediate's low byte + 1, a displacement's + 4, a conditional jump's condition inverted). A mutant
+    /// time (an immediate's low byte + 1, a displacement's + 4 and - 4, an address immediate's - 4 and + 4, a
+    /// conditional jump's condition inverted, two absolute addresses swapped: tasks/prover-mutants-swapped-objects.md). A mutant
     /// proved equal is printed: either the change cannot be seen (a dead stack slot) or the prover is wrong.
     /// `DCP_EQUIV_CORPUS=dir cargo test --lib equiv::tests::mutants -- --ignored --nocapture`
     #[test]
@@ -2502,17 +2503,32 @@ mod tests {
                     }
                     let mut tried = 0;
                     let mut bad = vec![];
-                    for i in dis::decode(ours, va) {
+                    let ins = dis::decode(ours, va);
+                    // a 4-byte field's value changed by `d` (the neighbour object below or above: dd_Width / dd_Height)
+                    let add4 = |m: &mut [u8], at: usize, d: i32| {
+                        let v = u32::from_le_bytes(m[at..at + 4].try_into().unwrap()).wrapping_add(d as u32);
+                        m[at..at + 4].copy_from_slice(&v.to_le_bytes());
+                    };
+                    for i in &ins {
                         if at_only.is_some_and(|x| x != i.addr) {
                             continue;
                         }
                         let o = (i.addr - va) as usize;
-                        let mut ms: Vec<(usize, u8, &str)> = vec![];
+                        // (field offset, change, what): change 0 inverts a jcc, 1..=4 adds to the low byte, else a
+                        // 4-byte field's value -4 / +4
+                        let mut ms: Vec<(usize, i32, &str)> = vec![];
                         if i.imm.size > 0 {
                             ms.push((o + i.imm.at as usize, 1, "imm+1"));
                         }
+                        if i.imm.size == 4 && u32::from_le_bytes(ours[o + i.imm.at as usize..][..4].try_into().unwrap()) >= 0x40_0000 {
+                            ms.push((o + i.imm.at as usize, -4, "address imm-4"));
+                            ms.push((o + i.imm.at as usize, 0x100, "address imm+4"));
+                        }
                         if i.disp.size > 0 {
                             ms.push((o + i.disp.at as usize, 4, "disp+4"));
+                        }
+                        if i.disp.size == 4 {
+                            ms.push((o + i.disp.at as usize, -4, "disp-4"));
                         }
                         if i.flow == Flow::CondJump && i.branch.size > 0 {
                             let at = o + i.branch.at as usize - 1;
@@ -2522,10 +2538,38 @@ mod tests {
                         }
                         for (at, d, what) in ms {
                             let mut m = ours.to_vec();
-                            m[at] = if d == 0 { m[at] ^ 1 } else { m[at].wrapping_add(d) };
+                            match d {
+                                0 => m[at] ^= 1,
+                                1..=4 => m[at] = m[at].wrapping_add(d as u8),
+                                0x100 => add4(&mut m, at, 4),
+                                _ => add4(&mut m, at, d),
+                            }
                             tried += 1;
                             if matches!(prove(&m, theirs, va), Outcome::Equal { .. }) {
                                 bad.push(format!("{} {:#x} {} {what}", h[0], i.addr, i.instr));
+                            }
+                        }
+                    }
+                    // two absolute addresses of ours swapped (a load of one global where the other belongs): the
+                    // first pair of each two distinct addresses, plain displacements only
+                    let abs: Vec<(u32, usize, u32)> = ins.iter().filter(|i| i.disp.size == 4 && at_only.is_none_or(|x| x == i.addr)
+                            && i.ops.iter().any(|op| op.typ == dis::OpType::Mem && op.base == dis::Reg::None && op.index == dis::Reg::None))
+                        .map(|i| {
+                            let at = (i.addr - va) as usize + i.disp.at as usize;
+                            (i.addr, at, u32::from_le_bytes(ours[at..at + 4].try_into().unwrap()))
+                        }).collect();
+                    let mut pairs = std::collections::HashSet::new();
+                    for (x, &(ia, a, va_)) in abs.iter().enumerate() {
+                        for &(ib, b, vb) in &abs[x + 1..] {
+                            if va_ == vb || !pairs.insert((va_.min(vb), va_.max(vb))) {
+                                continue;
+                            }
+                            let mut m = ours.to_vec();
+                            m[a..a + 4].copy_from_slice(&vb.to_le_bytes());
+                            m[b..b + 4].copy_from_slice(&va_.to_le_bytes());
+                            tried += 1;
+                            if matches!(prove(&m, theirs, va), Outcome::Equal { .. }) {
+                                bad.push(format!("{} {ia:#x}/{ib:#x} {va_:#x}<->{vb:#x} addresses swapped", h[0]));
                             }
                         }
                     }
