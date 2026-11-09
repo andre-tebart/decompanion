@@ -705,7 +705,7 @@ pub(crate) fn guidance(kind: Option<&str>) -> String {
     match kind {
         Some("layout") => format!("gate: ok. The {clock}."),
         Some("match-base") => format!("gate: ok. This is {functions}."),
-        Some("match-deep") => "gate: ok. A match-deep session is counted in items (the skill's count, each within its time budget), not                                minutes: `dcp next --deep` for the first item".to_string(),
+        Some("match-deep") => "gate: ok. A match-deep session is counted in items (the skill's count, each within its time budget), not minutes: `dcp next --deep` for the first item".to_string(),
         _ => format!("gate: ok. A layout session: {clock}. A match-base session: counted in functions, not minutes (`dcp next`)."),
     }
 }
