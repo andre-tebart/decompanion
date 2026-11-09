@@ -25,6 +25,9 @@ pub struct LinkReport {
     pub out: String,
     pub cached: bool,
     pub ms: i64,
+    /// the linked game objects (unit, path) and the link map: the record layout check reads them (layoutcheck.rs)
+    pub linked: Vec<(String, String)>,
+    pub map: String,
 }
 
 fn name_of(p: &str) -> String {
@@ -400,6 +403,8 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let lib_units: Vec<(i64, String)> = lu.values().filter_map(|d| d.key("lib").map(|k| (d.lo, k.s().to_string()))).collect();
     objs.retain(|(u, _)| lib_of(u).is_none());
     rep.objects = objs.len();
+    rep.linked = objs.clone();
+    rep.map = py_path(&format!("{out_dir}/{}.map", p.target_name));
     let mut defined: HashSet<String> = HashSet::new();
     let mut includes: Vec<String> = vec![];
     for (u, o) in &parsed {

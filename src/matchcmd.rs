@@ -738,12 +738,25 @@ pub(crate) fn link_report_lines(r: &crate::link::LinkReport) -> (Vec<String>, bo
 #[allow(clippy::type_complexity)]
 pub(crate) fn link_lines(p: &crate::project::Project) -> Result<(Vec<String>, bool, Option<String>, usize, Vec<String>)> {
     let r = crate::link::full_link(p).map_err(err)?;
-    let (out, _) = link_report_lines(&r);
+    let (mut out, _) = link_report_lines(&r);
+    // the record layout across the relink (layoutcheck.rs): fields of one record the link moved apart. The image
+    // links, but it does not run as the original does: the gate fails on it
+    let layout = if r.ok {
+        let phi = crate::names::ledger_phi(&p.store_path())?;
+        crate::layoutcheck::run(&r.linked, &r.map, &phi)
+    } else {
+        vec![]
+    };
+    out.extend(layout.iter().map(|l| format!("  {l}")));
     let class = |k: &str| r.unresolved.iter().find(|(c, _)| c == k).map(|(_, v)| v.as_slice()).unwrap_or(&[]);
-    let reason = (!r.ok).then(|| {
+    let reason = if !r.ok {
         let classes: Vec<String> = r.unresolved.iter().filter(|(k, v)| !v.is_empty() && k != "undrafted").map(|(k, v)| format!("{k}={}", v.len())).collect();
-        format!("link:{}{}", classes.join(","), if r.errors.is_empty() { String::new() } else { format!(",errors={}", r.errors.len()) })
-    });
+        Some(format!("link:{}{}", classes.join(","), if r.errors.is_empty() { String::new() } else { format!(",errors={}", r.errors.len()) }))
+    } else if !layout.is_empty() {
+        Some(format!("link:layout={}", layout.len()))
+    } else {
+        None
+    };
     let mut gate = vec![];
     if !r.ok {
         for (k, lines) in r.unresolved.iter().filter(|(k, _)| k != "undrafted") {
@@ -751,7 +764,8 @@ pub(crate) fn link_lines(p: &crate::project::Project) -> Result<(Vec<String>, bo
         }
         gate.extend(r.errors.iter().take(5).map(|x| format!("    link error: {x}")));
     }
-    Ok((out, r.ok, reason, class("undrafted").len(), gate))
+    gate.extend(layout.iter().take(10).map(|l| format!("    {l}")));
+    Ok((out, r.ok && layout.is_empty(), reason, class("undrafted").len(), gate))
 }
 
 // ------------------------------------------------------------------------------------------------ probe

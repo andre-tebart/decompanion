@@ -23,6 +23,7 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 | 64 | [address-as-number](address-as-number.md): `&SYM + N` used as a mask or constant (M.addrnum), lint and sweep | M | |
 | 65 | [slot-pairing-by-object](slot-pairing-by-object.md): one slot map per function; another offset in one local is a meaning difference | M | |
 | 66 | [prover-mutants-swapped-objects](prover-mutants-swapped-objects.md): mutants for swapped neighbours, offsets, constants | S | |
+| 67 | [record-layout-across-relink](record-layout-across-relink.md): fields of one record keep their distances in our link (M.layout, done) | S-M | |
 
 ## P1
 

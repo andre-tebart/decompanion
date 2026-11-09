@@ -31,7 +31,13 @@ the declaration set: it misses changes inside the include chain and inside type 
 gildegold 8941d6a9: ai_TutorialInitChapter2 sensitive (2 codegens; 68 of 128 samples give byte: proven byte);
 pool_Next and d3_CloneObject insensitive in 128 / 256 samples; ai_Unk483a60 (recorded sensitive after an AIBLD
 member was typed) insensitive now, and a hand-made AIBLD padding wrap moved only ai_TutorialInitChapter2: the old
-sensitivities are gone with the headers since. The sampler over every shape-level deep item: see below.
+sensitivities are gone with the headers since.
+
+Every shape-level deep item (risk shape / proved: 564 functions, 32 samples each, about 15 minutes): **562
+insensitive**, 2 sensitive: gm_RefreshGoodsLists (2 codegens, none better than shape) and ai_TutorialInitChapter3
+(its preprocessed control already gives shape where the build gives draft; 11 codegens, best shape). For almost every
+deep item the residue is in the function's text. A control that differs from the build is now a codegen of its own
+and proof of sensitivity (or a stale build), not an error.
 
 ## Left
 
