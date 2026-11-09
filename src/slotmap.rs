@@ -212,12 +212,25 @@ pub fn check(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
         ys.sort();
         xs == ys
     };
+    // how often each side touches each slot anywhere in the function (aligned or not): stores reordered across
+    // hunks touch the same elements as often on both sides; another element shifts one access from one element
+    // to another, so both elements' counts differ
+    let touched = |ins: &[Ins], d: &HashMap<u32, i32>| -> HashMap<i32, usize> {
+        let mut m = HashMap::new();
+        for a in ins.iter().filter_map(|i| d.get(&i.addr).map(|&x| accesses(i, x))).flatten() {
+            *m.entry(a.slot).or_insert(0) += 1;
+        }
+        m
+    };
+    let (ta_all, tb_all) = (touched(&ia, &da), touched(&ib, &db));
     let mut out = vec![];
     let mut seen = BTreeSet::new();
     for &(at, sa, sb, oa, ob, h) in &inside {
         let Some(d) = dominant(sa, sb) else { continue };
+        let n = |m: &HashMap<i32, usize>, s: i32| m.get(&s).copied().unwrap_or(0);
+        let missing = n(&ta_all, sa + oa) != n(&tb_all, sb + oa + d) && n(&ta_all, sa + ob - d) != n(&tb_all, sb + ob);
         if oa != ob && ob - oa != d && (paired.contains(&(sa, sb, ob - d, ob)) || paired.contains(&(sa, sb, oa, oa + d))) && !crossed(h, sa, sb, d)
-            && seen.insert(at) {
+            && missing && seen.insert(at) {
             out.push(SlotDiff { off: at - va, ours: (sa, oa), theirs: (sb, ob) });
         }
     }

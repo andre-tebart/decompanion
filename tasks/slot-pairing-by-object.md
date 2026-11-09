@@ -47,3 +47,18 @@ sv_CameraToObject, sv_FlyCameraToObject.
 
 Still open from the task: the same rule in diffclass's slots class and in the prover's frame correspondence (a
 verdict, not a report), once the warnings are read and the false positives known.
+
+## Second slice (2026-11-09): counts per element
+
+The 32 findings were read; the first one was taken for a y / z swap in `gv_FireShots` and was not one: the original
+keeps `v2` at entry-0x90 and `mode` at entry-0x8c and stores them to m+4 / m+8 like ours, in another order across two
+one-line hunks, so the positional pairing crossed them. The per-hunk crossing test cannot see a reorder across
+hunks. Now an access is listed only when the counts differ as well: how often each side touches the two elements
+(ours, and the original's by the correspondence) anywhere in the function. A wrong index shifts one access from one
+element to another; a reorder changes no count. Presence alone (an element the other side never touches) gave 0 on
+gildegold and would miss the motivating case (balance[0x11] is read elsewhere too).
+
+gildegold 744e339b: **4 findings, all ai_FireCannon**, x87 temporaries: the original keeps products on the FPU
+stack where ours stores each to a stack temporary (its @deep note), so the temporaries' counts differ. A known
+false-positive class: an x87 `fst`/`fstp` / `fld` temporary is no array element; to be excluded next (slots touched
+only by x87 stores and loads).
