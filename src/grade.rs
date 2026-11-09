@@ -87,6 +87,8 @@ struct Held {
     o: diffclass::Original,
     matched_sites: Vec<Site>,
     verdict: std::cell::OnceCell<Judged>,
+    /// the reference census's input (no byte match: refcheck::census_input over the prover's binding)
+    census: std::cell::OnceCell<crate::refcheck::CensusInput>,
 }
 
 thread_local! {
@@ -291,7 +293,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if let Some(v) = v {
             let _ = verdict.set(v);
         }
-        fresh.insert(i, Rc::new(Held { size, extent, slot, o, matched_sites, verdict }));
+        fresh.insert(i, Rc::new(Held { size, extent, slot, o, matched_sites, verdict, census: Default::default() }));
     }
     for (i, (f, key)) in funcs.iter().zip(keys).enumerate() {
         let lo = f.src.lo;
@@ -316,7 +318,28 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         } else {
             crate::refcheck::check(&f.obj.0, &f.code, &img, &judged().1, &refs[i], &phi)
         });
-        let lines = chk.lines(&phi, lo as u32, unit);
+        // the reference census (tasks/reference-census.md): the objects one side refers to and the other never
+        // does, whatever the alignment; no byte match only (equal bytes refer alike)
+        let census: Vec<crate::refcheck::CensusDiff> = if is_byte {
+            vec![]
+        } else {
+            let inp = h.census.get_or_init(|| crate::timing::phase("g.census", || {
+                let sites = &judged().1;
+                let (bound, unbound) = crate::equiv::bind(&f.obj.0, &f.code, &img, lo as u32, sites, &refs[i], &phi);
+                let data = img.read(lo as u32, h.o.code.max(0) as usize);
+                crate::refcheck::census_input(&f.obj.0, &f.code, &refs[i], &bound, unbound, &data, lo as u32)
+            }));
+            crate::refcheck::census(inp, &phi)
+        };
+        let mut lines = chk.lines(&phi, lo as u32, unit);
+        if !is_byte && census.is_empty() {
+            // the alignment paired reordered code crosswise: both sides refer to every object either one names
+            for (l, r) in lines.iter_mut().zip(chk.firsts()) {
+                if r.rule == "M8" {
+                    l.push_str(" (crossed: both sides refer to both)");
+                }
+            }
+        }
         let rules: BTreeSet<&str> = chk.differs().map(|r| r.rule).collect();
         let rules = rules.into_iter().collect::<Vec<_>>().join(", ");
         // the failing lines name the first differences, the count names them all
@@ -368,6 +391,23 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 w.push(format!("B2 shape: {}", v.summary()));
             }
             why = w;
+        }
+        // the census and our addresses used as numbers: listed and warned (not yet a concrete difference: measured
+        // on gildegold first)
+        let name = f.src.s("symbol").unwrap_or("");
+        for c in &census {
+            why.push(format!("census: {}", c.line()));
+            let site = lo + c.off as i64;
+            out.finding("warn", "M.census", site, site + 4, format!("{name} at {lo:#x}: {}", c.line()), &f.src.by);
+        }
+        for (k, n) in refs[i].numeric.iter().enumerate() {
+            let expect = f.code.relocs.iter().position(|(off, _)| *off == n.off).map(|j| refs[i].expect[j].as_slice()).unwrap_or(&[]);
+            let l = n.line(expect);
+            if k < REF_LINES {
+                why.push(format!("addrnum: {l}"));
+            }
+            let site = lo + n.off as i64;
+            out.finding("warn", "M.addrnum", site, site + 4, format!("{name} at {lo:#x}: {l}"), &f.src.by);
         }
         // the findings view (M8 / M9 / M10): a byte match whose reference φ contradicts, at the site (the bytes are
         // equal at this layout only, docs/mental-model.md §8.3); the positional pairing is exact there. Elsewhere

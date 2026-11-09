@@ -130,6 +130,34 @@ pub struct Refs {
     pub expect: Vec<Vec<i64>>,
     /// our references outside their object (containment, docs/mental-model.md §8.7): ill-formed
     pub outside: Vec<Outside>,
+    /// our addresses used as numbers (an immediate of a bitwise or multiplicative operation): M.addrnum
+    pub numeric: Vec<Numeric>,
+}
+
+/// The operations whose immediate is a number, never an address: no compiler places `&x + N` there.
+const NUMERIC_OPS: &[&str] = &["and", "or", "xor", "test", "imul", "shl", "shr", "sar", "rol", "ror"];
+
+/// A relocated immediate of ours to a named object, in an operation that uses it as a number (`and esi, offset
+/// txt_Keys + 0x181c0`): the value equals the original's only while the object keeps the original's address
+/// (tasks/address-as-number.md).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Numeric {
+    /// the relocated field's offset in the function
+    pub off: u32,
+    pub name: String,
+    pub within: i64,
+    /// the operation
+    pub mn: &'static str,
+}
+
+impl Numeric {
+    /// `M.addrnum at +0x1c: and &txt_Keys + 0x181c0 uses an address as a number: ...`, with the value at φ's address.
+    pub fn line(&self, expect: &[i64]) -> String {
+        let at = if self.within < 0 { format!("- {:#x}", self.within.unsigned_abs()) } else { format!("+ {:#x}", self.within) };
+        let value = expect.first().map(|e| format!(" ({:#x} at the original's layout)", (e + self.within) as u32)).unwrap_or_default();
+        format!("M.addrnum at +{:#x}: `{}` with &{} {at}{value} uses an address as a number: it changes when {} moves; \
+                 write the number", self.off, self.mn, self.name, self.name)
+    }
 }
 
 /// A reference of ours at `name + within` outside the object's declared size (`size` bytes; one past the end is
@@ -188,13 +216,25 @@ impl Refs {
             Target::Name { name, .. } => phi_addrs(phi, name),
             _ => vec![],
         }).collect();
-        // containment: the decode only for a function with a reference past its object's declared size
+        // containment: the decode only for a function with a reference past its object's declared size; an address
+        // used as a number: only for an absolute relocation with an addend (`&x + N`: a bare `&x` as a mask is no
+        // spelling anyone writes)
         let mut outside = vec![];
+        let mut numeric = vec![];
         let mut ins: Option<Vec<crate::dis::Ins>> = None;
+        let end = code.code_len.unwrap_or(u32::MAX);
         for ((off, r), t) in code.relocs.iter().zip(&targets) {
             let Target::Name { name, delta } = t else { continue };
-            let Some(size) = phi.size_of(name) else { continue };
             let within = obj.addend(code.secnum, r).wrapping_sub(*delta) as i32 as i64;
+            if within != 0 && *off < end && r.kind_width() == (crate::coff::ABSOLUTE, 4) {
+                let ins = ins.get_or_insert_with(|| crate::dis::decode(code.code().0, 0));
+                if let Some((x, crate::dis::FieldKind::Imm | crate::dis::FieldKind::Imm2)) = field_at(ins, *off) {
+                    if let Some(&mn) = NUMERIC_OPS.iter().find(|&&m| m == x.mn) {
+                        numeric.push(Numeric { off: *off, name: name.clone(), within, mn });
+                    }
+                }
+            }
+            let Some(size) = phi.size_of(name) else { continue };
             if (0..=size).contains(&within) {
                 continue;
             }
@@ -205,7 +245,7 @@ impl Refs {
                 None => {}
             }
         }
-        Refs { targets, expect, outside }
+        Refs { targets, expect, outside, numeric }
     }
 }
 
@@ -543,6 +583,186 @@ fn line(r: &Ref, phi: &Phi, va: u32, unit: Option<&str>) -> String {
     }
 }
 
+// ------------------------------------------------------------------------------------------------ the census
+
+/// One of our named references as the prover binds it (equiv::bind).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundRef {
+    /// the relocated field's offset in the function
+    pub off: u32,
+    pub name: String,
+    /// the object's start where the binding puts it, and our offset into it
+    pub start: u32,
+    pub within: i64,
+    /// a relative field (a call or jump to it): its start only counts
+    pub call: bool,
+}
+
+/// What the census reads of one function, from its key alone (held with the function's results): our bound
+/// references, every value our bound fields hold, the original's 4-byte fields and the unbound count.
+#[derive(Clone, Debug, Default)]
+pub struct CensusInput {
+    pub ours: Vec<BoundRef>,
+    pub fields: std::collections::BTreeSet<u32>,
+    /// the original's 4-byte fields (displacements, immediates, branch targets): value -> its first instruction's
+    /// address and the kinds of field it is (IMM, INDEXED, PLAIN)
+    pub theirs: std::collections::BTreeMap<u32, (u32, u8)>,
+    pub unbound: usize,
+    pub va: u32,
+    pub len: u32,
+}
+
+/// How far below an object's start the compiler's indexing reaches (`[x-4+ecx*4]`: an indexed displacement only).
+const BIAS: i64 = 0x10;
+/// The kinds of an original's field: an immediate, a displacement with an index register, a plain displacement or
+/// a branch target.
+const IMM: u8 = 1;
+const INDEXED: u8 = 2;
+const PLAIN: u8 = 4;
+
+/// The census input of a function: `bound` our code as equiv::bind binds it, `unbound` its count of unbound fields,
+/// `theirs` the original's code at `va`.
+pub fn census_input(obj: &Obj, code: &FunctionCode, refs: &Refs, bound: &[u8], unbound: usize, theirs: &[u8], va: u32) -> CensusInput {
+    let end = code.code_len.unwrap_or(bound.len() as u32);
+    let mut ours = vec![];
+    let mut fields = std::collections::BTreeSet::new();
+    for (k, (off, r)) in code.relocs.iter().enumerate() {
+        let o = *off as usize;
+        if *off >= end || o + 4 > bound.len() {
+            continue;
+        }
+        let v = u32::from_le_bytes(bound[o..o + 4].try_into().unwrap_or([0; 4]));
+        let (to, call) = match r.kind_width() {
+            (crate::coff::ABSOLUTE, 4) => (v, false),
+            (crate::coff::RELATIVE, 4) => (va.wrapping_add(*off).wrapping_add(4).wrapping_add(v), true),
+            _ => continue,
+        };
+        if to >= 0xf000_0000 {
+            continue; // unbound (equiv::bind's placeholder addresses)
+        }
+        fields.insert(to);
+        if let (Target::Name { name, delta }, false) = (&refs.targets[k], refs.expect[k].is_empty()) {
+            let addend = obj.addend(code.secnum, r);
+            let within = addend.wrapping_sub(*delta) as i32 as i64;
+            ours.push(BoundRef { off: *off, name: name.clone(), start: (to as i64 - within) as u32, within, call });
+        }
+    }
+    // every 4-byte field of our bound code as well: a number of ours equal to an address of the original's (a
+    // flag word that happens to be one) is the same number on both sides
+    let ours_code = &bound[..(end as usize).min(bound.len())];
+    for x in crate::dis::decode(ours_code, va) {
+        fields.extend(fields_in(&x, ours_code, va).into_iter().map(|(v, _)| v).filter(|&v| v < 0xf000_0000));
+    }
+    let mut their = std::collections::BTreeMap::new();
+    for x in crate::dis::decode(theirs, va) {
+        for (f, kind) in fields_in(&x, theirs, va) {
+            their.entry(f).or_insert((x.addr, 0)).1 |= kind;
+        }
+    }
+    CensusInput { ours, fields, theirs: their, unbound, va, len: theirs.len() as u32 }
+}
+
+/// The 4-byte reference fields of one instruction of `code` (at `va`), as addresses: fields_of on the code's own
+/// bytes instead of the image.
+fn fields_in(x: &crate::dis::Ins, code: &[u8], va: u32) -> Vec<(u32, u8)> {
+    let base = (x.addr - va) as usize;
+    let indexed = x.ops.iter().any(|o| o.typ == crate::dis::OpType::Mem && o.index != crate::dis::Reg::None);
+    let mut out = vec![];
+    for (f, kind) in [(x.disp, if indexed { INDEXED } else { PLAIN }), (x.imm, IMM), (x.imm2, IMM)] {
+        let o = base + f.at as usize;
+        if let (4, Some(b)) = (f.size, code.get(o..o + 4)) {
+            out.push((u32::from_le_bytes([b[0], b[1], b[2], b[3]]), kind));
+        }
+    }
+    if x.branch.size == 4 {
+        out.extend(x.target.map(|t| (t, PLAIN)));
+    }
+    out
+}
+
+/// A census difference: an object one side refers to and the other never refers into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CensusDiff {
+    /// ours (our relocated field's offset) or the original's (its instruction's offset)
+    pub ours: bool,
+    pub off: u32,
+    pub name: String,
+    pub addr: u32,
+}
+
+impl CensusDiff {
+    pub fn line(&self) -> String {
+        if self.ours {
+            format!("M.census at +{:#x}: ours refers to {} ({:#x}); the original never refers into it", self.off, self.name, self.addr)
+        } else {
+            format!("M.census at +{:#x} (the original's): the original refers to {} ({:#x}); ours never refers into it", self.off, self.name,
+                    self.addr)
+        }
+    }
+}
+
+/// The census (tasks/reference-census.md): the named objects one side refers to and the other never refers into,
+/// whatever the alignment. Ours: an object of our relocations without any field of the original's in its extent
+/// (its declared size; one past the end and the indexing bias below its start included; a call: its start). The
+/// original's: a field equal to the start φ gives one of our objects (a function, a datum) that none of our
+/// references names or holds, checked only when every one of our fields is bound (an unbound one could be it).
+pub fn census(inp: &CensusInput, phi: &Phi) -> Vec<CensusDiff> {
+    let mut out = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for b in &inp.ours {
+        if !seen.insert(&b.name) {
+            continue;
+        }
+        let refs: Vec<&BoundRef> = inp.ours.iter().filter(|x| x.name == b.name).collect();
+        let touched = refs.iter().any(|x| {
+            let (start, at) = (x.start as i64, x.start as i64 + x.within);
+            if x.call {
+                return inp.theirs.contains_key(&(at as u32));
+            }
+            // the object's bytes (an unsized one: up to our offset's 4 bytes), an immediate up to one more object
+            // size past its end (strength reduction's loop pointers and limits, as M.contain), the indexing bias
+            // below its start as an indexed displacement
+            let end = phi.size_of(&x.name).unwrap_or(0).max(x.within + 4);
+            let r = |lo: i64, hi: i64| inp.theirs.range(lo.max(0) as u32..=hi.max(0) as u32);
+            r(start.min(at), start + end - 1).next().is_some()
+                || r(start + end, start + 2 * end).any(|(_, &(_, k))| k & IMM != 0)
+                || r(start - BIAS, start - 1).any(|(_, &(_, k))| k & INDEXED != 0)
+        });
+        if !touched {
+            out.push(CensusDiff { ours: true, off: b.off, name: b.name.clone(), addr: (b.start as i64 + b.within) as u32 });
+        }
+    }
+    if inp.unbound > 0 {
+        return out;
+    }
+    let ours_names: std::collections::HashSet<&str> = inp.ours.iter().map(|b| b.name.as_str()).collect();
+    for (&f, &(at, kind)) in &inp.theirs {
+        if (inp.va..inp.va.wrapping_add(inp.len)).contains(&f) || inp.fields.contains(&f) {
+            continue;
+        }
+        let names: Vec<String> = phi.at(f as i64).filter(|e| matches!(e.origin, Origin::Source | Origin::Decl | Origin::Lib | Origin::Import))
+            .map(|e| e.name.clone()).collect();
+        if names.is_empty() || names.iter().any(|n| ours_names.contains(n.as_str())) {
+            continue;
+        }
+        // inside an object one of our references names (a view of it under another name, a field of it): the
+        // same extent as our side's check
+        // or an immediate up to one more object size past its end (a loop limit: `cmp edi, offset next_object`)
+        if inp.ours.iter().any(|b| {
+            let end = phi.size_of(&b.name).unwrap_or(0).max(b.within + 4);
+            let (lo, f) = (b.start as i64, f as i64);
+            !b.call && ((lo..lo + end).contains(&f) || (kind & IMM != 0 && (lo..=lo + 2 * end).contains(&f))) || b.start as i64 == f
+        }) {
+            continue;
+        }
+        let mut names = names;
+        names.sort();
+        names.dedup();
+        out.push(CensusDiff { ours: false, off: at - inp.va, name: names.join("|"), addr: f });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,5 +923,50 @@ mod tests {
         let refs = Refs::new(&obj, &code, &p);
         let (bound, unbound) = crate::equiv::bind(&obj, &code, &img, VA, &aligned, &refs, &p);
         assert_eq!((u32::from_le_bytes(bound[13..17].try_into().unwrap()), unbound), (VA + 0x40, 0));
+    }
+
+    /// The census of our f against an original whose first two fields hold `a` and `b`.
+    fn census_of(a: u32, b: u32, p: &Phi) -> Vec<CensusDiff> {
+        let (obj, code) = ours();
+        let img = image(a, b, VA + 0x40);
+        let refs = Refs::new(&obj, &code, p);
+        let sites = sites_matched(&code, &img, VA);
+        let (bound, unbound) = crate::equiv::bind(&obj, &code, &img, VA, &sites, &refs, p);
+        census(&census_input(&obj, &code, &refs, &bound, unbound, &img.read(VA, 0x17), VA), p)
+    }
+
+    #[test]
+    fn the_census_tells_crossed_references_from_another_object() {
+        // the loads swapped: M8 names both sites, but both sides refer to g_a and g_b: no census difference
+        let p = phi(&[]);
+        assert_eq!(census_of(B, A, &p), []);
+        assert_eq!(census_of(A, B, &p), []);
+        // the original loads g_d where ours loads g_b: ours refers to g_b, the original never does; the original
+        // refers to g_d, ours never does
+        let d = BASE + DATA + 0x20;
+        let p = phi(&[(d, "g_d")]);
+        let got = census_of(A, d, &p);
+        assert_eq!(got, [CensusDiff { ours: true, off: 7, name: "g_b".into(), addr: B }, CensusDiff { ours: false, off: 5, name: "g_d".into(), addr: d }],
+                   "{got:?}");
+        assert_eq!(got[0].line(), format!("M.census at +0x7: ours refers to g_b ({B:#x}); the original never refers into it"));
+        // a neighbour 4 bytes below is no reference into the object (dd_Width / dd_Height)
+        let p = phi(&[]);
+        assert_eq!(census_of(A, A, &p).iter().map(|c| (c.ours, c.name.as_str())).collect::<Vec<_>>(), [(true, "g_b")]);
+    }
+
+    /// `and eax, offset g_a + 0x10` uses an address as a number; `mov eax, offset g_a + 0x10` and `and eax, offset g_a`
+    /// do not.
+    #[test]
+    fn an_address_used_as_a_number_is_listed() {
+        let code = [0x25u8, 0x10, 0, 0, 0, 0xb8, 0x10, 0, 0, 0, 0x25, 0, 0, 0, 0, 0xc3];
+        let relocs = [(1u32, 2u32, 6u16), (6, 2, 6), (11, 2, 6)];
+        let syms = [(".text", 0, 1, 3), ("_f", 0, 1, 2), ("_g_a", 0, 0, 2)];
+        let obj = Obj::parse(&crate::coff::testlib::code_obj(&code, &relocs, &syms)).unwrap();
+        let code = obj.function_code(obj.function_index()["f"]);
+        let p = phi(&[]);
+        let refs = Refs::new(&obj, &code, &p);
+        assert_eq!(refs.numeric, [Numeric { off: 1, name: "g_a".into(), within: 0x10, mn: "and" }]);
+        assert!(refs.numeric[0].line(&[A as i64]).starts_with(&format!("M.addrnum at +0x1: `and` with &g_a + 0x10 ({:#x} at the original's layout)", A + 0x10)),
+                "{}", refs.numeric[0].line(&[A as i64]));
     }
 }
