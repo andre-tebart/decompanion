@@ -37,6 +37,9 @@ pub struct Reading {
     /// our references outside their object's declared size (refcheck::Outside, M.contain): (our field's address,
     /// its line)
     pub outside: Vec<(u32, String)>,
+    /// the reference census (refcheck::census, tasks/reference-census.md): an object one side refers to and the
+    /// other never refers into, one line each
+    pub census: Vec<String>,
 }
 
 /// What one of our X fields refers to, for comparing it with the original's number: the addresses its symbol
@@ -435,6 +438,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
     let open_lines = refs.open_lines(phi, a as u32);
     let outside = refs_of.outside.iter().map(|o| (a as u32 + o.off, o.line())).collect();
     let mut witness = None;
+    let mut census = vec![];
     let mut calls = (vec![], 0);
     let proof = crate::timing::phase("r.proof", || -> Result<_, Error> { Ok({
         let (ours, unbound) = crate::equiv::bind(&obj, &code, &img, a as u32, &sites, &refs_of, phi);
@@ -449,12 +453,14 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
             witness = Some(format!("{who} +{:#x} {} {:#x}{}; {other} never refers to it", w.at - a as u32, w.what, w.addr,
                                    name.map(|n| format!(" ({n})")).unwrap_or_default()));
         }
+        let inp = crate::refcheck::census_input(&obj, &code, &refs_of, &ours, unbound, &data, a as u32, &img);
+        census = crate::refcheck::census(&inp, phi).iter().map(|c| c.line()).collect();
         let (diff, unbound) = crate::equiv::calls_differ(&ours, &data, a as u32);
         let named = |t: u32| phi.names_at(t as i64).into_iter().next().unwrap_or_else(|| format!("{t:#x}"));
         calls = (diff.into_iter().map(|(t, x, y)| (named(t), x, y)).collect(), unbound);
         (crate::timing::phase("r.prove", || crate::equiv::prove(&ours, &data, a as u32)), unbound)
     }) })?;
-    Ok(Ok(Reading { row, fc, named, values, proof, witness, calls, refs, ref_lines, open_lines, outside }))
+    Ok(Ok(Reading { row, fc, named, values, proof, witness, calls, refs, ref_lines, open_lines, outside, census }))
 }
 
 // ------------------------------------------------------------------------------------------------ entry points

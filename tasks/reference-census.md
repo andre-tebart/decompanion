@@ -52,3 +52,12 @@ not of an instruction's.
 
 - this task came from a review of gildegold's deep queue (2026-11-09), not from a report
 - related: `equiv::witness` (2843815), diffclass-meaning-classes, escalate-gates-on-verdict
+
+## Literals (2026-11-09)
+
+The census also takes our literals (strings, floating constants): one whose bytes no field of the original's
+function refers to anywhere is listed (`our literal 0.6 (__real@...); the original's function refers to no such
+bytes`). With the census empty, every M8 / M9 / M10 line of the function says `(crossed ...)`: a literal paired
+with another field inside a mismatched hunk is no difference. gildegold 0ce9dab4: 24 literal findings in 14
+functions; the deep queue's `concrete` class fell from 24 to 16 (err_ExceptionFilter, ai_CommandExecution, ... were
+pairing artifacts).

@@ -247,8 +247,39 @@ fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&st
     }
     per.sort_by_key(|x| (x.0, x.1, x.2));
     let flat: Vec<Row> = per.into_iter().flat_map(|x| x.3).collect();
-    let (stuck, rest): (Vec<Row>, Vec<Row>) = flat.into_iter().partition(|r| s(r, "section") == "stuck");
+    let (stuck, mut rest): (Vec<Row>, Vec<Row>) = flat.into_iter().partition(|r| s(r, "section") == "stuck");
+    // the deep queue by risk, the order above kept within a class: the meaning differences first, then what no
+    // proof covers, then the shapes (a proved one is behaviour-equal and only waits for its bytes)
+    if which == "deep" {
+        for r in rest.iter_mut() {
+            let k = risk(r);
+            r.insert("risk".into(), Value::from(k));
+        }
+        rest.sort_by_key(|r| RISKS.iter().position(|x| *x == s(r, "risk")).unwrap_or(RISKS.len()));
+    }
     Ok(rest.into_iter().chain(stuck).collect())
+}
+
+/// The deep queue's risk classes, the riskiest first.
+pub const RISKS: [&str; 5] = ["concrete", "draft", "shape", "proved", "byte"];
+
+/// A deep item's risk class from its grade row: `concrete` a function whose grade names a meaning difference (a
+/// reference that differs and does not only cross, a census or an addrnum line), `draft` one no proof covers,
+/// `shape` one the shape classes explain without a proof, `proved` one the prover shows behaviour-equal, `byte`
+/// one whose code matches (its readability is left).
+pub fn risk(r: &Row) -> &'static str {
+    let failing: Vec<&str> = r.get("failing").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let meaning = failing.iter().any(|l| {
+        let reference = ["M8 at", "M9 at", "M10 at"].iter().any(|m| l.contains(m)) && !l.contains("(crossed") && !l.contains("open:");
+        reference || l.starts_with("census:") || l.starts_with("addrnum:")
+    });
+    match s(r, "code") {
+        "byte" if !meaning => "byte",
+        _ if meaning => "concrete",
+        "shape" if failing.iter().any(|l| l.contains("proved")) => "proved",
+        "shape" => "shape",
+        _ => "draft",
+    }
 }
 
 /// 'k/N' -> (k, N); 'off' -> None.
@@ -807,6 +838,27 @@ pub fn size_unexplained(ours: i64, orig: i64) -> Option<(i64, i64, i64)> {
     ((ours - orig).abs() > allow).then_some((ours, orig, allow))
 }
 
+/// The concrete differences of a reading, one line each: the witness (a call or a global store one side lacks),
+/// the references that differ (unless they only cross and the proof shows the effects the same: shape), the
+/// branches whose targets do not correspond (unless the proof shows the behaviour the same), and the reference
+/// census (an object one side never refers into). M.slotmap is left out: x87 temporaries give it false positives
+/// (tasks/slot-pairing-by-object.md).
+pub fn concrete(rd: &crate::asmcmd::Reading) -> Vec<String> {
+    let mut out = vec![];
+    if let Some(w) = &rd.witness {
+        out.push(format!("witness: {w}"));
+    }
+    let proved = matches!(rd.proof.0, crate::equiv::Outcome::Equal { .. });
+    if !rd.ref_lines.is_empty() && crate::grade::code_grade(false, rd.verdict.shape, proved, &rd.refs) != "shape" {
+        out.extend(rd.ref_lines.iter().cloned());
+    }
+    if !proved {
+        out.extend(rd.verdict.branches.iter().map(|b| format!("branch: {b}")));
+    }
+    out.extend(rd.census.iter().cloned());
+    out
+}
+
 /// `dcp escalate|stuck NAME --why` (`--clear`): (the lines, the error for stderr, the exit status). A deep
 /// escalation of a function below byte is refused while its instruction count differs from the original's beyond
 /// size_unexplained's allowance (missing or wrong statements: base work), unless `size_explained` says why
@@ -852,25 +904,20 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
                 if tails != 0 {
                     why = format!("{why} (size: {} of the instruction difference are shared / inline tails)", tails.abs());
                 }
-                if let Some(w) = &rd.witness {
-                    match divergence_explained.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
-                        None => return Ok((vec![], Some(format!(
-                            "refused: a concrete difference: {w}; a call or a global store one side lacks is a meaning difference, and \
-                             reconstruction is base work (dcp diffclass {name}; a difference that is none: --divergence-explained \"why\")")), 1)),
-                        Some(x) => why = format!("{why} (difference: {w}, explained: {x})"),
-                    }
-                }
                 let proved = matches!(rd.proof.0, crate::equiv::Outcome::Equal { .. });
-                // the reference check (refcheck.rs): a reference of ours the original's field does not make, unless
-                // the references only cross and the proof shows the effects the same (the grade is shape then)
-                if !rd.ref_lines.is_empty() && crate::grade::code_grade(false, rd.verdict.shape, proved, &rd.refs) != "shape" {
-                    let more = if rd.ref_lines.len() > 1 { format!(" (and {} more)", rd.ref_lines.len() - 1) } else { String::new() };
+                // every concrete difference the reading names (tasks/escalate-gates-on-verdict.md): a meaning
+                // difference is base work, unless --divergence-explained says why it is none
+                let diffs = concrete(&rd);
+                if let Some(first) = diffs.first() {
+                    let more = if diffs.len() > 1 { format!(" (and {} more: {})", diffs.len() - 1, diffs[1..].join("; ")) } else { String::new() };
                     match divergence_explained.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         None => return Ok((vec![], Some(format!(
-                            "refused: a reference differs: {}{more}; another object or other literal bytes than the original's is a meaning \
-                             difference, and fixing it is base work (dcp diffclass {name}; a difference that is none: --divergence-explained \"why\")",
-                            rd.ref_lines[0])), 1)),
-                        Some(x) => why = format!("{why} (references: {}{more}, explained: {x})", rd.ref_lines[0]),
+                            "refused: a concrete difference: {first}{more}; a meaning difference is base work (dcp diffclass {name}; a \
+                             difference that is none: --divergence-explained \"why\")")), 1)),
+                        Some(x) => {
+                            let n = if diffs.len() > 1 { format!(" and {} more", diffs.len() - 1) } else { String::new() };
+                            why = format!("{why} (differences: {first}{n}, explained: {x})");
+                        }
                     }
                 }
                 if let (true, Some((o, t, _))) = (proved, size_unexplained(ours, orig)) {

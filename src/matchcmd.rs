@@ -177,7 +177,8 @@ pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>
         let g = gates(r).join(",");
         out.push(record(&[("next", Tok::I(int(r, "addr"))), ("name", vt(r.get("name"))), ("unit", vt(r.get("queue_unit"))), ("section", vt(r.get("section"))),
                           ("tier", s(*tr)), ("experiment", vt(r.get("code"))), ("readability", vt(r.get("readability"))),
-                          ("gates", os(Some(g).filter(|g| !g.is_empty()))), ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
+                          ("gates", os(Some(g).filter(|g| !g.is_empty()))), ("risk", os(r.get("risk").and_then(|v| v.as_str()).map(str::to_string))),
+                          ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
     }
     if items.is_empty() {
         let of = tier.map(|w| format!("{w} tier of the ")).unwrap_or_default();

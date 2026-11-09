@@ -329,17 +329,16 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 let sites = &judged().1;
                 let (bound, unbound) = crate::equiv::bind(&f.obj.0, &f.code, &img, lo as u32, sites, &refs[i], &phi);
                 let data = img.read(lo as u32, h.o.code.max(0) as usize);
-                crate::refcheck::census_input(&f.obj.0, &f.code, &refs[i], &bound, unbound, &data, lo as u32)
+                crate::refcheck::census_input(&f.obj.0, &f.code, &refs[i], &bound, unbound, &data, lo as u32, &img)
             }));
             crate::refcheck::census(inp, &phi)
         };
         let mut lines = chk.lines(&phi, lo as u32, unit);
         if !is_byte && census.is_empty() {
-            // the alignment paired reordered code crosswise: both sides refer to every object either one names
-            for (l, r) in lines.iter_mut().zip(chk.firsts()) {
-                if r.rule == "M8" {
-                    l.push_str(" (crossed: both sides refer to both)");
-                }
+            // the alignment paired reordered code crosswise: both sides refer to every object and literal either
+            // one names
+            for l in lines.iter_mut() {
+                l.push_str(" (crossed: both sides refer to both)");
             }
         }
         let rules: BTreeSet<&str> = chk.differs().map(|r| r.rule).collect();

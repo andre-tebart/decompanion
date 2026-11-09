@@ -610,6 +610,9 @@ pub struct CensusInput {
     pub unbound: usize,
     pub va: u32,
     pub len: u32,
+    /// our literals (a string, a floating constant) whose bytes no field of the original's function refers to:
+    /// (our field's offset, the literal as it reads)
+    pub lits: Vec<(u32, String)>,
 }
 
 /// How far below an object's start the compiler's indexing reaches (`[x-4+ecx*4]`: an indexed displacement only).
@@ -622,7 +625,8 @@ const PLAIN: u8 = 4;
 
 /// The census input of a function: `bound` our code as equiv::bind binds it, `unbound` its count of unbound fields,
 /// `theirs` the original's code at `va`.
-pub fn census_input(obj: &Obj, code: &FunctionCode, refs: &Refs, bound: &[u8], unbound: usize, theirs: &[u8], va: u32) -> CensusInput {
+pub fn census_input(obj: &Obj, code: &FunctionCode, refs: &Refs, bound: &[u8], unbound: usize, theirs: &[u8], va: u32,
+                    img: &crate::pe::Image) -> CensusInput {
     let end = code.code_len.unwrap_or(bound.len() as u32);
     let mut ours = vec![];
     let mut fields = std::collections::BTreeSet::new();
@@ -659,7 +663,21 @@ pub fn census_input(obj: &Obj, code: &FunctionCode, refs: &Refs, bound: &[u8], u
             their.entry(f).or_insert((x.addr, 0)).1 |= kind;
         }
     }
-    CensusInput { ours, fields, theirs: their, unbound, va, len: theirs.len() as u32 }
+    // our literals by their bytes: present when a field of the original's refers to the same bytes anywhere in the
+    // function (whatever instruction the alignment pairs it with)
+    let mut lits = vec![];
+    let mut seen: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    for ((off, _), t) in code.relocs.iter().zip(&refs.targets) {
+        let Target::Lit { bytes, rule, .. } = t else { continue };
+        if *off >= end || !seen.insert(bytes.clone()) {
+            continue;
+        }
+        let present = their.keys().any(|&f| img.in_image(f) && *img.bytes(f, bytes.len()) == **bytes);
+        if !present {
+            lits.push((*off, lit_text(bytes, rule)));
+        }
+    }
+    CensusInput { ours, fields, theirs: their, unbound, va, len: theirs.len() as u32, lits }
 }
 
 /// The 4-byte reference fields of one instruction of `code` (at `va`), as addresses: fields_of on the code's own
@@ -692,7 +710,9 @@ pub struct CensusDiff {
 
 impl CensusDiff {
     pub fn line(&self) -> String {
-        if self.ours {
+        if self.ours && self.addr == 0 {
+            format!("M.census at +{:#x}: our literal {}; the original's function refers to no such bytes", self.off, self.name)
+        } else if self.ours {
             format!("M.census at +{:#x}: ours refers to {} ({:#x}); the original never refers into it", self.off, self.name, self.addr)
         } else {
             format!("M.census at +{:#x} (the original's): the original refers to {} ({:#x}); ours never refers into it", self.off, self.name,
@@ -731,6 +751,9 @@ pub fn census(inp: &CensusInput, phi: &Phi) -> Vec<CensusDiff> {
         if !touched {
             out.push(CensusDiff { ours: true, off: b.off, name: b.name.clone(), addr: (b.start as i64 + b.within) as u32 });
         }
+    }
+    for (off, text) in &inp.lits {
+        out.push(CensusDiff { ours: true, off: *off, name: text.clone(), addr: 0 });
     }
     if inp.unbound > 0 {
         return out;
@@ -932,7 +955,7 @@ mod tests {
         let refs = Refs::new(&obj, &code, p);
         let sites = sites_matched(&code, &img, VA);
         let (bound, unbound) = crate::equiv::bind(&obj, &code, &img, VA, &sites, &refs, p);
-        census(&census_input(&obj, &code, &refs, &bound, unbound, &img.read(VA, 0x17), VA), p)
+        census(&census_input(&obj, &code, &refs, &bound, unbound, &img.read(VA, 0x17), VA, &img), p)
     }
 
     #[test]

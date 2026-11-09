@@ -54,3 +54,18 @@ gildegold holds 1044 deep items, escalated under older and weaker gates. Once th
 (and on reference-census's differences once that is a concrete difference), `dcp next --deep` marks each item whose
 tag the gate would refuse now (`refused now: ...`). That gives a ranked list of meaning differences let through
 before the deep pass starts.
+
+## Done (2026-11-09)
+
+- `queues::concrete`: one list of a reading's concrete differences: the witness, the references that differ (not
+  only crossing under a proof), the branches whose targets do not correspond (without a proof), the reference
+  census (asmcmd::Reading gains `census`). `dcp escalate --deep` refuses on the first, names the rest, and records
+  them all with `--divergence-explained`. M.slotmap stays out (x87 false positives).
+- The deep queue by risk (`queues::risk`, `risk=` in `dcp next`): `concrete` (the grade names a meaning difference
+  that is not crossed: M8 / M9 / M10, census, addrnum), `draft`, `shape` (no proof), `proved`, `byte`; the unit
+  order kept within a class, stuck last.
+- gildegold 0ce9dab4: 1184 deep items: 16 concrete, 606 draft, 380 shape, 182 proved.
+
+Left: the refusal's raw instruction counts and `only_missing_statements` naming its clause (the task's last two
+items); a `refused now` re-check of existing tags needs a reading per item (seconds each), so the risk class from the
+grade stands in for it.
