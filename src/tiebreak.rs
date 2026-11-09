@@ -806,9 +806,10 @@ pub fn sample_function(p: &Project, name: &str, n: usize, seed: u64) -> Result<s
     let Some(&k0) = control.function_index().get(name) else { return Ok(Err(format!("{name} is not in the compiled unit"))) };
     let c0 = control.function_code(k0);
     let g0 = bench.grade(control, &c0, a);
-    if g0 != built {
-        return Ok(Err(format!("the preprocessed unit does not reproduce the build ({name} built {built}, preprocessed {g0}): dcp build, then sample again")));
-    }
+    // the preprocessed text alone (the same declarations, another form: #line directives, expanded macros) may move
+    // a function: that is a codegen of its own and proof of sensitivity (gildegold ai_TutorialInitChapter3: built
+    // draft, preprocessed shape); a stale build shows the same way, so the line says both
+    let form_moved = g0 != built;
     let where_at = |at: usize| -> String {
         // the file and line the #line directives give a line index
         cands.iter().rev().find(|c| c.at <= at).map(|c| format!("{}:{}", c.file.replace('\\', "/"), c.line + (at - c.at) as i64)).unwrap_or_default()
@@ -829,6 +830,9 @@ pub fn sample_function(p: &Project, name: &str, n: usize, seed: u64) -> Result<s
     };
     let key0 = code_key(control, &c0);
     let mut seen: Vec<((Vec<u8>, Vec<(u32, String)>), String, usize, String)> = vec![(key0, g0.to_string(), 0, "the build's declarations".into())];
+    if form_moved {
+        seen.insert(0, ((vec![], vec![]), built.clone(), 0, format!("the build itself (the preprocessed control gives {g0}; or the build is stale: dcp build)")));
+    }
     let (mut compiled, mut failed) = (0usize, 0usize);
     for (k, o) in objs[1..].iter().enumerate() {
         let Ok(o) = o else {
