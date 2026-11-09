@@ -2250,6 +2250,10 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
                 if !(0..8u8).filter(|&g| g != ESP).all(same) || ra.sp != rb.sp {
                     return unknown("a jump out of the function with other registers or stack".into(), a, b);
                 }
+                // the FPU stack is the target's argument as well (`jmp _ftol` converts st0)
+                if ra.fpu != rb.fpu {
+                    return unknown("a jump out of the function with another FPU stack (_ftol's argument)".into(), a, b);
+                }
                 // the arguments the target reads: our argument slots as they are now (a slot written on a path whose
                 // value is not followed any more: not shown the same)
                 let offs: BTreeSet<i32> = ra.exit.iter().chain(&rb.exit).filter_map(|x| if let Loc::Slot(o) = x.0 { Some(o) } else { None })
@@ -2601,6 +2605,22 @@ mod tests {
         // call 0xf0000100 (a symbol bind could not place): left out, counted
         let unplaced = [0xe8, 0xfb, 0xf0, 0xbf, 0xef, 0xc3];
         assert_eq!(calls_differ(&unplaced, &[0xc3], va), (vec![], 1));
+    }
+
+    /// `fld qword ptr [A]; jmp _ftol`: the tail call converts st0, so another constant is another result
+    /// (gildegold gm_BuildingSkill: the mutants of its `fadd [cm_DoubleHalf]; jmp _ftol` proved equal).
+    #[test]
+    fn a_tail_call_compares_the_fpu_stack() {
+        let va = 0x401000;
+        let ftol = |a: u32| {
+            let mut c = vec![0xdd, 0x05];
+            c.extend(a.to_le_bytes());
+            c.push(0xe9);
+            c.extend(0x500000u32.wrapping_sub(va + 11).to_le_bytes());
+            c
+        };
+        assert!(matches!(prove(&ftol(0x600000), &ftol(0x600000), va), Outcome::Equal { .. }));
+        assert!(!matches!(prove(&ftol(0x600000), &ftol(0x600008), va), Outcome::Equal { .. }));
     }
 
     #[test]

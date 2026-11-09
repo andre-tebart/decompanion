@@ -40,3 +40,19 @@ code cannot see, or a prover hole):
 
 Reproduce: start the daemon with DCP_EQUIV_DUMP=DIR, `dcp asmdiff NAME` per function, then
 `DCP_EQUIV_CORPUS=DIR cargo test --profile iter --lib equiv::tests::mutants -- --ignored --nocapture`.
+
+## Second run, after the fix (2026-11-09)
+
+The `gm_BuildingSkill` cases were a hole: a tail jump (`jmp _ftol`) compared registers and stack arguments but not
+the FPU stack, which is `_ftol`'s argument, so any float operand before it went unchecked. Fixed in equiv.rs (the
+tail jump compares the FPU stack; test a_tail_call_compares_the_fpu_stack). On the corpus, one proof is lost
+(gm_BuildingSkill: unknown); `mutants: 311 functions, 34872 mutants, 73 proved equal`. All new-class survivors
+were read and are equal for real:
+
+- swaps: `ai_WoodKontorContact` (the two loads of one `cmp ecx, eax; jne`), `cm_DrawScrollArrows` (the operands of
+  one `fmul`), `sv_UpdateSkyPhase` (the operands of one `add edx, ecx`): commutative;
+- `gv_RankCulprits` / `gv_RankCulpritsAll`: `lea eax, [ai_Chars + eax*4]` is dead (eax is overwritten by the call's
+  result or by `lea eax, [esp+0x1c]` on every path).
+
+Left: the known class (stack stores never read). A commutation-aware swap mutant (skip pairs that feed one
+commutative operation) would make the control silent; not needed while the survivors are few enough to read.
