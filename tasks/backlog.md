@@ -18,6 +18,11 @@ diffclass-branch-target-equal-offsets-reported-different.md, use 31ffbb6 instead
 |---|---|---|---|
 | 60 | [tiebreak-probe-positions](tiebreak-probe-positions.md): probes after each header guard and member splits (d3_CloneObject, ai_Unk483a60) | M | |
 | 57 | [d1-padding-decided](d1-padding-decided.md): D1 decides alignment padding instead of warning | S-M | |
+| 62 | [stale-object-after-header-change](stale-object-after-header-change.md): a header edit leaves a unit's object stale (false M1, the probe refuses) | S-M | |
+| 63 | [reference-census](reference-census.md): the objects each side refers to, whatever the alignment; crossed M8 said so | M | |
+| 64 | [address-as-number](address-as-number.md): `&SYM + N` used as a mask or constant (M.addrnum), lint and sweep | M | |
+| 65 | [slot-pairing-by-object](slot-pairing-by-object.md): one slot map per function; another offset in one local is a meaning difference | M | |
+| 66 | [prover-mutants-swapped-objects](prover-mutants-swapped-objects.md): mutants for swapped neighbours, offsets, constants | S | |
 
 ## P1
 

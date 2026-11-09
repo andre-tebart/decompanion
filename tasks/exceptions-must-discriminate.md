@@ -33,3 +33,11 @@ A special "add esp right after the call" detector.
 
 - detect-nested-call-in-arguments
 - skill-original-evidence-push-sequence
+
+## Addendum (2026-11-09)
+
+improvement-reports/original-exceptions-reverification.md (gildegold, 196 `@original`) asks for the same trial and
+more: classify each marker as confirmed / unneeded / stale / header suspect; a callee whose original call sites
+mostly disagree with the owner's prototype is a "header probably wrong" finding instead of N exceptions; evidence
+only from byte-matched callers; re-run when a header the marker names changes (`against cm.h's void ...` after cm.h
+says int is stale: gildegold `src/he.c:3165`). Its proposal 1-4 is this task's scope.

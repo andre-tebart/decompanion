@@ -47,3 +47,10 @@
 - escalate-why-file
 - grade-show-instruction-counts (threshold part)
 - skill-shape-vs-escalate-guidance (tool part)
+
+## Addendum (2026-11-09): re-check the deep queue
+
+gildegold holds 1044 deep items, escalated under older and weaker gates. Once the gate refuses on the verdict
+(and on reference-census's differences once that is a concrete difference), `dcp next --deep` marks each item whose
+tag the gate would refuse now (`refused now: ...`). That gives a ranked list of meaning differences let through
+before the deep pass starts.
