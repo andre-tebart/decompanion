@@ -262,8 +262,10 @@ fn escalate_refuses_an_unexplained_size() {
     let (code, out) = dcp(&t, &["escalate", "get", "register choice after the spell pass"]);
     assert!(code == 1 && !read(&t, "src/net.c").contains("@deep"), "{out}");
     let (code, out) = dcp(&t, &["escalate", "get", "register choice", "--size-explained", "the original keeps n in a register"]);
-    assert!(code == 0 && read(&t, "src/net.c").contains("@deep register choice (size: "), "{out}");
-    assert!(read(&t, "src/net.c").contains("explained: the original keeps n in a register)"));
+    // the tie-break note (tiebreak.rs) comes before the size note
+    let flat = read(&t, "src/net.c").split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(code == 0 && flat.contains("@deep register choice (tiebreak: ") && flat.contains("(size: 15 vs 2 instructions, explained: "), "{out} {flat}");
+    assert!(flat.contains("explained: the original keeps n in a register)"));
 }
 
 #[test]

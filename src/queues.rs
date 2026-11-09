@@ -749,11 +749,19 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
             Some(o) => (stripped, format!("{o} removed")),
         },
         Some(l) => {
-            let reason = crate::srcscan::py_strip(&reason.unwrap_or("").replace("*/", "* /")).to_string();
+            let mut reason = crate::srcscan::py_strip(&reason.unwrap_or("").replace("*/", "* /")).to_string();
+            // the earlier reason stays as `prior:` (improvement-reports/stuck-keeps-prior-reason.md: what earlier
+            // workers tried was lost on every escalation), the newest first, a reason given again once
+            let old_reason = tag.as_ref().and_then(|c| c.get(0)).map(|m| body[m.end()..].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+            let prior = prior_reasons(&reason, &old_reason);
+            if !prior.is_empty() {
+                reason = format!("{reason} prior: {prior}");
+            }
+            let kept = if prior.is_empty() { String::new() } else { " (the earlier reason kept as prior:)".into() };
             let action = match old {
                 None => format!("@{l} added"),
-                Some(o) if o == format!("@{l}") => format!("@{l} reason replaced"),
-                Some(o) => format!("{o} -> @{l}"),
+                Some(o) if o == format!("@{l}") => format!("@{l} reason replaced{kept}"),
+                Some(o) => format!("{o} -> @{l}{kept}"),
             };
             let tag = format!("@{l} {reason}");
             let body = if raw.starts_with("/*") { wrap_tag(&stripped, *cs - own(*cs), &tag) } else { format!("{stripped} {tag}") };
@@ -764,6 +772,30 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
     let out: String = tx[..*cs].iter().collect::<String>() + &new_raw + &tx[*ce..].iter().collect::<String>();
     crate::edit::write(&path, &out)?;
     Ok(action)
+}
+
+/// How many characters of earlier reasons a level tag keeps (the oldest are cut).
+const PRIOR_MAX: usize = 900;
+
+/// The earlier reasons a new level reason keeps: the old tag's reason split at its own `prior:` marks, every part the
+/// new reason repeats left out, joined by ` prior: ` and cut to PRIOR_MAX characters.
+fn prior_reasons(new: &str, old: &str) -> String {
+    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let new = norm(new);
+    let parts: Vec<String> = old.split(" prior: ").map(norm).filter(|p| !p.is_empty() && *p != new && !new.contains(p.as_str())).collect();
+    let mut out = String::new();
+    for p in parts {
+        let sep = if out.is_empty() { "" } else { " prior: " };
+        if out.chars().count() + sep.len() + p.chars().count() > PRIOR_MAX {
+            let room = PRIOR_MAX.saturating_sub(out.chars().count() + sep.len());
+            if room > 40 {
+                out = format!("{out}{sep}{}...", p.chars().take(room).collect::<String>());
+            }
+            break;
+        }
+        out = format!("{out}{sep}{p}");
+    }
+    out
 }
 
 /// The column a level tag's comment is wrapped at.
@@ -971,18 +1003,18 @@ mod level_tests {
         assert!(set_level(&root, "src/u.c", Some("deep"), Some("the data comment"), 1).is_err());
         assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("slot order after vargen"), 3).unwrap(), "@deep added");
         assert!(crate::edit::read(&format!("{root}/src/u.c")).contains("\n/* 0x10001000, does it @deep slot order after vargen */\n"));
-        assert_eq!(set_level(&root, "src/u.c", Some("stuck"), Some("every lead tried"), 3).unwrap(), "@deep -> @stuck");
+        assert_eq!(set_level(&root, "src/u.c", Some("stuck"), Some("every lead tried"), 3).unwrap(), "@deep -> @stuck (the earlier reason kept as prior:)");
         let text = crate::edit::read(&format!("{root}/src/u.c"));
         if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &text) {
             let f = &part.functions[0];
-            assert_eq!((f.1 .1.as_deref(), f.1 .0.as_deref(), f.0 .6.as_str(), f.1 .3), (Some("every lead tried"), None, "does it", 3));
+            assert_eq!((f.1 .1.as_deref(), f.1 .0.as_deref(), f.0 .6.as_str(), f.1 .3), (Some("every lead tried prior: slot order after vargen"), None, "does it", 3));
         }
         // @hard: handed to a stronger worker, read back as the function's hard reason
-        assert_eq!(set_level(&root, "src/u.c", Some("hard"), Some("the switch is still a chain of ifs"), 3).unwrap(), "@stuck -> @hard");
+        assert_eq!(set_level(&root, "src/u.c", Some("hard"), Some("the switch is still a chain of ifs"), 3).unwrap(), "@stuck -> @hard (the earlier reason kept as prior:)");
         let text = crate::edit::read(&format!("{root}/src/u.c"));
         if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &text) {
             let f = &part.functions[0];
-            assert_eq!((f.1 .7.as_deref(), f.1 .1.as_deref(), f.0 .6.as_str()), (Some("the switch is still a chain of ifs"), None, "does it"));
+            assert_eq!((f.1 .7.as_deref(), f.1 .1.as_deref(), f.0 .6.as_str()), (Some("the switch is still a chain of ifs prior: every lead tried prior: slot order after vargen"), None, "does it"));
         }
         assert_eq!(set_level(&root, "src/u.c", None, None, 3).unwrap(), "@hard removed");
         assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n");
@@ -1001,11 +1033,21 @@ mod level_tests {
         if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &tagged) {
             assert_eq!(part.functions[0].1 .0.as_deref(), Some(why.split_whitespace().collect::<Vec<_>>().join(" ").as_str()));
         }
-        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("x * y (z)"), 1).unwrap(), "@deep reason replaced");
-        assert!(crate::edit::read(&format!("{root}/src/u.c")).contains("while it flies. @deep x * y (z) */\nvoid f"));
+        // the same reason again: replaced, not appended
         assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep reason replaced");
-        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep reason replaced");
-        assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), tagged); // replaced, not appended
+        assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), tagged);
+        // another reason: the earlier one kept as prior: (a deep-match report: what earlier workers tried was lost)
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("x * y (z)"), 1).unwrap(), "@deep reason replaced (the earlier reason kept as prior:)");
+        let twice = crate::edit::read(&format!("{root}/src/u.c"));
+        assert!(twice.contains("while it flies.\n   @deep x * y (z) prior: body reconstructed (354 ins)"), "{twice}");
+        // the earlier reason given again: it moves to the front, once
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep reason replaced (the earlier reason kept as prior:)");
+        if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &crate::edit::read(&format!("{root}/src/u.c"))) {
+            let flat = why.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(part.functions[0].1 .0.as_deref(), Some(format!("{flat} prior: x * y (z)").as_str()));
+        }
+        assert_eq!(prior_reasons("new", &"a".repeat(2000)).chars().count(), PRIOR_MAX + 3);
+        assert_eq!(prior_reasons("new", &format!("old prior: {}", "a".repeat(2000))).chars().count(), PRIOR_MAX + 3);
         assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed");
         assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), orig);
         let _ = std::fs::remove_dir_all(&dir);
