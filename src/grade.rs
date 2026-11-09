@@ -132,7 +132,7 @@ type Computed = (i64, i64, i64, diffclass::Original, Vec<Site>, Option<Judged>);
 
 /// A function's shape verdict, its reference sites (the alignment's: refcheck::sites_aligned) and the prover's
 /// block pairs when it shows the behaviour the same.
-type Judged = (Verdict, Vec<Site>, Option<usize>);
+type Judged = (Verdict, Vec<Site>, Option<usize>, Vec<crate::slotmap::SlotDiff>);
 
 /// A function's code size, extent, slot, original, a byte match's sites and (no byte match, or a byte match
 /// whose named references cross) its verdict.
@@ -158,6 +158,8 @@ fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, 
     let fc = diffclass::FunctionCompare::new(env, obj, code, lo, o);
     let sites = crate::refcheck::sites_aligned(code, env.img, lo, &fc.la, &fc.lb);
     let crossed = crate::refcheck::check(obj, code, env.img, &sites, refs, phi).named_differs();
+    // slot pairing by object (tasks/slot-pairing-by-object.md): another element of a paired local array
+    let slots = crate::timing::phase("g.slotmap", || crate::slotmap::check(code.code().0, &env.img.read(lo, o.code.max(0) as usize), lo, &fc.la, &fc.lb));
     let proof = if fc.verdict.shape && !crossed {
         None
     } else {
@@ -168,7 +170,7 @@ fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, 
             _ => None,
         }
     };
-    (fc.verdict, sites, proof)
+    (fc.verdict, sites, proof, slots)
 }
 
 /// The code grade from the structure and the reference check: byte when the bytes match and every reference
@@ -197,7 +199,7 @@ fn decide<'a>(is_byte: bool, chk: &crate::refcheck::Check, judged: impl Fn() -> 
         let proof = if chk.literal_differs() { None } else { judged().2 };
         code_grade(true, false, proof.is_some(), chk)
     } else {
-        let (v, _, proof) = judged();
+        let (v, _, proof, _) = judged();
         code_grade(false, v.shape, proof.is_some(), chk)
     }
 }
@@ -365,7 +367,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 None => format!("B3 draft: {} reference(s) differ from the original's ({rules}): a meaning difference", lines.len()),
             });
         } else {
-            let (v, _, proof) = judged();
+            let (v, _, proof, _) = judged();
             g = decide(false, &chk, judged).to_string();
             hunks = v.hunks_json();
             dist_ins = v.distance;
@@ -395,6 +397,13 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         // the census and our addresses used as numbers: listed and warned (not yet a concrete difference: measured
         // on gildegold first)
         let name = f.src.s("symbol").unwrap_or("");
+        if !is_byte {
+            for d in &judged().3 {
+                why.push(format!("slotmap: {}", d.line()));
+                let site = lo + d.off as i64;
+                out.finding("warn", "M.slotmap", site, site + 4, format!("{name} at {lo:#x}: {}", d.line()), &f.src.by);
+            }
+        }
         for c in &census {
             why.push(format!("census: {}", c.line()));
             let site = lo + c.off as i64;

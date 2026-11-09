@@ -74,7 +74,8 @@ pub static CHECKS: &[(&str, Category)] = &[
     ("M9", Category::Contradiction),             // ref: a string literal's bytes
     ("M10", Category::Contradiction),            // ref: a floating constant's bits
     ("M.census", Category::Contradiction),       // ref: an object one side refers to, the other never (tasks/reference-census.md)
-    ("M.addrnum", Category::Contradiction),      // ref: `&x + N` as a mask or number (tasks/address-as-number.md)
+    ("M.addrnum", Category::Contradiction),
+    ("M.slotmap", Category::Contradiction),      // ref: another element of a paired local array (tasks/slot-pairing-by-object.md)      // ref: `&x + N` as a mask or number (tasks/address-as-number.md)
     ("M.flags", Category::Contradiction),        // toolchain: a probed flag the declaration lacks
     ("M.data.content", Category::Contradiction), // owner: a datum's bytes found elsewhere
     ("M.bytes.declared", Category::Contradiction), // unit: dead / foreign bytes across a unit boundary
@@ -258,7 +259,7 @@ pub static RULES: &[RuleDef] = &[
 function's experiment). Reported at the address\nof the function whose span holds the diagnostic's line (the image base when none does). A lint run whose units'\ntexts differ from today's units is stale: a warning, M.lint.stale (`dcp lint`; `dcp check` lints first). Native:\nnative/dcp_core/src/rules.rs m_lint.",
     },
     RuleDef {
-        id: "G.grade", version: "19", max_support: REPRODUCED, phase: "G", loader: false,
+        id: "G.grade", version: "20", max_support: REPRODUCED, phase: "G", loader: false,
         needs: &["L.src", "M.match", "L.unit.extent", "L.src.extent", "S.sections", "S.relocs", "S.codewalk", "S.crt.code", "S.thunk", "S.exports", "S.entry",
                  "L.decl", "S.imports", "S.lib.data", "S.crt.refs", "S.crt.data", "S.entry.user", "M.tiebreak"], outputs: &["experiment", "readability"], inputs: &["objects", "src", "lint"],
         doc: "The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8\nand the unit grades of rules/grade.py's module docstring), as `grade` facts: a function's at its address\n{of: function, name, unit, file, code, readability, level (deep / stuck from the address comment's tag, ''\nfor base), failing (the failing rules with evidence), dist (differing instructions, differing bytes, our\nsize, the original's code size without its switch tables, the extent and the slot the diff read: a report,\nnot a gate; `dcp asmdiff` / `dcp diffclass` read the same extent and slot), hunks, open}; a unit's over its extent {of: unit, code,\nreadability, functions, named_by}. A function's grade fact is proven when its code is byte, else declared (its\naddress comment is the premise).\nThe object experiment tests the bytes and the targets of the references (docs/mental-model.md §4): the\nreference check (refcheck.rs) takes each relocation of ours whose instruction lines up with the original's (a\nbyte match, M.match: every one at its offset; else the listings' alignment: the equal lines, the same-mnemonic\nlines of a hunk of equal length) and compares the address the original's field refers to with φ(our symbol)\n(the name claims of names::NAME_RULES, all needed; a placeholder name's spelled address when φ has none), a\nstring literal or a floating constant by its bytes (at an address φ gives one of our data objects, no\nplaceholder: open, the datum or the literal, two declarations contradict; it binds only in read-only data). Equal: the reference is reproduced; different: a\nconcrete difference naming both targets (M8 another object, M9 a string, M10 a constant; a pair by position\nagrees when the original's side of the hunk refers to the target: reordered code); φ undefined: open, listed\n(open), not failing. Byte: the bytes match (M.match) and no reference differs. Shape: the shape classes, a\nproof or a byte match explain the code and no literal differs; a named reference that differs only with a\nproof (the prover, equiv.rs, binds every reference through φ, learning only literals and open symbols from the\naligned sites: the fields cross, the effects are the same). Else draft: B1 / B2 name each difference first (at\nmost 8), B3 the meaning difference or the unexplained hunks. A byte match with a difference left is an M8 / M9 /\nM10 error at the site (the findings view: equal bytes at this layout only). Containment (§8.7): a reference of ours
@@ -272,7 +273,10 @@ source), and its unit a G.tiebreak gap, a warning: the unit's declaration set is
 The reference census (tasks/reference-census.md), no byte match only: over the prover's binding, a named object one side
 refers to and the other never refers into (its declared extent; a call: its start), a `census:` line and a warning M.census;
 an M8 line of a function without one says `(crossed: both sides refer to both)`. An address used as a number (tasks/address-as-number.md):
-a relocated `&x + N` immediate of and / or / xor / test / imul / a shift, an `addrnum:` line and a warning M.addrnum.",
+a relocated `&x + N` immediate of and / or / xor / test / imul / a shift, an `addrnum:` line and a warning M.addrnum. Slot pairing by object
+(tasks/slot-pairing-by-object.md), no byte match only: a plain stack access inside a local array (a slot whose
+address is taken or that is indexed, up to the next one) at another offset than the original's access inside the array its base is
+paired with, a `slotmap:` line and a warning M.slotmap.",
     },
     RuleDef {
         id: "M.tiebreak", version: "1", max_support: DERIVED, phase: "M", loader: false,
