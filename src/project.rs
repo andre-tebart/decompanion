@@ -8,18 +8,26 @@
 //!   [toolchain]    plugin, root, and compiler / linker / cflags as defaults a target without its own inherits.
 //!   [libs]         archives, reason: the default of every target without its own archives.
 //!   [[variant]], [[setup]], [[run]]  build variants and running a build (run.rs).
+//!   [paths]        name = "directory": the directories outside the project the configuration reads, each the
+//!                  default of a machine; `{name}` in any string of the configuration (reasons excepted) stands for it.
 //! The single-table form `[target]` of milestone 1 is still read (one target named after the file's stem).
+//!
+//! decompanion.local.toml (beside it, not committed: one machine's)
+//!   [paths]        name = "directory": this machine's directories, over the defaults of decompanion.toml.
 
 use crate::error::{Error, Result};
 use crate::fsmemo;
 use crate::store::canon;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub const CONFIG_NAME: &str = "decompanion.toml";
+pub const LOCAL_CONFIG_NAME: &str = "decompanion.local.toml";
+/// The placeholders other code expands (run.rs: {root}): no path name may take them.
+const RESERVED_NAMES: [&str; 1] = ["root"];
 const TOOLCHAIN_KEYS: [&str; 3] = ["compiler", "linker", "cflags"];
 const TARGET_KEYS: [&str; 10] = ["name", "path", "sha256", "image", "isa", "archives", "compiler", "linker", "cflags", "reason"];
 const REASON_KEYS: [&str; 6] = ["compiler", "linker", "cflags", "archives", "root", "plugin"];
@@ -136,6 +144,8 @@ pub(crate) fn is_identifier(name: &str) -> bool {
 pub struct Project {
     pub root: PathBuf,
     pub cfg: toml::Table,
+    /// the named directories ([paths] of decompanion.toml, then of decompanion.local.toml), by name
+    pub paths: BTreeMap<String, String>,
     pub targets: Vec<Target>,
     pub target_name: String,
     pub(crate) core_hash: String,
@@ -151,8 +161,8 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 impl Project {
     pub fn open(root: &Path, target: Option<&str>, core_hash: &str) -> Result<Project, String> {
         let text = std::fs::read_to_string(root.join(CONFIG_NAME)).map_err(|e| format!("{}: {e}", root.join(CONFIG_NAME).display()))?;
-        let cfg: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{CONFIG_NAME}: {}", e.message()))?;
-        let mut p = Project { root: root.to_path_buf(), cfg, targets: vec![], target_name: String::new(), core_hash: core_hash.into(),
+        let (cfg, paths) = load_config(root, &text)?;
+        let mut p = Project { root: root.to_path_buf(), cfg, paths, targets: vec![], target_name: String::new(), core_hash: core_hash.into(),
                               hashes: Mutex::new(HashMap::new()), waits: Mutex::new(HashMap::new()) };
         p.targets = p.parse_targets()?;
         p.target_name = match target {
@@ -443,7 +453,11 @@ impl Project {
         let root = self.root.to_string_lossy().into_owned();
         let h = match name {
             "image" => Self::file_hash(&self.target(None)?.path)?,
-            "config" => Self::file_hash(&py_path(&format!("{root}/{CONFIG_NAME}")))?,
+            "config" => {
+                let local = py_path(&format!("{root}/{LOCAL_CONFIG_NAME}"));
+                let local = if Path::new(&local).exists() { Self::file_hash(&local)? } else { "none".into() };
+                sha256_parts(&[Self::file_hash(&py_path(&format!("{root}/{CONFIG_NAME}")))?, local])
+            }
             "libs" | "archives" => {
                 let libs = if self.waiting("libs")?.is_empty() { self.lib_archives(None)? } else { vec![] };
                 let mut data = String::new();
@@ -580,6 +594,57 @@ mod tests {
         p
     }
 
+    /// [paths] names directories: decompanion.toml gives defaults, decompanion.local.toml this machine's; `{name}`
+    /// expands in every string but reasons; the placeholders of other code stay; an unnamed `{name}` is an error.
+    #[test]
+    fn named_paths() {
+        let d = crate::testkit::scratch("project-named-paths");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let cfg = r#"
+[[target]]
+path = "{game}/Gilde.exe"
+archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", "{dx8}/lib/dxguid.lib"]
+reason.archives = "the {dx8} SDK's order"
+[toolchain]
+root = "{msvc6}"
+include_dirs = ["{dx6}/include"]
+[paths]
+msvc6 = "C:/Tools/MSVC600"
+dx6 = "C:/Tools/DXSDK61/"
+dx8 = "C:/Tools/DXSDK8"
+game = "C:/Games/Gilde"
+[[setup]]
+name = "s"
+  [[setup.stage]]
+  from = "{target.dir}"
+  link = ["{root}/x"]
+"#;
+        std::fs::write(d.join(CONFIG_NAME), cfg).unwrap();
+        std::fs::write(d.join(LOCAL_CONFIG_NAME), "[paths]\ngame = 'D:\\Gilde Gold'\ndx8 = \"E:/sdk8\"\n").unwrap();
+        let (c, names) = load_config(&d, cfg).unwrap();
+        assert_eq!(names.get("game").map(|s| s.as_str()), Some("D:/Gilde Gold"));
+        assert_eq!(names.get("dx6").map(|s| s.as_str()), Some("C:/Tools/DXSDK61"));
+        let t = &c["target"].as_array().unwrap()[0];
+        assert_eq!(t["path"].as_str(), Some("D:/Gilde Gold/Gilde.exe"));
+        assert_eq!(t["archives"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect::<Vec<_>>(),
+                   ["{toolchain.root}/VC98/Lib/LIBC.LIB", "E:/sdk8/lib/dxguid.lib"]);
+        assert_eq!(t["reason"]["archives"].as_str(), Some("the {dx8} SDK's order"));
+        assert_eq!(c["toolchain"]["root"].as_str(), Some("C:/Tools/MSVC600"));
+        assert_eq!(c["toolchain"]["include_dirs"][0].as_str(), Some("C:/Tools/DXSDK61/include"));
+        let stage = &c["setup"][0]["stage"][0];
+        assert_eq!((stage["from"].as_str(), stage["link"][0].as_str()), (Some("{target.dir}"), Some("{root}/x")));
+        // an unnamed directory; a local file with more than [paths]; a reserved name
+        std::fs::remove_file(d.join(LOCAL_CONFIG_NAME)).unwrap();
+        let e = load_config(&d, &cfg.replace("{game}", "{gamedir}")).unwrap_err();
+        assert!(e.contains("{gamedir} names no directory") && e.contains(LOCAL_CONFIG_NAME), "{e}");
+        std::fs::write(d.join(LOCAL_CONFIG_NAME), "[paths]\ngame = \"D:/g\"\n[toolchain]\nroot = \"x\"\n").unwrap();
+        assert!(load_config(&d, cfg).unwrap_err().contains("[paths] only"));
+        std::fs::write(d.join(LOCAL_CONFIG_NAME), "[paths]\nroot = \"D:/g\"\n").unwrap();
+        assert!(load_config(&d, cfg).unwrap_err().contains("other than root"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn targets_and_declarations() {
         let p = project(r#"
@@ -635,10 +700,93 @@ reason = "S.rich"
     }
 }
 
+/// `[paths]` of a configuration table: (name, directory) in name order, the names checked.
+fn paths_table(cfg: &toml::Table, file: &str) -> Result<Vec<(String, String)>, String> {
+    let Some(v) = cfg.get("paths") else { return Ok(vec![]) };
+    let t = v.as_table().ok_or_else(|| format!("{file}: [paths] is not a table of name = \"directory\""))?;
+    let mut out = vec![];
+    for (k, d) in t {
+        if !is_identifier(k) || RESERVED_NAMES.contains(&k.as_str()) {
+            return Err(format!("{file}: [paths] {k}: a name is an identifier ([A-Za-z][A-Za-z0-9_-]*) other than {}", RESERVED_NAMES.join(", ")));
+        }
+        let d = d.as_str().ok_or_else(|| format!("{file}: [paths] {k} is not a directory (a string)"))?;
+        if d.contains('{') {
+            return Err(format!("{file}: [paths] {k} = {}: a directory names no other path", crate::decl::py_repr(d)));
+        }
+        out.push((k.clone(), d.replace('\\', "/").trim_end_matches('/').to_string()));
+    }
+    Ok(out)
+}
+
+/// `{name}` replaced by its directory in every string of the value; a reason (key `reason`, `reason.*`) stays as
+/// written. A `{name}` no [paths] names is collected in `missing`, except the placeholders other code expands
+/// ({root}; the dotted ones such as {toolchain.root} are no names).
+fn expand_names(v: &mut toml::Value, key: &str, names: &BTreeMap<String, String>, missing: &mut BTreeSet<String>) {
+    if key == "reason" || key.starts_with("reason.") {
+        return;
+    }
+    match v {
+        toml::Value::String(s) if s.contains('{') => {
+            let mut out = String::with_capacity(s.len());
+            let mut rest = s.as_str();
+            while let Some(i) = rest.find('{') {
+                out.push_str(&rest[..i]);
+                let after = &rest[i + 1..];
+                match after.find('}').map(|j| &after[..j]).filter(|n| is_identifier(n)) {
+                    Some(n) if names.contains_key(n) => {
+                        out.push_str(&names[n]);
+                        rest = &after[n.len() + 1..];
+                        continue;
+                    }
+                    Some(n) if !RESERVED_NAMES.contains(&n) => {
+                        missing.insert(n.to_string());
+                    }
+                    _ => {}
+                }
+                out.push('{');
+                rest = after;
+            }
+            out.push_str(rest);
+            *s = out;
+        }
+        toml::Value::Array(a) => a.iter_mut().for_each(|x| expand_names(x, key, names, missing)),
+        toml::Value::Table(t) => t.iter_mut().for_each(|(k, x)| expand_names(x, k, names, missing)),
+        _ => {}
+    }
+}
+
+/// The configuration of a project: decompanion.toml's text parsed, `{name}` expanded by the named directories
+/// ([paths] of decompanion.toml, then of decompanion.local.toml when it exists); (table, the names).
+pub fn load_config(root: &Path, text: &str) -> Result<(toml::Table, BTreeMap<String, String>), String> {
+    let mut cfg: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{CONFIG_NAME}: {}", e.message()))?;
+    let mut names: BTreeMap<String, String> = paths_table(&cfg, CONFIG_NAME)?.into_iter().collect();
+    let local = root.join(LOCAL_CONFIG_NAME);
+    if local.exists() {
+        let text = std::fs::read_to_string(&local).map_err(|e| format!("{}: {e}", local.display()))?;
+        let lcfg: toml::Table = text.parse().map_err(|e: toml::de::Error| {
+            let hint = if e.message().contains("escape") { r" (a Windows path: C:/Tools/x or 'C:\Tools\x')" } else { "" };
+            format!("{LOCAL_CONFIG_NAME}: {}{hint}", e.message().trim_end())
+        })?;
+        if let Some(k) = lcfg.keys().find(|k| *k != "paths") {
+            return Err(format!("{LOCAL_CONFIG_NAME}: [{k}]: this file holds [paths] only (one machine's directories)"));
+        }
+        names.extend(paths_table(&lcfg, LOCAL_CONFIG_NAME)?);
+    }
+    let mut missing = BTreeSet::new();
+    for (k, v) in cfg.iter_mut().filter(|(k, _)| *k != "paths") {
+        expand_names(v, k, &names, &mut missing);
+    }
+    if !missing.is_empty() {
+        let m: Vec<String> = missing.into_iter().map(|n| format!("{{{n}}}")).collect();
+        return Err(format!("{CONFIG_NAME}: {} names no directory: give it in [paths] of {LOCAL_CONFIG_NAME} (name = \"DIR\")", m.join(", ")));
+    }
+    Ok((cfg, names))
+}
+
 /// The targets (name, path) a configuration's text declares.
 pub fn targets_of(root: &str, text: &str) -> Result<Vec<(String, String)>, String> {
-    let cfg: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{CONFIG_NAME}: {}", e.message()))?;
-    let p = Project { root: PathBuf::from(root), cfg, targets: vec![], target_name: String::new(), core_hash: String::new(),
+    let (cfg, paths) = load_config(Path::new(root), text)?;
+    let p = Project { root: PathBuf::from(root), cfg, paths, targets: vec![], target_name: String::new(), core_hash: String::new(),
                       hashes: Mutex::new(HashMap::new()), waits: Mutex::new(HashMap::new()) };
     Ok(p.parse_targets()?.into_iter().map(|t| (t.name, t.path)).collect())
 }

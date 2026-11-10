@@ -49,6 +49,7 @@ mod init;
 mod grade;
 mod libcand;
 mod link;
+mod export;
 mod lint;
 mod lintrun;
 mod matchcmd;

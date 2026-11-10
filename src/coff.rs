@@ -480,6 +480,31 @@ pub fn archive_members(b: &[u8]) -> Result<Vec<(String, &[u8])>, String> {
     Ok(out)
 }
 
+/// An archive LIB.EXE wrote, without its time stamps: every member header's date, the time stamp of every import
+/// member (short form) and of every i386 object's file header become 0. The linker reads none of them, so the
+/// archive's bytes depend on its inputs only (the link's cache key digests them; an exported archive stays put).
+pub fn archive_without_times(b: &mut [u8]) {
+    if b.len() < 8 || &b[..8] != b"!<arch>\n" {
+        return;
+    }
+    let mut i = 8usize;
+    while i + 60 <= b.len() {
+        let Some(size) = std::str::from_utf8(&b[i + 48..i + 58]).ok().and_then(|s| s.trim().parse::<usize>().ok()) else { return };
+        b[i + 16..i + 28].copy_from_slice(b"0           ");
+        let d = i + 60;
+        let name = &b[i..i + 16];
+        let linker_member = name.starts_with(b"/ ") || name.starts_with(b"// ");
+        if !linker_member && d + 20 <= b.len() && size >= 20 {
+            if b[d..d + 4] == [0, 0, 0xff, 0xff] {
+                b[d + 8..d + 12].fill(0);
+            } else if b[d..d + 2] == 0x14cu16.to_le_bytes() {
+                b[d + 4..d + 8].fill(0);
+            }
+        }
+        i += 60 + size + (size & 1);
+    }
+}
+
 /// The public symbols of an archive's first linker member (`/`): a big-endian count N, N offsets, N names;
 /// empty without one.
 pub fn archive_symbol_table(b: &[u8]) -> Result<Vec<String>, String> {
@@ -858,5 +883,47 @@ mod reloc_tests {
         let obj = Obj { name: String::new(), sections: vec![Section { name: String::new(), chars: 0, data: None, size: 0, relocs: vec![], syms: vec![] }, sec],
                         symbols: vec![], by_index: Default::default() };
         assert_eq!((obj.addend(1, &relocs[1]), obj.addend(1, &relocs[0])), (0x10, 0xffff_fffc));
+    }
+}
+
+#[cfg(test)]
+mod archive_time_tests {
+    use super::*;
+
+    fn member(name: &str, date: &str, data: &[u8]) -> Vec<u8> {
+        let mut h = format!("{name:<16}{date:<12}{:<6}{:<6}{:<8}{:<10}`\n", "", "", "0", data.len()).into_bytes();
+        h.extend(data);
+        if data.len() % 2 == 1 {
+            h.push(b'\n');
+        }
+        h
+    }
+
+    /// The member dates, an import member's time stamp and an object's become 0; the linker members' data and
+    /// everything else stay.
+    #[test]
+    fn archive_without_its_times() {
+        let mut import = vec![0, 0, 0xff, 0xff, 0, 0, 0x4c, 0x01, 1, 2, 3, 4];
+        import.extend([9u8; 9]);
+        let mut obj = vec![0x4c, 0x01, 3, 0, 5, 6, 7, 8];
+        obj.extend([7u8; 13]);
+        let first = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+        let mut a = b"!<arch>\n".to_vec();
+        for m in [member("/", "1700000000", &first), member("a.dll/", "1700000001", &import), member("b.obj/", "1700000002", &obj)] {
+            a.extend(m);
+        }
+        let mut z = a.clone();
+        archive_without_times(&mut z);
+        let members = archive_members(&z).unwrap();
+        assert_eq!(members[0].1[8..12], [0, 0, 0, 0]);
+        assert_eq!(members[0].1[12..], import[12..]);
+        assert_eq!(members[1].1[4..8], [0, 0, 0, 0]);
+        assert_eq!(members[1].1[..4], obj[..4]);
+        assert_eq!(&z[8 + 60..8 + 60 + 20], &first); // the first linker member's data
+        assert_eq!(&z[8 + 16..8 + 28], b"0           ");
+        assert_eq!(z.len(), a.len());
+        let mut again = z.clone();
+        archive_without_times(&mut again);
+        assert_eq!(again, z);
     }
 }

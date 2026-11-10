@@ -338,7 +338,13 @@ impl Tools {
         let mut args = vec!["/NOLOGO".to_string(), format!("/OUT:{name}"), name.clone()];
         args.extend(objects.iter().map(|o| resolved("", o)));
         let (code, out, err) = self.run("LIB.EXE", &args, &p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default())?;
-        Ok((code != 0).then(|| format!("LIB.EXE failed: {}", format!("{out}{err}").trim().chars().take(300).collect::<String>())))
+        if code != 0 {
+            return Ok(Some(format!("LIB.EXE failed: {}", format!("{out}{err}").trim().chars().take(300).collect::<String>())));
+        }
+        let mut data = std::fs::read(p).map_err(|e| format!("{lib}: {e}"))?;
+        crate::coff::archive_without_times(&mut data);
+        std::fs::write(p, data).map_err(|e| format!("{lib}: {e}"))?;
+        Ok(None)
     }
 
     /// An import library from the image's own import directory (vc6/implib.py): LIB.EXE /DEF writes it; in each
@@ -355,14 +361,8 @@ impl Tools {
         let outp = Path::new(out);
         let dir = outp.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
         let _ = std::fs::create_dir_all(&dir);
-        let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let def = outp.with_extension("def");
-        let lines: String = named.iter().map(|i| {
-            let n = i.name.as_deref().unwrap();
-            format!("    {}\n", n.strip_prefix('_').unwrap_or(n))
-        }).collect();
-        std::fs::write(&def, format!("; built by dcp link from the image's import directory\nLIBRARY {}\nEXPORTS\n{lines}", stem(Path::new(dll))))
-            .map_err(|e| e.to_string())?;
+        std::fs::write(&def, import_definition(dll, imports)).map_err(|e| e.to_string())?;
         let fname = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let (code, o, e) = self.run("LIB.EXE", &["/NOLOGO".into(), format!("/DEF:{}", fname(&def)), format!("/OUT:{}", fname(outp)), "/MACHINE:IX86".into()], &dir)?;
         if code != 0 || !outp.exists() {
@@ -393,6 +393,7 @@ impl Tools {
             lib[d + 18..d + 20].copy_from_slice(&word.to_le_bytes());
             lib[d + 16..d + 18].copy_from_slice(&imp.hint.unwrap_or(0).to_le_bytes());
         }
+        crate::coff::archive_without_times(&mut lib);
         std::fs::write(outp, lib).map_err(|e| e.to_string())?;
         Ok(None)
     }
@@ -400,20 +401,36 @@ impl Tools {
     /// The CRT start-up calls DllMain / WinMain / main: when the function at the user entry has another name in the
     /// sources, a stub calling it is written to out_dir/entry.c and compiled; None when no stub is needed.
     pub fn entry_object(&self, kind: &str, out_dir: &str, user: Option<&str>) -> Result<Option<String>, String> {
-        let expected = match kind { "dll" => "DllMain", "gui" => "WinMain", "console" => "main", _ => return Ok(None) };
-        let Some(user) = user.filter(|u| *u != expected) else { return Ok(None) };
-        let text = match kind {
-            "dll" => format!("#include <windows.h>\nBOOL WINAPI {user}(HINSTANCE h, DWORD reason, LPVOID reserved);\nBOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved)\n{{\n    return {user}(h, reason, reserved);\n}}\n"),
-            "gui" => format!("#include <windows.h>\nint WINAPI {user}(HINSTANCE h, HINSTANCE prev, LPSTR cmd, int show);\nint WINAPI WinMain(HINSTANCE h, HINSTANCE prev, LPSTR cmd, int show)\n{{\n    return {user}(h, prev, cmd, show);\n}}\n"),
-            _ => format!("int {user}(int argc, char **argv);\nint main(int argc, char **argv)\n{{\n    return {user}(argc, argv);\n}}\n"),
-        };
+        let Some(text) = entry_stub(kind, user) else { return Ok(None) };
         std::fs::write(Path::new(out_dir).join("entry.c"), text).map_err(|e| e.to_string())?;
-        let r = self.compile("entry.c", "entry.obj", &["/O2".into(), "/Gy".into()], &[], out_dir)?;
+        let r = self.compile("entry.c", "entry.obj", &ENTRY_FLAGS.map(String::from), &[], out_dir)?;
         if !r.ok {
             return Err(format!("the entry stub does not compile:\n{}", r.log));
         }
         Ok(Some(py_path(&format!("{out_dir}/entry.obj"))))
     }
+}
+
+/// The flags the entry stub compiles with.
+pub const ENTRY_FLAGS: [&str; 2] = ["/O2", "/Gy"];
+
+/// The entry stub's text: DllMain / WinMain / main calling the function at the user entry when the sources name it
+/// otherwise; None when no stub is needed.
+pub fn entry_stub(kind: &str, user: Option<&str>) -> Option<String> {
+    let expected = match kind { "dll" => "DllMain", "gui" => "WinMain", "console" => "main", _ => return None };
+    let user = user.filter(|u| *u != expected)?;
+    Some(match kind {
+        "dll" => format!("#include <windows.h>\nBOOL WINAPI {user}(HINSTANCE h, DWORD reason, LPVOID reserved);\nBOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID reserved)\n{{\n    return {user}(h, reason, reserved);\n}}\n"),
+        "gui" => format!("#include <windows.h>\nint WINAPI {user}(HINSTANCE h, HINSTANCE prev, LPSTR cmd, int show);\nint WINAPI WinMain(HINSTANCE h, HINSTANCE prev, LPSTR cmd, int show)\n{{\n    return {user}(h, prev, cmd, show);\n}}\n"),
+        _ => format!("int {user}(int argc, char **argv);\nint main(int argc, char **argv)\n{{\n    return {user}(argc, argv);\n}}\n"),
+    })
+}
+
+/// The module definition an import library is built from: the names the image imports from the dll.
+pub fn import_definition(dll: &str, imports: &[crate::pe::Import]) -> String {
+    let stem = Path::new(dll).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let lines: String = imports.iter().filter_map(|i| i.name.as_deref()).map(|n| format!("    {}\n", n.strip_prefix('_').unwrap_or(n))).collect();
+    format!("; built by dcp link from the image's import directory\nLIBRARY {stem}\nEXPORTS\n{lines}")
 }
 
 /// LIBRARY <name> / EXPORTS <name> @<ordinal> (NONAME for an export without a name).
