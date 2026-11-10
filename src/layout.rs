@@ -430,7 +430,7 @@ pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 /// - several names of ours (address comments of definitions, externs, functions; `decl` names) at one address, unless
 ///   the toolchain or the image explains it (Phi::many_reason) or an alias is declared (a view, `#define B A`); two
 ///   definitions at one address are L.src's;
-/// - a placeholder spelling (`ai_Unk5049e0`, `ai_Unk5a9e40K`) of an address that φ names otherwise, the spelling
+/// - a placeholder spelling (`net_Unk5049e0`, `net_Unk5a9e40K`) of an address that φ names otherwise, the spelling
 ///   itself no object of φ: a stale name a rename did not reach.
 /// C.name.extern, a gap: an extern-only name (no definition of it) whose address no symbol owns (unknown data):
 /// it links only while nothing uses it.
@@ -1591,7 +1591,7 @@ mod tests_2b {
             }).collect()
         };
         assert_eq!(caps(r"c:\src\net\net.c"), [(r"c:\src\net\net.c".to_string(), "net".to_string())]);
-        assert_eq!(caps("assert in d:/game/ai_main.cpp line"), [("d:/game/ai_main.cpp".to_string(), "ai_main".to_string())]);
+        assert_eq!(caps("assert in d:/proj/net_main.cpp line"), [("d:/proj/net_main.cpp".to_string(), "net_main".to_string())]);
         assert!(caps("%s.c").is_empty());
     }
 

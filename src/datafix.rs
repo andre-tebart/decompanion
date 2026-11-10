@@ -1158,7 +1158,7 @@ mod tests {
         assert_eq!(chars(&apply(&mut f, &edits.iter().collect::<Vec<_>>())["a.c"]), "1\n2\ny\n");
     }
 
-    /// The init_PlayerProfile case: the definition sorts between two in the head, but its typedef stands further
+    /// The cfg_Profile case: the definition sorts between two in the head, but its typedef stands further
     /// down, between the two places: a manual case, no edit (the move would not compile).
     #[test]
     fn d4_does_not_move_a_definition_above_its_type() {

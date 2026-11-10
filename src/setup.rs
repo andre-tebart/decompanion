@@ -467,8 +467,8 @@ mod tests {
     fn name_alias() {
         let k = Kit::new(&build(None));
         let mut out = crate::store::Out::new("L.src", "1");
-        for (a, n, why, by) in [(0x1000, "ai_Unk1000", "data address comment (def)", "src:src/a.c:3"),
-                                (0x1000, "d3_Origin", "data address comment (extern)", "src:include/d3.h:9"),
+        for (a, n, why, by) in [(0x1000, "net_Unk1000", "data address comment (def)", "src:src/a.c:3"),
+                                (0x1000, "vec_Origin", "data address comment (extern)", "src:include/vec.h:9"),
                                 (0x2000, "x", "data address comment (def)", "src:src/a.c:4"), (0x2000, "xB", "view of x +0x0", "src:include/v.h:1"),
                                 (0x3000, "f", "address comment", "src:src/a.c:9"), (0x3000, "g", "address comment", "src:src/b.c:9")] {
             let mut v = json!({"name": n, "origin": "source"});
@@ -484,7 +484,7 @@ mod tests {
         let (_, c) = k.run("C.name.alias", &["L.src"], "");
         let c: Vec<(String, i64, String)> = c.into_iter().map(|c| (c.severity, c.lo, c.message)).collect();
         let tail = |a: &str| format!("; one object has one name (dcp rename the others to it, or declare an alias: #define B A  /* {a} */)");
-        assert_eq!(c, [("error".to_string(), 0x1000, format!("2 names of ours at 0x1000: ai_Unk1000 (src/a.c:3), d3_Origin (include/d3.h:9){}", tail("0x1000"))),
+        assert_eq!(c, [("error".to_string(), 0x1000, format!("2 names of ours at 0x1000: net_Unk1000 (src/a.c:3), vec_Origin (include/vec.h:9){}", tail("0x1000"))),
                        ("error".to_string(), 0x3000, format!("2 names of ours at 0x3000: f (src/a.c:9), g (src/b.c:9){}", tail("0x3000")))]);
     }
 }

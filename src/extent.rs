@@ -1,6 +1,6 @@
 //! S.extent: how far the original's code proves a data object reaches. A global the sources declare smaller than
-//! the original uses it links cleanly and corrupts its neighbours at run time (a play session: the save header
-//! `ai_Unk76f920[1]` that ls_ReadSaveHeader fills up to +0xfc; a 748-byte table a loop scans up to 920 bytes).
+//! the original uses it links cleanly and corrupts its neighbours at run time (a play session: a save header
+//! declared `int x[1]` that the loader fills up to +0xfc; a 748-byte table a loop scans up to 920 bytes).
 //!
 //! Every walked function is read once, bottom-up over the call graph, by a small abstract interpretation of its
 //! registers and stack slots (one linear sweep in address order; a forward jump carries its state to the target,
@@ -1030,7 +1030,7 @@ mod tests {
         // L: mov [esi-0x10], eax; mov [esi], eax; add esi, 4; cmp esi, D+0x2b0; jl L; ret
         put(0xc0, &[&[0xbe][..], &le(d + 0x2a0), &[0x89, 0x46, 0xf0, 0x89, 0x06, 0x83, 0xc6, 0x04, 0x81, 0xfe], &le(d + 0x2b0), &[0x7c, 0xf0, 0xc3]]
             .concat());
-        // 0xe0 a guard in the body (he_Unk53d800's slot shift): mov esi, D+0x310; L: cmp esi, D+0x3c4; jge skip;
+        // 0xe0 a guard in the body (a slot shift): mov esi, D+0x310; L: cmp esi, D+0x3c4; jge skip;
         // mov eax, [esi]; mov [esi+4], eax; skip: mov ecx, [esi-0xc]; add esi, 0xc; cmp esi, D+0x3d0; jl L; ret
         // (the last pass, esi = D+0x3c4, skips [esi]: the array ends at D+0x3c4 - 0xc + 4, not D+0x3d0 - 0xc + 4)
         put(0xe0, &[&[0xbe][..], &le(d + 0x310), &[0x81, 0xfe], &le(d + 0x3c4), &[0x7d, 0x05, 0x8b, 0x06, 0x89, 0x46, 0x04,
@@ -1067,7 +1067,7 @@ mod tests {
         assert_eq!((call["to"].as_i64(), call["site"].as_i64()), (Some(t + 0x90), Some(t + 0xa9)));
     }
 
-    /// An `overrun` exception (main_ChooseTalents' memset of six ints into five): the rep stosd at it is no
+    /// An `overrun` exception (a memset of six ints into five): the rep stosd at it is no
     /// evidence; one at an instruction that proves nothing (a ret) is stale.
     #[test]
     fn an_overrun_exception_removes_its_evidence() {

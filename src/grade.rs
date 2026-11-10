@@ -159,7 +159,7 @@ fn verdict(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, 
     let sites = crate::refcheck::sites_aligned(code, env.img, lo, &fc.la, &fc.lb);
     let theirs = env.img.read(lo, o.code.max(0) as usize);
     let crossed = crate::refcheck::check(obj, code, env.img, &sites, refs, phi).settle_calls(obj, code, refs, &theirs, lo).named_differs();
-    // slot pairing by object (tasks/slot-pairing-by-object.md): another element of a paired local array
+    // slot pairing by object (slotmap.rs): another element of a paired local array
     let slots = crate::timing::phase("g.slotmap", || crate::slotmap::check(code.code().0, &env.img.read(lo, o.code.max(0) as usize), lo, &fc.la, &fc.lb));
     let proof = if fc.verdict.shape && !crossed {
         None
@@ -323,7 +323,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             crate::refcheck::check(&f.obj.0, &f.code, &img, &judged().1, &refs[i], &phi)
                 .settle_calls(&f.obj.0, &f.code, &refs[i], &img.read(lo as u32, h.o.code.max(0) as usize), lo as u32)
         });
-        // the reference census (tasks/reference-census.md): the objects one side refers to and the other never
+        // the reference census (refcheck::census): the objects one side refers to and the other never
         // does, whatever the alignment; no byte match only (equal bytes refer alike)
         let census: Vec<crate::refcheck::CensusDiff> = if is_byte {
             vec![]
@@ -396,8 +396,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             }
             why = w;
         }
-        // the census and our addresses used as numbers: listed and warned (not yet a concrete difference: measured
-        // on gildegold first)
+        // the census and our addresses used as numbers: listed and warned (not yet a concrete difference: to be
+        // measured on a project first)
         let name = f.src.s("symbol").unwrap_or("");
         if !is_byte {
             for d in &judged().3 {

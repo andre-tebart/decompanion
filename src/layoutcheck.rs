@@ -1,10 +1,10 @@
-//! Record layout across the relink (bug-reports/split-record-table-scaled-index-not-caught.md): symbols of ours
+//! Record layout across the relink: symbols of ours
 //! that one function addresses through the same register expression are fields of one record of the original's
-//! (`mov [eax*4 + cm_KindRun], ..; mov [eax*4 + cm_KindCheck], ..` with eax = kind*5: a table of 0x14-byte records).
+//! (`mov [eax*4 + g_KindRun], ..; mov [eax*4 + g_KindCheck], ..` with eax = kind*5: a table of 0x14-byte records).
 //! The original keeps them at fixed distances; our link must keep the same distances, or every record but the
 //! first reads its neighbour's fields. Byte-identical code does not show it: each field's reference agrees with φ
-//! at the original's layout, and the relink is what moves them apart (gildegold: cm_KindCheck 0x14 after
-//! cm_KindRun where the original has 0x10; the tutorial crashed).
+//! at the original's layout, and the relink is what moves them apart (seen: g_KindCheck 0x14 after g_KindRun where
+//! the original has 0x10; the program crashed).
 //!
 //! The groups come from our objects: within a straight run of code (a branch target, a jump or a return ends it),
 //! the relocated displacements of memory operands with a register in the address, per (base, index, scale), until
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(gs.len(), 1, "{gs:?}");
         assert_eq!(gs[0].objects.iter().map(|o| o.0.as_str()).collect::<Vec<_>>(), ["g_a", "g_b"]);
         assert_eq!(gs[0].expr, "[eax + X]");
-        // the original: g_b 0x10 after g_a (one record), our link: 0x14 after (cm_KindRun / cm_KindCheck)
+        // the original: g_b 0x10 after g_a (one record), our link: 0x14 after (g_KindRun / g_KindCheck)
         let p = phi(&[(0x92c500, "g_a", 4), (0x92c510, "g_b", 0xf0)]);
         let map: HashMap<String, u32> = [("g_a".to_string(), 0x7000), ("g_b".to_string(), 0x7014)].into_iter().collect();
         let v = check(&gs, &map, &p);

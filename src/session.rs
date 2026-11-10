@@ -390,7 +390,7 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
     let mut changes: Option<Option<crate::cause::Changes>> = None;
     // the window of the causes: from the commit that last wrote the baseline as of the base, not from the base: a fix
     // committed outside a session after the last promote moves grades the wrap reports
-    // (bug-reports/wrap-unexplained-grade-change.md: seven raises "nothing it compiles from changed")
+    // (else seven raises read "nothing it compiles from changed")
     let baseline_rev = git(root, &["log", "-1", "--format=%H", base, "--", "ledger/grades.tsv"]).trim().to_string();
     let since_rev = if baseline_rev.is_empty() { base.to_string() } else { baseline_rev.clone() };
     let before_base = if baseline_rev.is_empty() { 0 } else {

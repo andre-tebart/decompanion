@@ -4,8 +4,6 @@
 
 use super::*;
 
-const VC6: &str = "C:/Tools/MSVC600-SP5PP";
-const DX6: &str = "C:/Tools/DXSDK61/lib";
 
 fn errors(root: &Path, check: &str) -> Vec<FindingRow> {
     findings(root, None).into_iter().filter(|c| c.1 == check && c.0 == "error").collect()
@@ -137,18 +135,18 @@ fn link_library_class() {
 #[test]
 #[ignore = "e2e: VC6 and the DX 6.1 SDK"]
 fn link_library_class_dx6() {
-    if !(Path::new(VC6).join("VC98/Lib").exists() && Path::new(DX6).join("dxguid.lib").exists()) {
+    let (Some(vc6), Some(dx6)) = (vc6_root(), dxsdk6_lib()) else {
         return;
-    }
+    };
     let t = tiny();
-    set_config(&t, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{VC6}\"\nlib_dirs = [\"{DX6}\"]\n"));
+    set_config(&t, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{vc6}\"\nlib_dirs = [\"{dx6}\"]\n"));
     assert_eq!(dcp(&t, &["setup"]).0, 0);
     let out: std::collections::HashMap<String, Vec<String>> =
         crate::link::link_classify(&project(&t, None), vec!["_IID_IDirectDraw4".into(), "_GUID_SysMouse".into()]).unwrap().into_iter().collect();
     let line = out["library"].iter().find(|l| l.starts_with("_IID_IDirectDraw4")).unwrap();
-    assert!(line.starts_with(&format!("_IID_IDirectDraw4  ->  {DX6}/dxguid.lib  (")), "{line}");
+    assert!(line.starts_with(&format!("_IID_IDirectDraw4  ->  {dx6}/dxguid.lib  (")), "{line}");
     let mouse = out["library"].iter().find(|l| l.starts_with("_GUID_SysMouse")).unwrap();
-    assert!(mouse.contains(&format!("{DX6}/dxguid.lib")) && mouse.contains("VC98/Lib/DXGUID.LIB"), "{mouse}");
+    assert!(mouse.contains(&format!("{dx6}/dxguid.lib")) && mouse.contains("VC98/Lib/DXGUID.LIB"), "{mouse}");
 }
 
 #[test]
@@ -254,11 +252,11 @@ fn headers_conflicts_multi_name_and_position() {
 #[test]
 #[ignore = "e2e: VC6 and libclang"]
 fn headers_conflicts_vc6() {
-    if !(has_clang() && Path::new(VC6).join("VC98/Bin/CL.EXE").exists()) {
+    let Some(vc6) = vc6_root().filter(|_| has_clang()) else {
         return;
-    }
+    };
     let t = tiny();
-    set_config(&t, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{VC6}\"\n"));
+    set_config(&t, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{vc6}\"\n"));
     write(&t, "include/net.h", "void paint(struct COLOR c);\n");
     unit(&t, "net", &["int counter = 1;  /* 0x10002000 */\n", "/* 0x10001020, reads */\nint get(void)\n{\n    return counter;\n}\n"]);
     let (code, out) = dcp(&t, &["headers", "conflicts", "net", "net"]);

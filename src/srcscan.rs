@@ -661,7 +661,7 @@ pub(crate) mod tests {
         // the names the code uses are declared on the first line (an expression with an undeclared name has no cast
         // for the front end: clang's recovery drops it)
         let text = "/* 0x5de460, registers the exit callback */ int atexit(void (*)(void)); char *p, *t; \
-                    struct foo **q; void (__cdecl *r)(int); unsigned s; int u, full_data_6f242c, ai_OptionsFile; char *w; int U_I(unsigned);\n\
+                    struct foo **q; void (__cdecl *r)(int); unsigned s; int u, full_data_6f242c, net_OptionsFile; char *w; int U_I(unsigned);\n\
                     #define CB ((void (*)(void))0x5de471)\n\
                     #if 0\nchar *dead = (char *)0x401234;\n#endif\n\
                     int f(void)\n{\n\
@@ -670,7 +670,7 @@ pub(crate) mod tests {
                     \x20   q = (struct foo **)(unsigned)(0x6f2430u);\n\
                     \x20   r = (void (__cdecl *)(int))(0x401000);\n\
                     \x20   s = U_I((unsigned)&full_data_6f242c);\n\
-                    \x20   t = (char *)(unsigned)&ai_OptionsFile;\n\
+                    \x20   t = (char *)(unsigned)&net_OptionsFile;\n\
                     \x20   u = (int)0x5de470;\n\
                     \x20   w = \"(char *)0x5de470\";  /* (char *)0x5de470 */\n\
                     \x20   return 0;\n}\n";
@@ -708,11 +708,11 @@ pub(crate) mod tests {
         assert_eq!(part.errors.iter().map(|e| (e.2.as_str(), e.1)).collect::<Vec<_>>(), [("L15", 6)]); // an address comment, no byte offset
     }
 
-    /// `ai_Unk7603a0B` is the view B of 0x7603a0 (an upper-case suffix after lower-case hex); a comment behind the
+    /// `net_Unk7603a0B` is the view B of 0x7603a0 (an upper-case suffix after lower-case hex); a comment behind the
     /// second statement of a line is that statement's, not the first's.
     #[test]
     fn placeholders_and_shared_comments() {
-        let Some(part) = scan_alone("src/u.c", "int x = ai_Unk7603a0B + ai_Unk430100C + FUN_0040100a + DAT_7603A0 + x_abcdef_123456 + y_abcdef;\n") else { return };
+        let Some(part) = scan_alone("src/u.c", "int x = net_Unk7603a0B + net_Unk430100C + FUN_0040100a + DAT_7603A0 + x_abcdef_123456 + y_abcdef;\n") else { return };
         assert_eq!(part.placeholders.iter().map(|p| p.3).collect::<Vec<_>>(), [0x7603a0, 0x430100, 0x40100a, 0x7603a0, 0x123456]);
         let part = scan_alone("src/u.c", "extern char *a; extern char *b;  /* 0x10002000 */\n").unwrap();
         let got: Vec<(&str, Vec<(Option<String>, u64)>)> = part.data.iter().map(|d| (d.3.as_str(), d.5.clone())).collect();

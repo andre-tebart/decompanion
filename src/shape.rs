@@ -830,9 +830,8 @@ fn dataflow_of(lines: &[Shape]) -> Option<(Vec<(Val, u8, Val)>, Vec<(&'static st
 /// only, with the run of such lines that precedes each (at most 16, as many on both sides) as their common start,
 /// that store the same values to the same places, test the same values in the same order and end with the same
 /// values in the registers, under one bijective renaming of the registers where the run starts. The registers
-/// that hold each value, and the order of the loads and stores, are the allocation's: gildegold
-/// ai_TutorialInitChapter3 stores three float constants through [esi+0x64] with the constants loaded into
-/// permuted registers in another order. A load reads a value of the address alone (the two sides read the same
+/// that hold each value, and the order of the loads and stores, are the allocation's: one function seen stores three
+/// float constants through [esi+0x64] with the constants loaded into permuted registers in another order. A load reads a value of the address alone (the two sides read the same
 /// addresses; which store it follows is the order's).
 pub fn dataflow(pre_a: &[Shape], xa: &[Shape], pre_b: &[Shape], xb: &[Shape], context: &[Shape]) -> Option<(String, String)> {
     let eligible = |s: &Shape| matches!(s.mn, "mov" | "cmp" | "test") && s.rep == 0;
@@ -1134,7 +1133,7 @@ mod tests {
 
     #[test]
     fn store_moved_across_a_push() {
-        // ai_CurseWindow of GildeGold.exe: ours stores before the push, the original after it
+        // ours stores before the push, the original after it
         let ours = ["mov word ptr [esp + 0xa4], ax", "mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "mov dword ptr [esp + 0xd0], ecx", "push edx"];
         let orig = ["mov ecx, dword ptr [ebp + 4]", "lea edx, [esp + 0x70]", "push edx", "mov word ptr [esp + 0xa8], ax", "mov dword ptr [esp + 0xd0], ecx"];
         let (c, why) = cls(&ours, &orig).unwrap();
@@ -1145,7 +1144,7 @@ mod tests {
 
     #[test]
     fn renaming_renewed_where_a_register_is_overwritten() {
-        // gildegold ai_ExecuteMasterBuilder: ours reuses esi once s1 is dead, the original takes eax
+        // ours reuses esi once s1 is dead, the original takes eax
         let ours = ["mov esi, dword ptr [esi + 0x10]", "test esi, esi", "cmp esi, 4", "fstp dword ptr [esi*8 + X]"];
         let orig = ["mov eax, dword ptr [esi + 0x10]", "test eax, eax", "cmp eax, 4", "fstp dword ptr [eax*8 + X]"];
         assert_eq!(cls(&ours, &orig), Some(("regs".into(), "esi->eax".into())));
@@ -1158,7 +1157,7 @@ mod tests {
 
     #[test]
     fn renaming_with_another_order() {
-        // gildegold ls_ReadSceneRecords: one rotation (eax->ecx, ecx->edx, edx->eax) and a lea moved before a load
+        // one rotation (eax->ecx, ecx->edx, edx->eax) and a lea moved before a load
         let ours = ["mov ecx, dword ptr [esi + 0x34]", "lea eax, [esi + 0x48]", "push eax", "push ecx", "mov edx, dword ptr [esi + 0x38]", "push edx"];
         let orig = ["lea ecx, [esi + 0x48]", "mov edx, dword ptr [esi + 0x34]", "push ecx", "push edx", "mov eax, dword ptr [esi + 0x38]", "push eax"];
         let (c, n) = cls(&ours, &orig).unwrap();
@@ -1167,7 +1166,7 @@ mod tests {
         let ours = ["mov eax, ebx", "mov ecx, edx", "mov esi, edi", "push ebp", "add eax, ecx", "add esi, eax"];
         let orig = ["push ebp", "mov ebx, eax", "mov edx, ecx", "mov edi, esi", "add ebx, edx", "add edi, ebx"];
         assert_eq!(cls(&ours, &orig).unwrap().0, "order");
-        // another order and other stack offsets in one hunk (gildegold gv_RankCulpritsAll)
+        // another order and other stack offsets in one hunk
         let ours = ["xor edi, edi", "mov dword ptr [esp + 0x1c], edi", "mov esi, X", "mov dword ptr [esp + 0x20], edi"];
         let orig = ["mov esi, X", "xor edi, edi", "mov dword ptr [esp + 0x20], edi", "mov dword ptr [esp + 0x24], edi"];
         let (c, n) = cls(&ours, &orig).unwrap();
@@ -1187,7 +1186,7 @@ mod tests {
 
     #[test]
     fn saves_are_the_allocations_choice() {
-        // gildegold evt_FindLogic: ours saves edi and zeroes it, the original zeroes esi and saves edi
+        // ours saves edi and zeroes it, the original zeroes esi and saves edi
         let marked = |l: &[&str]| {
             let mut v = parse_all(l);
             mark_saves(&mut v.iter_mut().collect::<Vec<_>>());
@@ -1205,7 +1204,7 @@ mod tests {
 
     #[test]
     fn frame_shift_in_indexed_operands() {
-        // gildegold sv_RunLocationScripts: frames 0x21c vs 0x218, an array on the stack indexed by eax
+        // frames 0x21c vs 0x218, an array on the stack indexed by eax
         let f = (0x21c, 0x218);
         let (a, b) = (parse_all(&["mov dword ptr [esp + eax*4 + 0x10c], 0"]), parse_all(&["mov dword ptr [esp + eax*4 + 0x108], 0"]));
         assert_eq!(stack_mask(&a, f), stack_mask(&b, f));
@@ -1221,15 +1220,14 @@ mod tests {
         assert!(one_renaming(&a, &b));
         let c = parse_all(&["mov ecx, dword ptr [esp + 8]", "mov ecx, dword ptr [esp + 4]", "add ecx, eax", "ret"]);
         assert!(!one_renaming(&a, &c));
-        // a register and its part are not one name (gildegold ai_Unk5a91c0: `mov esi, eax` against `mov si, ax`
-        // passed as a renaming while the text mapped si to esi)
+        // a register and its part are not one name (`mov esi, eax` against `mov si, ax` passed as a renaming while
+        // the text mapped si to esi)
         assert!(!one_renaming(&parse_all(&["mov esi, eax", "ret"]), &parse_all(&["mov si, ax", "ret"])));
     }
 
     #[test]
     fn same_stores_through_permuted_registers() {
-        // gildegold ai_TutorialInitChapter3: three float constants stored through [esi+0x64], the constants loaded
-        // into permuted registers in another order (ecx and edi exchanged where the hunk starts)
+        // three float constants stored through [esi+0x64], the constants loaded into permuted registers in another order (ecx and edi exchanged where the hunk starts)
         let pre = parse_all(&["mov ebx, 0x428e0000", "mov eax, dword ptr [esi + 0x64]"]);
         let ours = parse_all(&["mov dword ptr [eax + 0x78], edi", "mov edx, dword ptr [esi + 0x64]", "mov edi, 0x447f0000", "mov dword ptr [edx + 0x7c], ecx",
                                "mov eax, dword ptr [esi + 0x64]", "mov ecx, 0x442f0000", "mov edx, 0x44670000", "mov dword ptr [eax + 0x80], ebx",
@@ -1256,7 +1254,7 @@ mod tests {
 
     #[test]
     fn slot_remaps_beyond_five_offsets() {
-        // gildegold sv_FlyCameraToModel: a moved push shifts three offsets by 4, a fourth local moves; eight
+        // a moved push shifts three offsets by 4, a fourth local moves; eight
         // offsets in play were beyond the permutation search's limit
         let ours = ["fld dword ptr [esp + 0x38]", "fsub dword ptr [esp + 0x6c]", "fstp dword ptr [esp + 0x2c]", "lea edx, [esp + 0x44]"];
         let orig = ["fld dword ptr [esp + 0x34]", "fsub dword ptr [esp + 0x68]", "fstp dword ptr [esp + 0xb8]", "lea edx, [esp + 0x40]"];

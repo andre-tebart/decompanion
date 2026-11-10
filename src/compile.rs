@@ -292,7 +292,7 @@ pub fn ensure(p: &Project, force: bool, jobs: Option<usize>) -> Result<Report, S
             let _ = std::fs::remove_file(&tmp_abs);
             let compile = || tools.compile(&win(&a.file), &tmp, flags, &dirs, &root);
             // the include set (a preprocessor process of its own) beside the compile while the pool has threads to
-            // spare (an edit or a rename compiles one unit: ~0.2 s of 0.7 s on gildegold's main.c)
+            // spare (an edit or a rename compiles one unit: ~0.2 s of 0.7 s on a large unit)
             let (files, res) = if spare {
                 std::thread::scope(|s| {
                     let pre = s.spawn(|| preprocess(k));

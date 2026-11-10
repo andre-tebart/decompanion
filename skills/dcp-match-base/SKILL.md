@@ -165,7 +165,7 @@ work, however long.
   "ab" at 0x...` (M10 for a constant: a missing prefix, `1e-7` where the original has `1e-7f`, a wrong value). A
   byte match with such a difference is also an M8 / M9 / M10 error of `dcp check`: equal bytes at this layout only.
   `M.contain` (ill-formed, an error even on a byte match; asmdiff's `contain:` line): `&sym + N` outside sym's
-  declared size is no address of sym. Usually a constant written as an address (`&cm_SendRing + 0x4973c0` is the
+  declared size is no address of sym. Usually a constant written as an address (`&g_Ring + 0x4973c0` is the
   mask 0xf00500): write the number; else name the object the address belongs to.
   Named references that only cross (two independent stores in the other order) stay shape when the prover shows the
   effects the same. Not checked, listed as `open:` (`dcp grade NAME`, asmdiff, diffclass): a symbol without an
@@ -191,7 +191,7 @@ work, however long.
   holds the original TU order: never move a function within or between units to make a diff go away.
 
 ### 2.3 Readability (`gates=Q...`)
-- Q1 / Q2 placeholder names (`ai_Unk4a13e0`, `param_1`, `iVar2`, `DAT_...`): name what you understood.
+- Q1 / Q2 placeholder names (`net_Unk4a13e0`, `param_1`, `iVar2`, `DAT_...`): name what you understood.
   Functions and data: `dcp rename OLD NEW --why "the evidence"` (project-wide, whole words, names.log;
   `dcp refs` first; OLD may be `0xADDR` / `exe:0xADDR` for the ledger's name). Several names at once:
   `dcp rename OLD1 NEW1 OLD2 NEW2 ... --why "..."` or `--from FILE` (one `OLD NEW [why]` per line): one
@@ -201,7 +201,7 @@ work, however long.
   quotes with single backslashes, or in a `--from FILE` line. Rename first, then edit: the rename writes the new name everywhere and logs it (a name already written by hand in some places is
   completed by the rename, not refused). It prints every changed file with its replacements; a refusal is an
   `error=` record with exit 1 and nothing written: read it, never assume the rename happened. A view
-  (`ai_Unk7603a0B`) keeps its name when its datum is renamed (the note lists it): rename it on its own.
+  (`net_Unk7603a0B`) keeps its name when its datum is renamed (the note lists it): rename it on its own.
   Locals and parameters: edit the function.
 - Q3 address literals and Q4 raw access (`*(T *)(p + 0x1c)`, macros built on such casts, and the same access in
   two steps: an offset pointer `T *x = (T *)((char *)e + 0xc2)`, `(T *)(ev + 4)`, `(char *)obj + 8`): a typed
@@ -367,7 +367,7 @@ missing statements, and one that admits a part not read against the original yet
 compared / verified, hard to judge): reconstruction and reading the whole function are base work. It also
 refuses while our instruction count differs from the original's by more than max(12, 1/100 of the original's)
 (the `asmdiff` head: `ours=` / `original=`): allocation, slots and frames move a few instructions (no shape
-function on gildegold differs by more than 7), a larger difference is missing or wrong statements. When
+function measured differs by more than 7), a larger difference is missing or wrong statements. When
 allocation really causes it (extra saved registers, spills you have read in the asmdiff), say how:
 `--size-explained "why"` (kept in the reason); a function whose behaviour the prover shows the same (`proof:
 equal` in `dcp diffclass NAME`) is not held to the size. It refuses too on a concrete difference: a call or a

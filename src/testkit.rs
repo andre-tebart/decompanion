@@ -3,6 +3,18 @@
 
 use std::path::{Path, PathBuf};
 
+/// The VC6 installation of the e2e tests (`DCP_VC6`: the directory holding VC98/), when it is installed there.
+pub fn vc6_root() -> Option<String> {
+    std::env::var("DCP_VC6").ok().map(|r| r.replace('\\', "/").trim_end_matches('/').to_string())
+        .filter(|r| Path::new(r).join("VC98/Bin/CL.EXE").exists())
+}
+
+/// The DirectX 6.1 SDK's lib directory of the e2e tests (`DCP_DXSDK6`: the SDK's directory), when it holds dxguid.lib.
+pub fn dxsdk6_lib() -> Option<String> {
+    std::env::var("DCP_DXSDK6").ok().map(|r| format!("{}/lib", r.replace('\\', "/").trim_end_matches('/')))
+        .filter(|l| Path::new(l).join("dxguid.lib").exists())
+}
+
 pub const BASE: u32 = 0x1000_0000;
 const TEXT: u32 = 0x1000;
 const DATA: u32 = 0x2000;

@@ -6,8 +6,8 @@
 //! that repeats one block (a loop unrolled per column, a chain of near-identical cases) the longest run can pair
 //! the k-th copy of ours with another copy of the original's; everything on one side of it is then aligned against
 //! the wrong copies or nothing, and a slot-only or one-register difference read as hundreds of `code` lines (a
-//! match-base report, gildegold ai_FillNearRing: one 452-line code hunk of lines equal on both sides, differing=1203
-//! where a plain diff counts 645; sv_RefreshPanel: one register skipped a whole case). The edit script is minimal:
+//! match-base report: one 452-line code hunk of lines equal on both sides, differing=1203 where a plain diff counts
+//! 645; another: one register skipped a whole case). The edit script is minimal:
 //! every line it leaves unpaired is one no alignment can pair.
 
 use std::collections::HashMap;

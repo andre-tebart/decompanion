@@ -199,7 +199,7 @@ pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>
                                 ("shard", os(sh.clone())), ("unit", os(unit))])];
     for (r, tr) in items.iter().take(n) {
         let g = gates(r).join(",");
-        // why a deep item is there (improvement-reports/deep-queue-untagged-items.md): its tag (the reason and the
+        // why a deep item is there: its tag (the reason and the
         // earlier workers' notes are in it), or `untagged` (below byte in a unit whose base work is done: no notes)
         let why = (which == "deep").then(|| match r.get("level").and_then(|v| v.as_str()).filter(|l| !l.is_empty()) {
             Some(l) => format!("@{l}"),
@@ -722,8 +722,8 @@ pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> 
     let mut out = vec![record(&[("promoted", s("ledger/grades.tsv")), ("functions", Tok::I(n)), ("targets", Tok::I(projects.len() as i64)),
                                 ("falls_against_old", Tok::I(falls.len() as i64)), ("debt", Tok::I(accepted as i64))])];
     out.extend(falls.iter().map(|f| format!("  fell (accepted): {f}")));
-    // the entries that carry an accepted fall, from this promote or earlier ones (bug-reports/wrap-accepted-count-
-    // unexplained.md: `accepted=8` with no fall read as eight things to act on)
+    // the entries that carry an accepted fall, from this promote or earlier ones (else `accepted=8` with no fall
+    // reads as eight things to act on)
     if accepted > falls.len() {
         out.push(format!("  debt={accepted}: baseline entries kept below an earlier grade on purpose ({} from earlier promotes or dcp debt add; dcp debt list names them); nothing to act on now", accepted - falls.len()));
     }

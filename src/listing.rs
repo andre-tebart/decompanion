@@ -1,7 +1,6 @@
 //! VC6's own assembly listing of a unit (`/FAc`: each instruction with its offset and bytes, `; Line N` before the
 //! code of each source line, and the frame symbols `_name$ = N` before each function): `dcp listing NAME`, the
-//! names of `dcp frame`, the source lines of `dcp asmdiff --lines` (improvement-reports/build-listing-command.md,
-//! frame-slot-map-command.md, asmdiff-hunk-to-source-line.md). The unit is compiled as the build compiles it (the
+//! names of `dcp frame`, the source lines of `dcp asmdiff --lines`. The unit is compiled as the build compiles it (the
 //! trial bench's flags and include order), into build/trial/, the files removed after.
 
 use crate::error::{Error, Result};

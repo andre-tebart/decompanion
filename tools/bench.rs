@@ -1,8 +1,8 @@
 //! dcp-bench: the speed of the match loop on a target project: edit -> build -> diffclass / asmdiff -> grade, timed
 //! per command.
 //!
-//!     dcp-bench --root ../gildegold --fn 0x5dcf00 --swap "ai_ShotHitHeight + height::height + ai_ShotHitHeight" \
-//!         --rename ai_ShotHitsGround [--runs 3] [--scenarios S0,S1,...] [--dcp PATH] [--verify] [--budget MS] [--label NAME]
+//!     dcp-bench --root ../project --fn 0x401000 --swap "net_Height + height::height + net_Height" \
+//!         --rename net_HitsGround [--runs 3] [--scenarios S0,S1,...] [--dcp PATH] [--verify] [--budget MS] [--label NAME]
 //!
 //! Every command runs as its own process (`dcp` beside this executable, or --dcp), with DCP_TIMING=1, in the
 //! project's daemon (started on demand). Scenarios, each applied inside the function's span of its unit file

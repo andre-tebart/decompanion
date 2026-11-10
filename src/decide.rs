@@ -978,11 +978,11 @@ mod tests {
     #[test]
     fn wraps_like_textwrap() {
         let first = "    seen  ";
-        let text = "installs found: C:/Tools/MSVC600 (cl 12.00.8804 c2 12.00.9782 link 6.00.8447; makes a Rich linker (8447)); \
-                    C:/Tools/MSVC600-SP5PP (cl 12.00.8804 c2 13.00.9044 link 6.00.8447; makes a Rich compiler (9044) and a Rich linker (8447))";
+        let text = "installs found: C:/VC/Studio-6.0 (cl 12.00.8804 c2 12.00.9782 link 6.00.8447; makes a Rich linker (8447)); \
+                    C:/VC/Studio-6.0-SP5PP (cl 12.00.8804 c2 13.00.9044 link 6.00.8447; makes a Rich compiler (9044) and a Rich linker (8447))";
         assert_eq!(fill(text, 100, first), [
-            "    seen  installs found: C:/Tools/MSVC600 (cl 12.00.8804 c2 12.00.9782 link 6.00.8447; makes a Rich",
-            "          linker (8447)); C:/Tools/MSVC600-SP5PP (cl 12.00.8804 c2 13.00.9044 link 6.00.8447; makes",
+            "    seen  installs found: C:/VC/Studio-6.0 (cl 12.00.8804 c2 12.00.9782 link 6.00.8447; makes a Rich",
+            "          linker (8447)); C:/VC/Studio-6.0-SP5PP (cl 12.00.8804 c2 13.00.9044 link 6.00.8447; makes",
             "          a Rich compiler (9044) and a Rich linker (8447))",
         ]);
         // hyphenated words break after a hyphen between letters; a word longer than the line breaks anywhere

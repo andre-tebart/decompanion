@@ -36,7 +36,7 @@
 //! Then the functions to re-grade (a `call` / `vc6` / `supersedes` / `other` line in their span, a `prototyped` call
 //! that is not safe) and a warning:
 //!   declaration-set  the includes add declarations to the unit, or --write drops head duplicates: under VC6 /O2 the
-//!                    declaration set of a unit alone moves code generation (gildegold: removing uncalled prototypes
+//!                    declaration set of a unit alone moves code generation (seen: removing uncalled prototypes
 //!                    flipped byte matches to shape), so every function of the unit is re-graded, byte ones first
 //! The tool reads only; `--write` inserts the includes and drops the `duplicate` declarations of the head (a line
 //! whose names are all duplicates goes, comment and all; a multi-name extern line keeps its other declarators), and
@@ -1228,8 +1228,8 @@ pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<S
     }
     let dropped = count("duplicate");
     if an.added > 0 || dropped > 0 {
-        // VC6 /O2: the declaration set of a unit alone moves code generation (gildegold: removing uncalled
-        // prototypes flipped byte matches to shape)
+        // VC6 /O2: the declaration set of a unit alone moves code generation (seen: removing uncalled prototypes
+        // flipped byte matches to shape)
         let mut fns = vec![];
         for (addr, name) in &an.unit.functions {
             if let Some(addr) = addr {

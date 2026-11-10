@@ -585,7 +585,7 @@ Containment holds both ways:
 
 - **A reference of H must stay inside its object.** A reference at `sym + N` outside sym's declared size (sizeof;
   one past the end is inside) is no address of sym. H is ill-formed there (`M.contain`), whatever the bytes compare,
-  because the sum moves with sym when relinked: `&cm_SendRing + 0x4973c0` is the constant 0xf00500.
+  because the sum moves with sym when relinked: `&g_Ring + 0x4973c0` is the constant 0xf00500.
 - **The compiler's own arithmetic is exempt:** an indexed displacement, and a loop's pointer one element past either
   end.
 - **A view past its container** is the same case (`D7`).
@@ -628,8 +628,7 @@ declared on I's instruction because H has no line for it. One whose instruction 
 
 - **An exception must discriminate.** `@original` is valid only if the consistent spelling changes the bytes. A tool
   can check it: build the variant without the exception and compare. If the bytes stay the same, the exception has no
-  evidence. (`improvement-reports/detect-nested-call-in-arguments.md` is such a case: an `@original` for a
-  "six-argument call" whose real cause was a nested call.)
+  evidence. (A seen case: an `@original` for a "six-argument call" whose real cause was a nested call.)
 - **Exceptions go stale.** When H changes, the experiment behind an exception is rerun; one that no longer
   discriminates is flagged.
 - **Exceptions are visible and counted**, like debt items, each naming its evidence.
@@ -684,7 +683,7 @@ What the code does not do yet:
 | Model | Today |
 |---|---|
 | An answer per (byte, kind) | The `answer` table holds the owner, the unit and the section; `ref`, `start` and `toolchain` are answered per address on demand (`dcp why`), not kept |
-| One alignment per function | Several readers align the listings themselves: `refcheck::sites_aligned` (its own pairs: equal lines, same-mnemonic lines of equal-length hunks), `diffclass::compare_tables` (its own map of the equal runs), asmdiff's `diff_lines` (frame-masked), besides `Cuts`; they can pair an instruction differently (tasks/normalized-alignment.md) |
+| One alignment per function | Several readers align the listings themselves: `refcheck::sites_aligned` (its own pairs: equal lines, same-mnemonic lines of equal-length hunks), `diffclass::compare_tables` (its own map of the equal runs), asmdiff's `diff_lines` (frame-masked), besides `Cuts`; they can pair an instruction differently |
 | Every contradiction names its rule and its claims | The consistency rules are checks of category contradiction (`L13`, `C.walk`, ...), each computing its own predicate; a finding names the producers (`a=`, `b=`), not the claim rows |
 | The kinds of claim | They are called questions: `store::Question`, `dcp claims --question`, `dcp why` by question |
 | Unit and image experiments | Unit boundaries rest on the evidence rules (`L.analyze`: fill, literal order, leaks) and D4's definition order; there is no explicit unit experiment |

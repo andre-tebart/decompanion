@@ -7,7 +7,6 @@ use crate::store::DECLARED;
 use serde_json::json;
 use std::collections::BTreeMap;
 
-const VC6: &str = "C:/Tools/MSVC600-SP5PP";
 
 fn errors(root: &Path) -> Vec<FindingRow> {
     findings(root, None).into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect()
@@ -282,11 +281,11 @@ fn source_only_start_owns_its_code() {
 #[test]
 #[ignore = "e2e: VC6"]
 fn unlinked_helper_builds_without_a_grade() {
-    if !Path::new(VC6).join("VC98/Bin/CL.EXE").exists() {
+    let Some(vc6) = vc6_root() else {
         return;
-    }
+    };
     let t = tiny();
-    set_config(&t, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{VC6}\"\n"));
+    set_config(&t, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{vc6}\"\n"));
     write(&t, "decl/text.dcl", "# code\n0x10001020 boundary start by=guess tu=net -- test\n0x10001030 boundary end tu=net -- test\n");
     unit(&t, "net", &["int counter = 0x1234;  /* 0x10002000 */\nint twice(int x);\n", "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter;\n}\n",
                       "/* unlinked, inlined everywhere by /Ob1 */\nint twice(int x)\n{\n    return x + x;\n}\n"]);

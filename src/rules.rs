@@ -596,7 +596,7 @@ fn extent_ends(ctx: &Ctx, objs: &[DataObj]) -> Result<Vec<i64>> {
 /// match_data.site_confirmed: address -> C name of every data address a byte-matched function's absolute
 /// relocation confirms (the first such relocation wins). Only a near-certain reference is evidence (§8.2): a
 /// memory operand's displacement, or an immediate at a base relocation of the image. An immediate otherwise may
-/// be a number (`&cm_SendRing + 0x4973c0` is the mask 0xf00500): the original's field minus our addend confirms
+/// be a number (`&g_Ring + 0x4973c0` is the mask 0xf00500): the original's field minus our addend confirms
 /// nothing.
 fn site_confirmed(ctx: &Ctx, db: &Connection) -> Result<HashMap<u32, String>> {
     let img = image(&ctx.image)?;
@@ -1270,27 +1270,27 @@ mod tests_aligned {
         let decl = |lo: i64, size: i64, name: &str, unit: &str| ExtentDecl { lo, least: size, size, name: name.into(), by: format!("src:{name}"),
                                                                              unit: unit.into(), kind: "bss".into() };
         let ev = |lo: i64, hi: i64, how: &str, to: i64| ExtentEv { lo, hi, base: lo, site: 0x51c99d, how: how.into(), to };
-        let decls = [decl(0x76f920, 4, "ai_Unk76f920", "ls"), decl(0x76f990, 4, "full_data_76f990", "main"), decl(0x76f994, 4, "full_data_76f994", "main"),
-                     decl(0x60c7c0, 748, "ai_Unk60c7c0", "cm"), decl(0x100, 16, "whole", "a"), decl(0x200, 8, "inner", "a"),
+        let decls = [decl(0x76f920, 4, "net_Unk76f920", "ls"), decl(0x76f990, 4, "full_data_76f990", "main"), decl(0x76f994, 4, "full_data_76f994", "main"),
+                     decl(0x60c7c0, 748, "net_Unk60c7c0", "cm"), decl(0x100, 16, "whole", "a"), decl(0x200, 8, "inner", "a"),
                      decl(0x300, 4, "gap_300", "main"), decl(0x304, 4, "gap_304", "main")];
         let evs = [ev(0x76f920, 0x76fa1c, "call", 0x51cee0), ev(0x76f920, 0x76f924, "field", 0), ev(0x60c7c0, 0x60cb00, "bound", 0),
                    ev(0x100, 0x110, "copy", 0), ev(0x1f8, 0x204, "copy", 0), ev(0x300, 0x308, "copy", 0)];
-        let named = |a: i64| (a == 0x51cee0).then(|| "ls_ReadSaveHeader".to_string());
+        let named = |a: i64| (a == 0x51cee0).then(|| "io_ReadHeader".to_string());
         let got = d8(&decls, &evs, named);
         let msgs: Vec<&str> = got.iter().map(|g| g.3.as_str()).collect();
         assert_eq!(got.iter().map(|g| (g.0, g.1, g.2, g.4.as_str())).collect::<Vec<_>>(),
-                   [("error", 0x1f8, 0x204, "src:inner"), ("error", 0x300, 0x308, "src:gap_300"), ("error", 0x60c7c0, 0x60cb00, "src:ai_Unk60c7c0"),
-                    ("error", 0x76f920, 0x76fa1c, "src:ai_Unk76f920")], "{msgs:?}");
+                   [("error", 0x1f8, 0x204, "src:inner"), ("error", 0x300, 0x308, "src:gap_300"), ("error", 0x60c7c0, 0x60cb00, "src:net_Unk60c7c0"),
+                    ("error", 0x76f920, 0x76fa1c, "src:net_Unk76f920")], "{msgs:?}");
         assert!(msgs[1].ends_with("(all of unit main, in order and without a hole: it links as the original's, but it is one object: declare one \
                                     object holding 0x300..0x308, the pieces inside as its fields, or as views of it with `@original` where a unit \
                                     needs another spelling; the range is what the accesses reach, a lower bound: a table's start and end follow \
                                     from its rows' stride)"), "{}", msgs[1]);
         let msgs = [msgs[0], msgs[2], msgs[3]];
-        assert!(msgs[2].starts_with("ai_Unk76f920 at 0x76f920 is 4 bytes, the original's code uses 0x76f920..0x76fa1c as one object (the address \
-                                     0x76f920 passed at 0x51c99d to ls_ReadSaveHeader (0x51cee0), which reaches that far through it): \
-                                     ai_Unk76f920 needs at least 252 bytes; declared inside it: full_data_76f990 (+0x70), full_data_76f994 (+0x74)"),
+        assert!(msgs[2].starts_with("net_Unk76f920 at 0x76f920 is 4 bytes, the original's code uses 0x76f920..0x76fa1c as one object (the address \
+                                     0x76f920 passed at 0x51c99d to io_ReadHeader (0x51cee0), which reaches that far through it): \
+                                     net_Unk76f920 needs at least 252 bytes; declared inside it: full_data_76f990 (+0x70), full_data_76f994 (+0x74)"),
                 "{}", msgs[2]);
-        assert!(msgs[1].contains("ai_Unk60c7c0 needs at least 832 bytes") && !msgs[1].contains("declared inside"), "{}", msgs[1]);
+        assert!(msgs[1].contains("net_Unk60c7c0 needs at least 832 bytes") && !msgs[1].contains("declared inside"), "{}", msgs[1]);
         assert!(msgs[0].contains("which starts before inner: one declaration at 0x1f8 holds inner (0x200, 8 bytes)"), "{}", msgs[0]);
     }
 }

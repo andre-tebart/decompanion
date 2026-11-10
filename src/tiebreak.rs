@@ -39,8 +39,7 @@ pub const HEADER: &str = "target\taddress\tname\tunit\ttext\tsensitive\tbest\twi
 
 /// The probes: the lines put before the unit's text (a `#line 1` after them keeps every line number and
 /// `__FILE__` as the build has them). The count of declarations drives some tie-breaks, a name's hash others
-/// (gildegold 2026-11-04: one typedef raised ai_TutorialInitChapter2 and left d3_CloneObject), so the family
-/// varies both.
+/// (seen: one typedef raised one function's grade and left another's), so the family varies both.
 pub const PROBES: [&str; 4] = [
     "typedef int __dcp_probe_1;",
     "typedef int __dcp_probe_1; typedef int __dcp_probe_2;",
@@ -263,8 +262,7 @@ impl Bench {
             f.s("skind") == Some("func") && matches!(&*f.rule, "S.codewalk" | "L.src.extent")
         }))?.iter().map(|f| (f.lo, f.hi)).collect();
         // the next start as M.match reads it (rules::compiled_functions): the starts of the rules M.match needs, not
-        // an analyzer's (gildegold: Ghidra's start inside ord_HandleMessageRecord cut its compare short, byte read
-        // as shape)
+        // an analyzer's (seen: Ghidra's start inside a function cut its compare short, byte read as shape)
         let needed: Vec<String> = crate::engine::resolve_needs(crate::engine::rule("M.match")?)?.iter().map(|s| s.to_string()).collect();
         let mut starts: Vec<i64> = crate::with_db(&db, |c| {
             let mut v = store::los(c, &db, "start", &needed, |_| true)?;
@@ -713,7 +711,7 @@ fn sample_text(lines: &[&str], places: &[Place], mems: &[Member], picks: &[Pick]
         match &mems[pk.idx] {
             Member::Pad { at, head, name, n, rest } => {
                 // one in three: the array wrapped in a struct of its own (a member's type changed, the layout not:
-                // gildegold ai_Unk483a60 moved when AIBLD.workSet went from char[0x10] to a record); else split
+                // a function moved when a member went from char[0x10] to a record); else split
                 if pk.k % 3 == 0 {
                     replace.insert(*at, format!("{}struct {{ char {nm}[{n}]; }} {name};{rest}", head.trim_end().trim_end_matches("char").trim_end_matches("unsigned").to_string() + " "));
                 } else {
@@ -824,8 +822,8 @@ pub fn sample_function(p: &Project, name: &str, n: usize, seed: u64) -> Result<s
     let c0 = control.function_code(k0);
     let g0 = bench.grade(control, &c0, a);
     // the preprocessed text alone (the same declarations, another form: #line directives, expanded macros) may move
-    // a function: that is a codegen of its own and proof of sensitivity (gildegold ai_TutorialInitChapter3: built
-    // draft, preprocessed shape); a stale build shows the same way, so the line says both
+    // a function: that is a codegen of its own and proof of sensitivity (seen: built draft, preprocessed shape); a
+    // stale build shows the same way, so the line says both
     let form_moved = g0 != built;
     let where_at = |at: usize| -> String {
         // the file and line the #line directives give a line index

@@ -1,4 +1,4 @@
-//! `dcp try NAME [FILE] [--move-line N --to A..B] [--apply LABEL]` (improvement-reports/variant-runner.md): source
+//! `dcp try NAME [FILE] [--move-line N --to A..B] [--apply LABEL]`: source
 //! variants of one function, each compiled in a scratch copy of its unit (build/trial/, as the tie-break probes
 //! compile: the unit's flags, its directory before include/, in parallel) and graded as G.grade grades it. Nothing
 //! in the tree or the ledger changes unless `--apply` names the variant to write.
@@ -16,7 +16,7 @@
 //! ```
 //!
 //! An old text must occur exactly once in the function (not in the file: a twin function's equal lines are never
-//! touched, improvement-reports/fn-edit-by-name.md). `--move-line N --to A..B` adds a variant for each place in
+//! touched). `--move-line N --to A..B` adds a variant for each place in
 //! A..B the file's line N (a declaration inside the function) can move to.
 //!
 //! The table: one row per variant with the grade, the distance (differing instructions on both sides, differing

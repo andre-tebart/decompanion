@@ -29,8 +29,7 @@ fn stack_ops(s: &[Shape]) -> Vec<Shape> {
 /// multiset; and each basic block's pushes in order (cut before a branch target and after a jump, a branch or a
 /// return). A moved block, a block split by another layout, a push moved across a call (an FPU-argument call takes
 /// nothing from the stack) and another frame size keep both; a cleanup moved across a call (a nested call's partial
-/// pop: bug-reports/arg-count-casts-hide-nested-call.md) or two pushes swapped (ai_MessageBox's arguments) change
-/// them.
+/// pop) or two pushes swapped (a call's two arguments in another order) change them.
 fn stack_profile(l: &[Line], skip: &HashSet<usize>) -> (Vec<Option<Shape>>, Vec<Vec<Shape>>) {
     let m = |x: &Shape| shape::mask_slots(&shape::mask_regs(x));
     let targets: HashSet<i64> = l.iter().filter_map(|x| x.target).collect();
@@ -237,8 +236,7 @@ fn classify(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: us
     }
     if multiset_eq(&a, &b) {
         // the stack's instructions in another order (pushes swapped, a push moved across a call or a cleanup): another
-        // call's arguments, not scheduling (bug-reports/arg-count-casts-hide-nested-call.md: ai_MessageBox's two
-        // arguments swapped, classed order)
+        // call's arguments, not scheduling (a call's two arguments swapped was classed order)
         if stack_ops(&a) != stack_ops(&b) {
             return ("code".into(), "the stack's pushes, pops and calls in another order: a call's arguments differ".into());
         }
@@ -600,14 +598,14 @@ impl Cuts {
     /// Whether the code from our cut `ca` and from the original's cut `cb` is the same block run to its end: the same
     /// instructions in turn (a `jmp` followed, a conditional jump's targets the same place or the same code again)
     /// up to a `ret` or to a pair of cuts that correspond. VC6 keeps a copy of a return tail per path or merges them,
-    /// so two jumps the alignment pairs can go to two copies of one tail (gildegold gm_CharLevel, ls_WriteMessageQueues:
-    /// the original's copy before the loop, ours after it).
+    /// so two jumps the alignment pairs can go to two copies of one tail (seen: the original's copy before the loop,
+    /// ours after it).
     ///
     /// `zero`: per side, the registers known to be zero at the jump (known_zero). A `xor R, R` only one side's path
     /// has is skipped when R is zero at the other side's jump and no line of either path so far names R (no flag
     /// reader after it): R is zero after it on both. VC6 threads a jump past a zeroing that is redundant on its path
-    /// (gildegold ai_DecideUseMilitaryObject: `test eax, eax; je` to the epilogue after its `xor eax, eax`, ours to
-    /// the one before; ai_ExecuteUseMilitaryObject: the original zeroes eax before its `test esi, esi; je`).
+    /// (seen: `test eax, eax; je` to the epilogue after its `xor eax, eax`, ours to the one before; or the original
+    /// zeroes eax before its `test esi, esi; je`).
     #[allow(clippy::too_many_arguments)]
     fn same_tail(&self, la: &[Line], lb: &[Line], ca: usize, cb: usize, mut zero: [Vec<&'static str>; 2], depth: u32) -> bool {
         let (mut x, mut y) = (ca, cb);
@@ -803,12 +801,12 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
     }
     // the code hunks are moved instructions: their lines the same on both sides, or with the lines of the explained
     // hunks taken as they are (a hunk-local renaming can pair a moved instruction with another one, and leave
-    // its partner to a code hunk of its own: gildegold gm_RemoveOwned, two zeroings moved apart)
+    // its partner to a code hunk of its own: seen with two zeroings moved apart)
     // a moved push, pop, call or stack cleanup is no move: it changes what a call gets as arguments (a nested
-    // call's partial cleanup against a merged one: bug-reports/arg-count-casts-hide-nested-call.md); the prover
+    // call's partial cleanup against a merged one); the prover
     // judges such code. The function's whole sequence of them is compared: an instruction moved past a pop of the
     // epilogue changes nothing on the stack
-    // per basic block (a moved block keeps its own order: gildegold he_SecretRoomDomizil, ai_DragTownMap)
+    // per basic block (a moved block keeps its own order)
     let tails = |side: usize| -> HashSet<usize> {
         hs.iter().filter(|h| h.4 == "tail").flat_map(|h| if side == 0 { h.0..h.1 } else { h.2..h.3 }).collect()
     };
@@ -1190,7 +1188,7 @@ mod tests {
 
     #[test]
     fn the_stack_keeps_its_order() {
-        // two pushes swapped before a call: another argument order (ai_MessageBox), not scheduling
+        // two pushes swapped before a call: another argument order, not scheduling
         let a = lines(&["mov edx, 1", "push edx", "push 0x101", "call 0x500000", "ret"]);
         let b = lines(&["mov edx, 1", "push 0x101", "push edx", "call 0x500000", "ret"]);
         assert_eq!(classes(&a, &b), ["code"]);
@@ -1231,7 +1229,7 @@ mod tests {
 
     #[test]
     fn repeated_loops() {
-        // eleven copies of one column loop (a match-base report, gildegold ai_FillNearRing): ours keeps the column
+        // eleven copies of one column loop (a match-base report): ours keeps the column
         // pointer in another stack slot, the original's sixth copy as ours. Each copy aligns with its own and every
         // difference reads slots (the longest-run alignment paired copies across: one code hunk of hundreds of lines)
         let body = |k: usize, slot: &str, r: &str| -> Vec<String> {
@@ -1263,7 +1261,7 @@ mod tests {
 
     #[test]
     fn shared_and_inline_tails() {
-        // gildegold rd_BuildRoad: ours merges two identical fail tails into one and jumps to it, the original keeps
+        // ours merges two identical fail tails into one and jumps to it, the original keeps
         // a copy per path
         let ours = jumps(&[("cmp eax, 1", None), ("jne X", Some(4)), ("push edx", None), ("jmp X", Some(5)), ("push ecx", None),
                            ("call X", None), ("add esp, 4", None), ("mov eax, -1", None), ("ret", None)]);
@@ -1277,7 +1275,7 @@ mod tests {
         // the other way round
         let (hs, _) = analyse(&theirs, &ours, None);
         assert!(hs[0].4 == "tail" && hs[0].5.starts_with("the original jumps to a shared block"), "{hs:?}");
-        // gildegold ai_TrustedOfFour: ours branches to one shared `return -1` epilogue, the original branches round a
+        // ours branches to one shared `return -1` epilogue, the original branches round a
         // copy of it on the inverted condition
         let ours = jumps(&[("test eax, eax", None), ("je X", Some(4)), ("mov eax, 1", None), ("ret", None),
                            ("pop edi", None), ("or eax, -1", None), ("ret", None)]);
@@ -1349,8 +1347,8 @@ mod tests {
         let v = verdict(&jumps(&ours), &jumps(&theirs), None);
         assert!(v.branches.is_empty() && v.hunks.iter().all(|h| h.0 == "fpu"), "{:?} {:?}", v.branches, v.hunks);
         // an order hunk with a register swap, one mov moved across a jle: the je's target is the same line on both
-        // sides; the hunk's lines pair by their text after the swap, not the raw text (a match-base report,
-        // gv_BuryCharacter: "je at +0x11b: ours to +0x131, the original's to +0x131")
+        // sides; the hunk's lines pair by their text after the swap, not the raw text (a match-base report: "je at
+        // +0x11b: ours to +0x131, the original's to +0x131")
         let ours = [("xor edx, edx", None), ("mov eax, edi", None), ("test esi, esi", None), ("mov ecx, edi", None), ("jle X", Some(12)),
                     ("cmp dword ptr [ecx], -1", None), ("je X", Some(10)), ("mov eax, ecx", None), ("inc edx", None), ("jmp X", Some(12)),
                     ("mov eax, edx", None), ("shl eax, 4", None), ("ret", None)];
@@ -1364,8 +1362,8 @@ mod tests {
         other[6] = ("je X", Some(11));
         let v = verdict(&jumps(&ours), &jumps(&other), None);
         assert!(!v.shape && v.branches.len() == 1 && v.branches[0].contains("je at +0x6: ours to +0xa (mov eax, edx), the original's to +0xb (shl eax, 4)"), "{:?}", v.branches);
-        // the epilogue's pops in another order (a match-base report, gm_FreeStallCapacity: "jg at +0x35: ours to
-        // +0x76, the original's to +0x76"): the je goes to the cut inside the order hunk after the same two movs on
+        // the epilogue's pops in another order (a match-base report: "jg at +0x35: ours to +0x76, the original's to
+        // +0x76"): the je goes to the cut inside the order hunk after the same two movs on
         // both sides, though the instructions at the target differ
         let ours = [("test eax, eax", None), ("je X", Some(4)), ("mov ecx, 1", None), ("mov edx, 2", None), ("pop ebx", None),
                     ("pop edi", None), ("ret", None)];
@@ -1397,16 +1395,16 @@ mod tests {
         let v = verdict(&jumps(&ours), &jumps(&theirs), None);
         assert!(v.branches.is_empty() && v.into_code == ["2 jumps into the code hunk at +0x5"], "{:?} {:?}", v.branches, v.into_code);
         assert!(v.summary().contains("2 jumps into the code hunk at +0x5") && !v.summary_without_branches().contains("jumps into"));
-        // two copies of one return tail, ours' je to the first, the original's to the second (gildegold gm_CharLevel,
-        // proved equal): the same code from both targets, no difference
+        // two copies of one return tail, ours' je to the first, the original's to the second (proved equal): the
+        // same code from both targets, no difference
         let body = [("test eax, eax", None), ("je X", Some(3)), ("mov eax, 1", None), ("pop esi", None), ("ret", None),
                     ("xor eax, eax", None), ("pop esi", None), ("ret", None)];
         let mut other = body.to_vec();
         other[1] = ("je X", Some(6));
         let v = verdict(&jumps(&body), &jumps(&other), None);
         assert!(v.shape && v.branches.is_empty(), "{:?}", v.branches);
-        // the original's je skips the zeroing its tail does (gildegold ai_DecideUseMilitaryObject: `je` past
-        // `xor eax, eax`, eax differs at the return): a real difference
+        // the original's je skips the zeroing its tail does (`je` past `xor eax, eax`, eax differs at the return): a
+        // real difference
         let ours = [("test ecx, ecx", None), ("je X", Some(3)), ("inc edx", None), ("pop edi", None), ("pop esi", None), ("xor eax, eax", None),
                     ("ret", None)];
         let theirs = [("test ecx, ecx", None), ("je X", Some(4)), ("inc edx", None), ("xor eax, eax", None), ("pop edi", None), ("pop esi", None),
@@ -1419,7 +1417,7 @@ mod tests {
         };
         let v = verdict(&jumps(&zero(&ours)), &jumps(&zero(&theirs)), None);
         assert!(v.shape && v.branches.is_empty(), "{:?} {:?}", v.branches, v.hunks);
-        // the original zeroes eax before its jump, ours on the path (gildegold ai_ExecuteUseMilitaryObject)
+        // the original zeroes eax before its jump, ours on the path
         let ours = [("test esi, esi", None), ("je X", Some(4)), ("xor eax, eax", None), ("inc edx", None), ("pop edi", None),
                     ("xor eax, eax", None), ("ret", None)];
         let theirs = [("xor eax, eax", None), ("test esi, esi", None), ("je X", Some(5)), ("inc edx", None), ("xor eax, eax", None),
@@ -1431,7 +1429,7 @@ mod tests {
         (o[2], t[0]) = (("mov eax, ecx", None), ("mov eax, ecx", None));
         let v = verdict(&jumps(&o), &jumps(&t), None);
         assert!(!v.shape && v.branches.len() == 1, "{:?} {:?}", v.branches, v.hunks);
-        // the zeroing earlier in the jump's block (gildegold amt_HasColumn7Holder)
+        // the zeroing earlier in the jump's block
         let ours = [("xor eax, eax", None), ("test edi, edi", None), ("je X", Some(5)), ("inc edx", None), ("xor eax, eax", None),
                     ("pop edi", None), ("pop esi", None), ("ret", None)];
         let theirs = [("xor eax, eax", None), ("test edi, edi", None), ("je X", Some(4)), ("inc edx", None), ("pop edi", None),

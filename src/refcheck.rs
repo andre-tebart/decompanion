@@ -115,7 +115,7 @@ pub fn target(obj: &Obj, code: &FunctionCode, r: &Reloc) -> Target {
 }
 
 /// φ(name): the addresses φ gives an object of H, sorted; without any, the address a placeholder name spells
-/// (`ai_Unk5eb9b8`).
+/// (`net_Unk5eb9b8`).
 pub fn phi_addrs(phi: &Phi, name: &str) -> Vec<i64> {
     match phi.of(name) {
         Some(m) if !m.is_empty() => m.keys().copied().collect(),
@@ -138,8 +138,7 @@ pub struct Refs {
 const NUMERIC_OPS: &[&str] = &["and", "or", "xor", "test", "imul", "shl", "shr", "sar", "rol", "ror"];
 
 /// A relocated immediate of ours to a named object, in an operation that uses it as a number (`and esi, offset
-/// txt_Keys + 0x181c0`): the value equals the original's only while the object keeps the original's address
-/// (tasks/address-as-number.md).
+/// txt_Keys + 0x181c0`): the value equals the original's only while the object keeps the original's address.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Numeric {
     /// the relocated field's offset in the function
@@ -164,8 +163,8 @@ impl Numeric {
 /// inside): an absolute memory operand without a register, or an immediate more than one object size past either
 /// end. The compiler's own arithmetic is no such reference: an indexed operand's displacement (`[arr-4+ecx*4]`),
 /// and the pointers strength reduction makes of a loop over the elements' field (`cmp esi, &arr[N].f`: one element
-/// past the end at most, an element no larger than the object). `&cm_SendRing + 0x4973c0` is the constant
-/// 0xf00500 spelled as an address: it moves with cm_SendRing in a relinked image.
+/// past the end at most, an element no larger than the object). `&g_Ring + 0x4973c0` is the constant
+/// 0xf00500 spelled as an address: it moves with g_Ring in a relinked image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outside {
     /// the relocated field's offset in the function
@@ -178,7 +177,7 @@ pub struct Outside {
 }
 
 impl Outside {
-    /// `M.contain at +0x1c: &cm_SendRing + 0x4973c0 (an immediate) lies outside cm_SendRing (4 bytes): ...`
+    /// `M.contain at +0x1c: &g_Ring + 0x4973c0 (an immediate) lies outside g_Ring (4 bytes): ...`
     pub fn line(&self) -> String {
         let at = if self.within < 0 { format!("- {:#x}", self.within.unsigned_abs()) } else { format!("+ {:#x}", self.within) };
         let what = if self.imm { "an immediate" } else { "an absolute memory operand" };
@@ -538,7 +537,7 @@ fn call_sequences(obj: &Obj, code: &FunctionCode, refs_of: &Refs, theirs: &[u8],
 
 impl Check {
     /// The named differences at calls left out when both functions call the same callees in the same order
-    /// (bug-reports/false-m8-from-misaligned-calls.md: register-rotated hunks paired `call _strupr` with the
+    /// (seen: register-rotated hunks paired `call _strupr` with the
     /// original's `call sprintf` although both sides make the same calls): the alignment paired different calls, the
     /// calls themselves agree. `theirs`: the original's code at `va`.
     pub fn settle_calls(mut self, obj: &Obj, code: &FunctionCode, refs_of: &Refs, theirs: &[u8], va: u32) -> Check {
@@ -783,7 +782,7 @@ impl CensusDiff {
     }
 }
 
-/// The census (tasks/reference-census.md): the named objects one side refers to and the other never refers into,
+/// The census: the named objects one side refers to and the other never refers into,
 /// whatever the alignment. Ours: an object of our relocations without any field of the original's in its extent
 /// (its declared size; one past the end and the indexing bias below its start included; a call: its start). The
 /// original's: a field equal to the start φ gives one of our objects (a function, a datum) that none of our
@@ -956,7 +955,7 @@ mod tests {
         assert_eq!(c.differs().count(), 0);
         assert!(c.open_lines(&p, VA)[0].contains("where the original refers to the datum one at"));
         // a placeholder name is no datum (a pooled literal the layout has not explained yet)
-        let p = phi(&[(VA + 0x40, "ai_Unk10001040")]);
+        let p = phi(&[(VA + 0x40, "net_Unk10001040")]);
         assert_eq!(run(&image(A, B, VA + 0x40), &p).differs().count(), 0);
     }
 
@@ -1034,7 +1033,7 @@ mod tests {
         assert_eq!(got, [CensusDiff { ours: true, off: 7, name: "g_b".into(), addr: B }, CensusDiff { ours: false, off: 5, name: "g_d".into(), addr: d }],
                    "{got:?}");
         assert_eq!(got[0].line(), format!("M.census at +0x7: ours refers to g_b ({B:#x}); the original never refers into it"));
-        // a neighbour 4 bytes below is no reference into the object (dd_Width / dd_Height)
+        // a neighbour 4 bytes below is no reference into the object (g_Width / g_Height)
         let p = phi(&[]);
         assert_eq!(census_of(A, A, &p).iter().map(|c| (c.ours, c.name.as_str())).collect::<Vec<_>>(), [(true, "g_b")]);
     }

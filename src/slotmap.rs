@@ -1,9 +1,9 @@
-//! Slot pairing by object (tasks/slot-pairing-by-object.md): a constant-offset access into a local array that the
+//! Slot pairing by object: a constant-offset access into a local array that the
 //! alignment pairs with another offset of the original's array than the arrays' bases pair with.
 //!
 //! diffclass explains a stack displacement pair (`[esp+X]` against `[esp+Y]`) per hunk as a slot renaming. A wrong
-//! index into a local array (`balance[0x11]` where the original reads `balance[0]`: gildegold
-//! ai_BuildingDetailWindow) is such a pair too. Here the function is read as a whole: each stack operand at its
+//! index into a local array (`balance[0x11]` where the original reads `balance[0]`) is
+//! such a pair too. Here the function is read as a whole: each stack operand at its
 //! entry-relative slot (esp at the instruction, taken from a walk of the code, plus the displacement), the arrays
 //! as the slots whose address is taken (`lea r, [esp+S]`) or that are indexed (`[esp+S+r*k]`), each array up to the
 //! next one. A plain access inside one of our arrays and inside the original's array its base is paired with must
@@ -369,7 +369,7 @@ fn slots(ins: &[Ins], d: &HashMap<u32, i32>) -> (Slots, i32, BTreeSet<i32>) {
     (out, body, saves)
 }
 
-/// `dcp frame NAME`'s lines (improvement-reports/frame-slot-map-command.md): both frames' slots as `[esp + X]` at the
+/// `dcp frame NAME`'s lines: both frames' slots as `[esp + X]` at the
 /// body's depth (after the prologue), each with its size, its reads and writes, whether it is an array base (its
 /// address taken or indexed), and the original's slots the alignment pairs it with; the slots of one side paired with
 /// several of the other (locals that share a slot on one side only), and the holes (bytes of the locals no access

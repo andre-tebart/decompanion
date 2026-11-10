@@ -144,8 +144,6 @@ pub(crate) fn is_identifier(name: &str) -> bool {
 pub struct Project {
     pub root: PathBuf,
     pub cfg: toml::Table,
-    /// the named directories ([paths] of decompanion.toml, then of decompanion.local.toml), by name
-    pub paths: BTreeMap<String, String>,
     pub targets: Vec<Target>,
     pub target_name: String,
     pub(crate) core_hash: String,
@@ -161,8 +159,8 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 impl Project {
     pub fn open(root: &Path, target: Option<&str>, core_hash: &str) -> Result<Project, String> {
         let text = std::fs::read_to_string(root.join(CONFIG_NAME)).map_err(|e| format!("{}: {e}", root.join(CONFIG_NAME).display()))?;
-        let (cfg, paths) = load_config(root, &text)?;
-        let mut p = Project { root: root.to_path_buf(), cfg, paths, targets: vec![], target_name: String::new(), core_hash: core_hash.into(),
+        let (cfg, _) = load_config(root, &text)?;
+        let mut p = Project { root: root.to_path_buf(), cfg, targets: vec![], target_name: String::new(), core_hash: core_hash.into(),
                               hashes: Mutex::new(HashMap::new()), waits: Mutex::new(HashMap::new()) };
         p.targets = p.parse_targets()?;
         p.target_name = match target {
@@ -603,17 +601,17 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let cfg = r#"
 [[target]]
-path = "{game}/Gilde.exe"
+path = "{game}/Game.exe"
 archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB", "{dx8}/lib/dxguid.lib"]
 reason.archives = "the {dx8} SDK's order"
 [toolchain]
 root = "{msvc6}"
 include_dirs = ["{dx6}/include"]
 [paths]
-msvc6 = "C:/Tools/MSVC600"
-dx6 = "C:/Tools/DXSDK61/"
-dx8 = "C:/Tools/DXSDK8"
-game = "C:/Games/Gilde"
+msvc6 = "C:/VC6"
+dx6 = "C:/SDK/DX61/"
+dx8 = "C:/SDK/DX8"
+game = "C:/Games/Game"
 [[setup]]
 name = "s"
   [[setup.stage]]
@@ -621,17 +619,17 @@ name = "s"
   link = ["{root}/x"]
 "#;
         std::fs::write(d.join(CONFIG_NAME), cfg).unwrap();
-        std::fs::write(d.join(LOCAL_CONFIG_NAME), "[paths]\ngame = 'D:\\Gilde Gold'\ndx8 = \"E:/sdk8\"\n").unwrap();
+        std::fs::write(d.join(LOCAL_CONFIG_NAME), "[paths]\ngame = 'D:\\My Game'\ndx8 = \"E:/sdk8\"\n").unwrap();
         let (c, names) = load_config(&d, cfg).unwrap();
-        assert_eq!(names.get("game").map(|s| s.as_str()), Some("D:/Gilde Gold"));
-        assert_eq!(names.get("dx6").map(|s| s.as_str()), Some("C:/Tools/DXSDK61"));
+        assert_eq!(names.get("game").map(|s| s.as_str()), Some("D:/My Game"));
+        assert_eq!(names.get("dx6").map(|s| s.as_str()), Some("C:/SDK/DX61"));
         let t = &c["target"].as_array().unwrap()[0];
-        assert_eq!(t["path"].as_str(), Some("D:/Gilde Gold/Gilde.exe"));
+        assert_eq!(t["path"].as_str(), Some("D:/My Game/Game.exe"));
         assert_eq!(t["archives"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect::<Vec<_>>(),
                    ["{toolchain.root}/VC98/Lib/LIBC.LIB", "E:/sdk8/lib/dxguid.lib"]);
         assert_eq!(t["reason"]["archives"].as_str(), Some("the {dx8} SDK's order"));
-        assert_eq!(c["toolchain"]["root"].as_str(), Some("C:/Tools/MSVC600"));
-        assert_eq!(c["toolchain"]["include_dirs"][0].as_str(), Some("C:/Tools/DXSDK61/include"));
+        assert_eq!(c["toolchain"]["root"].as_str(), Some("C:/VC6"));
+        assert_eq!(c["toolchain"]["include_dirs"][0].as_str(), Some("C:/SDK/DX61/include"));
         let stage = &c["setup"][0]["stage"][0];
         assert_eq!((stage["from"].as_str(), stage["link"][0].as_str()), (Some("{target.dir}"), Some("{root}/x")));
         // an unnamed directory; a local file with more than [paths]; a reserved name
@@ -654,7 +652,7 @@ path = "C:/g/server.dll"
 compiler = "cl 12.00.9044"
 reason.compiler = "rich"
 [[target]]
-path = "C:/g/Gilde Gold.exe"
+path = "C:/g/Some Game.exe"
 [toolchain]
 root = "C:/Tools/VC"
 linker = "link 6.00.8447"
@@ -664,7 +662,7 @@ reason = "probe"
 archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB"]
 reason = "S.rich"
 "#).unwrap();
-        assert_eq!(p.targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["server", "gilde_gold"]);
+        assert_eq!(p.targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["server", "some_game"]);
         assert_eq!(p.target_name, "server");
         let d = p.toolchain_decl(None).unwrap();
         assert_eq!(d["compiler"], "cl 12.00.9044");
@@ -785,8 +783,8 @@ pub fn load_config(root: &Path, text: &str) -> Result<(toml::Table, BTreeMap<Str
 
 /// The targets (name, path) a configuration's text declares.
 pub fn targets_of(root: &str, text: &str) -> Result<Vec<(String, String)>, String> {
-    let (cfg, paths) = load_config(Path::new(root), text)?;
-    let p = Project { root: PathBuf::from(root), cfg, paths, targets: vec![], target_name: String::new(), core_hash: String::new(),
+    let (cfg, _) = load_config(Path::new(root), text)?;
+    let p = Project { root: PathBuf::from(root), cfg, targets: vec![], target_name: String::new(), core_hash: String::new(),
                       hashes: Mutex::new(HashMap::new()), waits: Mutex::new(HashMap::new()) };
     Ok(p.parse_targets()?.into_iter().map(|t| (t.name, t.path)).collect())
 }

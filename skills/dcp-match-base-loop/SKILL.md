@@ -50,7 +50,7 @@ next iteration is hard again until `H = 0`. The order is decided anew before eac
 `dcp` command you run; you still do no decompilation yourself.
 
 Locations
-- Project: the current working directory (e.g. gildegold), the main checkout the workers use.
+- Project: the current working directory, the main checkout the workers use.
 - decompanion repo: the dcp tooling (sibling directory, e.g. `../decompanion`; confirm with `ls`). Feedback goes
   into its `bug-reports/` and `improvement-reports/` folders.
 

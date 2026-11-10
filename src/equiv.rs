@@ -1,4 +1,4 @@
-//! The dataflow-equivalence prover (docs/shape-equiv-plan.md Phase 2, first slice: it reports, it does not grade).
+//! The dataflow-equivalence prover (it reports, it does not grade).
 //!
 //! Our function and the original's are each cut into basic blocks and walked together from their entries. A pair
 //! of blocks is executed symbolically, both sides over the same inputs where a correspondence pairs their
@@ -1254,7 +1254,7 @@ impl Exec<'_> {
     fn set_sp(&mut self, off: i32) {
         // a pop into the middle of a call's argument cells: VC6's nested call `f(a, g(b))` pushes f's cells, then
         // g's, calls g and pops g's own cells only; the cells left are f's arguments, pushed before g's result
-        // (bug-reports/arg-count-casts-hide-nested-call.md: a 6-argument cast of the inner call popped all of them,
+        // (seen: a 6-argument cast of the inner call popped all of them,
         // and the outer call lost its last four arguments in a function graded shape). A cleanup VC6 merges into a
         // later `add esp` pops nothing in between and leaves the cells reserved.
         if off > self.sp && self.reserved.iter().any(|&o| o < off) && self.reserved.iter().any(|&o| o >= off) {
@@ -1736,7 +1736,7 @@ impl Exec<'_> {
                 // the arguments: the cells from esp up that were pushed (or written into space reserved by a
                 // `sub esp`), up to the first one that was not (a save, a local)
                 // A call with values on the FPU stack takes them as its argument (`_ftol`, VC6's `_CI*` intrinsics) and
-                // nothing from the stack: the cells pushed before it are an outer call's, still pending (he_RunTribute
+                // nothing from the stack: the cells pushed before it are an outer call's, still pending (seen: ours
                 // pushes the outer call's 1 before `call _ftol`, the original after it)
                 let fpu_call = !self.fpu.is_empty();
                 let mut offs: Vec<i32> = vec![];
@@ -2264,9 +2264,9 @@ fn attempt(ca: &Cfg, cb: &Cfg, esc0: (Esc, Esc)) -> Result<Outcome, (Esc, Esc)> 
                     return unknown(if *ta == 0 || *tb == 0 { "a switch table's jump (not followed yet)" } else { "a jump out of the function to another place" }.into(), a, b);
                 }
                 // the callee-saved registers the same on both sides: the target is a function of the C calling
-                // conventions (cdecl, stdcall; gildegold has no fastcall or thiscall), which reads its arguments from
-                // the stack and treats eax, ecx and edx as scratch (bug-reports/prover-tail-jmp-offset.md: init_Betrieb's
-                // `add ecx, edx; lea edi, [ecx+0x2e]` against `lea edi, [ecx+edx+0x2e]` leaves another ecx at the jump)
+                // conventions (cdecl, stdcall; no fastcall or thiscall), which reads its arguments from the stack and
+                // treats eax, ecx and edx as scratch (`add ecx, edx; lea edi, [ecx+0x2e]` against
+                // `lea edi, [ecx+edx+0x2e]` leaves another ecx at the jump)
                 let same = |g: u8| {
                     let at = |side: u8| next.pairs.iter().find(|p| p.0 == side && p.1 == Loc::Reg(g)).map(|p| (p.2, p.3));
                     at(0).is_some() && at(0) == at(1)
@@ -2500,7 +2500,7 @@ mod tests {
 
     /// The negative control: every function of the corpus proved equal, with our code changed at one place at a
     /// time (an immediate's low byte + 1, a displacement's + 4 and - 4, an address immediate's - 4 and + 4, a
-    /// conditional jump's condition inverted, two absolute addresses swapped: tasks/prover-mutants-swapped-objects.md). A mutant
+    /// conditional jump's condition inverted, two absolute addresses swapped). A mutant
     /// proved equal is printed: either the change cannot be seen (a dead stack slot) or the prover is wrong.
     /// `DCP_EQUIV_CORPUS=dir cargo test --lib equiv::tests::mutants -- --ignored --nocapture`
     #[test]
@@ -2532,7 +2532,7 @@ mod tests {
                     let mut tried = 0;
                     let mut bad = vec![];
                     let ins = dis::decode(ours, va);
-                    // a 4-byte field's value changed by `d` (the neighbour object below or above: dd_Width / dd_Height)
+                    // a 4-byte field's value changed by `d` (the neighbour object below or above: g_Width / g_Height)
                     let add4 = |m: &mut [u8], at: usize, d: i32| {
                         let v = u32::from_le_bytes(m[at..at + 4].try_into().unwrap()).wrapping_add(d as u32);
                         m[at..at + 4].copy_from_slice(&v.to_le_bytes());
@@ -2632,7 +2632,7 @@ mod tests {
     }
 
     /// `fld qword ptr [A]; jmp _ftol`: the tail call converts st0, so another constant is another result
-    /// (gildegold gm_BuildingSkill: the mutants of its `fadd [cm_DoubleHalf]; jmp _ftol` proved equal).
+    /// (seen: the mutants of a `fadd [g_Half]; jmp _ftol` proved equal).
     #[test]
     fn a_tail_call_compares_the_fpu_stack() {
         let va = 0x401000;

@@ -800,7 +800,7 @@ pub fn debug_launch(run: &str, exe: &str, cmdline: &str, dir: &str, env: Vec<(St
 mod tests {
     use super::*;
 
-    const MAP: &str = " GildeGold
+    const MAP: &str = " game
 
   Address         Publics by Value              Rva+Base     Lib:Object
 
@@ -843,11 +843,12 @@ mod tests {
         let _ = std::fs::remove_file(p);
     }
 
-    /// A VC6 program (C:/Tools/MSVC600-SP5PP): `cargo test -- --ignored debugger`.
+    /// A VC6 program (DCP_VC6): `cargo test -- --ignored debugger`.
     fn vc6_exe(dir: &Path, name: &str, src: &str) -> String {
-        let vc = Path::new("C:/Tools/MSVC600-SP5PP/VC98");
+        let root = crate::testkit::vc6_root().expect("DCP_VC6: a VC6 installation");
+        let vc = Path::new(&root).join("VC98");
         std::fs::write(dir.join(format!("{name}.c")), src).unwrap();
-        let path = format!("{};{}", vc.join("Bin").display(), Path::new("C:/Tools/MSVC600-SP5PP/Common/MSDev98/Bin").display());
+        let path = format!("{};{}", vc.join("Bin").display(), Path::new(&root).join("Common/MSDev98/Bin").display());
         let out = std::process::Command::new(vc.join("Bin").join("CL.EXE"))
             .args(["/nologo", "/O2", &format!("{name}.c"), "/link", "/MAP", "/FIXED"]).current_dir(dir)
             .env("PATH", path).env("INCLUDE", vc.join("Include")).env("LIB", vc.join("Lib")).output().unwrap();

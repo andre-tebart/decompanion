@@ -151,7 +151,7 @@ Decide which side is wrong:
 One group, one commit: `<unit>: data <name> from the gap block (typing)` - the owner unit, the datum or struct,
 and in the body the extents moved, the declarations dropped and the sites typed when they are not obvious.
 A group that fixed accesses is prefixed `data bug:` and lists each fixed access in the body, one line each:
-`main_RoundReport 0x538a10: read main_GfxOn as a byte -> an int (the original's mov eax, dword ptr
+`main_Report 0x538a10: read main_Flag as a byte -> an int (the original's mov eax, dword ptr
 [0x624560] at the same site)`. `git log --grep "data bug"` is how the user finds them: never fix an access
 without saying so. A message of more than one line goes through a file (`git commit -F <file>`); `git status`
 clean before the next group.

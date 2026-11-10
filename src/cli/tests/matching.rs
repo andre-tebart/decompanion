@@ -6,14 +6,13 @@
 use super::*;
 use crate::store::REPRODUCED;
 
-const VC6: &str = "C:/Tools/MSVC600-SP5PP";
 
 fn has_vc6() -> bool {
-    Path::new(VC6).join("VC98/Bin/CL.EXE").exists()
+    vc6_root().is_some()
 }
 
 fn with_vc6(root: &Path) {
-    set_config(root, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{VC6}\"\n"));
+    set_config(root, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{}\"\n", vc6_root().unwrap_or_default()));
 }
 
 fn scan(root: &Path) -> std::rc::Rc<crate::frontend::Scan> {

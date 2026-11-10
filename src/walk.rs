@@ -611,13 +611,13 @@ pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 }
 
 /// L.src.refs: the references of the sourced functions the walk does not reach (an image without base relocations
-/// hides most functions only a pointer reaches: on gildegold more than half of them). Each function the ledger
+/// hides most functions only a pointer reaches: on one project more than half of them). Each function the ledger
 /// gives an extent (L.src.extent's convention, M.match's comparison) and no S.codewalk function starts at is
 /// descended inside its extent (W4: a return or an unconditional jump ends a path; a jump out of the extent is a
 /// tail call; a jump table's entries inside the extent are paths), and its calls, tail calls, code immediates at
 /// relocation sites and memory operands into the image are `ref` facts like the walk's, declared (they rest on
 /// the address comment's start). A match-base report: `dcp refs` missed `test byte ptr [0xfd7f78], 2` in
-/// rd_BuildRoad, a function no walk reached.
+/// a function no walk reached.
 pub fn l_src_refs(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let err = |e: String| Error::runtime(e);
     let img = crate::image(&ctx.image)?;

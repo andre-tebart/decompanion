@@ -245,8 +245,8 @@ pub fn reg_name(r: Reg) -> String {
     }
 }
 
-/// One decoded instruction, typed. `mnemonic`, `uses` and `defs` wait for their reader: the dataflow lift of
-/// docs/shape-equiv-plan.md Phase 2.
+/// One decoded instruction, typed. `mnemonic`, `uses` and `defs` wait for their reader: the dataflow lift
+/// (equiv.rs).
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct Ins {

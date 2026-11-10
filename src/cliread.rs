@@ -324,8 +324,8 @@ fn disasm_ours(r: &Reader, key: &str, lv: &ListingView) -> Result<Out> {
     let relocs: BTreeMap<u32, String> = code.relocs.iter()
         .map(|(off, rel)| (*off, obj.symbol_at(rel.symbol_index).map(|s| crate::coff::undecorate(&s.name)).unwrap_or_else(|| "?".into()))).collect();
     // each relocated field as the C names it: the object (a section symbol plus an addend: the datum at that offset)
-    // and the offset into it, written over the field's number (bug-reports/disasm-ours-placeholder-addresses.md:
-    // `[0x6b58] ; reloc txt_Ptrs` read as an address of the original's)
+    // and the offset into it, written over the field's number (else
+    // `[0x6b58] ; reloc txt_Ptrs` reads as an address of the original's)
     let named: BTreeMap<u32, (u32, String)> = code.relocs.iter().map(|(off, rel)| {
         let value = obj.addend(code.secnum, rel);
         let label = match crate::refcheck::target(&obj, &code, rel) {
@@ -909,7 +909,7 @@ mod tests {
         // the immediate, not the displacement of the same value
         assert_eq!(name_field("mov dword ptr [0], 0", false, 0, "g_x+0x4").as_deref(), Some("mov dword ptr [0], g_x+0x4"));
         assert_eq!(name_field("mov dword ptr [0], 0", true, 0, "g_y").as_deref(), Some("mov dword ptr [g_y], 0"));
-        assert_eq!(name_field("push 0xa", false, 10, "init_PlayerProfile+0xa").as_deref(), Some("push init_PlayerProfile+0xa"));
+        assert_eq!(name_field("push 0xa", false, 10, "cfg_Profile+0xa").as_deref(), Some("push cfg_Profile+0xa"));
         assert_eq!(name_field("push eax", false, 10, "x"), None);
     }
 

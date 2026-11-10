@@ -318,7 +318,7 @@ pub fn only_missing_statements(reason: &str) -> bool {
 
 /// The words of a reason that admit a part of the function not read against the original yet (not reconciled, not
 /// checked, not compared, not verified, hard to judge): reading the whole function is base work. A word for what the
-/// code does (`the parameter is not read`, `cm_SendUnchecked`) is no admission: only these phrasings count.
+/// code does (`the parameter is not read`, `net_SendUnchecked`) is no admission: only these phrasings count.
 pub fn admits_unread(reason: &str) -> Option<String> {
     use std::sync::LazyLock;
     static UNREAD: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -750,8 +750,7 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
         },
         Some(l) => {
             let mut reason = crate::srcscan::py_strip(&reason.unwrap_or("").replace("*/", "* /")).to_string();
-            // the earlier reason stays as `prior:` (improvement-reports/stuck-keeps-prior-reason.md: what earlier
-            // workers tried was lost on every escalation), the newest first, a reason given again once
+            // the earlier reason stays as `prior:` (else what earlier workers tried is lost on every escalation), the newest first, a reason given again once
             let old_reason = tag.as_ref().and_then(|c| c.get(0)).map(|m| body[m.end()..].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
             let prior = prior_reasons(&reason, &old_reason);
             if !prior.is_empty() {
@@ -857,8 +856,8 @@ pub fn grades_auto_clear(p: &crate::project::Project) -> Result<Vec<String>> {
 }
 
 /// The instruction-count difference allocation explains: max(SIZE_INS, the original's count / SIZE_PER). Measured on
-/// gildegold (2026-10-31): the 173 shape functions (allocation, slots, frame, order only) differ by at most 7
-/// instructions (d3_MatInverse 429 vs 436, gm_Mix 33 vs 27), and 166 of them by none; extra saved registers
+/// one VC6 project: the 173 shape functions (allocation, slots, frame, order only) differ by at most 7 instructions
+/// (429 vs 436, 33 vs 27), and 166 of them by none; extra saved registers
 /// (push / pop pairs), a spill or a register-held constant add a few instructions, an encoding change none.
 pub const SIZE_INS: i64 = 12;
 pub const SIZE_PER: i64 = 100;
@@ -873,8 +872,7 @@ pub fn size_unexplained(ours: i64, orig: i64) -> Option<(i64, i64, i64)> {
 /// The concrete differences of a reading, one line each: the witness (a call or a global store one side lacks),
 /// the references that differ (unless they only cross and the proof shows the effects the same: shape), the
 /// branches whose targets do not correspond (unless the proof shows the behaviour the same), and the reference
-/// census (an object one side never refers into). M.slotmap is left out: x87 temporaries give it false positives
-/// (tasks/slot-pairing-by-object.md).
+/// census (an object one side never refers into). M.slotmap is left out: x87 temporaries give it false positives.
 pub fn concrete(rd: &crate::asmcmd::Reading) -> Vec<String> {
     let mut out = vec![];
     if let Some(w) = &rd.witness {
@@ -944,7 +942,7 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
                     why = format!("{why} (size: {} of the instruction difference are shared / inline tails)", tails.abs());
                 }
                 let proved = matches!(rd.proof.0, crate::equiv::Outcome::Equal { .. });
-                // every concrete difference the reading names (tasks/escalate-gates-on-verdict.md): a meaning
+                // every concrete difference the reading names: a meaning
                 // difference is base work, unless --divergence-explained says why it is none
                 let diffs = concrete(&rd);
                 if let Some(first) = diffs.first() {
@@ -993,10 +991,10 @@ mod level_tests {
         assert_eq!(admits_unread("frame 0x3bc vs 0x3b8. The part after +0x5c7 (summary page) is not yet reconciled and is hard to judge").as_deref(),
                    Some("not yet reconciled"));
         assert_eq!(admits_unread("the store order and the 0x5a paths unverified").as_deref(), Some("unverified"));
-        assert_eq!(size_unexplained(436, 429), None); // the largest difference of a shape function on gildegold
-        assert_eq!(size_unexplained(1205, 1226), Some((1205, 1226, 12))); // main_Unk5384e0, 4277 vs 4402 bytes
+        assert_eq!(size_unexplained(436, 429), None); // the largest difference of a shape function measured
+        assert_eq!(size_unexplained(1205, 1226), Some((1205, 1226, 12))); // a draft function, 4277 vs 4402 bytes
         assert_eq!((size_unexplained(3030, 3000), size_unexplained(3031, 3000)), (None, Some((3031, 3000, 30))));
-        assert_eq!(admits_unread("bpp is not read; cm_SendMoveGoodsUnchecked's slots; read to the end, only ebx/esi left"), None);
+        assert_eq!(admits_unread("bpp is not read; net_SendRecordsUnchecked's slots; read to the end, only ebx/esi left"), None);
         let dir = crate::testkit::scratch("level");
         let root = dir.to_string_lossy().into_owned();
         crate::edit::write(&format!("{root}/src/u.c"), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n").unwrap();

@@ -1,7 +1,6 @@
 //! The guided decisions (decide.rs): `dcp init` declares nothing, `dcp setup` and `dcp status` name the open
 //! obligations in order, the declarations refuse a missing reason, the rules waiting on a declaration run once it is
-//! made, and an open toolchain or libs obligation fails `dcp session start`; on server.dll when it and VC6 are
-//! installed (tests/test_obligations.py).
+//! made, and an open toolchain or libs obligation fails `dcp session start` (tests/test_obligations.py).
 
 use super::*;
 use serde_json::{json, Value};
@@ -145,34 +144,4 @@ fn session_start_fails_on_an_open_obligation() {
     assert!(out.contains("obligations=5  gate=FAIL") && out.contains("    obligation=toolchain.compiler  target=t"), "{out}");
     let (code, out) = dcp(&f, &["check"]);
     assert!(code == 1 && out.contains("obligation=toolchain.root"), "{out}");
-}
-
-const SERVER: &str = "C:/Program Files/GOG Galaxy/Games/The Guild Gold/server/server.dll";
-const VC6: &str = "C:/Tools/MSVC600-SP5PP";
-
-#[test]
-#[ignore = "e2e: server.dll and VC6"]
-fn server_status_and_libs_candidates() {
-    if !(Path::new(SERVER).exists() && Path::new(VC6).exists()) {
-        return;
-    }
-    let root = tmp("obl").join("proj");
-    assert_eq!(dcp_bare(&["init", &root.to_string_lossy(), SERVER, "--target-name", "server"]).0, 0);
-    assert_eq!(dcp(&root, &["setup", "--no-analyzer"]).0, 0);
-    let (_, out) = dcp(&root, &["status"]);
-    assert_eq!(obligations(&out)[..5], ["toolchain.compiler", "toolchain.linker", "toolchain.root", "toolchain.cflags", "libs.archives"]);
-    assert!(flat(&out).contains("Rich compilers cl 12.00.8047 x125, cl 12.00.9044 x37, cl 12.00.8047 x1 C++"), "{out}");
-    assert!(flat(&out).contains("C:/Tools/MSVC600-SP5PP (cl 12.00.8804 c2 13.00.9044 link 6.00.8447; makes a Rich compiler (9044) and a Rich linker (8447))"), "{out}");
-    assert_eq!(dcp(&root, &["libs", "candidates"]).0, 2); // no root declared yet
-    let (code, out) = dcp(&root, &["toolchain", "declare", &format!("root={VC6}"), "--why", "test: makes the Rich builds 9044 and 8447"]);
-    assert_eq!(code, 0, "{out}");
-    let (code, out) = dcp(&root, &["libs", "candidates"]);
-    assert_eq!(code, 0, "{out}");
-    let rows: Vec<&str> = out.lines().map(|l| l.trim()).filter(|l| l.starts_with("archive=")).collect();
-    assert!(rows[0].starts_with("archive=LIBCMT.LIB  members=637  placed=109") && rows[1].starts_with("archive=LIBC.LIB  members=637  placed=75"), "{out}");
-    assert!(out.contains("conflict=LIBCMT.LIB,LIBC.LIB"), "{out}");
-    let (_, again) = dcp(&root, &["libs", "candidates"]);
-    assert!(again.contains("cached=13"), "{again}"); // per (image, archive) like a rule run
-    let (_, out) = dcp(&root, &["status"]);
-    assert!(flat(&out).contains("dcp libs candidates: LIBCMT.LIB placed=109, LIBC.LIB placed=75"), "{out}");
 }

@@ -31,7 +31,7 @@ Hard rules
    older reasons as `prior:`) or `why=untagged` (below byte in a unit whose base work is done: nobody has tried it,
    there are no notes). `risk=` orders the queue: `concrete` items first (a concrete difference is still named),
    then `draft`, `shape`, `proved`.
-3. Read the project's matching notes if it has them (gildegold: `notes/vc6-quick.md`, the short list, and
+3. Read the project's matching notes if it has them (e.g. `notes/vc6-quick.md`, the short list, and
    `notes/vc6-matching.md`, searchable by the construct you face).
 
 ## 2. Work loop: one item at a time, always the first

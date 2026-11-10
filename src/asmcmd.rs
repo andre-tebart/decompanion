@@ -37,7 +37,7 @@ pub struct Reading {
     /// our references outside their object's declared size (refcheck::Outside, M.contain): (our field's address,
     /// its line)
     pub outside: Vec<(u32, String)>,
-    /// the reference census (refcheck::census, tasks/reference-census.md): an object one side refers to and the
+    /// the reference census (refcheck::census): an object one side refers to and the
     /// other never refers into, one line each
     pub census: Vec<String>,
     /// our code (the function's bytes, relocated fields as compiled) and the original's at the function's address
@@ -208,7 +208,7 @@ fn label(names: &crate::names::Names, img: &crate::pe::Image, own: (i64, i64), v
         if let Some(e) = bound.and_then(|u| names.end_label(v, u)) {
             return format!("{l} (or {e})");
         }
-        // a placeholder name the ledger gave a pooled string literal (ai_Unk5fe7d0 for "%i") reads as the string
+        // a placeholder name the ledger gave a pooled string literal (net_Unk5fe7d0 for "%i") reads as the string
         if l.contains("_Unk") && crate::srcscan::placeholder_whole(&l).is_some() {
             if let Some(t) = text() {
                 return t;
@@ -385,7 +385,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
                         let hit = code.relocs.iter().filter(|(off, _)| o <= *off && *off < o + size).nth(k);
                         let val = hit.map(|(_, r)| reloc_val(&obj, &code, r, names, &table_pairs)).unwrap_or(Val::Unknown);
                         let name = hit.map(|(off, r)| reloc_name(&obj, &code, r, a as u32, *off, &img, names, own));
-                        // a floating constant we load through a symbol the ledger places (extern ai_Unk5eb9b8): its
+                        // a floating constant we load through a symbol the ledger places (extern net_Unk5eb9b8): its
                         // value there, as the original's line shows it (a __real@ constant names its own)
                         let value = match (&val, float_operand(la, ins)) {
                             (Val::Addrs(xs), Some(z)) if !xs.is_empty() && name.as_ref().is_some_and(|n| !n.ends_with(')')) => float_at(&img, xs[0], z),

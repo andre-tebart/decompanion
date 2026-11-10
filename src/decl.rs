@@ -618,8 +618,8 @@ mod tests {
             ("exe:0x401000 start -- reached through a computed jump", "start", 0x401000, 0x401001, vec![], k(&[]), Some("exe")),
             ("0x5de460..0x5de480 libunit lib=mss32.lib tu=mss32lib -- mss32.lib's code member", "libunit", 0x5de460, 0x5de480, vec![],
              k(&[("lib", s("mss32.lib")), ("tu", s("mss32lib"))]), None),
-            (r"0x5fbd94 file tu=d3_interface path=D:\develop\Units\d3\d3_interface.c -- its __FILE__", "file", 0x5fbd94, 0x5fbd95, vec![],
-             k(&[("tu", s("d3_interface")), ("path", s(r"D:\develop\Units\d3\d3_interface.c"))]), None),
+            (r"0x5fbd94 file tu=gfx_surface path=D:\work\src\gfx\gfx_surface.c -- its __FILE__", "file", 0x5fbd94, 0x5fbd95, vec![],
+             k(&[("tu", s("gfx_surface")), ("path", s(r"D:\work\src\gfx\gfx_surface.c"))]), None),
         ] {
             let d = parse_line(line, "", 0).unwrap();
             assert_eq!((d.kind.as_str(), d.lo, d.hi, d.words.iter().map(|w| w.as_str()).collect::<Vec<_>>(), &d.keys, d.target.as_deref()),

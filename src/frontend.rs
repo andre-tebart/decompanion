@@ -559,8 +559,8 @@ mod tests {
     }
 
     /// A model is taken from a whole parse only: a live unit reparsed over its preamble (lint's reuse) is parsed
-    /// anew for a model (its preamble's headers lex to nothing: their address comments vanished, gildegold
-    /// reg_OpenKey's Q6 after cm's head gained an include); the unit the whole parse made is reused while its text
+    /// anew for a model (its preamble's headers lex to nothing: their address comments vanished: a
+    /// function's Q6 after its unit's head gained an include); the unit the whole parse made is reused while its text
     /// stays.
     #[test]
     fn a_model_comes_from_a_whole_parse() {

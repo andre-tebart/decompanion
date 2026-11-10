@@ -73,9 +73,9 @@ pub static CHECKS: &[(&str, Category)] = &[
     ("M8", Category::Contradiction),             // ref: our reference against the original's target
     ("M9", Category::Contradiction),             // ref: a string literal's bytes
     ("M10", Category::Contradiction),            // ref: a floating constant's bits
-    ("M.census", Category::Contradiction),       // ref: an object one side refers to, the other never (tasks/reference-census.md)
+    ("M.census", Category::Contradiction),       // ref: an object one side refers to, the other never
     ("M.addrnum", Category::Contradiction),
-    ("M.slotmap", Category::Contradiction),      // ref: another element of a paired local array (tasks/slot-pairing-by-object.md)      // ref: `&x + N` as a mask or number (tasks/address-as-number.md)
+    ("M.slotmap", Category::Contradiction),      // ref: another element of a paired local array      // ref: `&x + N` as a mask or number
     ("M.flags", Category::Contradiction),        // toolchain: a probed flag the declaration lacks
     ("M.data.content", Category::Contradiction), // owner: a datum's bytes found elsewhere
     ("M.bytes.declared", Category::Contradiction), // unit: dead / foreign bytes across a unit boundary
@@ -270,11 +270,11 @@ The declaration-set probe (M.tiebreak, tiebreak.rs): a function's fresh probe re
 a sensitive one whose best grade under the probes is above its built grade has `proven` (the source-proven grade:
 the queues' code grade), never an M2.stale (its tag stays: a byte through the declaration set proves nothing of its
 source), and its unit a G.tiebreak gap, a warning: the unit's declaration set is not yet the original's. Q7 is evaluated only for the units whose\ntext the last `dcp lint` parsed (the store meta `lint`). Native: src/grade.rs (refcheck.rs, diffclass.rs,\nequiv.rs, readability.rs, x86.rs).
-The reference census (tasks/reference-census.md), no byte match only: over the prover's binding, a named object one side
+The reference census, no byte match only: over the prover's binding, a named object one side
 refers to and the other never refers into (its declared extent; a call: its start), a `census:` line and a warning M.census;
-an M8 line of a function without one says `(crossed: both sides refer to both)`. An address used as a number (tasks/address-as-number.md):
-a relocated `&x + N` immediate of and / or / xor / test / imul / a shift, an `addrnum:` line and a warning M.addrnum. Slot pairing by object
-(tasks/slot-pairing-by-object.md), no byte match only: a plain stack access inside a local array (a slot whose
+an M8 line of a function without one says `(crossed: both sides refer to both)`. An address used as a number:
+a relocated `&x + N` immediate of and / or / xor / test / imul / a shift, an `addrnum:` line and a warning M.addrnum. Slot pairing by object,
+no byte match only: a plain stack access inside a local array (a slot whose
 address is taken or that is indexed, up to the next one) at another offset than the original's access inside the array its base is
 paired with, a `slotmap:` line and a warning M.slotmap.",
     },

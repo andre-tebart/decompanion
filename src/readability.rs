@@ -461,7 +461,7 @@ mod tests {
         // a dereference cast is counted by `*(T *)` already, its operand is no second access
         assert_eq!(offset_pointers("x = *(int *)(ev + 0x84) + *(short *)((char *)&obj + 2);"), 0);
         // typed accesses and pointer arithmetic without a cast stay readable
-        assert_eq!(offset_pointers("e->end = ai_Time; p = list + 4; q = (char *)name; n = (int)(a + 4);"), 0);
+        assert_eq!(offset_pointers("e->end = net_Time; p = list + 4; q = (char *)name; n = (int)(a + 4);"), 0);
         // the payload after a header: a typed pointer one past itself
         assert_eq!(offset_pointers("slot = (int *)(p + 1); d->data = (char *)(d + 1); v->items = (SBDATA *)(v + 1);"), 0);
         assert_eq!(offset_pointers("s = (char *)((char *)map + 1);"), 1);

@@ -254,7 +254,7 @@ pub fn file_version(path: &Path) -> Option<String> {
 }
 
 /// Every root of the places VC6 lives that holds VC98/Bin/CL.EXE, in the order of the places, once each:
-/// $VC6_ROOT; C:/Tools/* (the convention of this project's machines); <Program Files>/Microsoft Visual Studio and
+/// $VC6_ROOT; C:/Tools/* (a common place for unpacked toolchains); <Program Files>/Microsoft Visual Studio and
 /// <Program Files (x86)>/Microsoft Visual Studio (the installer's default).
 fn vc6_roots() -> Vec<String> {
     let posix = |s: &str| s.replace('\\', "/");
