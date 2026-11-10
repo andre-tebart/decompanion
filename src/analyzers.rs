@@ -1,8 +1,7 @@
-//! The analyzer seam: a third-party tool that reads the image and hands back opinions about it (function starts,
-//! names, a pseudocode body per function). Ghidra (headless, its post-script DcpExport.java) and no analyzer at all
-//! are the plugins (`[analyzer] plugin = ghidra | none`; the default ghidra). An analyzer's output is never a computed fact: its function starts are declared `start` facts
-//! (L.analyzer), its pseudocode is draft text for `dcp draft`, its function bodies are checked against our starts
-//! (L9). The rules read the stored entries (input `drafts`), never the plugin.
+//! The analyzer: Ghidra (headless, its post-script DcpExport.java) reads the image and hands back opinions about it
+//! (function starts, names, a pseudocode body per function). Its output is never a computed fact: its function starts
+//! are declared `start` facts (L.analyzer), its pseudocode is draft text for `dcp draft`, its function bodies are
+//! checked against our starts (L9). The rules read the stored entries (input `drafts`), never Ghidra.
 //!
 //! Where Ghidra and its JDK are (first hit wins):
 //!   Ghidra   [analyzer] root = "..." in decompanion.toml, else $GHIDRA_INSTALL_DIR, else the newest
@@ -28,9 +27,8 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// The analyzer plugins, in registration order; the default.
-pub const KEYS: [&str; 2] = ["ghidra", "none"];
-pub const DEFAULT: &str = "ghidra";
+/// The analyzer's name in the output, the build directory and the stored entries.
+pub const NAME: &str = "ghidra";
 const KIND: &str = "drafts";
 const EXPORT: &str = "drafts.export";
 const STARTS: &str = "drafts.starts";
@@ -74,7 +72,6 @@ pub struct Export {
 }
 
 pub struct Analyzer {
-    pub key: String,
     cfg: toml::Table,
     expand: Box<dyn Fn(&str) -> String + Send + Sync>,
 }
@@ -93,12 +90,8 @@ impl Analyzer {
     /// The analyzer of a project ([analyzer] plugin = ..., the default ghidra), with its table.
     pub fn of(p: &Project) -> Result<Analyzer, String> {
         let cfg = p.cfg.get("analyzer").and_then(|v| v.as_table()).cloned().unwrap_or_default();
-        let key = cfg.get("plugin").and_then(|v| v.as_str()).filter(|k| !k.is_empty()).unwrap_or(DEFAULT).to_string();
-        if !KEYS.contains(&key.as_str()) {
-            return Err(format!("unknown analyzer plugin {} (known: {}); name one with [analyzer] plugin = ...", crate::decl::py_repr(&key), KEYS.join(", ")));
-        }
         let (root, tc_root) = (p.root.to_string_lossy().into_owned(), p.toolchain_root().unwrap_or_default());
-        Ok(Analyzer { key, cfg, expand: Box::new(move |s| {
+        Ok(Analyzer { cfg, expand: Box::new(move |s| {
             let s = s.replace("{toolchain.root}", &tc_root);
             if Path::new(&s).is_absolute() { py_path(&s) } else { py_path(&format!("{root}/{s}")) }
         }) })
@@ -106,18 +99,11 @@ impl Analyzer {
 
     /// The default analyzer without configuration (what `dcp init` looks for).
     pub fn default_unconfigured() -> Analyzer {
-        Analyzer { key: DEFAULT.into(), cfg: toml::Table::new(), expand: Box::new(|s| s.to_string()) }
+        Analyzer { cfg: toml::Table::new(), expand: Box::new(|s| s.to_string()) }
     }
 
     /// Where the tool is, or the reason it is not there (module docs).
     pub fn available(&self) -> Install {
-        match self.key.as_str() {
-            "none" => Install { at: "none".into(), note: "no analyzer configured: no drafts, dcp draft writes @rough skeletons".into(), ..Default::default() },
-            _ => self.ghidra(),
-        }
-    }
-
-    fn ghidra(&self) -> Install {
         let exe = if cfg!(windows) { "analyzeHeadless.bat" } else { "analyzeHeadless" };
         let cfg_s = |k: &str| self.cfg.get(k).and_then(|v| v.as_str()).filter(|v| !v.is_empty()).map(|v| v.to_string());
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
@@ -150,25 +136,12 @@ impl Analyzer {
     /// The hash of what makes the export besides the image and our starts (the shipped post-script).
     pub fn script_hash(&self) -> String {
         use sha2::{Digest, Sha256};
-        match self.key.as_str() {
-            "ghidra" => crate::fsmemo::hex(&Sha256::digest(SCRIPT.1.as_bytes())),
-            _ => String::new(),
-        }
+        crate::fsmemo::hex(&Sha256::digest(SCRIPT.1.as_bytes()))
     }
 
     /// One entry per function the tool knows; Err(message) when the tool failed.
-    pub fn export(&self, inst: &Install, image: &str, isa: &str, starts: &[i64], out_dir: &str, fresh: bool) -> Result<Export, String> {
-        match self.key.as_str() {
-            "ghidra" => self.ghidra_export(inst, image, isa, starts, out_dir, fresh),
-            _ => Ok(Export::default()),
-        }
-    }
-
-    fn ghidra_export(&self, inst: &Install, image: &str, isa: &str, starts: &[i64], out_dir: &str, fresh: bool) -> Result<Export, String> {
-        let lang = match isa {
-            "x86" => "x86:LE:32:default",
-            _ => return Err(format!("no Ghidra language for the instruction set {} (analyzers.rs)", crate::decl::py_repr(isa))),
-        };
+    pub fn export(&self, inst: &Install, image: &str, starts: &[i64], out_dir: &str, fresh: bool) -> Result<Export, String> {
+        let lang = "x86:LE:32:default";
         let d = PathBuf::from(out_dir);
         std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
         let script_dir = d.join("script");
@@ -219,7 +192,7 @@ impl Analyzer {
             let first = last.unwrap_or_else(|| format!("analyzeHeadless exit {}, no export written", code.map(|c| c.to_string()).unwrap_or_else(|| "None".into())));
             return Err(format!("{first} (log: {})", posix(&log.to_string_lossy())));
         }
-        let (digest, entries, failed) = parse(&out.to_string_lossy(), &self.key).map_err(|e| e.to_string())?;
+        let (digest, entries, failed) = parse(&out.to_string_lossy(), NAME).map_err(|e| e.to_string())?;
         Ok(Export { entries, failed, digest, ms, out: Some(out.to_string_lossy().into_owned()) })
     }
 }
@@ -291,7 +264,7 @@ fn our_starts(p: &Project, img: &crate::pe::Image) -> Result<Vec<i64>> {
 }
 
 fn export_key(az: &Analyzer, sha: &str, starts: &[i64]) -> String {
-    sha256_parts(&[az.key.clone(), sha.to_string(), az.script_hash(), starts.iter().map(|a| format!("{a:x}")).collect::<Vec<_>>().join(",")])
+    sha256_parts(&[NAME.to_string(), sha.to_string(), az.script_hash(), starts.iter().map(|a| format!("{a:x}")).collect::<Vec<_>>().join(",")])
 }
 
 /// Make these entries the store's drafts (every older draft of this store goes) and set meta `drafts`.
@@ -333,7 +306,7 @@ pub fn state(p: &Project) -> Result<String> {
 fn run(p: &Project, force: bool) -> Result<Value> {
     let az = Analyzer::of(p).map_err(crate::project::cfg_err)?;
     let inst = az.available();
-    let mut o = json!({"analyzer": az.key, "status": "", "reason": "", "where": "", "stored": 0, "note": "", "failed": [], "ms": 0, "out": null});
+    let mut o = json!({"analyzer": NAME, "status": "", "reason": "", "where": "", "stored": 0, "note": "", "failed": [], "ms": 0, "out": null});
     if !inst.ok() {
         o["status"] = json!("unavailable");
         o["reason"] = json!(inst.reason);
@@ -356,9 +329,8 @@ fn run(p: &Project, force: bool) -> Result<Value> {
         let ours: BTreeSet<i64> = starts.iter().copied().collect();
         !prev.split(',').filter(|x| !x.is_empty()).filter_map(|x| i64::from_str_radix(x, 16).ok()).all(|a| ours.contains(&a))
     });
-    let isa = target.isa.clone().unwrap_or_else(|| img.default_isa().unwrap_or("").to_string());
-    let out_dir = py_path(&format!("{}/build/{}/{}", p.root.to_string_lossy(), az.key, p.target_name));
-    let ex = match az.export(&inst, &target.path, &isa, &starts, &out_dir, fresh) {
+    let out_dir = py_path(&format!("{}/build/{NAME}/{}", p.root.to_string_lossy(), p.target_name));
+    let ex = match az.export(&inst, &target.path, &starts, &out_dir, fresh) {
         Ok(ex) => ex,
         Err(e) => {
             o["status"] = json!("failed");
@@ -371,7 +343,7 @@ fn run(p: &Project, force: bool) -> Result<Value> {
     o["out"] = json!(ex.out);
     if !ex.digest.is_empty() && ex.digest != sha {
         o["status"] = json!("failed");
-        o["reason"] = json!(format!("{} analysed sha256 {}, target {} is {}", az.key, &ex.digest[..16.min(ex.digest.len())], p.target_name, &sha[..16]));
+        o["reason"] = json!(format!("{NAME} analysed sha256 {}, target {} is {}", &ex.digest[..16.min(ex.digest.len())], p.target_name, &sha[..16]));
         return Ok(o);
     }
     let n = replace(&db, &sha, &ex.entries)?;
@@ -412,23 +384,6 @@ pub fn analyzer_step(p: &crate::project::Project, force: bool) -> Result<(Vec<St
     Ok((out, errs, true, st("status") == "exported"))
 }
 
-#[cfg(test)]
-fn install_json(key: &str, i: &Install) -> Value {
-    json!({"key": key, "ok": i.ok(), "where": i.at, "reason": i.reason, "note": i.note, "root": i.root, "java_home": i.java_home})
-}
-
-/// The default analyzer without configuration and what it finds (`dcp init`'s [analyzer] keys).
-#[cfg(test)]
-pub fn analyzer_default() -> Value {
-    let az = Analyzer::default_unconfigured();
-    install_json(&az.key, &az.available())
-}
-
-/// The analyzer plugins (the default first).
-#[cfg(test)]
-pub fn analyzer_keys() -> Vec<&'static str> {
-    KEYS.to_vec()
-}
 
 #[cfg(test)]
 mod tests {

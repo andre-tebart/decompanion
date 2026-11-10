@@ -32,8 +32,6 @@ const TOOLCHAIN_KEYS: [&str; 3] = ["compiler", "linker", "cflags"];
 const TARGET_KEYS: [&str; 10] = ["name", "path", "sha256", "image", "isa", "archives", "compiler", "linker", "cflags", "reason"];
 const REASON_KEYS: [&str; 5] = ["compiler", "linker", "cflags", "archives", "root"];
 pub const IMAGE_FORMATS: [&str; 1] = ["pe32"];
-#[cfg(test)]
-pub const ISAS: [&str; 1] = ["x86"];
 
 pub(crate) fn cfg_err(msg: String) -> Error {
     Error::config(msg)
@@ -538,26 +536,6 @@ impl Project {
             return Err(cfg_err(format!("target {}: {} has sha256 {sha}, the declared one is {}", t.name, t.path, t.sha256)));
         }
         Ok(img)
-    }
-
-    /// The current target's instruction set: its `isa` key, else what the image's machine type implies.
-    #[cfg(test)]
-    pub fn isa(&self) -> Result<String> {
-        let t = self.target(None).map_err(cfg_err)?;
-        let key = match &t.isa {
-            Some(k) => Some(k.clone()),
-            None => self.image_checked()?.default_isa().map(|k| k.to_string()),
-        };
-        match key {
-            Some(k) if ISAS.contains(&k.as_str()) => Ok(k),
-            k => Err(cfg_err(format!("target {}: unknown instruction set {} (known: {}); declare isa = ... in its [[target]] table", self.target_name,
-                                     k.map(|k| crate::decl::py_repr(&k)).unwrap_or_else(|| "None".into()), ISAS.join(", ")))),
-        }
-    }
-
-    /// The analyzer's key ([analyzer] plugin, default ghidra).
-    pub fn analyzer_key(&self) -> Result<String> {
-        crate::analyzers::Analyzer::of(self).map(|a| a.key).map_err(cfg_err)
     }
 
 }

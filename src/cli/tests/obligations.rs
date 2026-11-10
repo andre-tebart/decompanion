@@ -24,7 +24,8 @@ fn fresh() -> PathBuf {
     let (code, out, err) = dcp_bare(&["init", &root.to_string_lossy(), &pe.to_string_lossy()]);
     assert_eq!(code, 0, "{out}{err}");
     let t = read(&root, "decompanion.toml");
-    write(&root, "decompanion.toml", &t.replace("plugin = \"ghidra\"", "plugin = \"none\"")); // no Ghidra run in tests
+    let t = &t[..t.find("[analyzer]").unwrap()];
+    write(&root, "decompanion.toml", &format!("{t}[analyzer]\nroot = \"C:/nowhere/ghidra\"\n")); // no Ghidra run in tests
     root
 }
 
@@ -113,7 +114,7 @@ fn declarations_end_the_waits() {
     let tc = facts(&f, "toolchain", None)[0].value.clone();
     let rich = tc["compilers"].as_array().unwrap().iter().find(|c| c["build"] == 8047).unwrap().clone();
     assert_eq!(rich["archive_objects"], 2); // S.rich reads the declared archives now
-    let (code, out) = dcp(&f, &["analyzer", "declare", "none", "--why", "no drafts in a unit test"]);
+    let (code, out) = dcp(&f, &["analyzer", "declare", "--why", "no drafts in a unit test"]);
     assert!(code == 0 && obligations(&out) == ["layout"], "{out}");
     assert_eq!(dcp(&f, &["check"]).0, 0);
 }

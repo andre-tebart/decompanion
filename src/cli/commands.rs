@@ -119,9 +119,9 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
                 Ok(0)
             }
         },
-        Cmd::Analyzer(AnalyzerArgs { sub: AnalyzerCmd::Declare(AnalyzerDeclareArgs { plugin, pairs, why }) }) => {
+        Cmd::Analyzer(AnalyzerArgs { sub: AnalyzerCmd::Declare(AnalyzerDeclareArgs { pairs, why }) }) => {
             let p = glue::config(sel, None)?;
-            let (l, e, c) = crate::decide::decide_analyzer_declare(&p, &plugin, pairs, why)?;
+            let (l, e, c) = crate::decide::decide_analyzer_declare(&p, pairs, why)?;
             let code = io.report("analyzer declare", &l, e.as_deref(), c);
             if code != 0 {
                 return Ok(code);
@@ -316,8 +316,7 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         Cmd::Refs(RefsArgs { what }) => read(io, sel, "refs", "refs", &[("what", Some(what))]),
         Cmd::Draft(DraftArgs { addr, next, show, unit }) => {
             let p = refreshed(io, sel, None)?;
-            let key = p.analyzer_key()?;
-            let (l, e, c) = crate::draft::draft_command(&p, addr, next, show, unit, &key)?;
+            let (l, e, c) = crate::draft::draft_command(&p, addr, next, show, unit)?;
             Ok(draft_report(io, "draft", l, e, c))
         }
         Cmd::Rename(RenameArgs { pairs, from_file, why }) => rename(io, sel, pairs, from_file, why),
@@ -757,7 +756,7 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
                 return Ok(1);
             }
             for (_, p, _, _) in &targets {
-                for l in crate::session::session_overview(p, &p.analyzer_key()?)? {
+                for l in crate::session::session_overview(p, crate::analyzers::NAME)? {
                     io.say(&l);
                 }
                 status_tail(io, p)?;

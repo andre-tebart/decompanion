@@ -894,10 +894,6 @@ pub fn resolve_key(p: &Project, key: &str) -> Result<Option<i64>> {
     Reader::open(p)?.resolve(key).map_err(Error::value)
 }
 
-/// The body comment of a draft skeleton at a (the disassembly of the walk's extent).
-pub fn skeleton_lines(p: &Project, a: i64) -> Result<Vec<String>> {
-    Ok(skeleton(&Reader::open(p)?, a)?.0)
-}
 
 #[cfg(test)]
 mod tests {

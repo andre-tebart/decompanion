@@ -379,7 +379,7 @@ fn setup_obligations(c: &Ctx) -> Result<Vec<Obligation>> {
 
 fn analyzer_obligation(c: &Ctx) -> Result<Option<Obligation>> {
     let p = c.p;
-    if !crate::project::reason_of(p.table("analyzer"), "plugin").is_empty() {
+    if !crate::project::reason_of(p.table("analyzer"), "root").is_empty() {
         return Ok(None);
     }
     let az = crate::analyzers::Analyzer::of(p).map_err(crate::project::cfg_err)?;
@@ -389,10 +389,10 @@ fn analyzer_obligation(c: &Ctx) -> Result<Option<Obligation>> {
         Some(r) => format!("not available: {r}"),
     };
     let n = with_db(&c.db, |db| crate::names::draft_values(db, &p.main_uri()))?.len();
-    let written = p.table("analyzer").and_then(|t| t.get("plugin")).is_some_and(|v| v.as_str() != Some(""));
-    let origin = if written { "as dcp init found it" } else { "the default, no [analyzer] plugin written" };
-    Ok(Some(Obligation::new("analyzer", None, "the analyzer whose pseudocode the drafts start from (computed, not confirmed)".into(),
-                            format!("[analyzer] plugin={} {origin} ({found}); drafts={n}", az.key), "dcp analyzer declare ghidra|none [root=DIR] --why \"...\"", "")))
+    let written = p.table("analyzer").and_then(|t| t.get("root")).is_some_and(|v| v.as_str() != Some(""));
+    let origin = if written { "as dcp init found it" } else { "no [analyzer] root written" };
+    Ok(Some(Obligation::new("analyzer", None, "the Ghidra installation whose pseudocode the drafts start from (computed, not confirmed)".into(),
+                            format!("[analyzer] {origin} ({found}); drafts={n}"), "dcp analyzer declare [root=DIR] [java_home=DIR] --why \"...\"", "")))
 }
 
 /// The layout and match obligations of the current target: the first open function and the counts; the first item
@@ -932,20 +932,16 @@ pub fn decide_libs_after(p: &crate::project::Project) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// `dcp analyzer declare`: confirm or change the analyzer ([analyzer] plugin and its keys) with the reason.
-pub fn decide_analyzer_declare(p: &crate::project::Project, plugin: &str, pairs: Vec<String>, why: Option<String>) -> Result<Out> {
+/// `dcp analyzer declare`: confirm or change Ghidra's installation ([analyzer] root, java_home, timeout) with the reason.
+pub fn decide_analyzer_declare(p: &crate::project::Project, pairs: Vec<String>, why: Option<String>) -> Result<Out> {
     if no_why(&why) {
         return refused(NO_WHY);
-    }
-    let keys = crate::analyzers::KEYS;
-    if !keys.contains(&plugin) {
-        return refused(format!("unknown analyzer {} (known: {}); nothing written", crate::decl::py_repr(plugin), keys.join(", ")));
     }
     let kv = match parse_pairs(&pairs, &["root", "java_home", "timeout"]) {
         Ok(kv) => kv,
         Err(e) => return refused(e),
     };
-    let mut vals: Vec<(String, TV)> = vec![("plugin".into(), TV::S(plugin.into()))];
+    let mut vals: Vec<(String, TV)> = vec![];
     for (k, v) in kv {
         vals.push(match k.as_str() {
             "timeout" => match v.parse::<i64>() {
@@ -960,7 +956,7 @@ pub fn decide_analyzer_declare(p: &crate::project::Project, plugin: &str, pairs:
     tomledit::set_keys(&config_path(p), "analyzer", &vals, None, &[]).map_err(err)?;
     let p = Project::open(&p.root, Some(&p.target_name), &p.core_hash).map_err(crate::project::cfg_err)?;
     let inst = crate::analyzers::Analyzer::of(&p).map_err(crate::project::cfg_err)?.available();
-    let mut out = vec![record(&[("declared", s("analyzer")), ("value", s(plugin)), ("level", s("declared")), ("where", s("[analyzer]")), ("why", s(why)),
+    let mut out = vec![record(&[("declared", s("analyzer")), ("value", s(crate::analyzers::NAME)), ("level", s("declared")), ("where", s("[analyzer]")), ("why", s(why)),
                                 ("available", Tok::B(inst.ok())), ("at", if inst.ok() { s(inst.at.clone()) } else { Tok::No })])];
     if let Some(r) = &inst.reason {
         out.push(format!("  {}", record(&[("unavailable", s(r.clone()))])));

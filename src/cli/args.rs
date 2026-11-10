@@ -110,7 +110,7 @@ pub enum Cmd {
     Dump(DumpArgs),
     /// definition, facts, references to and from, and source lines of a name or address
     Refs(RefsArgs),
-    /// write a function into its unit's file (the analyzer's pseudocode, else a @rough skeleton)
+    /// write a function into its unit's file from Ghidra's pseudocode
     Draft(DraftArgs),
     /// rename identifiers over src/ and include/ (names.log); several pairs in one call share one rebuild
     Rename(RenameArgs),
@@ -864,9 +864,6 @@ pub struct LibsDeclareArgs {
 /// `AnalyzerCmd::Declare`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct AnalyzerDeclareArgs {
-    /// ghidra | none
-    #[arg(value_name = "PLUGIN")]
-    pub plugin: String,
     /// root= java_home= timeout=
     #[arg(value_name = "KEY=VALUE")]
     pub pairs: Vec<String>,

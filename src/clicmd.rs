@@ -379,8 +379,7 @@ fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -
     let l9: Vec<FindingRow> = findings(db, None)?.into_iter().filter(|c| c.1 == "L9").collect();
     let game: Vec<i64> = v.funcs.iter().map(|f| f.lo).filter(|a| glo <= *a && *a < ghi).collect();
     let state = crate::analyzers::state(p)?;
-    let key = crate::analyzers::Analyzer::of(p).map_err(crate::project::cfg_err)?.key;
-    out.push(record(&[("analyzer", s(key)), ("drafts", Tok::I(ents.len() as i64)), ("export", s(state)), ("game_functions", Tok::I(game.len() as i64)),
+    out.push(record(&[("analyzer", s(crate::analyzers::NAME)), ("drafts", Tok::I(ents.len() as i64)), ("export", s(state)), ("game_functions", Tok::I(game.len() as i64)),
                       ("with_draft", Tok::I(game.iter().filter(|a| ents.contains_key(a)).count() as i64)), ("analyzer_only", Tok::I(a_only.len() as i64)),
                       ("ours_only", Tok::I(o_only.len() as i64)), ("l9", Tok::I(l9.len() as i64))]));
     let mut place: BTreeMap<&str, usize> = BTreeMap::new();

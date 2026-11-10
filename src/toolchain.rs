@@ -285,10 +285,6 @@ impl Vc6 {
     pub fn keywords(&self) -> &'static [&'static str] {
         &["__cdecl", "__stdcall", "__fastcall", "__thiscall", "__int64", "__declspec", "__asm"]
     }
-    /// CL's default (/Gd).
-    pub fn default_convention(&self) -> &'static str {
-        "__cdecl"
-    }
     /// `_f@12`, `@f@8`: the name needs the parameters.
     pub fn sized_conventions(&self) -> &'static [&'static str] {
         &["__stdcall", "__fastcall", "__thiscall"]

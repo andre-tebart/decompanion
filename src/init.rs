@@ -33,8 +33,8 @@ roots = ["src"]
 include = ["include"]
 
 [analyzer]
-# The third-party analyzer `dcp setup` runs for a draft of every function: "ghidra" (headless; root, java_home,
-# timeout = seconds per function) or "none" (dcp draft writes @rough skeletons from the disassembly). Its function starts are declarations.
+# Ghidra, which `dcp setup` runs headless for a draft of every function (root, java_home, timeout = seconds per
+# function). Its function starts are declarations.
 # Written by `dcp init` from what this machine has; an obligation until `dcp analyzer declare` confirms it.
 {analyzer}
 "#;
@@ -90,14 +90,13 @@ fn open_target(path: &Path) -> Result<(&'static str, &'static str, String), Stri
     Ok((IMAGE_FORMATS[0], isa, sha))
 }
 
-/// The [analyzer] keys of a new project: the default analyzer with the installation it finds, else none.
+/// The [analyzer] keys of a new project: the Ghidra installation it finds (a comment when there is none).
 fn analyzer_lines() -> Vec<String> {
-    let az = crate::analyzers::Analyzer::default_unconfigured();
-    let inst = az.available();
+    let inst = crate::analyzers::Analyzer::default_unconfigured().available();
     if let Some(r) = inst.reason {
-        return vec![format!("# {}: {r}", az.key), "plugin = \"none\"".into()];
+        return vec![format!("# {r}")];
     }
-    let mut out = vec![format!("plugin = {}", toml_str(&az.key))];
+    let mut out = vec![];
     for (v, k) in [(inst.root, "root"), (inst.java_home, "java_home")] {
         if let Some(v) = v {
             out.push(format!("{k} = {}", toml_str(&posix(&v))));

@@ -29,6 +29,14 @@ fn analyze(root: &Path, items: &[(i64, &str, &str, &[(i64, i64)])]) {
     assert!(code == 0 && out.contains(&format!("exported={}", items.len())), "{out}");
 }
 
+/// Ghidra drafts with an empty body for these starts (through the fake Ghidra): what `dcp draft` needs.
+fn stub_drafts(root: &Path, starts: &[i64]) {
+    let texts: Vec<(i64, String, String)> = starts.iter().map(|a| (*a, format!("FUN_{a:08x}"), format!("\nvoid FUN_{a:08x}(void)\n\n{{\n  return;\n}}\n"))).collect();
+    let ranges: Vec<[(i64, i64); 1]> = starts.iter().map(|a| [(*a, *a + 1)]).collect();
+    let items: Vec<(i64, &str, &str, &[(i64, i64)])> = texts.iter().zip(&ranges).map(|((a, n, t), r)| (*a, n.as_str(), t.as_str(), &r[..])).collect();
+    analyze(root, &items);
+}
+
 const F1: &str = "\nvoid FUN_10001000(void)\n\n{\n  FUN_10001020();\n  FUN_10001030();\n  DAT_10002000 = 0;\n  return;\n}\n";
 const F2: &str = "\nundefined4\nFUN_10001020(void)\n\n{\n  return DAT_10002000;\n}\n";
 
@@ -133,15 +141,10 @@ fn unit_new_draft_rename() {
     assert!(text.find("/* 0x10001000").unwrap() < text.find("/* 0x10001020").unwrap());
     assert!(!head.contains("net_10001020"));
     assert!(read(&t, "include/net.h").contains("undefined4 net_10001020(void);"));
-    // f3 without a draft: the @rough skeleton with the disassembly
-    let (_, out) = dcp(&t, &["draft", "--next"]);
-    assert!(out.contains("drafted=0x10001030") && out.contains("body=skeleton"), "{out}");
-    let (text, head) = unit_text(&t);
-    let f3 = &text[text.find("/* 0x10001030").unwrap()..];
-    assert!(f3.starts_with("/* 0x10001030, net_10001030 @rough */\nvoid __cdecl net_10001030(void)") && f3.contains("push 0x10002010"), "{f3}");
-    assert!(!head.contains("int net_10001030();"));
-    assert!(text.find("/* 0x10001020").unwrap() < text.find("/* 0x10001030").unwrap());
-    assert_eq!(dcp(&t, &["draft", "0x10001030"]).0, 1); // drafted already
+    // f3 without a draft: refused, nothing written
+    let (code, _, err) = dcp3(&t, &["draft", "--next"]);
+    assert!(code == 1 && err.contains("no Ghidra draft at 0x10001030"), "{err}");
+    assert!(!unit_text(&t).0.contains("/* 0x10001030"));
     assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
     assert!(!findings(&t, None).iter().any(|c| ["L5", "L.src", "L1", "L7"].contains(&c.1.as_str())));
     // rename: whole words, names.log, collision refused, the check count unchanged
@@ -172,6 +175,7 @@ fn unit_new_draft_rename() {
 #[test]
 fn unit_join() {
     let t = tiny();
+    stub_drafts(&t, &[0x10001000, 0x10001020, 0x10001030, 0x10001050]);
     assert_eq!(dcp(&t, &["unit", "new", "a", "--range", "0x10001000..0x10001030", "--by", "guess", "--why", "first half"]).0, 0);
     assert_eq!(dcp(&t, &["unit", "new", "b", "--range", "0x10001030..0x10001060", "--by", "guess", "--why", "second half"]).0, 0);
     for _ in 0..4 {
@@ -253,12 +257,15 @@ fn declared_start_is_walked() {
     let root = patched();
     assert_eq!(dcp(&root, &["decl", "add", "0x10001058 start -- a function only a table reaches (test)"]).0, 0);
     assert_eq!(dcp(&root, &["unit", "new", "tail", "--range", "0x10001050..0x10001060", "--by", "guess", "--why", "f4"]).0, 0);
+    stub_drafts(&root, &[0x10001058]);
     let (code, out) = dcp(&root, &["draft", "0x10001058"]);
     assert_eq!(code, 0, "{out}");
     let w = facts(&root, "symbol", None).into_iter().find(|f| &*f.rule == "S.codewalk" && f.lo == 0x10001058).unwrap();
     assert!(w.support == DECLARED && w.hi == 0x1000105b); // xor eax,eax; ret
     assert!(findings_of(&root, None, "L10").is_empty());
-    assert_eq!(dcp(&root, &["check"]).0, 0);
+    // the only errors: the Ghidra types header's system includes, which the test machine's lint has no headers for
+    let (_, out) = dcp(&root, &["check"]);
+    assert!(!out.lines().any(|l| l.starts_with("error") && !l.contains("include/dcp_ghidra.h")), "{out}");
 }
 
 /// A fragment whose start only the source names owns its code up to the next stop by the contiguity convention
@@ -312,6 +319,7 @@ fn git(root: &Path, args: &[&str]) {
 #[ignore = "e2e: starts git"]
 fn session_start_and_wrap() {
     let t = tiny();
+    stub_drafts(&t, &[0x10001000, 0x10001020]);
     git(&t, &["init", "-q", "-b", "main"]);
     write(&t, ".gitignore", "/build/\n.dcp/\n");
     git(&t, &["add", "-A"]);
@@ -351,7 +359,6 @@ fn skills_install() {
 #[test]
 fn setup_without_ghidra() {
     let t = tiny();
-    set_config(&t, "plugin = \"none\"", "plugin = \"ghidra\"\nroot = \"C:/nowhere/ghidra\"");
     let (code, out, err) = dcp3(&t, &["setup"]);
     assert!(code == 0 && out.contains("analyzer=ghidra  drafts=0  export=none"), "{out}");
     let lines: Vec<&str> = err.lines().filter(|l| l.starts_with("analyzer=")).collect();
@@ -359,35 +366,6 @@ fn setup_without_ghidra() {
     assert_eq!(dcp(&t, &["layout", "next"]).0, 0); // nothing else breaks
     let (code, _, err) = dcp3(&t, &["setup", "--no-analyzer"]);
     assert!(code == 0 && !err.contains("unavailable"));
-}
-
-/// plugin = "none": setup exports nothing (one warning line), dcp draft writes a @rough skeleton from the disassembly.
-#[test]
-fn no_analyzer_drafts_rough_skeletons() {
-    let t = tiny();
-    let (code, out, err) = dcp3(&t, &["setup"]);
-    assert!(code == 0 && out.contains("analyzer=none  drafts=0"), "{out}");
-    let lines: Vec<&str> = err.lines().filter(|l| l.starts_with("analyzer=")).collect();
-    assert_eq!(lines, ["analyzer=none: no analyzer configured: no drafts, dcp draft writes @rough skeletons"]);
-    assert_eq!(dcp(&t, &["unit", "new", "net", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code"]).0, 0);
-    let (code, out) = dcp(&t, &["draft", "--next"]);
-    assert!(code == 0 && out.contains("drafted=0x10001000") && out.contains("body=skeleton"), "{out}");
-    assert!(read(&t, "src/net.c").contains("\n/* 0x10001000, net_10001000 @rough */\nvoid __cdecl net_10001000(void)\n{\n    /* disassembly"));
-    assert!(!t.join("include/dcp_ghidra.h").exists());
-}
-
-#[test]
-fn analyzer_registry() {
-    assert_eq!(crate::analyzers::analyzer_keys(), ["ghidra", "none"]);
-    assert_eq!(crate::analyzers::analyzer_default()["key"], "ghidra");
-}
-
-#[test]
-fn unknown_analyzer() {
-    let t = tiny();
-    set_config(&t, "plugin = \"none\"", "plugin = \"ida\"");
-    let (code, _, err) = dcp3(&t, &["setup"]);
-    assert!(code == 2 && err.contains("unknown analyzer plugin 'ida'"), "{err}");
 }
 
 /// A symbol with an address is renamed where it is used, not where a parameter, a local or a struct field of the

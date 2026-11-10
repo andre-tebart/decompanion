@@ -7,7 +7,7 @@ description: Run one layout session of a decompanion project - for 30 minutes (t
 
 Goals, in order: (1) find the unit boundaries (one file `src/<unit>.c` per translation unit of the
 original); (2) draft C for every function of each unit in address order, no gaps (a hard or big function gets a
-`@rough` draft, it is never skipped); (3) quick byte fixes only.
+draft marked `@rough` in its address comment, it is never skipped); (3) quick byte fixes only.
 
 Hard rules
 - Every tool is `dcp ...` from the project root (`--target NAME` for a target other than the first).
@@ -44,9 +44,9 @@ Hard rules
    libs candidates` show the evidence; `dcp toolchain declare` / `dcp libs declare` resolve it, always with
    `--why`). An open `obligation=analyzer` does not block the session: mention it in the wrap-up. The drafts
    come from the project's analyzer (`[analyzer]` in
-   decompanion.toml, a third-party tool `dcp setup` runs when its export is stale); with `analyzer=none`
-   or `drafts=0` every draft is a `@rough` skeleton (`dcp report` says why: `export=`, and setup prints
-   `analyzer=ghidra unavailable: <reason>` when the tool is missing).
+   decompanion.toml: Ghidra, which `dcp setup` runs when its export is stale); with `drafts=0` there is nothing to
+   draft from (`dcp report` says why: `export=`, and setup prints `analyzer=ghidra unavailable: <reason>` when
+   Ghidra is missing): fix the installation first.
 2. The clock started with the gate: `dcp session start` recorded the start time, and from now on the first
    line of every `dcp layout next` is the clock (`session=running  elapsed=12m  left=18m  over=no`;
    `dcp session status` prints the same line). It is the only clock of the session: no timer, no `date`
@@ -78,8 +78,8 @@ Always work the first open function; never skip one, never stop early, never end
    `/* 0x10001234, <unit>_10001234 */` directly above it, the body from the analyzer's draft with the ledger's
    names (callees that the ledger names are spelled that way, others as placeholders `<unit>_<addr>` /
    `unk_<addr>`, data as `DAT_<addr>`), the prototype in `include/<unit>.h`, the includes and K&R declarations
-   it needs in the unit's head region. Without a draft it writes a `@rough` skeleton with the disassembly as a
-   comment: fill it from `dcp disasm 0xADDR`.
+   it needs in the unit's head region. A function without a Ghidra draft is refused: write it by hand from
+   `dcp disasm 0xADDR` under its address comment.
 3. `dcp build` - compile. Fix what the compiler says at the line it names (section 2.1). Then give the
    function a description in its address comment (`/* 0x10001234, sends the login reply */`) and better names
    for what you understood (section 4).
@@ -107,8 +107,8 @@ What `dcp build` typically says about a fresh draft and what to do:
 - `CONCAT`, `SUB`, `ZEXT`, `SEXT` macros, `undefined4`, `uint`, `byte`, `code` come from
   `include/dcp_ghidra.h`; they compile, they are not readable: replace them as you understand the code.
 - A call through a function pointer `(*(code *)x)()` compiles; give the pointer a real type when you can.
-- Never replace a compiling draft by a `@rough` skeleton to make the gate pass: a gate error that a worse draft
-  makes go away is a tool bug; report it and leave the draft in place.
+- Never replace a compiling draft by a worse one to make the gate pass: a gate error that a worse draft makes go
+  away is a tool bug; report it and leave the draft in place.
 - C89: declarations at the top of a block; no `//` comments in new code; no `bool`.
 - Never write a second prototype for a name: `dcp refs NAME` shows every declaration. A function of
   another unit is declared by including that unit's header; an undrafted one by the K&R line `dcp draft` wrote.

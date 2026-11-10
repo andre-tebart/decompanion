@@ -28,7 +28,7 @@ mod coff;
 mod decl;
 mod extent;
 mod crt;
-mod dialect;
+mod ghidra;
 mod draft;
 mod datafix;
 mod decide;

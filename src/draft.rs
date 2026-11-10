@@ -3,17 +3,15 @@
 //! unit's next function of the target, else at the end of the file.
 //!
 //! The function:
-//!   comment  the address comment `/* 0x10001234, <name> */` directly above it (`@rough` added when the body is a
-//!            skeleton; a target other than the default: `<target>:0x...` and the definition under
-//!            `#if defined(DCP_TARGET_<target>)`)
-//!   body     the analyzer's pseudocode of the function when it has a draft (`dcp setup` runs the export), its
-//!            signature on one line, every name rewritten by the rules below; else an empty definition whose body is a
-//!            comment holding the disassembly (the skeleton, `@rough`)
+//!   comment  the address comment `/* 0x10001234, <name> */` directly above it (a target other than the default:
+//!            `<target>:0x...` and the definition under `#if defined(DCP_TARGET_<target>)`)
+//!   body     Ghidra's pseudocode of the function (`dcp setup` runs the export), its signature on one line, every name
+//!            rewritten by the rules below; a function without a Ghidra draft is refused
 //! The name: the one the ledger registers for the address from a declaration, an export or the user entry, else the
 //! placeholder `<unit>_<addr>` (8 hex digits; L5 checks that it spells a start, Q1 that it gets replaced).
 //!
-//! Two dialects meet here: the analyzer's in (dialect.rs), the toolchain's language out (Vc6 keywords /
-//! default_convention / sized_conventions / import_header, the declaring header of a C library function).
+//! Ghidra's pseudocode comes in (ghidra.rs), VC6's language goes out (Vc6 keywords / sized_conventions /
+//! import_header, the declaring header of a C library function).
 //!
 //! Names inside an analyzer's body:
 //!   the function itself        its name above
@@ -141,9 +139,8 @@ impl Ctx<'_> {
 
     /// (an analyzer's pseudocode with every name rewritten, {used name: (address, a function, data type)}).
     fn rewrite_body(&self, e: &Entry, own: &str) -> (String, BTreeMap<String, (i64, bool, String)>) {
-        let d = crate::dialect::of(&e.analyzer);
-        let types = d.data_labels(&e.body);
-        let out = d.rewrite(&e.body, (&e.name, own), &|a| self.callee_name(a), &|a| self.data_name(a), &self.labels);
+        let types = crate::ghidra::data_labels(&e.body);
+        let out = crate::ghidra::rewrite(&e.body, (&e.name, own), &|a| self.callee_name(a), &|a| self.data_name(a), &self.labels);
         let keywords: Vec<&str> = C_KEYWORDS.iter().chain(self.tc.keywords()).copied().collect();
         let mut uses: BTreeMap<String, (i64, bool, String)> = BTreeMap::new();
         let (_, body) = split(&out);
@@ -155,14 +152,9 @@ impl Ctx<'_> {
             }
             let hit = self.names.addrs_of(n).first().copied();
             let Some(a) = hit.or_else(|| crate::srcscan::placeholder_whole(n).map(|v| v as i64)) else { continue };
-            uses.insert(n.to_string(), (a, self.is_start(a), types.get(&a).cloned().unwrap_or_else(|| d.unknown_data_type().to_string())));
+            uses.insert(n.to_string(), (a, self.is_start(a), types.get(&a).cloned().unwrap_or_else(|| "undefined4".to_string())));
         }
         (out, uses)
-    }
-
-    fn skeleton_signature(&self, name: &str) -> String {
-        let conv = self.tc.default_convention();
-        if conv.is_empty() { format!("void {name}(void)") } else { format!("void {conv} {name}(void)") }
     }
 
     /// The return type of a signature (without the calling convention).
@@ -175,7 +167,7 @@ impl Ctx<'_> {
                 b.rsplit_once(' ').map(|x| x.0).unwrap_or(b).to_string()
             }
         };
-        for conv in std::iter::once(self.tc.default_convention()).chain(self.tc.sized_conventions().iter().copied()) {
+        for conv in std::iter::once("__cdecl").chain(self.tc.sized_conventions().iter().copied()) {
             if !conv.is_empty() {
                 before = Regex::new(&format!(r"\b{}\b", regex::escape(conv))).unwrap().replace_all(&before, "").into_owned();
             }
@@ -265,8 +257,10 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
     let rel = format!("src/{tu}.c");
     let head = py_path(&format!("{root}/{rel}"));
     let header = py_path(&format!("{root}/include/{tu}.h"));
-    let mut d = Draft { unit: tu.clone(), name: name.clone(), file: rel.clone(), source: "skeleton".into(), renamed: BTreeMap::new(), declared: vec![], uses: 0 };
-    let entry = x.entries.get(&a);
+    let Some(e) = x.entries.get(&a).filter(|e| !e.body.trim().is_empty()) else {
+        return Ok(Err(format!("no Ghidra draft at {a:#x}: dcp setup runs Ghidra's export (dcp draft --show {a:#x})")));
+    };
+    let mut d = Draft { unit: tu.clone(), name: name.clone(), file: rel.clone(), source: e.analyzer.clone(), renamed: BTreeMap::new(), declared: vec![], uses: 0 };
     if !Path::new(&head).exists() {
         E::write(&head, &format!("/* {tu}: the unit's includes, local types and declarations, then its functions */\n#include \"{tu}.h\"\n")).map_err(err)?;
     }
@@ -292,23 +286,11 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
     let default = x.p.targets[0].name.clone();
     let target = x.p.target_name.clone();
     let tag = if target == default { fmt_addr(a) } else { format!("{target}:{}", fmt_addr(a)) };
-    let (sig, uses, block) = match entry.filter(|e| !e.body.trim().is_empty()) {
-        Some(e) => {
-            d.source = e.analyzer.clone();
-            let (text, uses) = x.rewrite_body(e, &name);
-            let (sig, body) = split(&text);
-            let lead: String = lead_comments(&text).iter().map(|c| format!("{c}\n")).collect();
-            let block = format!("/* {tag}, {name} */\n{lead}{sig}\n{}\n", body.trim_matches('\n'));
-            (sig, Some(uses), block)
-        }
-        None => {
-            let sig = x.skeleton_signature(&name);
-            let body = crate::cliread::skeleton_lines(x.p, a)?;
-            let block = format!("/* {tag}, {name} @rough */\n{sig}\n{{\n{}\n     */\n}}\n", body.join("\n"));
-            (sig, None, block)
-        }
-    };
-    d.uses = uses.as_ref().map(|u| u.len()).unwrap_or(0);
+    let (text, uses) = x.rewrite_body(e, &name);
+    let (sig, body) = split(&text);
+    let lead: String = lead_comments(&text).iter().map(|c| format!("{c}\n")).collect();
+    let block = format!("/* {tag}, {name} */\n{lead}{sig}\n{}\n", body.trim_matches('\n'));
+    d.uses = uses.len();
     let block = if target != default { format!("#if defined({})\n{block}#endif\n", crate::frontend::target_macro(&target)) } else { block };
     let next = scan.functions().filter(|f| f.0 .0 == rel)
         .filter_map(|f| f.0 .4.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == target).map(|(_, x)| (*x as i64, f.1 .3)))
@@ -319,16 +301,11 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
     if E::add_to_header(&header, &tu, &format!("{sig};"), &name).map_err(err)? {
         d.declared.push(format!("include/{tu}.h: {sig};"));
     }
-    if let Some(uses) = uses {
-        let e = entry.unwrap();
-        if let Some(shipped) = crate::dialect::of(&e.analyzer).types_header() {
-            let include = ensure_types_header(root, &head, &rel, &tu, shipped, &mut d, end).map_err(err)?;
-            if E::ensure_after_guard(&header, &tu, &include).map_err(err)? {
-                d.declared.push(format!("include/{tu}.h: {include}"));
-            }
-        }
-        declare_uses(x, &head, &rel, &tu, &uses, &mut d, end)?;
+    let include = ensure_types_header(root, &head, &rel, &tu, crate::ghidra::GHIDRA_HEADER, &mut d, end).map_err(err)?;
+    if E::ensure_after_guard(&header, &tu, &include).map_err(err)? {
+        d.declared.push(format!("include/{tu}.h: {include}"));
     }
+    declare_uses(x, &head, &rel, &tu, &uses, &mut d, end)?;
     Ok(Ok(d))
 }
 
@@ -364,7 +341,7 @@ fn ensure_types_header(root: &str, head: &str, rel: &str, unit: &str, shipped: (
 /// The unit header of include/ that declares `name` (its own unit's first): a function or data declaration of the
 /// front end's model of the header.
 fn header_declaring(root: &str, name: &str, unit: &str) -> Result<Option<String>> {
-    let skip = crate::dialect::types_headers();
+    let skip = [crate::ghidra::GHIDRA_HEADER.0];
     let mut hs: Vec<String> = std::fs::read_dir(py_path(&format!("{root}/include"))).into_iter().flatten().flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.to_lowercase().ends_with(".h")).collect();
     hs.sort_by_key(|h| (h[..h.len() - 2] != *unit, h.clone()));
@@ -450,7 +427,7 @@ fn open<'a>(p: &'a Project) -> Result<Ctx<'a>> {
 
 /// `dcp draft [ADDR|--next] [--unit U]` and `--show`: (the lines, the error for stderr, the exit status).
 #[allow(clippy::too_many_arguments)]
-pub fn draft_command(p: &crate::project::Project, addr: Option<String>, next: bool, show: bool, unit: Option<String>, analyzer: &str)
+pub fn draft_command(p: &crate::project::Project, addr: Option<String>, next: bool, show: bool, unit: Option<String>)
     -> Result<(Vec<String>, Option<String>, i32)> {
     let x = open(p)?;
     let resolve = |s: &str| crate::cliread::resolve_key(p, s);
@@ -466,7 +443,7 @@ pub fn draft_command(p: &crate::project::Project, addr: Option<String>, next: bo
             }
         }
         let Some(e) = e else {
-            return Ok((vec![format!("no draft at {} (analyzer={analyzer}; dcp setup runs its export)", fmt_addr(a))], None, 1));
+            return Ok((vec![format!("no draft at {} (dcp setup runs Ghidra's export)", fmt_addr(a))], None, 1));
         };
         let mut out = vec![format!("/* {} draft of {} {} (requested {}, from {}) */", e.analyzer, fmt_addr(e.start), e.name, fmt_addr(e.requested), e.source)];
         out.extend(e.body.strip_suffix('\n').unwrap_or(&e.body).split('\n').map(|l| l.to_string()));

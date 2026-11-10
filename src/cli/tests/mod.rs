@@ -132,8 +132,8 @@ pub fn use_fake_ghidra(root: &Path, export: &Path) {
     let bat = format!("@echo off\r\n:loop\r\nif \"%~1\"==\"\" goto :eof\r\nif \"%~1\"==\"-postScript\" (\r\n  copy /y \"{}\" \"%~3\" >nul\r\n  goto :eof\r\n)\r\nshift\r\ngoto loop\r\n",
                       export.to_string_lossy());
     std::fs::write(fake.join("support").join("analyzeHeadless.bat"), bat).unwrap();
-    set_config(root, "[analyzer]\nplugin = \"none\"\n",
-               &format!("[analyzer]\nplugin = \"ghidra\"\nroot = \"{}\"\njava_home = \"{}\"\n", posix(&fake), posix(&fake.join("jdk"))));
+    set_config(root, "[analyzer]\nroot = \"C:/nowhere/ghidra\"\n",
+               &format!("[analyzer]\nroot = \"{}\"\njava_home = \"{}\"\n", posix(&fake), posix(&fake.join("jdk"))));
 }
 
 /// The sha256 of a file.

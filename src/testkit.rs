@@ -267,7 +267,7 @@ archives = []
 reason = "test project: no static library"
 
 [analyzer]
-plugin = "none"
+root = "C:/nowhere/ghidra"
 "#;
 
 /// The synthetic project (conftest.make_project): tiny.dll as target `tiny` (and tiny2.dll as `other`).
