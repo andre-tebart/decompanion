@@ -309,7 +309,7 @@ fn promote_raises_only_and_accept() {
     let bad = good.replace("counter;\n}", "counter + 1;\n}");
     unit(&t, "net", &[good]);
     let (code, out) = dcp(&t, &["promote"]);
-    assert!(code == 0 && out.contains("functions=1") && out.contains("accepted=0"), "{out}");
+    assert!(code == 0 && out.contains("functions=1") && out.contains("debt=0"), "{out}");
     let tsv = || read(&t, "ledger/grades.tsv");
     assert_eq!(tsv(), "target\taddress\tname\tunit\tcode\treadability\tlevel\taccepted\ntiny\t0x10001020\tget\tnet\tbyte\treadable\t\t\n");
     unit(&t, "net", &[&bad]);
@@ -328,13 +328,13 @@ fn promote_raises_only_and_accept() {
     let out = dcp(&t, &["debt", "list"]).1;
     assert!(out.starts_with("debt=1  max_debt=none") && out.contains("name=get") && out.contains("waits_for='the net header'"), "{out}");
     let (code, out) = dcp(&t, &["promote"]); // no fall against the lowered entry; the note stays
-    assert!(code == 0 && out.contains("accepted=1") && tsv().lines().nth(1).unwrap() == line, "{out}");
+    assert!(code == 0 && out.contains("debt=1") && tsv().lines().nth(1).unwrap() == line, "{out}");
     unit(&t, "net", &[good]);
     let (code, out) = dcp(&t, &["promote"]); // back at byte: raised, the note cleared
-    assert!(code == 0 && out.contains("accepted=0") && tsv() == before, "{out}");
+    assert!(code == 0 && out.contains("debt=0") && tsv() == before, "{out}");
     unit(&t, "net", &[&bad]);
     let (code, out) = dcp(&t, &["promote", "--accept-falls"]);
-    assert!(code == 0 && out.contains("fell (accepted): 0x10001020 get") && out.contains("accepted=1"), "{out}");
+    assert!(code == 0 && out.contains("fell (accepted): 0x10001020 get") && out.contains("debt=1"), "{out}");
     assert!(tsv().contains("\tdraft\treadable\t\tbyte+readable -> draft+readable at ") && tsv().trim_end().ends_with(": promote --accept-falls"));
 }
 

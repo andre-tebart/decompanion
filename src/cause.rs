@@ -91,6 +91,18 @@ impl Changes {
         git(root, &["show", &format!("{}:{}", self.rev, file.replace('\\', "/"))]).map(|t| t.replace("\r\n", "\n"))
     }
 
+    /// The commits since the base that changed any of `files` (project-relative), newest first: `abc1234 subject`,
+    /// at most `max`.
+    pub fn commits(&self, root: &str, files: &[String], max: usize) -> Vec<String> {
+        if files.is_empty() {
+            return vec![];
+        }
+        let range = format!("{}..HEAD", self.rev);
+        let mut args = vec!["log", "--format=%h %s", "--no-renames", &range, "--"];
+        args.extend(files.iter().map(|f| f.as_str()));
+        git(root, &args).unwrap_or_default().lines().take(max).map(|l| l.chars().take(90).collect()).collect()
+    }
+
     /// What changed of the inputs of the unit compiled from `file` (project-relative).
     pub fn of_unit(&self, root: &str, file: &str) -> Cause {
         let own = norm(file);
@@ -129,6 +141,19 @@ impl Changes {
 }
 
 impl Cause {
+    /// The files of the cause: the unit's own and the changed headers.
+    pub fn files(&self) -> Vec<String> {
+        self.unit.iter().map(|u| u.0.clone()).chain(self.headers.iter().map(|h| h.0.clone())).collect()
+    }
+
+    /// `text`, with the commits since the base that made the change (wrap-unexplained-grade-change.md: a raise by a
+    /// shared macro fixed for another function, or by a fix committed outside a session, named no edit).
+    pub fn text_with_commits(&self, ch: &Changes, root: &str, max: usize) -> String {
+        let t = self.text(&ch.since, max);
+        let c = ch.commits(root, &self.files(), 3);
+        if c.is_empty() { t } else { format!("{t}; by {}", c.join(", ")) }
+    }
+
     /// The cause as one clause: "since abc1234: unit src/a.c changed; header include/t.h (src/a.c > include/a.h >
     /// include/t.h)", at most `max` headers named.
     pub fn text(&self, since: &str, max: usize) -> String {

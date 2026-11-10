@@ -388,6 +388,20 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
     // the cause candidates of each grade change (cause.rs): what its unit compiles from that changed since the base;
     // git is read once, and only when a grade changed
     let mut changes: Option<Option<crate::cause::Changes>> = None;
+    // the window of the causes: from the commit that last wrote the baseline as of the base, not from the base: a fix
+    // committed outside a session after the last promote moves grades the wrap reports
+    // (bug-reports/wrap-unexplained-grade-change.md: seven raises "nothing it compiles from changed")
+    let baseline_rev = git(root, &["log", "-1", "--format=%H", base, "--", "ledger/grades.tsv"]).trim().to_string();
+    let since_rev = if baseline_rev.is_empty() { base.to_string() } else { baseline_rev.clone() };
+    let before_base = if baseline_rev.is_empty() { 0 } else {
+        git(root, &["rev-list", "--count", &format!("{baseline_rev}..{base}")]).trim().parse::<usize>().unwrap_or(0)
+    };
+    let open_changes = || crate::cause::Changes::since(root, &since_rev).map(|mut c| {
+        if before_base > 0 {
+            c.since = format!("{} (the last promote, {before_base} commit(s) before this session)", c.since);
+        }
+        c
+    });
     for (name, tp, _, _) in &targets {
         let rows = crate::queues::function_grades(&tp.store_path())?;
         let ch: Vec<_> = grade_changes(root, base, name, &rows).into_iter().filter(|x| !drafted_at.contains(&x.0) || x.3.is_some()).collect();
@@ -402,7 +416,7 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
         let mut moved: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
         for (a, unit, fname, b, aft) in ch {
             if let (Some(bg), Some(ag), Some(k), Some(tb)) = (&b, &aft, files.get(&unit), by_addr.get(&a).and_then(|r| r.get("tiebreak"))) {
-                let ch = changes.get_or_insert_with(|| crate::cause::Changes::since(root, base));
+                let ch = changes.get_or_insert_with(open_changes);
                 if let Some(label) = ch.as_ref().and_then(|ch| crate::tiebreak::declaration_move(root, ch, tb, &k.amalg)) {
                     moved.entry(label).or_default().push(format!("{fname} ({bg} -> {ag})"));
                     continue;
@@ -410,8 +424,8 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
             }
             let cause = match (&b, &aft, files.get(&unit)) {
                 (Some(_), Some(_), Some(k)) => {
-                    let ch = changes.get_or_insert_with(|| crate::cause::Changes::since(root, base));
-                    ch.as_ref().map(|ch| causes.entry(unit.clone()).or_insert_with(|| ch.of_unit(root, &k.amalg).text(&ch.since, 3)).clone())
+                    let ch = changes.get_or_insert_with(open_changes);
+                    ch.as_ref().map(|ch| causes.entry(unit.clone()).or_insert_with(|| ch.of_unit(root, &k.amalg).text_with_commits(ch, root, 3)).clone())
                 }
                 _ => None,
             };

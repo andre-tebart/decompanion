@@ -653,8 +653,13 @@ pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> 
     write_baseline(root, &text)?;
     let n = text.matches('\n').count() as i64 - 1;
     let mut out = vec![record(&[("promoted", s("ledger/grades.tsv")), ("functions", Tok::I(n)), ("targets", Tok::I(projects.len() as i64)),
-                                ("falls_against_old", Tok::I(falls.len() as i64)), ("accepted", Tok::I(accepted as i64))])];
+                                ("falls_against_old", Tok::I(falls.len() as i64)), ("debt", Tok::I(accepted as i64))])];
     out.extend(falls.iter().map(|f| format!("  fell (accepted): {f}")));
+    // the entries that carry an accepted fall, from this promote or earlier ones (bug-reports/wrap-accepted-count-
+    // unexplained.md: `accepted=8` with no fall read as eight things to act on)
+    if accepted > falls.len() {
+        out.push(format!("  debt={accepted}: baseline entries kept below an earlier grade on purpose ({} from earlier promotes or dcp debt add; dcp debt                           list names them); nothing to act on now", accepted - falls.len()));
+    }
     Ok((out, None, 0))
 }
 
