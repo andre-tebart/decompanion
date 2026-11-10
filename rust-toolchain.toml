@@ -1,3 +1,5 @@
-# The core builds with the GNU toolchain on Windows (libclang is loaded at run time).
+# Stable Rust on the machine's default host: x86_64-pc-windows-gnu where no Visual Studio is installed (libclang is
+# loaded at run time), x86_64-pc-windows-msvc on a machine with it (the release runner). rustup refuses a host
+# triple in this channel name.
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnu"
+channel = "stable"

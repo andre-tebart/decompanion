@@ -50,7 +50,7 @@ dcp = ["decompanion==0.1.0"]
 decompanion = { url = "https://github.com/andre-tebart/decompanion/releases/download/v0.1.0/decompanion-0.1.0-py3-none-win_amd64.whl" }
 ```
 
-From source (Rust stable, `x86_64-pc-windows-gnu`, as `rust-toolchain.toml` pins it):
+From source (Rust stable; without Visual Studio, use the GNU host: `rustup set default-host x86_64-pc-windows-gnu`):
 
 ```
 cargo install --path .
