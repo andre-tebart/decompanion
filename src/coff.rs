@@ -1,5 +1,5 @@
-//! COFF objects as objfmt/coff.py reads them (VC6's CL, i386): sections with their relocations, symbols, the
-//! function symbols, a function's code with its relocation mask. Names are Latin-1, as Python decodes them.
+//! COFF objects (VC6's CL, i386): sections with their relocations, symbols, the function symbols, a function's code
+//! with its relocation mask. Names are Latin-1.
 
 pub const ABSOLUTE: u8 = 1;
 pub const RELATIVE: u8 = 2;
@@ -132,7 +132,7 @@ fn rstrip_nul(b: &[u8]) -> &[u8] {
     &b[..e]
 }
 
-/// Python's str.isdigit of a Latin-1 name part: 0-9 and the superscripts ¹ ² ³; false when empty.
+/// A Latin-1 name part of digits only: 0-9 and the superscripts ¹ ² ³; false when empty.
 fn isdigit(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '\u{b2}' || c == '\u{b3}' || c == '\u{b9}')
 }
@@ -689,7 +689,7 @@ pub fn rename_symbols(b: &[u8], mapping: &std::collections::BTreeMap<String, Str
 
 #[cfg(test)]
 pub(crate) mod testlib {
-    //! An archive of objects that carry only an `@comp.id` symbol (tests/conftest.py build_lib), plus an import
+    //! An archive of objects that carry only an `@comp.id` symbol, plus an import
     //! member, a long-named member and a linker member.
     fn member(name: &[u8], d: &[u8]) -> Vec<u8> {
         let mut h = name.to_vec();

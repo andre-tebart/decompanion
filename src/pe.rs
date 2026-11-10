@@ -1,4 +1,4 @@
-//! PE32 images, as image/base.py and image/pe32.py read them: the headers and sections, `read` (bytes without
+//! PE32 images: the headers and sections, `read` (bytes without
 //! file backing read as zero, like the loader maps them), the absolute base-relocation sites, the data
 //! directories, the imports and exports with the byte ranges of their machinery, the Rich header.
 
@@ -170,7 +170,7 @@ impl Image {
                 }
                 Some((o, avail)) => {
                     let k = n.min(avail);
-                    // a section running past the file end gives fewer bytes, as Python's slice does
+                    // a section running past the file end gives fewer bytes
                     let end = (o + k).min(self.data.len());
                     out.extend_from_slice(&self.data[o.min(end)..end]);
                     va = va.wrapping_add(k as u32);
@@ -539,7 +539,7 @@ impl Image {
 
 #[cfg(test)]
 pub(crate) mod testpe {
-    //! A synthetic PE32 dll for the tests (tests/conftest.py build_pe's, with an import and an export directory):
+    //! A synthetic PE32 dll for the tests (with an import and an export directory):
     //! base 0x10000000; .text 0x1000 (f1 calls f2 and f3, f2 reads a dword of .data, f3 and f4 push strings);
     //! .data 0x2000 (a dword, strings, a pointer to f4; the import and export tables); .reloc 0x3000.
     pub const BASE: u32 = 0x1000_0000;

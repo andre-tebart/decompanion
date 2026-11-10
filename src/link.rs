@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::fsmemo;
-use crate::project::{py_path, sha256_parts, Project};
+use crate::project::{native_path, sha256_parts, Project};
 use crate::store::{self, canon, Claim};
 use crate::vc6::{LinkJob, Tools};
 use serde_json::{json, Value};
@@ -41,32 +41,6 @@ fn file_digest(p: &str) -> String {
     }
 }
 
-/// json.dumps of a list of strings (Python's default spelling: `", "` between items, non-ASCII escaped).
-fn py_json_list(xs: &[String]) -> String {
-    let item = |s: &str| {
-        let mut o = String::from("\"");
-        for c in s.chars() {
-            match c {
-                '"' => o.push_str("\\\""),
-                '\\' => o.push_str("\\\\"),
-                '\n' => o.push_str("\\n"),
-                '\r' => o.push_str("\\r"),
-                '\t' => o.push_str("\\t"),
-                c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
-                    let mut b = [0u16; 2];
-                    for u in c.encode_utf16(&mut b) {
-                        o.push_str(&format!("\\u{:04x}", u));
-                    }
-                }
-                c => o.push(c),
-            }
-        }
-        o.push('"');
-        o
-    };
-    format!("[{}]", xs.iter().map(|s| item(s)).collect::<Vec<_>>().join(", "))
-}
-
 struct Ctx<'a> {
     p: &'a Project,
     root: String,
@@ -82,7 +56,7 @@ impl Ctx<'_> {
 
     /// Where an archive of the link may come from: the project's libs/, then the toolchain's library directories.
     fn library_dirs(&self) -> Vec<String> {
-        let mut v = vec![py_path(&format!("{}/libs", self.root))];
+        let mut v = vec![native_path(&format!("{}/libs", self.root))];
         v.extend(self.tools.lib_path());
         v
     }
@@ -97,7 +71,7 @@ impl Ctx<'_> {
             if let Ok(rd) = std::fs::read_dir(&d) {
                 for e in rd.flatten() {
                     if e.file_name().to_string_lossy().to_lowercase() == name.to_lowercase() {
-                        return Some(py_path(&e.path().to_string_lossy()));
+                        return Some(native_path(&e.path().to_string_lossy()));
                     }
                 }
             }
@@ -150,7 +124,7 @@ impl Ctx<'_> {
                 if !p.extension().is_some_and(|x| x.eq_ignore_ascii_case("lib")) || !p.is_file() {
                     continue;
                 }
-                let ps = py_path(&p.to_string_lossy());
+                let ps = native_path(&p.to_string_lossy());
                 let rp = canon_path(&ps);
                 if declared.contains(&rp) || !seen.insert(rp) {
                     continue;
@@ -340,7 +314,7 @@ pub fn order_libraries(libs: Vec<String>, first: &BTreeMap<String, Vec<(String, 
     (libs, chains)
 }
 
-/// The full link of the current target (build/link.py module docstring).
+/// The full link of the current target.
 pub fn full_link(p: &Project) -> Result<LinkReport, String> {
     full_link_with(p, None)
 }
@@ -358,8 +332,8 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let x = Ctx { p, root: root.clone(), db: db.clone(), img: img.clone(), tools: Tools::of(p) };
     let mut rep = LinkReport { target: p.target_name.clone(), unresolved: CLASSES.iter().map(|c| (c.to_string(), vec![])).collect(), ..Default::default() };
     let out_dir = match variant {
-        Some((v, _)) => py_path(&format!("{root}/build/link/{}/{v}", p.target_name)),
-        None => py_path(&format!("{root}/build/link/{}", p.target_name)),
+        Some((v, _)) => native_path(&format!("{root}/build/link/{}/{v}", p.target_name)),
+        None => native_path(&format!("{root}/build/link/{}", p.target_name)),
     };
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
     let tus = crate::compile::tu_rows(&db).map_err(|e| e.to_string())?;
@@ -403,7 +377,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     objs.retain(|(u, _)| lib_of(u).is_none());
     rep.objects = objs.len();
     rep.linked = objs.clone();
-    rep.map = py_path(&format!("{out_dir}/{}.map", p.target_name));
+    rep.map = native_path(&format!("{out_dir}/{}.map", p.target_name));
     let mut defined: HashSet<String> = HashSet::new();
     let mut includes: Vec<String> = vec![];
     for (u, o) in &parsed {
@@ -444,7 +418,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
         aliases.extend(syms.iter().filter(|s| **s != canon && !defined.contains(*s)).map(|s| (s.clone(), canon.clone())));
     }
     if !aliases.is_empty() {
-        let path = py_path(&format!("{out_dir}/aliases.obj"));
+        let path = native_path(&format!("{out_dir}/aliases.obj"));
         std::fs::write(&path, crate::coff::alias_object(&aliases)).map_err(|e| e.to_string())?;
         extra.push(path);
     }
@@ -460,7 +434,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
         let path = match x.find_library(&name) {
             Some(path) => path,
             None => {
-                let path = py_path(&format!("{out_dir}/{name}"));
+                let path = native_path(&format!("{out_dir}/{name}"));
                 let mine: Vec<crate::pe::Import> = imports.iter().filter(|i| i.dll == dll).cloned().collect();
                 if let Some(why) = x.tools.make_import_library(&dll, &mine, &path)? {
                     missing_libs.push(format!("no import library {name} for {dll}: {why}"));
@@ -477,7 +451,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
             rep.errors.push(format!("library unit(s) {}: the archive {key} is not linked", units.iter().map(|u| u.0.as_str()).collect::<Vec<_>>().join(", ")));
             continue;
         };
-        let dest = py_path(&format!("{out_dir}/{}", name_of(&libs[k])));
+        let dest = native_path(&format!("{out_dir}/{}", name_of(&libs[k])));
         if crate::vc6::resolved("", &libs[k]).to_lowercase() != crate::vc6::resolved("", &dest).to_lowercase() {
             std::fs::copy(&libs[k], &dest).map_err(|e| e.to_string())?;
             libs[k] = dest.clone();
@@ -497,7 +471,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let mut def_file = None;
     let mut open_exports = vec![];
     if img.is_dll {
-        let path = py_path(&format!("{out_dir}/{}.def", p.target_name));
+        let path = native_path(&format!("{out_dir}/{}.def", p.target_name));
         let exports = img.exports();
         let exports: Vec<&crate::pe::Export> = exports.iter().filter(|e| e.forwarder.is_none()).collect();
         open_exports = exports.iter().filter(|e| !src_names.contains_key(&(e.va as i64)))
@@ -509,21 +483,21 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
         }
         def_file = Some(path);
     }
-    let out = py_path(&format!("{out_dir}/{}", name_of(&target.path)));
+    let out = native_path(&format!("{out_dir}/{}", name_of(&target.path)));
     let objects: Vec<String> = extra.iter().cloned().chain(objs.iter().map(|o| o.1.clone())).collect();
     let job = LinkJob {
         cwd: root.clone(), out: out.clone(), objects: objects.clone(), libraries: libs.clone(), dll: img.is_dll, base: img.base,
-        map_file: py_path(&format!("{out_dir}/{}.map", p.target_name)), def_file: def_file.clone(), includes: includes.clone(),
+        map_file: native_path(&format!("{out_dir}/{}.map", p.target_name)), def_file: def_file.clone(), includes: includes.clone(),
         subsystem: if kind == "gui" || kind == "console" { kind.to_string() } else { String::new() },
-        rsp: py_path(&format!("{out_dir}/link.rsp")),
+        rsp: native_path(&format!("{out_dir}/link.rsp")),
     };
     rep.out = crate::vc6::rel_to(&root, &out);
-    let mut parts = vec![py_json_list(&objects.iter().chain(&libs).chain(&includes).cloned().collect::<Vec<_>>())];
+    let mut parts = vec![serde_json::to_string(&objects.iter().chain(&libs).chain(&includes).collect::<Vec<_>>()).unwrap_or_default()];
     parts.extend(objects.iter().chain(&libs).map(|f| file_digest(f)));
     parts.push(def_file.as_deref().map(file_digest).unwrap_or_default());
     parts.push(img.base.to_string());
     let key = sha256_parts(&parts);
-    let cache = py_path(&format!("{out_dir}/link.json"));
+    let cache = native_path(&format!("{out_dir}/link.json"));
     let hit: Option<Value> = std::fs::read_to_string(&cache).ok().and_then(|t| serde_json::from_str(&t).ok());
     let lines = |v: &Value| -> Vec<String> { v.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(|s| s.to_string())).collect() };
     let settle = |rep: &mut LinkReport, link_ok: bool, raw_nonempty: bool| {
@@ -549,13 +523,13 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     }
     let _ = std::fs::remove_file(&out);
     let res = x.tools.link(&job)?;
-    std::fs::write(py_path(&format!("{out_dir}/link.log")), &res.log).map_err(|e| e.to_string())?;
+    std::fs::write(native_path(&format!("{out_dir}/link.log")), &res.log).map_err(|e| e.to_string())?;
     rep.unresolved = x.classify(&res.unresolved)?;
     rep.unresolved.iter_mut().find(|x| x.0 == "undrafted").unwrap().1.extend(open_exports);
     rep.errors.extend(res.errors.iter().cloned());
     settle(&mut rep, res.ok, !res.unresolved.is_empty());
     for (k, ls) in &rep.unresolved {
-        std::fs::write(py_path(&format!("{out_dir}/unresolved-{k}.txt")), ls.iter().map(|l| format!("{l}\n")).collect::<String>()).map_err(|e| e.to_string())?;
+        std::fs::write(native_path(&format!("{out_dir}/unresolved-{k}.txt")), ls.iter().map(|l| format!("{l}\n")).collect::<String>()).map_err(|e| e.to_string())?;
     }
     let j = json!({"key": key, "ok": rep.ok, "link_ok": res.ok, "raw": res.unresolved, "unresolved": unresolved_json(&rep.unresolved), "errors": res.errors});
     std::fs::write(&cache, serde_json::to_string(&j).unwrap_or_default()).map_err(|e| e.to_string())?;

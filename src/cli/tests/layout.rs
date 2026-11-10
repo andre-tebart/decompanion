@@ -1,5 +1,5 @@
 //! Layout rules on the synthetic dll: loaders, evidence, unit extents, the checks, propose, the analyzer's drafts
-//! (tests/test_layout.py).
+//!.
 
 use super::*;
 use crate::store::DECLARED;

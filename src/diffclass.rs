@@ -1,10 +1,10 @@
-//! match/diffclass.py: the instruction diff of one function and the classification of its hunks (its module
-//! docstring is the criterion), with the walk of the original's slot that finds its switch tables (rules/walk.py's
-//! Walker for one root, no stops, no relocation sites).
+//! The instruction diff of one function and the classification of its hunks (its module
+//! docstring is the criterion), with the walk of the original's slot that finds its switch tables (walk.rs's
+//! walker for one root, no stops, no relocation sites).
 
 use crate::difflib::{opcodes, Tag};
 use crate::shape::{self, Shape};
-use crate::x86::{self, py_hex, Line};
+use crate::x86::{self, hex_int, Line};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -304,7 +304,7 @@ fn tail(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: usize,
                     let (who, other) = if side == 0 { ("ours", "the original") } else { ("the original", "ours") };
                     let how = if mn == "jmp" { "jumps" } else { "branches" };
                     notes.push(format!("{who} {how} to a shared block at +{} ({} instructions) {other} has inline at +{}",
-                                       py_hex(at_addr as i64 - base), n - skip.is_some() as usize, py_hex(from as i64 - base)));
+                                       hex_int(at_addr as i64 - base), n - skip.is_some() as usize, hex_int(from as i64 - base)));
                 }
                 None => k += 1,
             }
@@ -415,7 +415,7 @@ impl Verdict {
             s += "; equal under one function-wide renaming";
         }
         if let Some((a, b)) = self.frame {
-            s += &format!("; frame {} vs {} (stack offsets aligned)", py_hex(a), py_hex(b));
+            s += &format!("; frame {} vs {} (stack offsets aligned)", hex_int(a), hex_int(b));
         }
         if branches && !self.into_code.is_empty() {
             s += &format!("; {}", self.into_code[..self.into_code.len().min(3)].join("; "));
@@ -737,7 +737,7 @@ fn branch_diffs(la: &[Line], lb: &[Line], hs: &[Hunk], renamed: bool) -> (Vec<St
         None => l.last().map(|x| (x.addr + x.size) as i64 - base).unwrap_or(0),
     };
     let place = |l: &[Line], c: Option<usize>| match c {
-        Some(c) => format!("+{} ({})", py_hex(off(l, c)), l.get(c).map(|x| x.text.as_str()).unwrap_or("the end")),
+        Some(c) => format!("+{} ({})", hex_int(off(l, c)), l.get(c).map(|x| x.text.as_str()).unwrap_or("the end")),
         None => "outside the code".to_string(),
     };
     let (mut out, mut into): (Vec<String>, Vec<((usize, usize), usize)>) = (vec![], vec![]);
@@ -763,20 +763,20 @@ fn branch_diffs(la: &[Line], lb: &[Line], hs: &[Hunk], renamed: bool) -> (Vec<St
             }
             continue;
         }
-        let mut s = format!("{} at +{}: ours to {}, the original's to {}", mnemonic(&la[i].text), py_hex(la[i].addr as i64 - base),
+        let mut s = format!("{} at +{}: ours to {}, the original's to {}", mnemonic(&la[i].text), hex_int(la[i].addr as i64 - base),
                             place(la, ca), place(lb, cb));
         if let Some(c) = ca {
             match (images.first(), cuts.inside_of(c)) {
-                (Some(&x), _) => s += &format!("; the alignment puts ours' target at the original's +{}", py_hex(off(lb, x))),
+                (Some(&x), _) => s += &format!("; the alignment puts ours' target at the original's +{}", hex_int(off(lb, x))),
                 (None, Some((cls, h))) => s += &format!("; ours' target lies inside the {cls} hunk at +{}, which gives it no place in the original",
-                                                        py_hex(off(la, h))),
+                                                        hex_int(off(la, h))),
                 _ => {}
             }
         }
         out.push(s);
     }
     into.sort();
-    let into = into.into_iter().map(|((h, _), n)| format!("{n} jump{} into the code hunk at +{}", if n == 1 { "" } else { "s" }, py_hex(off(la, h)))).collect();
+    let into = into.into_iter().map(|((h, _), n)| format!("{n} jump{} into the code hunk at +{}", if n == 1 { "" } else { "s" }, hex_int(off(la, h)))).collect();
     (out, into)
 }
 
@@ -1107,7 +1107,7 @@ pub fn compare_tables(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::Fun
             let r = relocs.get(&(k as i64));
             let width = r.map(|r| r.kind_width().1 as usize);
             if r.is_none() || width != Some(4) || k + 4 > n {
-                diffs.push(format!("+{}: a relocated field that is no table entry", py_hex(k as i64)));
+                diffs.push(format!("+{}: a relocated field that is no table entry", hex_int(k as i64)));
                 k += 1usize.max(width.unwrap_or(1));
                 continue;
             }
@@ -1118,8 +1118,8 @@ pub fn compare_tables(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::Fun
             let tb = u32::from_le_bytes([orig[k], orig[k + 1], orig[k + 2], orig[k + 3]]) as i64 - addr_i;
             if !same(ta, tb) {
                 diffs.push(match ta {
-                    Some(ta) => format!("entry +{}: ours to +{}, the original's to +{}", py_hex(k as i64), py_hex(ta), py_hex(tb)),
-                    None => format!("entry +{}: ours points outside the function", py_hex(k as i64)),
+                    Some(ta) => format!("entry +{}: ours to +{}, the original's to +{}", hex_int(k as i64), hex_int(ta), hex_int(tb)),
+                    None => format!("entry +{}: ours points outside the function", hex_int(k as i64)),
                 });
             }
             k += 4;
@@ -1127,7 +1127,7 @@ pub fn compare_tables(env: &Env, obj: &crate::coff::Obj, code: &crate::coff::Fun
         }
         nbytes += 1;
         if ours[k] != orig[k] {
-            diffs.push(format!("byte +{}: {:#04x} vs {:#04x}", py_hex(k as i64), ours[k], orig[k]));
+            diffs.push(format!("byte +{}: {:#04x} vs {:#04x}", hex_int(k as i64), ours[k], orig[k]));
         }
         k += 1;
     }

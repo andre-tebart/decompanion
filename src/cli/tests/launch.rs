@@ -1,5 +1,5 @@
 //! launch.rs: a launch spec's steps, program and `after` steps (cmd.exe is the program), the hand-off from the daemon,
-//! and run's options never becoming program arguments (tests/test_launch.py).
+//! and run's options never becoming program arguments.
 
 use super::*;
 use crate::cli::Io;

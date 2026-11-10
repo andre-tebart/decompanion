@@ -273,14 +273,14 @@ fn reloc_name(obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, r: &crat
     }
 }
 
-fn py_int0(s: &str) -> Option<i64> {
+fn int_auto(s: &str) -> Option<i64> {
     let t = s.trim().to_lowercase();
     t.strip_prefix("0x").map(|h| i64::from_str_radix(h, 16).ok()).unwrap_or_else(|| t.parse().ok())
 }
 
 /// The function grade row named `key` (a function name or an address).
 pub fn find_function(db: &str, key: &str) -> Result<Option<Value>> {
-    let a = if key.to_lowercase().starts_with("0x") { py_int0(key) } else { None };
+    let a = if key.to_lowercase().starts_with("0x") { int_auto(key) } else { None };
     Ok(crate::queues::function_grades(db)?.iter().cloned()
         .find(|r| r.get("name").and_then(|v| v.as_str()) == Some(key) || (a.is_some() && r["addr"].as_i64() == a))
         .map(Value::Object))

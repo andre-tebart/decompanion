@@ -26,7 +26,7 @@
 
 use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use crate::store;
 use crate::tomledit::{self, TV};
 use crate::toolchain::Install;
@@ -653,7 +653,7 @@ pub fn decide_toolchain_view(p: &crate::project::Project) -> Result<Vec<String>>
     let crt = c.crt_strings();
     out.push(format!("  crt strings={}", crt.len()));
     for (a, t) in &crt {
-        out.push(format!("    {a:#010x} {}", crate::decl::py_repr(t)));
+        out.push(format!("    {a:#010x} {}", crate::decl::quote_str(t)));
     }
     match &rich {
         None => out.push("  rich: no Rich header".into()),
@@ -752,11 +752,11 @@ fn parse_pairs(pairs: &[String], known: &[&str]) -> Result<Vec<(String, String)>
     let mut out: Vec<(String, String)> = vec![];
     for x in pairs {
         let Some((k, v)) = x.split_once('=') else {
-            return Err(format!("{} is not KEY=VALUE (keys: {})", crate::decl::py_repr(x), known.join(", ")));
+            return Err(format!("{} is not KEY=VALUE (keys: {})", crate::decl::quote_str(x), known.join(", ")));
         };
         let k = k.trim();
         if !known.contains(&k) {
-            return Err(format!("unknown key {} (keys: {})", crate::decl::py_repr(k), known.join(", ")));
+            return Err(format!("unknown key {} (keys: {})", crate::decl::quote_str(k), known.join(", ")));
         }
         match out.iter_mut().find(|(o, _)| o == k) {
             Some(o) => o.1 = v.trim().to_string(),
@@ -767,7 +767,7 @@ fn parse_pairs(pairs: &[String], known: &[&str]) -> Result<Vec<(String, String)>
 }
 
 fn config_path(p: &Project) -> String {
-    py_path(&p.root.join(crate::project::CONFIG_NAME).to_string_lossy())
+    native_path(&p.root.join(crate::project::CONFIG_NAME).to_string_lossy())
 }
 
 /// A path as Path(s).expanduser().resolve() spells it (posix).
@@ -833,7 +833,7 @@ fn toolchain_declare(p: &Project, pairs: &[String], why: &Option<String>) -> Res
         };
         out.push(record(&[("declared", s(k.clone())), ("value", s(text)), ("level", s("declared")), ("where", s(place)), ("why", s(why.clone()))]));
         if let TV::L(l) = v {
-            out.push(format!("  flags  {}", if l.is_empty() { "-".into() } else { l.iter().map(|f| crate::decl::py_repr(f)).collect::<Vec<_>>().join(" ") }));
+            out.push(format!("  flags  {}", if l.is_empty() { "-".into() } else { l.iter().map(|f| crate::decl::quote_str(f)).collect::<Vec<_>>().join(" ") }));
         }
     }
     let root = proj.iter().find(|(k, _)| k == "root").and_then(|(_, v)| if let TV::S(x) = v { Some(x.clone()) } else { None });

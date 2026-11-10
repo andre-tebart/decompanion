@@ -1,11 +1,11 @@
 //! The declaration checker's reading of the sources:
 //! a file's file-scope declarations as the all-declarations unit repeats them, its macro lines, the names it
 //! defines and uses (the header order), its system includes; the all-declarations unit built from the scan's
-//! pieces; the M5 lines of a run of clang over it. Offsets are byte offsets; the `at` of a declaration goes to
-//! Python in characters.
+//! pieces; the M5 lines of a run of clang over it. Offsets are byte offsets; the `at` of a declaration is in
+//! characters.
 
 use crate::error::Result;
-use crate::srcscan::{py_space, py_strip, py_words, Src};
+use crate::srcscan::{is_space, trim_space, squeeze_words, Src};
 use crate::clang::FileModel;
 
 use regex::Regex;
@@ -56,7 +56,7 @@ pub(crate) struct MDecl {
     body: Option<Lc>,
     knr: Option<Vec<(String, Option<String>)>>,
     kind: String, // a datum's def / extern
-    init: bool,   // a datum's initialiser (a function's: K&R parameters, as Python's truth of the list)
+    init: bool,   // a datum's initialiser (a function's: K&R parameters present)
 }
 
 pub(crate) fn mdecls(decls: &[crate::clang::Decl]) -> Vec<MDecl> {
@@ -103,7 +103,7 @@ impl Decl {
             Some(s) => s,
             None => self.stmt.trim_end_matches(';'),
         };
-        py_strip(s.strip_prefix("extern ").unwrap_or(s)).to_string()
+        trim_space(s.strip_prefix("extern ").unwrap_or(s)).to_string()
     }
 
     fn where_(&self) -> String {
@@ -115,7 +115,7 @@ impl Decl {
         match k {
             Some(k) => format!("{}{}{}", &s[..k], new, &s[k + self.name.len()..]),
             None => {
-                // Python's offset -1: s[:-1] + new + s[len(name) - 1:]
+                // offset -1: the character before the name, then the name replaced
                 let cs: Vec<char> = s.chars().collect();
                 let a: String = cs[..cs.len().saturating_sub(1)].iter().collect();
                 let b: String = cs[self.name.chars().count().saturating_sub(1).min(cs.len())..].iter().collect();
@@ -143,7 +143,7 @@ fn name_at(stmt: &str, name: &str) -> Option<usize> {
     };
     let before = |i: usize| stmt[..i].chars().last().is_none_or(|c| !is_w(c));
     for &i in &found {
-        let rest = stmt[i + name.len()..].trim_start_matches(py_space);
+        let rest = stmt[i + name.len()..].trim_start_matches(is_space);
         if before(i) && rest.chars().next().is_none_or(|c| "([);,=".contains(c)) {
             return Some(i);
         }
@@ -156,7 +156,7 @@ fn declarator_lead(t: &str) -> usize {
     let mut p = t.len();
     'outer: loop {
         if let Some(c) = t[..p].chars().last() {
-            if py_space(c) || c == '*' || c == '(' {
+            if is_space(c) || c == '*' || c == '(' {
                 p -= c.len_utf8();
                 continue;
             }
@@ -221,7 +221,7 @@ fn data_decls(head: &str) -> Option<Vec<(String, String)>> {
     let pos = declarator_lead(&cut[0][..k]);
     let base = LEAD_EXTERN.replace(&cut[0][..pos], "").into_owned();
     cut[0] = cut[0][pos..].to_string();
-    Some(names.into_iter().zip(cut).map(|(n, ch)| (n, py_words(&format!("extern {base} {ch}")) + ";")).collect())
+    Some(names.into_iter().zip(cut).map(|(n, ch)| (n, squeeze_words(&format!("extern {base} {ch}")) + ";")).collect())
 }
 
 /// lint.file_scope_decls over a file's text (src) and its model's declarations.
@@ -272,8 +272,8 @@ pub(crate) fn file_decls(rel: &str, src: &Src, decls: &[MDecl]) -> Vec<Decl> {
                 k = Some(j);
             }
             let k_ = k.unwrap_or(0);
-            if p.is_none() || py_strip(&code[k_.min(brace)..brace]).is_empty() {
-                let stmt = py_words(&code[s..brace]) + ";";
+            if p.is_none() || trim_space(&code[k_.min(brace)..brace]).is_empty() {
+                let stmt = squeeze_words(&code[s..brace]) + ";";
                 let a = name_at(&stmt, name);
                 out.push(decl(line, src.line_of(brace), name, "fdef", stmt, a, false, String::new()));
                 continue;
@@ -282,12 +282,12 @@ pub(crate) fn file_decls(rel: &str, src: &Src, decls: &[MDecl]) -> Vec<Decl> {
             let (head, between) = (&code[s..k_], &code[k_..brace]);
             let mut types: HashMap<String, String> = HashMap::new();
             for dd in between.split(';') {
-                if py_strip(dd).is_empty() {
+                if trim_space(dd).is_empty() {
                     continue;
                 }
                 for (n, x) in data_decls(dd).unwrap_or_default() {
                     let x = x.strip_prefix("extern ").unwrap_or(&x).trim_end_matches(';').to_string();
-                    types.insert(n, py_words(&x));
+                    types.insert(n, squeeze_words(&x));
                 }
             }
             let params: Vec<String> = g0.knr.as_deref().unwrap_or(&[]).iter()
@@ -297,10 +297,10 @@ pub(crate) fn file_decls(rel: &str, src: &Src, decls: &[MDecl]) -> Vec<Decl> {
                 })
                 .collect();
             let ps = if params.is_empty() { "void".to_string() } else { params.join(", ") };
-            let proto = py_words(&format!("{}({})", &code[s..p], ps)) + ";";
-            let fh = py_words(head);
+            let proto = squeeze_words(&format!("{}({})", &code[s..p], ps)) + ";";
+            let fh = squeeze_words(head);
             let a = name_at(&fh, name);
-            out.push(decl(line, src.line_of(brace), name, "knr", py_words(&format!("{head} {between}")) + " {}", a, false, proto));
+            out.push(decl(line, src.line_of(brace), name, "knr", squeeze_words(&format!("{head} {between}")) + " {}", a, false, proto));
             continue;
         }
         // the `;` that ends the statement, the depth-0 commas before it (read from the text)
@@ -331,7 +331,7 @@ pub(crate) fn file_decls(rel: &str, src: &Src, decls: &[MDecl]) -> Vec<Decl> {
                 if !kept(d) {
                     continue;
                 }
-                let stmt = if group.len() > 1 { py_words(&format!("{base} {t}")) + ";" } else { py_words(&code[s..e]) + ";" };
+                let stmt = if group.len() > 1 { squeeze_words(&format!("{base} {t}")) + ";" } else { squeeze_words(&code[s..e]) + ";" };
                 let a = match DECL.captures(&stmt) {
                     Some(c) if &c[2] == d.name => Some(c.get(2).unwrap().start()),
                     _ => name_at(&stmt, &d.name),
@@ -346,9 +346,9 @@ pub(crate) fn file_decls(rel: &str, src: &Src, decls: &[MDecl]) -> Vec<Decl> {
             if !kept(d) {
                 continue;
             }
-            let x = py_words(&format!("extern {base} {t}")) + ";";
+            let x = squeeze_words(&format!("extern {base} {t}")) + ";";
             if !d.f && d.kind == "extern" {
-                let x = if group.len() == 1 { py_words(&code[s..e]) + ";" } else { x };
+                let x = if group.len() == 1 { squeeze_words(&code[s..e]) + ";" } else { x };
                 let a = name_at(&x, &d.name);
                 out.push(decl(line, last, &d.name, "extern", x, a, false, String::new()));
             } else {
@@ -393,8 +393,8 @@ pub(crate) fn file_lint(rel: &str, src: &Src, m: &FileModel) -> Result<FileLint>
         if n > 0 {
             live.push('\n');
         }
-        let directive = cont || ln.trim_start_matches(py_space).starts_with('#');
-        cont = directive && ln.trim_end_matches(py_space).ends_with('\\');
+        let directive = cont || ln.trim_start_matches(is_space).starts_with('#');
+        cont = directive && ln.trim_end_matches(is_space).ends_with('\\');
         if directive || dead.contains(&(n as i64 + 1)) {
             live.extend(std::iter::repeat_n(' ', ln.chars().count()));
         } else {
@@ -408,7 +408,7 @@ pub(crate) fn file_lint(rel: &str, src: &Src, m: &FileModel) -> Result<FileLint>
 
 /// A file's `#include <..>` names.
 pub(crate) fn system_includes(text: &str) -> Vec<String> {
-    SYSINC.captures_iter(text).map(|c| py_strip(&c[1]).to_string()).collect()
+    SYSINC.captures_iter(text).map(|c| trim_space(&c[1]).to_string()).collect()
 }
 
 // ------------------------------------------------------------------------------------------------ the unit
@@ -717,8 +717,8 @@ fn cast_view(d: &Decl) -> Option<String> {
     let s = d.spelling();
     let k = name_at(&s, &d.name)?;
     if d.func() {
-        let ret = py_strip(&s[..k]);
-        let rest = py_strip(&s[k + d.name.len()..]);
+        let ret = trim_space(&s[..k]);
+        let rest = trim_space(&s[k + d.name.len()..]);
         let (ret, inner) = match CC_END.captures(ret) {
             Some(c) => (&ret[..c.get(0).unwrap().start()], format!("({} *)", &c[1])),
             None => (ret, "(*)".to_string()),
@@ -728,7 +728,7 @@ fn cast_view(d: &Decl) -> Option<String> {
     if s[k..].contains(['[', '(']) {
         return None;
     }
-    Some(format!("#define {}_X (*({} *)&{})", d.name, py_strip(&s[..k]), d.name))
+    Some(format!("#define {}_X (*({} *)&{})", d.name, trim_space(&s[..k]), d.name))
 }
 
 /// lint.cross_conflicts: the M5 lines of one run of clang over the all-declarations unit (diags: its
@@ -870,8 +870,8 @@ pub fn lint_cross(ad: &AllDecls, diags: Vec<Diag>, root: &str) -> Result<Vec<Str
         }
         let ls = rd_lines.entry(x.file.clone()).or_insert_with(|| FileLines::read(&std::path::Path::new(root).join(&x.file)));
         if let Some(l) = ls.line(x.line) {
-            let f = py_words(l);
-            let f = py_strip(f.split("/*").next().unwrap_or(""));
+            let f = squeeze_words(l);
+            let f = trim_space(f.split("/*").next().unwrap_or(""));
             return Some(f.strip_prefix("extern ").unwrap_or(f).trim_end_matches(';').to_string());
         }
         None

@@ -1,4 +1,4 @@
-//! The native layout rules (rules/layout.py keeps their criteria as docstrings).
+//! The native layout rules.
 
 use crate::error::{Error, Result};
 use crate::rules::Ctx;
@@ -131,7 +131,7 @@ pub fn l9_analyzer_span(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()>
         hits.sort();
         let listed: Vec<String> = hits.iter().take(6).map(|a| format!("{:#x} ({})", a, ours[a])).collect();
         let more = if hits.len() > 6 { format!(" (+{} more)", hits.len() - 6) } else { String::new() };
-        let size = e.size.map(|s| s.to_string()).unwrap_or_else(|| "None".to_string());
+        let size = e.size.map(|s| s.to_string()).unwrap_or_else(|| "none".to_string());
         let name = if e.name.is_empty() { "-" } else { &e.name };
         let hi = e.ranges.iter().map(|r| r.1).max().unwrap_or(0);
         out.finding("warn", "L9", e.start, hi,
@@ -144,9 +144,9 @@ pub fn l9_analyzer_span(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()>
 
 // ------------------------------------------------------------------------------------------------ L.src.extent
 
-/// Python's bisect.bisect_right on any list (claimed's starts: the symbols sorted, then the regions sorted, the
-/// whole not sorted; the search must probe as Python's does).
-fn py_bisect_right(a: &[i64], x: i64) -> usize {
+/// The bisect_right probe on any list (claimed's starts: the symbols sorted, then the regions sorted, the whole not
+/// sorted; the search probes exactly as a binary search does).
+fn upper_bound(a: &[i64], x: i64) -> usize {
     let (mut lo, mut hi) = (0, a.len());
     while lo < hi {
         let mid = (lo + hi) / 2;
@@ -197,7 +197,7 @@ pub fn l_src_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if !in_code(a) {
             continue;
         }
-        let i = py_bisect_right(&los, a) as i64 - 1;
+        let i = upper_bound(&los, a) as i64 - 1;
         if i >= 0 && claimed[(i - 8).max(0) as usize..=i as usize].iter().any(|&(lo, hi)| lo <= a && a < hi) {
             continue; // the walk, a match or a library member owns it already
         }
@@ -843,7 +843,7 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         while f.len() < 8 {
             f.push(String::new());
         }
-        let Some(a) = py_int16(&f[1]) else { continue };
+        let Some(a) = int16(&f[1]) else { continue };
         if f[0] == target {
             base.insert(a, f);
         }
@@ -932,8 +932,8 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     Ok(())
 }
 
-/// int(s, 16) as Python reads it: surrounding whitespace, a sign, a 0x prefix and _ between digits allowed.
-pub(crate) fn py_int16(s: &str) -> Option<i64> {
+/// A hex number: surrounding whitespace, a sign, a 0x prefix and _ between digits allowed.
+pub(crate) fn int16(s: &str) -> Option<i64> {
     let t = s.trim();
     let (neg, t) = match t.strip_prefix('-') {
         Some(r) => (true, r),
@@ -997,13 +997,13 @@ pub fn l1_src_start(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             None => v["line"].clone(),
         };
         let line = match &line {
-            serde_json::Value::Null => "None".to_string(),
+            serde_json::Value::Null => "null".to_string(),
             serde_json::Value::String(s) => s.clone(),
             x => x.to_string(),
         };
         out.finding2("error", "L1", a, a + 1,
                       format!("{}:{line}: {} starts at {:#x}, inside the {} {:#x}..{:#x}", s.s("file").unwrap_or(""), s.s("symbol").unwrap_or(""),
-                              a, sk.unwrap_or("None"), hit.lo, hit.hi), &s.by, &hit.by);
+                              a, sk.unwrap_or("none"), hit.lo, hit.hi), &s.by, &hit.by);
     }
     Ok(())
 }
@@ -1298,13 +1298,13 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
             };
             if ca + offset != a {
                 err(out, "L15", a, format!("{file}:{line}: view {name} at {:#x}, but {container} ({:#x}) + {} is {:#x}", a, ca,
-                                           crate::x86::py_hex(*offset), ca + offset), &by, "");
+                                           crate::x86::hex_int(*offset), ca + offset), &by, "");
                 continue;
             }
             data_at.entry((name.clone(), None)).or_insert(a);
             name_at((name.clone(), None), a, &by);
             decl(out, a, "name", serde_json::json!({"name": name, "origin": "source", "view": container}), &by,
-                 &format!("view of {container} +{}", crate::x86::py_hex(*offset)));
+                 &format!("view of {container} +{}", crate::x86::hex_int(*offset)));
         }
         if rest.len() == n {
             for (v, a, by) in &rest {
@@ -1365,7 +1365,7 @@ pub fn lits_of(ev: &[std::rc::Rc<Claim>]) -> Vec<Lit> {
 
 pub fn leaks_of(ev: &[std::rc::Rc<Claim>]) -> Vec<Leak> {
     ev.iter().filter(|f| f.s("ekind") == Some("leak")).map(|f| Leak {
-        func: f.lo, path: crate::setup::py_str(f.value.get("path")), stem: crate::setup::py_str(f.value.get("stem")),
+        func: f.lo, path: crate::setup::value_str(f.value.get("path")), stem: crate::setup::value_str(f.value.get("stem")),
         header: f.value.get("header").is_some_and(|h| h.as_bool() == Some(true) || h.as_i64().is_some_and(|n| n != 0)),
     }).collect()
 }

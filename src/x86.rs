@@ -1,4 +1,4 @@
-//! isa/x86.py's instruction diff side: the normalised listing (Isa.listing: each line's text and its typed shape,
+//! The instruction diff side: the normalised listing (Isa.listing: each line's text and its typed shape,
 //! shape.rs, which the explanations of a differing hunk compare), the renaming `dcp asmdiff --regs` prints, and the
 //! decoder the walk of an original's slot and S.codewalk read (X86Decoder, over dis.rs's typed instructions).
 
@@ -35,7 +35,7 @@ re!(reg_re, r"\b(e[abcd]x|e[sd]i|ebp|[abcd][xlh]|[sd]i|bp)\b");
 /// int(s, 0) of the numbers the decoder and the listing write (an optional sign, 0x hex or decimal): the test
 /// listings' (shape::parse).
 #[cfg(test)]
-pub fn py_int0(s: &str) -> i64 {
+pub fn int_auto(s: &str) -> i64 {
     let (neg, t) = match s.strip_prefix('-') {
         Some(r) => (true, r),
         None => (false, s.strip_prefix('+').unwrap_or(s)),
@@ -47,8 +47,8 @@ pub fn py_int0(s: &str) -> i64 {
     if neg { -v } else { v }
 }
 
-/// Python's hex() / format(v, "#x") of a signed value.
-pub fn py_hex(v: i64) -> String {
+/// A signed value in hex (`-0x..` for a negative one).
+pub fn hex_int(v: i64) -> String {
     if v < 0 { format!("-{:#x}", -(v as i128)) } else { format!("{:#x}", v) }
 }
 

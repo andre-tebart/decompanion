@@ -397,7 +397,7 @@ pub fn los(db: &Connection, db_path: &str, kind: &str, rules: &[String], keep: i
 // ------------------------------------------------------------------------------------------------ canonical
 
 /// float.__repr__: the shortest round-trip digits, positional for exponents -4 .. 15, else d.ddde+XX.
-pub fn py_float(out: &mut String, f: f64) {
+pub fn canon_float(out: &mut String, f: f64) {
     if f.is_nan() {
         out.push_str("NaN");
         return;
@@ -456,7 +456,7 @@ pub fn canon(out: &mut String, v: &Value) {
             } else if let Some(u) = n.as_u64() {
                 let _ = write!(out, "{}", u);
             } else {
-                py_float(out, n.as_f64().unwrap_or(0.0));
+                canon_float(out, n.as_f64().unwrap_or(0.0));
             }
         }
         Value::String(s) => put_str(out, s),

@@ -10,7 +10,7 @@
 use crate::clang::CDiag;
 use crate::frontend::{self, Front};
 use crate::fsmemo;
-use crate::project::{py_path, sha256_parts, Project};
+use crate::project::{native_path, sha256_parts, Project};
 use crate::store::canon;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -33,7 +33,7 @@ fn include_headers(root: &str) -> Vec<(String, String)> {
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.to_lowercase().ends_with(".h"))
-        .map(|n| (n.clone(), py_path(&inc.join(&n).to_string_lossy())))
+        .map(|n| (n.clone(), native_path(&inc.join(&n).to_string_lossy())))
         .collect();
     out.sort_by_key(|x| x.0.to_lowercase());
     out
@@ -64,7 +64,7 @@ fn quoted_includes(p: &str) -> Vec<(String, i64)> {
 }
 
 fn unit_sources(root: &str) -> Vec<(String, String)> {
-    let src = py_path(&format!("{root}/src"));
+    let src = native_path(&format!("{root}/src"));
     if !Path::new(&src).exists() {
         return vec![];
     }
@@ -130,7 +130,7 @@ pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
             Some(d) => {
                 results.insert(a.unit.clone(), d);
             }
-            None => jobs.push((Some(a.unit.clone()), key, py_path(&format!("{root}/{}", a.file)), false)),
+            None => jobs.push((Some(a.unit.clone()), key, native_path(&format!("{root}/{}", a.file)), false)),
         }
     }
     let scan = frontend::scan(&root, Some(&p.input_hash("src")?.unwrap_or_default()))?;
@@ -152,7 +152,7 @@ pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
         let out = Path::new(&root).join("build").join("lint").join(&p.target_name).join("alldecls.c");
         std::fs::create_dir_all(out.parent().unwrap()).map_err(|e| e.to_string())?;
         std::fs::write(&out, &text).map_err(|e| e.to_string())?;
-        jobs.push((None, akey.clone(), py_path(&out.to_string_lossy()), true));
+        jobs.push((None, akey.clone(), native_path(&out.to_string_lossy()), true));
     }
     let unit_jobs = jobs.iter().filter(|j| j.0.is_some()).count();
     let keep_one = unit_jobs == 1;

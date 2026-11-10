@@ -4,7 +4,7 @@
 //! trial bench's flags and include order), into build/trial/, the files removed after.
 
 use crate::error::{Error, Result};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 
 fn err(e: impl std::fmt::Display) -> Error {
     Error::value(e.to_string())
@@ -17,7 +17,7 @@ pub fn unit_listing(p: &Project, tu: &crate::plan::Tu, text: &str) -> Result<std
     if !tools.available() {
         return Ok(Err("the toolchain is not available".into()));
     }
-    let full = |r: &str| py_path(&format!("{root}/{r}"));
+    let full = |r: &str| native_path(&format!("{root}/{r}"));
     for d in ["build/trial", "build/obj/trial"] {
         let _ = std::fs::create_dir_all(full(d));
     }
@@ -110,7 +110,7 @@ pub fn of_function(p: &Project, name: &str) -> Result<std::result::Result<(Strin
     let plan = crate::plan::plan(p).map_err(err)?;
     let Some(tu) = plan.iter().find(|t| t.unit == unit) else { return Ok(Err(format!("no unit {unit} in target {}", p.target_name))) };
     let root = p.root.to_string_lossy().into_owned();
-    let text = crate::fsmemo::read_text(&py_path(&format!("{root}/{}", tu.file))).map_err(err)?;
+    let text = crate::fsmemo::read_text(&native_path(&format!("{root}/{}", tu.file))).map_err(err)?;
     let asm = match unit_listing(p, tu, &text)? {
         Ok(a) => a,
         Err(e) => return Ok(Err(e)),

@@ -14,7 +14,7 @@
 use crate::error::{Error, Result};
 use crate::fsmemo;
 use crate::plan::{self, Tu};
-use crate::project::{py_path, sha256_parts, Project};
+use crate::project::{native_path, sha256_parts, Project};
 use crate::store::canon;
 use crate::vc6::{Diag, Tools};
 use crate::with_db;
@@ -182,12 +182,12 @@ pub struct Report {
 }
 
 pub fn obj_path(root: &str, obj_hash: &str) -> String {
-    py_path(&format!("{root}/build/obj/{obj_hash}.obj"))
+    native_path(&format!("{root}/build/obj/{obj_hash}.obj"))
 }
 
 /// The compiler's diagnostics in the unit's file at its physical lines.
 fn located(root: &str, a: &Tu, diags: Vec<Diag>) -> Vec<Diag> {
-    let text = fsmemo::read_text(&py_path(&format!("{root}/{}", a.file))).unwrap_or_default();
+    let text = fsmemo::read_text(&native_path(&format!("{root}/{}", a.file))).unwrap_or_default();
     diags.into_iter().map(|mut d| {
         let hits = if d.file.is_empty() { vec![] } else { plan::locate(&text, &a.file, &d.file, d.line) };
         if let Some(&first) = hits.first() {
@@ -224,14 +224,14 @@ pub fn ensure(p: &Project, force: bool, jobs: Option<usize>) -> Result<Report, S
     if !units.is_empty() && !tools.available() {
         rep.unavailable = true;
         rep.log.push(format!("build: the toolchain is not available (root {}): {} units not compiled",
-                             tools.root.as_deref().unwrap_or("None"), units.len()));
+                             tools.root.as_deref().unwrap_or("none"), units.len()));
         return Ok(rep);
     }
     let rows = tu_keys(&db).map_err(|e| e.to_string())?;
     let memo = Memo::default();
     let dirs = vec!["include".to_string()];
-    let mut search = vec![py_path(&format!("{root}/include"))];
-    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { py_path(&format!("{root}/{d}")) }));
+    let mut search = vec![native_path(&format!("{root}/include"))];
+    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { native_path(&format!("{root}/{d}")) }));
     // (unit, flags, key)
     let mut work: Vec<(&Tu, Vec<String>, String)> = vec![];
     let mut todo_pre = vec![];
@@ -287,7 +287,7 @@ pub fn ensure(p: &Project, force: bool, jobs: Option<usize>) -> Result<Report, S
         let results = run_threads(n, &stale, |&k| {
             let (a, flags, _) = &work[k];
             let tmp = format!("build\\obj\\tmp\\{}\\{}.obj", a.target, a.unit);
-            let tmp_abs = py_path(&format!("{root}/{tmp}"));
+            let tmp_abs = native_path(&format!("{root}/{tmp}"));
             let _ = std::fs::create_dir_all(Path::new(&tmp_abs).parent().unwrap());
             let _ = std::fs::remove_file(&tmp_abs);
             let compile = || tools.compile(&win(&a.file), &tmp, flags, &dirs, &root);
@@ -322,7 +322,7 @@ pub fn ensure(p: &Project, force: bool, jobs: Option<usize>) -> Result<Report, S
             }
             (res, files, obj_hash)
         });
-        let _ = std::fs::create_dir_all(py_path(&format!("{root}/build/obj")));
+        let _ = std::fs::create_dir_all(native_path(&format!("{root}/build/obj")));
         for (k, (res, files, obj_hash)) in stale.iter().zip(results) {
             let (a, flags, key) = &work[*k];
             let res = res?;
@@ -396,7 +396,7 @@ struct VariantRow {
 }
 
 pub fn variant_rows_path(p: &Project, variant: &str) -> String {
-    py_path(&format!("{}/build/variant/{}/{variant}.json", p.root.to_string_lossy(), p.target_name))
+    native_path(&format!("{}/build/variant/{}/{variant}.json", p.root.to_string_lossy(), p.target_name))
 }
 
 /// The objects of a run::Variant (run.rs) of the current target: the units its flags reach, compiled with the unit's
@@ -418,15 +418,15 @@ pub fn ensure_variant(p: &Project, v: &crate::run::Variant, force: bool) -> Resu
     let tools = Tools::of(p);
     if !mine.is_empty() && !tools.available() {
         rep.unavailable = true;
-        rep.log.push(format!("build: the toolchain is not available (root {}): {} units not compiled", tools.root.as_deref().unwrap_or("None"), mine.len()));
+        rep.log.push(format!("build: the toolchain is not available (root {}): {} units not compiled", tools.root.as_deref().unwrap_or("none"), mine.len()));
         return Ok((rep, HashMap::new()));
     }
     let path = variant_rows_path(p, &v.name);
     let old: HashMap<String, VariantRow> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let memo = Memo::default();
     let dirs = vec!["include".to_string()];
-    let mut search = vec![py_path(&format!("{root}/include"))];
-    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { py_path(&format!("{root}/{d}")) }));
+    let mut search = vec![native_path(&format!("{root}/include"))];
+    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { native_path(&format!("{root}/{d}")) }));
     let mut work: Vec<(&Tu, Vec<String>, String)> = vec![];
     for (a, extra) in mine {
         let mut flags = plan::compile_flags(p, &a.unit)?;
@@ -456,7 +456,7 @@ pub fn ensure_variant(p: &Project, v: &crate::run::Variant, force: bool) -> Resu
         let results = run_threads(n, &stale, |&k| {
             let (a, flags, _) = &work[k];
             let tmp = format!("build\\obj\\tmp\\{}@{}\\{}.obj", a.target, v.name, a.unit);
-            let tmp_abs = py_path(&format!("{root}/{tmp}"));
+            let tmp_abs = native_path(&format!("{root}/{tmp}"));
             let _ = std::fs::create_dir_all(Path::new(&tmp_abs).parent().unwrap());
             let _ = std::fs::remove_file(&tmp_abs);
             let files = tools.includes(&win(&a.file), flags, &dirs, &root).ok().filter(|(_, e)| e.is_empty()).map(|(f, _)| f);
@@ -542,8 +542,8 @@ pub fn rename_before(p: &Project, touched: &[String]) -> Result<Vec<Before>, Str
     let rows = tu_rows(&db).map_err(|e| e.to_string())?;
     let keys = tu_keys(&db).map_err(|e| e.to_string())?;
     let memo = Memo::default();
-    let mut search = vec![py_path(&format!("{root}/include"))];
-    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { py_path(&format!("{root}/{d}")) }));
+    let mut search = vec![native_path(&format!("{root}/include"))];
+    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { native_path(&format!("{root}/{d}")) }));
     let mut todo: Vec<(&Tu, Vec<String>)> = vec![];
     for a in units.iter() {
         let (Some(row), Some(k)) = (rows.get(&a.unit), keys.get(&a.unit)) else { continue };
@@ -675,8 +675,8 @@ pub fn rename_after(p: &Project, before: Vec<Before>, mapping: &std::collections
         Ok(Some((crate::vc6::include_files(&text, &win(&a.file), &root), obj_hash)))
     });
     let memo = Memo::default();
-    let mut search = vec![py_path(&format!("{root}/include"))];
-    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { py_path(&format!("{root}/{d}")) }));
+    let mut search = vec![native_path(&format!("{root}/include"))];
+    search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { native_path(&format!("{root}/{d}")) }));
     let olds: Vec<(regex::Regex, &String)> = mapping.iter().map(|(o, n)| (regex::Regex::new(&format!(r"\b{}\b", regex::escape(o))).unwrap(), n)).collect();
     let words = |t: &str| olds.iter().fold(t.to_string(), |t, (r, n)| r.replace_all(&t, regex::NoExpand(n)).into_owned());
     let mut reused = vec![];

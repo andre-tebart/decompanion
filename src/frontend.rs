@@ -15,7 +15,7 @@
 use crate::error::Result;
 use crate::clang::{self, FileModel, ModelOut, Unit};
 use crate::fsmemo;
-use crate::project::{py_path, sha256_parts, Project};
+use crate::project::{native_path, sha256_parts, Project};
 use crate::srcscan::{self, FilePart};
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -67,7 +67,7 @@ impl Front {
     /// The project at root's front end, its libclang loaded.
     pub fn of(root: &str) -> Result<Front, String> {
         let r = Path::new(root);
-        let incdirs = vec![py_path(&r.join("include").to_string_lossy())];
+        let incdirs = vec![native_path(&r.join("include").to_string_lossy())];
         if !r.join(crate::project::CONFIG_NAME).exists() {
             clang::load(&library(None).ok_or(NOT_FOUND)?)?;
             return Ok(Front { root: root.into(), sysdirs: vec![], incdirs, targets: vec![(None, vec![])] });
@@ -94,9 +94,9 @@ pub fn system_dirs(p: &Project) -> Vec<String> {
     let root = p.toolchain_root();
     let raw = p.cfg.get("toolchain").and_then(|t| t.get("include_dirs")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let mut out: Vec<String> = raw.iter().filter_map(|v| v.as_str())
-        .map(|s| py_path(&s.replace("{toolchain.root}", root.as_deref().unwrap_or("")))).collect();
+        .map(|s| native_path(&s.replace("{toolchain.root}", root.as_deref().unwrap_or("")))).collect();
     if let Some(r) = root {
-        out.push(py_path(&format!("{r}/VC98/Include")));
+        out.push(native_path(&format!("{r}/VC98/Include")));
     }
     out.retain(|d| Path::new(d).exists());
     out
@@ -316,7 +316,7 @@ fn clang_version() -> Result<String, String> {
 pub fn project_files(root: &str) -> Vec<(String, String)> {
     let mut files = vec![];
     for (d, pats) in [("src", vec!["*.c".to_string(), "*.h".to_string()]), ("include", vec!["*.h".to_string()])] {
-        let base = py_path(&Path::new(root).join(d).to_string_lossy());
+        let base = native_path(&Path::new(root).join(d).to_string_lossy());
         if Path::new(&base).exists() {
             let mut fs: Vec<(String, String)> = fsmemo::walk(&base, &pats).into_iter().map(|(r, p)| (format!("{d}/{r}"), p)).collect();
             fs.sort();
@@ -354,7 +354,7 @@ impl Scan {
         for p in &self.parts {
             h.update(p.piece.digest().as_bytes());
         }
-        let r = |s: &str| crate::decl::py_repr(s);
+        let r = |s: &str| crate::decl::quote_str(s);
         let rows: Vec<String> = self.own_errors.iter().map(|(f, l, c, m)| format!("({}, {}, {l}, {})", r(c), r(f), r(m))).collect();
         h.update(format!("[{}]", rows.join(", ")).as_bytes());
         fsmemo::hex(&h.finalize())
@@ -545,10 +545,10 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
-        py_path(&d.to_string_lossy())
+        native_path(&d.to_string_lossy())
     }
 
-    /// A unit's file from its parts (conftest.unit): each part ends its line, a blank line between two parts.
+    /// A unit's file from its parts: each part ends its line, a blank line between two parts.
     fn unit_text(parts: &[&str]) -> String {
         parts.iter().filter(|p| !p.is_empty()).map(|p| if p.ends_with('\n') { p.to_string() } else { format!("{p}\n") }).collect::<Vec<_>>().join("\n")
     }
@@ -563,7 +563,7 @@ mod tests {
             return;
         }
         let root = tree("whole", &[("src/a.c", "int x;\n"), ("include/a.h", "int f(void);  /* 0x10001000, f */\n")]);
-        let path = py_path(&format!("{root}/src/a.c"));
+        let path = native_path(&format!("{root}/src/a.c"));
         let args = Front::of(&root).unwrap().args(&[]);
         let (t0, t1) = ("#include \"a.h\"\nint x;\n", "#include \"a.h\"\nint x;\nint y;\n");
         let id = |u: &Unit| Ok(u.tu_id());

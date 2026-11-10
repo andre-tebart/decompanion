@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::layoutview::View;
 use crate::names::Names;
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use crate::store::{self, Claim};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -33,7 +33,7 @@ pub fn tok(v: &Tok) -> String {
         Tok::B(b) => if *b { "yes" } else { "no" }.into(),
         Tok::I(i) => if *i >= 0x100000 { fmt_addr(*i) } else { i.to_string() },
         Tok::R(a, b) => format!("{}..{}", fmt_addr(*a), fmt_addr(*b)),
-        Tok::S(s) => if s.contains(' ') || s.is_empty() { crate::decl::py_repr(s) } else { s.clone() },
+        Tok::S(s) => if s.contains(' ') || s.is_empty() { crate::decl::quote_str(s) } else { s.clone() },
     }
 }
 
@@ -53,7 +53,7 @@ fn oi(x: Option<i64>) -> Tok {
     x.map(Tok::I).unwrap_or(Tok::No)
 }
 
-/// Python's `{x:.Ng}`.
+/// `x` to N significant digits, the shortest form (`%.Ng`).
 pub fn fmt_g(x: f64, prec: usize) -> String {
     if x.is_nan() {
         return "nan".into();
@@ -81,7 +81,7 @@ pub fn fmt_g(x: f64, prec: usize) -> String {
 /// int(s, 16) for 0x..., else int(s, 0).
 pub fn parse_addr(s: &str) -> Result<i64, String> {
     let t = s.trim();
-    let bad = || format!("invalid literal for int(): {}", crate::decl::py_repr(t));
+    let bad = || format!("invalid literal for int(): {}", crate::decl::quote_str(t));
     if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         return i64::from_str_radix(&h.replace('_', ""), 16).map_err(|_| bad());
     }
@@ -442,7 +442,7 @@ fn dump(r: &Reader, addr: &str, len: Option<&str>, strings: bool, dwords: bool, 
         for s_ in row..row + chunk.len() as i64 {
             for f in starts.get(&s_).into_iter().flatten() {
                 let nm = r.name(f.lo);
-                tags.push(format!("{}@{:#x}{}{}", crate::setup::py_str(f.value.get("skind")), f.lo, nm.map(|n| format!("={n}")).unwrap_or_default(),
+                tags.push(format!("{}@{:#x}{}{}", crate::setup::value_str(f.value.get("skind")), f.lo, nm.map(|n| format!("={n}")).unwrap_or_default(),
                                   if f.lo < a { format!("..{:#x}", f.hi) } else { String::new() }));
             }
         }
@@ -495,7 +495,7 @@ fn dump(r: &Reader, addr: &str, len: Option<&str>, strings: bool, dwords: bool, 
 fn source_files(root: &str) -> Vec<String> {
     let mut out = vec![];
     for (d, pats) in [("src", vec!["*.c".to_string(), "*.h".to_string()]), ("include", vec!["*.h".to_string()])] {
-        let base = py_path(&format!("{root}/{d}"));
+        let base = native_path(&format!("{root}/{d}"));
         if Path::new(&base).exists() {
             let mut fs: Vec<String> = crate::fsmemo::walk(&base, &pats).into_iter().map(|x| x.1).collect();
             fs.sort_by_key(|p| p.to_lowercase().replace('\\', "\u{1}"));
@@ -537,9 +537,9 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
                               ("support", os(sym.as_ref().map(|f| f.support.name()))), ("unit", os(unit.as_ref().and_then(|f| f.s("tu").map(|x| x.to_string()))))]));
             if let Some(f) = &src {
                 let file = f.s("file").unwrap_or("");
-                let path = py_path(&format!("{root}/{file}"));
+                let path = native_path(&format!("{root}/{file}"));
                 let first = if Path::new(&path).exists() { read_text_locale(&path).split('\n').next().unwrap_or("").trim().to_string() } else { String::new() };
-                out.push(format!("  {}", record(&[("definition", s(format!("{file}:{}", crate::setup::py_str(f.value.get("line"))))),
+                out.push(format!("  {}", record(&[("definition", s(format!("{file}:{}", crate::setup::value_str(f.value.get("line"))))),
                                                   ("symbol", s(f.s("symbol").unwrap_or(""))), ("comment", s(first))])));
             }
             for f in r.facts_in("name", a, a + 1)?.iter().filter(|f| f.lo == a) {
@@ -591,7 +591,7 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
         scan_file(&path, &mut out);
     }
     for path in crate::decl::files(&root) {
-        scan_file(&py_path(&path.to_string_lossy()), &mut out);
+        scan_file(&native_path(&path.to_string_lossy()), &mut out);
     }
     out.push(format!("  source_lines={hits}  names={}", if idents.is_empty() { "-".to_string() } else { idents.into_iter().collect::<Vec<_>>().join(",") }));
     Ok((out, None))
@@ -673,7 +673,7 @@ fn layout_literals(r: &Reader, v: &View, what: Option<&str>) -> Result<Out> {
                 unit = Some(u.tu.clone());
                 (u.lo, u.hi)
             }
-            None => return Ok((vec![], Some(format!("no unit {} (dcp layout units), and not a range 0xLO..0xHI", crate::decl::py_repr(w))))),
+            None => return Ok((vec![], Some(format!("no unit {} (dcp layout units), and not a range 0xLO..0xHI", crate::decl::quote_str(w))))),
         },
     };
     let targets = literal_targets(r, v)?;
@@ -774,7 +774,7 @@ fn layout_fptrs(r: &Reader, v: &View, what: Option<&str>) -> Result<Out> {
         }
         Some(w) => match v.units.iter().find(|u| u.tu == w) {
             Some(u) => by_target = Some((u.lo, u.hi)),
-            None => return Ok((vec![], Some(format!("no unit {} (dcp layout units), and not a range 0xLO..0xHI", crate::decl::py_repr(w))))),
+            None => return Ok((vec![], Some(format!("no unit {} (dcp layout units), and not a range 0xLO..0xHI", crate::decl::quote_str(w))))),
         },
     }
     let mut rows: Vec<(i64, String, i64)> = vec![];
@@ -836,7 +836,7 @@ fn layout_starts(r: &Reader, v: &View, range: Option<&str>) -> Result<Out> {
     for a in rows {
         let nxt = ends.get(ends.partition_point(|&x| x <= a)).copied().unwrap_or(hi);
         let hows: Vec<&str> = starts[&a].iter().map(|h| h.as_str()).filter(|h| !h.is_empty()).collect();
-        let fill = v.fills.get(&a).and_then(|x| x.get("pre")).map(|x| crate::setup::py_str(Some(x)));
+        let fill = v.fills.get(&a).and_then(|x| x.get("pre")).map(|x| crate::setup::value_str(Some(x)));
         out.push(record(&[("start", Tok::I(a)), ("how", s(if hows.is_empty() { "symbol".to_string() } else { hows.join(",") })),
                           ("callers", Tok::I(callers.get(&a).copied().unwrap_or(0))), ("size", Tok::I(nxt - a)),
                           ("extent", fn_at.get(&a).map(|x| Tok::R(x.0, x.1)).unwrap_or(Tok::No)), ("fill", os(fill)),
@@ -920,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn python_formats() {
+    fn number_formats() {
         assert_eq!(fmt_g(1.5, 7), "1.5");
         assert_eq!(fmt_g(0.1, 7), "0.1");
         assert_eq!(fmt_g(1e20, 7), "1e+20");

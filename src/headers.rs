@@ -44,15 +44,15 @@
 //! would leave it (build/obj/trial/, removed after) and grades every function of the unit against the original as
 //! G.grade grades its code (byte by M.match's compare, else shape / draft by the instruction diff over the extent and
 //! slot of its grade row): the falls (exit 1) and the rises, the declaration set's effect itself; nothing is written.
-//! Positions are in characters, as Python's str offsets were.
+//! Positions are in characters.
 
 use crate::error::{Error, Result};
 use crate::clang::{CDiag, FileModel};
 use crate::cliread::{fmt_addr, record, Tok};
 use crate::frontend::{self, Front, Scan};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use crate::readability::Source;
-use crate::srcscan::{py_strip, Src};
+use crate::srcscan::{trim_space, Src};
 use crate::store;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -107,12 +107,12 @@ fn ci(s: &str, byte: usize) -> usize {
 }
 
 fn read(root: &str, rel: &str) -> String {
-    crate::fsmemo::read_text(&py_path(&format!("{root}/{rel}"))).unwrap_or_default()
+    crate::fsmemo::read_text(&native_path(&format!("{root}/{rel}"))).unwrap_or_default()
 }
 
-/// Python's `" ".join(x.split())`.
+/// The words of x joined by one space.
 fn collapse(x: &str) -> String {
-    x.split(crate::srcscan::py_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+    x.split(crate::srcscan::is_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 // ------------------------------------------------------------------------------------------------ the diagnostics
@@ -208,7 +208,7 @@ impl std::ops::Deref for Ctx<'_> {
 impl Texts {
     /// The front end's model of one text parsed alone (no unit around it).
     fn model_alone(&self, rel: &str, text: &str) -> Arc<FileModel> {
-        let path = py_path(&format!("{}/{rel}", self.root));
+        let path = native_path(&format!("{}/{rel}", self.root));
         let r = rel.replace('\\', "/");
         let m = frontend::parse_model(&self.root, &path, &self.front.args(&[]), text, false).ok();
         Arc::new(m.and_then(|m| m.files.into_iter().find(|(x, _)| *x == r).map(|x| x.1)).unwrap_or_default())
@@ -217,7 +217,7 @@ impl Texts {
     /// The scan's model of a file when text is the file as it is on disk, else None.
     fn model_of(&self, rel: &str, text: &str) -> Option<Arc<FileModel>> {
         let scan = self.scan.as_ref()?;
-        let disk = crate::fsmemo::read_text(&py_path(&format!("{}/{rel}", self.root))).ok()?;
+        let disk = crate::fsmemo::read_text(&native_path(&format!("{}/{rel}", self.root))).ok()?;
         (disk == text).then(|| scan.models.get(rel).cloned().unwrap_or_default())
     }
 
@@ -257,7 +257,7 @@ impl Texts {
         while let Some(h) = todo.pop_front() {
             let name = Path::new(&h).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let rel = format!("include/{name}");
-            if Path::new(&py_path(&format!("{}/{rel}", self.root))).exists() && !out.contains(&rel) {
+            if Path::new(&native_path(&format!("{}/{rel}", self.root))).exists() && !out.contains(&rel) {
                 let text = read(&self.root, &rel);
                 out.push(rel);
                 todo.extend(INCLUDE_LINE.captures_iter(&text).map(|c| c[1].to_string()));
@@ -321,8 +321,8 @@ fn live_code(src: &Source, m: &FileModel) -> String {
     let mut cont = false;
     let mut out: Vec<String> = vec![];
     for (n, ln) in code.split('\n').enumerate() {
-        let directive = cont || ln.trim_start_matches(crate::srcscan::py_space).starts_with('#');
-        cont = directive && ln.trim_end_matches(crate::srcscan::py_space).ends_with('\\');
+        let directive = cont || ln.trim_start_matches(crate::srcscan::is_space).starts_with('#');
+        cont = directive && ln.trim_end_matches(crate::srcscan::is_space).ends_with('\\');
         out.push(if directive || dead.contains(&(n as i64 + 1)) { " ".repeat(ln.chars().count()) } else { ln.to_string() });
     }
     out.join("\n")
@@ -386,14 +386,14 @@ fn include_pos(x: &Texts, rel: &str, text: &str, names: &HashSet<String>) -> usi
     }
     // line i is right below a comment line (text that is no code and no directive)
     let below_comment = |i: usize| i > 0 && {
-        let r = raw[i - 1].trim_matches(crate::srcscan::py_space);
-        !r.is_empty() && !r.starts_with('#') && code_lines.get(i - 1).is_some_and(|c| py_strip(c).is_empty())
+        let r = raw[i - 1].trim_matches(crate::srcscan::is_space);
+        !r.is_empty() && !r.starts_with('#') && code_lines.get(i - 1).is_some_and(|c| trim_space(c).is_empty())
     };
     let (mut ok, mut depth, mut prev) = (vec![], 0i64, ';');
     for (i, l) in code_lines.iter().enumerate() {
         ok.push(depth == 0 && !inside.contains(&i) && matches!(prev, ';' | '}' | '#') && !below_comment(i));
-        let t = py_strip(l);
-        if raw.get(i).is_some_and(|r| r.trim_start_matches(crate::srcscan::py_space).starts_with('#')) {
+        let t = trim_space(l);
+        if raw.get(i).is_some_and(|r| r.trim_start_matches(crate::srcscan::is_space).starts_with('#')) {
             prev = '#';
         } else if !t.is_empty() {
             prev = t.chars().last().unwrap();
@@ -464,7 +464,7 @@ fn drop_names(line: &str, names: &HashSet<String>) -> Option<String> {
         let chunks: Vec<&str> = g2.as_str().split(',').collect();
         // each declarator's name and where it starts in its chunk (the part before `=`, trailing space cut)
         let heads: Vec<Option<(usize, String)>> = chunks.iter().map(|c| {
-            let t = c.split('=').next().unwrap_or("").trim_end_matches(crate::srcscan::py_space);
+            let t = c.split('=').next().unwrap_or("").trim_end_matches(crate::srcscan::is_space);
             DECLARATOR.captures(t).map(|cp| (ci(c, cp.get(0).unwrap().start()), cp[1].to_string()))
         }).collect();
         if heads.iter().any(|h| h.is_none()) {
@@ -483,7 +483,7 @@ fn drop_names(line: &str, names: &HashSet<String>) -> Option<String> {
             starts.push(starts.last().unwrap() + c.chars().count() + 1);
         }
         let decls: Vec<String> = kept.iter().map(|&i| {
-            py_strip(&sub(starts[i] + if i == 0 { spec } else { 0 }, starts[i] + chunks[i].chars().count())).to_string()
+            trim_space(&sub(starts[i] + if i == 0 { spec } else { 0 }, starts[i] + chunks[i].chars().count())).to_string()
         }).collect();
         out.push(sub(pos, ms));
         if !kept.is_empty() {
@@ -493,11 +493,11 @@ fn drop_names(line: &str, names: &HashSet<String>) -> Option<String> {
         at = next_at;
     }
     out.push(sub(pos, lc.len()));
-    let new = out.concat().trim_end_matches(crate::srcscan::py_space).to_string();
-    if py_strip(&chars(&Source::new(&new).code)).is_empty() {
+    let new = out.concat().trim_end_matches(crate::srcscan::is_space).to_string();
+    if trim_space(&chars(&Source::new(&new).code)).is_empty() {
         return None;
     }
-    Some(if line.chars().next().is_some_and(crate::srcscan::py_space) { new } else { new.trim_start_matches(crate::srcscan::py_space).to_string() })
+    Some(if line.chars().next().is_some_and(crate::srcscan::is_space) { new } else { new.trim_start_matches(crate::srcscan::is_space).to_string() })
 }
 
 /// A head line with its duplicates `names` dropped; a line whose declarations (`line_names`) are all duplicates but
@@ -520,7 +520,7 @@ impl Reader {
     fn raw(&mut self, loc: &str) -> String {
         let (f, n) = loc.rsplit_once(':').unwrap_or(("", loc));
         if !self.memo.contains_key(f) {
-            let p = if Path::new(f).is_absolute() { py_path(f) } else { py_path(&format!("{}/{f}", self.root)) };
+            let p = if Path::new(f).is_absolute() { native_path(f) } else { native_path(&format!("{}/{f}", self.root)) };
             let ls = if Path::new(&p).exists() {
                 crate::fsmemo::read_text(&p).unwrap_or_default().split('\n').map(|l| l.to_string()).collect()
             } else {
@@ -529,7 +529,7 @@ impl Reader {
             self.memo.insert(f.to_string(), ls);
         }
         let ls = &self.memo[f];
-        match py_strip(n).parse::<usize>() {
+        match trim_space(n).parse::<usize>() {
             Ok(k) if k > 0 && k <= ls.len() => ls[k - 1].clone(),
             _ => String::new(),
         }
@@ -575,7 +575,7 @@ fn map_diags(a: &crate::plan::Tu, text: &str, rel: &str, diags: Vec<Dg>) -> Vec<
 fn project_rel(root: &str, f: &str) -> String {
     let full = if Path::new(f).is_absolute() { f.to_string() } else { format!("{root}/{f}") };
     let canon = |p: &str| -> String {
-        let c = std::fs::canonicalize(p).map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| py_path(p));
+        let c = std::fs::canonicalize(p).map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| native_path(p));
         c.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(c)
     };
     let (cf, cr) = (canon(&full), canon(root));
@@ -642,15 +642,15 @@ fn trial(x: &Ctx, unit: &str, headers: &[String], drop: &BTreeMap<i64, HashSet<S
     }
     let new = insert_includes(&kept.join("\n"), headers, kpos.max(0) as usize);
     let dir = format!("build/lint/{}/trial", p.target_name);
-    std::fs::create_dir_all(py_path(&format!("{}/{dir}", x.root))).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(native_path(&format!("{}/{dir}", x.root))).map_err(|e| e.to_string())?;
     let (rb, rn) = (format!("{dir}/{unit}.base.c"), format!("{dir}/{unit}.trial.c"));
-    std::fs::write(py_path(&format!("{}/{rb}", x.root)), &old).map_err(|e| e.to_string())?;
-    std::fs::write(py_path(&format!("{}/{rn}", x.root)), &new).map_err(|e| e.to_string())?;
+    std::fs::write(native_path(&format!("{}/{rb}", x.root)), &old).map_err(|e| e.to_string())?;
+    std::fs::write(native_path(&format!("{}/{rn}", x.root)), &new).map_err(|e| e.to_string())?;
     let args = x.front.args(&[]);
     let tools = crate::vc6::Tools::of(p);
     let root = x.root.as_str();
     let clang = |rel: &str, text: &str| -> Result<Vec<Dg>, String> {
-        let path = py_path(&format!("{root}/{rel}"));
+        let path = native_path(&format!("{root}/{rel}"));
         let ds = frontend::with_parse(&path, &args, text, false, |u| u.diags(root, text, false).map_err(|e| e.to_string()))?;
         Ok(ds.iter().map(Dg::from).collect())
     };
@@ -882,7 +882,7 @@ fn analyse(x: &Ctx, unit: &str, headers: &[String], at: Option<i64>) -> Result<R
         let found = call_sites(x, &t.unit, &callee);
         let sites = if found.is_empty() { sites } else { found };
         let classes: Vec<(String, i64, (bool, &str))> = sites.iter().map(|(f, ln)| {
-            let p = py_path(&format!("{root}/{f}"));
+            let p = native_path(&format!("{root}/{f}"));
             let text = Path::new(&p).exists().then(|| read(root, f));
             (f.clone(), *ln, call_class(text.as_deref(), *ln, &callee, hdr_decls.get(&callee)))
         }).collect();
@@ -947,17 +947,17 @@ fn declaration_set(x: &Ctx, a: &crate::plan::Tu, head: &str, hdr_names: &[(Strin
 
 /// int | float | string | expr: the class of one call argument.
 fn arg_kind(arg: &str) -> &'static str {
-    let mut s = py_strip(arg).to_string();
+    let mut s = trim_space(arg).to_string();
     loop {
         let Some(m) = CAST.find(&s) else { break };
-        let rest = py_strip(&s[m.end()..]).to_string();
+        let rest = trim_space(&s[m.end()..]).to_string();
         if rest.is_empty() {
             break;
         }
         s = rest;
     }
     while s.starts_with('(') && s.ends_with(')') && s.len() >= 2 {
-        s = py_strip(&s[1..s.len() - 1]).to_string();
+        s = trim_space(&s[1..s.len() - 1]).to_string();
     }
     if s.starts_with('"') {
         "string"
@@ -1008,10 +1008,10 @@ fn call_args(text: &str, line: i64, callee: &str) -> Option<Vec<String>> {
         }
         i += 1;
     }
-    if !py_strip(&cur).is_empty() || !args.is_empty() {
+    if !trim_space(&cur).is_empty() || !args.is_empty() {
         args.push(cur);
     }
-    Some(args.iter().map(|a| py_strip(a).to_string()).collect())
+    Some(args.iter().map(|a| trim_space(a).to_string()).collect())
 }
 
 /// (safe, why) of a call that compiled without a prototype and gets the header's: safe when every argument is a
@@ -1026,7 +1026,7 @@ fn call_class(text: Option<&str>, line: i64, callee: &str, decl: Option<&crate::
         if let Some(k) = sp[from.min(sp.len())..].iter().position(|&c| c == '(').map(|k| k + from) {
             let close = sp.iter().rposition(|&c| c == ')').unwrap_or(sp.len().saturating_sub(1));
             let inner = if k + 1 <= close { chars(&sp[k + 1..close]) } else { String::new() };
-            params = inner.split(',').map(|p| py_strip(p).to_string()).collect();
+            params = inner.split(',').map(|p| trim_space(p).to_string()).collect();
         }
     }
     let kinds: Vec<&str> = args.iter().map(|a| arg_kind(a)).collect();
@@ -1092,7 +1092,7 @@ fn call_evidence(x: &Ctx, names: &crate::names::Names, func: Option<i64>, callee
 fn resolve_header(root: &str, h: &str) -> Option<String> {
     let base = Path::new(h).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let name = if h.ends_with(".h") { base } else { format!("{base}.h") };
-    Path::new(&py_path(&format!("{root}/include/{name}"))).exists().then_some(name)
+    Path::new(&native_path(&format!("{root}/include/{name}"))).exists().then_some(name)
 }
 
 /// --trial: the unit's text with the includes (and without the head's duplicates, as --write would leave it)
@@ -1112,7 +1112,7 @@ fn trial_grades(p: &Project, unit: &crate::plan::Tu, text: &str) -> Result<Resul
     };
     let index = o.function_index();
     let bench = crate::tiebreak::Bench::of(p)?;
-    let base: HashMap<i64, String> = crate::queues::parse_baseline(&crate::fsmemo::read_text(&py_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default())
+    let base: HashMap<i64, String> = crate::queues::parse_baseline(&crate::fsmemo::read_text(&native_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default())
         .into_iter().filter(|x| x.0 .0 == p.target_name).map(|x| (x.0 .1, x.1.code)).collect();
     let mut out = vec![];
     for r in crate::queues::function_grades(&db)?.iter().filter(|r| r["unit"].as_str() == Some(unit.unit.as_str())) {
@@ -1325,7 +1325,7 @@ pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<S
         }
         return Ok((out, 1));
     }
-    std::fs::write(py_path(&format!("{root}/{}", t.unit.file)), t.new.replace(TRIAL_MARK, "")).map_err(err)?;
+    std::fs::write(native_path(&format!("{root}/{}", t.unit.file)), t.new.replace(TRIAL_MARK, "")).map_err(err)?;
     let included: Vec<String> = hdrs.iter().filter(|h| !t.already.contains(h)).cloned().collect();
     out.push(record(&[("write", s(t.unit.file.clone())), ("included", s(included.join(","))), ("at", Tok::I(t.pos as i64 + 1)),
                       ("dropped", Tok::I(drop.values().map(|v| v.len() as i64).sum())), ("lines", Tok::I(drop.len() as i64))])

@@ -42,7 +42,7 @@ use crate::cliread::{fmt_addr, record, Tok};
 use crate::edit as E;
 use crate::layoutview::View;
 use crate::names::Names;
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -255,8 +255,8 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
     }
     let name = x.function_name(&tu, a);
     let rel = format!("src/{tu}.c");
-    let head = py_path(&format!("{root}/{rel}"));
-    let header = py_path(&format!("{root}/include/{tu}.h"));
+    let head = native_path(&format!("{root}/{rel}"));
+    let header = native_path(&format!("{root}/include/{tu}.h"));
     let Some(e) = x.entries.get(&a).filter(|e| !e.body.trim().is_empty()) else {
         return Ok(Err(format!("no Ghidra draft at {a:#x}: dcp setup runs Ghidra's export (dcp draft --show {a:#x})")));
     };
@@ -275,11 +275,11 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
         d.renamed = olds.into_iter().map(|o| (o, name.clone())).collect();
         E::rename_words(root, &d.renamed, false, None).map_err(err)?;
     }
-    let mut cs: Vec<String> = std::fs::read_dir(py_path(&format!("{root}/src"))).into_iter().flatten().flatten()
+    let mut cs: Vec<String> = std::fs::read_dir(native_path(&format!("{root}/src"))).into_iter().flatten().flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".c")).collect();
     cs.sort();
     for f in cs {
-        if E::drop_declarations(&py_path(&format!("{root}/src/{f}")), &name).map_err(err)? {
+        if E::drop_declarations(&native_path(&format!("{root}/src/{f}")), &name).map_err(err)? {
             d.declared.push(format!("dropped the declaration of {name} from src/{f}'s dcp block"));
         }
     }
@@ -313,7 +313,7 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
 fn ensure_types_header(root: &str, head: &str, rel: &str, unit: &str, shipped: (&str, &str), d: &mut Draft, end: usize) -> Result<String, String> {
     let (name, want) = shipped;
     let line = format!("#include \"{name}\"");
-    let dh = py_path(&format!("{root}/include/{name}"));
+    let dh = native_path(&format!("{root}/include/{name}"));
     let have = Path::new(&dh).exists();
     if !have || std::fs::read_to_string(&dh).map(|t| t.replace("\r\n", "\n")).unwrap_or_default() != want {
         d.declared.push(format!("{} include/{name} (the analyzer's type names)", if have { "updated" } else { "wrote" }));
@@ -341,7 +341,7 @@ fn ensure_types_header(root: &str, head: &str, rel: &str, unit: &str, shipped: (
 /// front end's model of the header.
 fn header_declaring(root: &str, name: &str, unit: &str) -> Result<Option<String>> {
     let skip = [crate::ghidra::GHIDRA_HEADER.0];
-    let mut hs: Vec<String> = std::fs::read_dir(py_path(&format!("{root}/include"))).into_iter().flatten().flatten()
+    let mut hs: Vec<String> = std::fs::read_dir(native_path(&format!("{root}/include"))).into_iter().flatten().flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.to_lowercase().ends_with(".h")).collect();
     hs.sort_by_key(|h| (h[..h.len() - 2] != *unit, h.clone()));
     let scan = crate::frontend::scan(root, None).map_err(err)?;

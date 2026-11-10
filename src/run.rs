@@ -12,12 +12,12 @@
 //!                starts.
 //!
 //! The core builds and stages and writes the launch spec build/run/<run>.json; the process the user typed `dcp`
-//! in runs the steps and the program (launch.py): the daemon has no window to start a game in.
+//! in runs the steps and the program: the daemon has no window to start a game in.
 
 use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::fsmemo;
-use crate::project::{py_path, toml_json, Project, CONFIG_NAME};
+use crate::project::{native_path, toml_json, Project, CONFIG_NAME};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -128,7 +128,7 @@ fn name_of(t: &toml::Table, kind: &str, i: usize) -> Result<String, String> {
         return Err(format!("{CONFIG_NAME}: {kind} #{} has no name", i + 1));
     }
     if !crate::project::is_identifier(n) {
-        return Err(format!("{CONFIG_NAME}: {kind} name {} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)", crate::decl::py_repr(n)));
+        return Err(format!("{CONFIG_NAME}: {kind} name {} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)", crate::decl::quote_str(n)));
     }
     Ok(n.to_string())
 }
@@ -150,7 +150,7 @@ fn commands(t: &toml::Table, key: &str, what: &str) -> Result<Vec<Vec<String>>, 
 fn dup(names: &[&str], kind: &str) -> Result<(), String> {
     for (i, n) in names.iter().enumerate() {
         if names[..i].contains(n) {
-            return Err(format!("{CONFIG_NAME}: {kind} {} declared twice", crate::decl::py_repr(n)));
+            return Err(format!("{CONFIG_NAME}: {kind} {} declared twice", crate::decl::quote_str(n)));
         }
     }
     Ok(())
@@ -161,7 +161,7 @@ pub fn parse(cfg: &toml::Table) -> Result<RunCfg, String> {
     let mut out = RunCfg::default();
     for (i, t) in tables(cfg.get("variant"), "variant")?.into_iter().enumerate() {
         let name = name_of(t, "variant", i)?;
-        let what = format!("variant {}", crate::decl::py_repr(&name));
+        let what = format!("variant {}", crate::decl::quote_str(&name));
         check_keys(t, &VARIANT_KEYS, &what)?;
         let mut units = vec![];
         for (k, u) in tables(t.get("unit"), "variant.unit")?.into_iter().enumerate() {
@@ -177,7 +177,7 @@ pub fn parse(cfg: &toml::Table) -> Result<RunCfg, String> {
     }
     for (i, t) in tables(cfg.get("setup"), "setup")?.into_iter().enumerate() {
         let name = name_of(t, "setup", i)?;
-        let what = format!("setup {}", crate::decl::py_repr(&name));
+        let what = format!("setup {}", crate::decl::quote_str(&name));
         check_keys(t, &SETUP_KEYS, &what)?;
         let mut stages = vec![];
         for (k, s) in tables(t.get("stage"), "setup.stage")?.into_iter().enumerate() {
@@ -199,18 +199,18 @@ pub fn parse(cfg: &toml::Table) -> Result<RunCfg, String> {
     }
     for (i, t) in tables(cfg.get("run"), "run")?.into_iter().enumerate() {
         let name = name_of(t, "run", i)?;
-        let what = format!("run {}", crate::decl::py_repr(&name));
+        let what = format!("run {}", crate::decl::quote_str(&name));
         check_keys(t, &RUN_KEYS, &what)?;
         let str_of = |k: &str| t.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
         let variant = str_of("variant");
         if let Some(v) = &variant {
             if !out.variants.iter().any(|x| &x.name == v) {
-                return Err(format!("{CONFIG_NAME}: {what}: no [[variant]] {}", crate::decl::py_repr(v)));
+                return Err(format!("{CONFIG_NAME}: {what}: no [[variant]] {}", crate::decl::quote_str(v)));
             }
         }
         let setup = str_of("setup").ok_or_else(|| format!("{CONFIG_NAME}: {what} names no setup"))?;
         if !out.setups.iter().any(|s| s.name == setup) {
-            return Err(format!("{CONFIG_NAME}: {what}: no [[setup]] {}", crate::decl::py_repr(&setup)));
+            return Err(format!("{CONFIG_NAME}: {what}: no [[setup]] {}", crate::decl::quote_str(&setup)));
         }
         let env = match t.get("env") {
             None => vec![],
@@ -233,7 +233,7 @@ pub fn parse(cfg: &toml::Table) -> Result<RunCfg, String> {
         };
         let dump = str_of("dump").unwrap_or_else(|| "full".into());
         if !DUMPS.contains(&dump.as_str()) {
-            return Err(format!("{CONFIG_NAME}: {what}: dump {} is none of {}", crate::decl::py_repr(&dump), DUMPS.join(", ")));
+            return Err(format!("{CONFIG_NAME}: {what}: dump {} is none of {}", crate::decl::quote_str(&dump), DUMPS.join(", ")));
         }
         out.runs.push(RunProfile { name, variant, setup, args: strs(t, "args", &what)?, env, seconds, debug, dump });
     }
@@ -250,7 +250,7 @@ impl Project {
 
     pub fn variant(&self, name: &str) -> Result<Variant, String> {
         let c = self.run_cfg()?;
-        c.variants.into_iter().find(|v| v.name == name).ok_or_else(|| format!("no [[variant]] {}", crate::decl::py_repr(name)))
+        c.variants.into_iter().find(|v| v.name == name).ok_or_else(|| format!("no [[variant]] {}", crate::decl::quote_str(name)))
     }
 }
 
@@ -426,7 +426,7 @@ pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seco
     let c = p.run_cfg().map_err(err)?;
     let Some(r) = c.runs.iter().find(|r| r.name == name) else {
         let names: Vec<&str> = c.runs.iter().map(|r| r.name.as_str()).collect();
-        return Ok((vec![], Some(format!("no [[run]] {} (runs: {})", crate::decl::py_repr(name), if names.is_empty() { "none".into() } else { names.join(", ") })), None));
+        return Ok((vec![], Some(format!("no [[run]] {} (runs: {})", crate::decl::quote_str(name), if names.is_empty() { "none".into() } else { names.join(", ") })), None));
     };
     let setup = c.setups.iter().find(|s| s.name == r.setup).cloned().ok_or_else(|| err(format!("no [[setup]] {}", r.setup)))?;
     let target = &p.target;
@@ -434,11 +434,11 @@ pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seco
     let mut lines = vec![];
     // the program: the variant's link, else the main link
     let link_dir = match &r.variant {
-        Some(v) => py_path(&format!("{root}/build/link/{}/{v}", target.name)),
-        None => py_path(&format!("{root}/build/link/{}", target.name)),
+        Some(v) => native_path(&format!("{root}/build/link/{}/{v}", target.name)),
+        None => native_path(&format!("{root}/build/link/{}", target.name)),
     };
     let exe_name = Path::new(&target.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let built = PathBuf::from(py_path(&format!("{link_dir}/{exe_name}")));
+    let built = PathBuf::from(native_path(&format!("{link_dir}/{exe_name}")));
     if !no_build {
         let (ok, ls) = match &r.variant {
             Some(v) => {
@@ -479,7 +479,7 @@ pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seco
     let exe = dir.join(setup.exe.clone().unwrap_or(exe_name));
     st.exe_copied = place_exe(&built, &exe).map_err(err)?;
     let s = |x: &Path| x.to_string_lossy().into_owned();
-    let map = py_path(&format!("{link_dir}/{}.map", target.name));
+    let map = native_path(&format!("{link_dir}/{}.map", target.name));
     let hook_env: BTreeMap<&str, String> = [
         ("DCP_ROOT", root.clone()), ("DCP_TARGET", target.name.clone()), ("DCP_VARIANT", r.variant.clone().unwrap_or_default()),
         ("DCP_RUN", r.name.clone()), ("DCP_SETUP", setup.name.clone()), ("DCP_RUN_DIR", s(&dir)), ("DCP_EXE", s(&exe)),
@@ -492,9 +492,9 @@ pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seco
     if !DUMPS.contains(&dump.as_str()) {
         return Ok((lines, Some(format!("--dump {dump}: none of {}", DUMPS.join(", "))), None));
     }
-    let symbols = py_path(&format!("{root}/build/run/{name}.symbols.tsv"));
+    let symbols = native_path(&format!("{root}/build/run/{name}.symbols.tsv"));
     if debug {
-        std::fs::create_dir_all(py_path(&format!("{root}/build/run"))).map_err(|e| err(e.to_string()))?;
+        std::fs::create_dir_all(native_path(&format!("{root}/build/run"))).map_err(|e| err(e.to_string()))?;
         if let Err(e) = run_symbols(p, &hook_env["DCP_MAP"], &symbols, r.variant.as_deref()) {
             lines.push(format!("  note the symbol table is not written ({e}): crash reports name module offsets only"));
         }
@@ -503,9 +503,9 @@ pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seco
         "run": r.name, "root": root, "dir": s(&dir), "exe": s(&exe), "args": args,
         "env": Value::Object(r.env.iter().map(|(k, v)| (k.clone(), json!(v))).collect()),
         "seconds": seconds.unwrap_or(r.seconds), "steps": setup.steps, "after": setup.after, "hook_env": hook_env,
-        "debug": debug, "dump": dump, "symbols": symbols, "crash_root": py_path(&format!("{root}/build/crash")),
+        "debug": debug, "dump": dump, "symbols": symbols, "crash_root": native_path(&format!("{root}/build/crash")),
     });
-    let spec_path = py_path(&format!("{root}/build/run/{name}.json"));
+    let spec_path = native_path(&format!("{root}/build/run/{name}.json"));
     std::fs::create_dir_all(Path::new(&spec_path).parent().unwrap()).map_err(|e| err(e.to_string()))?;
     std::fs::write(&spec_path, serde_json::to_string_pretty(&spec).unwrap_or_default()).map_err(|e| err(format!("{spec_path}: {e}")))?;
     lines.push(record(&[("run", Tok::S(r.name.clone())), ("dir", Tok::S(crate::vc6::rel_to(&root, &s(&dir)))), ("exe", Tok::S(exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())),

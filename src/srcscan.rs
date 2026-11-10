@@ -16,17 +16,17 @@ type Addrs = Vec<(Option<String>, u64)>;
 type Lc = (i64, i64);
 
 /// str.isspace: Unicode white space and the separators U+001C..U+001F.
-pub(crate) fn py_space(c: char) -> bool {
+pub(crate) fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
 }
 
-pub(crate) fn py_strip(s: &str) -> &str {
-    s.trim_matches(py_space)
+pub(crate) fn trim_space(s: &str) -> &str {
+    s.trim_matches(is_space)
 }
 
 /// " ".join(s.split())
-pub(crate) fn py_words(s: &str) -> String {
-    s.split(py_space).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
+pub(crate) fn squeeze_words(s: &str) -> String {
+    s.split(is_space).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 const ADDR_ITEM: &str = r"(?:[A-Za-z][A-Za-z0-9_-]*:)?0x[0-9a-fA-F]+";
@@ -222,7 +222,7 @@ impl<'a> Src<'a> {
         s.cstarts = s.comments.iter().map(|c| c.0).collect();
         for (i, &(a, b, _)) in s.comments.iter().enumerate() {
             let bol = text[..a].rfind('\n').map(|x| x + 1).unwrap_or(0);
-            if py_strip(&text[bol..a]).is_empty() {
+            if trim_space(&text[bol..a]).is_empty() {
                 s.own.insert(b, i);
             }
         }
@@ -244,7 +244,7 @@ impl<'a> Src<'a> {
     /// The offset before the white space that ends at off (Source.end_before).
     fn end_before(&self, off: usize) -> usize {
         let t = &self.text[..off];
-        t.trim_end_matches(py_space).len()
+        t.trim_end_matches(is_space).len()
     }
 
     fn char_at(&self, s: &str, i: usize) -> Option<char> {
@@ -319,7 +319,7 @@ impl Piece {
     }
 }
 
-/// A file's piece, held by the Python scan that holds the file's scan (srcscan.Scan.native); the native rules
+/// A file's piece, held by the scan (frontend.rs); the rules
 /// name it by its id (native_view). digest: the hash of the items the native rules read of it (the scan's
 /// input hash: srcscan.Scan.digest).
 pub struct ScanPiece {
@@ -425,7 +425,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         if *fl {
             let rest = &text[(s + name.len()).min(*e)..*e];
             let k = rest.find(')').map(|k| k + 1).unwrap_or(0);
-            macros.push((name.clone(), py_strip(&rest[k..]).to_string()));
+            macros.push((name.clone(), trim_space(&rest[k..]).to_string()));
         }
     }
     let unit = std::path::Path::new(rel).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -474,11 +474,11 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
             Some(c) => c.get(1).unwrap().as_str(),
             None => &body[lead_end..],
         };
-        let what = py_strip(py_strip(what).trim_start_matches(','));
-        let what = py_strip(&SPACES.replace_all(before_tags(what), " ")).to_string();
-        let deep = DEEP.captures(body).map(|c| SPACES.replace_all(py_strip(&c[1]), " ").into_owned());
-        let stuck = STUCK.captures(body).map(|c| SPACES.replace_all(py_strip(&c[1]), " ").into_owned());
-        let hard = HARD.captures(body).map(|c| SPACES.replace_all(py_strip(&c[1]), " ").into_owned());
+        let what = trim_space(trim_space(what).trim_start_matches(','));
+        let what = trim_space(&SPACES.replace_all(before_tags(what), " ")).to_string();
+        let deep = DEEP.captures(body).map(|c| SPACES.replace_all(trim_space(&c[1]), " ").into_owned());
+        let stuck = STUCK.captures(body).map(|c| SPACES.replace_all(trim_space(&c[1]), " ").into_owned());
+        let hard = HARD.captures(body).map(|c| SPACES.replace_all(trim_space(&c[1]), " ").into_owned());
         let unlinked = um.is_some() && addrs.is_empty();
         functions.push(((rel.to_string(), line, unit.clone(), fname, addrs, unlinked, what),
                         (deep, stuck, ROUGH.is_match(body), sf.line_of(sf.comments[k].0), fstatic, end.map(|e| e.0).unwrap_or(0), ts, hard)));
@@ -510,7 +510,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         let s = sf.offset(*line, *col);
         let e = ds.iter().map(|d| sf.offset(d.2, d.3)).max().unwrap_or(s);
         let mut j = e;
-        while let Some(c) = sf.char_at(&sf.code, j).filter(|&c| py_space(c)) {
+        while let Some(c) = sf.char_at(&sf.code, j).filter(|&c| is_space(c)) {
             j += c.len_utf8();
         }
         let i = if sf.code.as_bytes().get(j) == Some(&b';') { j + 1 } else { e };
@@ -527,7 +527,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
     };
     for (line, col, el, ec, lit) in model.casts.iter().cloned() {
         if let Some(v) = literal_value(lit.trim_end_matches(['u', 'U', 'l', 'L'])) {
-            let t = py_words(&text[sf.offset(line, col)..sf.offset(el, ec).max(sf.offset(line, col))]);
+            let t = squeeze_words(&text[sf.offset(line, col)..sf.offset(el, ec).max(sf.offset(line, col))]);
             ptrcasts.push((rel.to_string(), line, close(t), v));
         }
     }
@@ -538,7 +538,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
             let all = c.name("all").unwrap();
             pos = all.end();
             if let Some(v) = literal_value(c.name("lit").unwrap().as_str()) {
-                ptrcasts.push((rel.to_string(), sf.line_of(s + all.start()), close(py_words(all.as_str())), v));
+                ptrcasts.push((rel.to_string(), sf.line_of(s + all.start()), close(squeeze_words(all.as_str())), v));
             }
         }
     }
@@ -549,7 +549,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         if *fl {
             continue;
         }
-        let body = py_strip(&sf.code[(s + name.len()).min(*e)..*e]);
+        let body = trim_space(&sf.code[(s + name.len()).min(*e)..*e]);
         if body.is_empty() || body.contains('\n') {
             continue;
         }
@@ -607,7 +607,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
     }
     // a unit file with code but no addressed function, and no function the scan names as missing its address comment:
     // the scan could not read it as a unit (a head alone, as `dcp unit new` writes it, is a unit waiting for its functions)
-    let has_code = || sf.code.lines().any(|l| !matches!(py_strip(l).chars().next(), None | Some('#')));
+    let has_code = || sf.code.lines().any(|l| !matches!(trim_space(l).chars().next(), None | Some('#')));
     let no_unit = (is_unit && yields_no_unit(&functions) && !errors.iter().any(|e| e.2 == "L.src") && has_code()).then(|| {
         format!("{rel}: no addressed function found (scan: no function with an address comment or unlinked, code outside every function): the file is no unit")
     });
@@ -650,7 +650,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let r = root.to_string_lossy().into_owned();
         let front = crate::frontend::Front::of(&r).unwrap();
-        let path = crate::project::py_path(&format!("{r}/{rel}"));
+        let path = crate::project::native_path(&format!("{r}/{rel}"));
         let m = crate::frontend::parse_model(&r, &path, &front.args(&[]), text, false).unwrap();
         let model = m.files.into_iter().find(|(x, _)| x == rel).map(|x| x.1).unwrap_or_default();
         Some(scan_file_rs(rel, text, &model, &[]).unwrap())

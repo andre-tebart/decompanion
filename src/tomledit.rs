@@ -140,7 +140,7 @@ pub fn set_keys_text(text: &str, file: &str, table: &str, values: &[(String, TV)
             got = got.and_then(|g| g.as_table()).and_then(|t| t.get(part));
         }
         if !same(v, got) {
-            let g = got.map(|g| crate::project::toml_json(g).to_string()).unwrap_or_else(|| "None".into());
+            let g = got.map(|g| crate::project::toml_json(g).to_string()).unwrap_or_else(|| "none".into());
             return Err(format!("{file}: setting {key} in [{table}] gave {g}, not {}", value_text(v)));
         }
     }

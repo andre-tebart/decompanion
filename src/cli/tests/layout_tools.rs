@@ -1,6 +1,6 @@
 //! The layout tooling on the synthetic dll: the reading commands (disasm, dump, refs, layout literals / starts),
 //! drafting (unit new, draft, rename, unit rename, unit join, names.log), L9, L10, declared dead bytes owned by their
-//! unit, the analyzer lines of the report, the session gate and report, the skills (tests/test_layout_tools.py).
+//! unit, the analyzer lines of the report, the session gate and report, the skills.
 
 use super::*;
 use crate::store::DECLARED;

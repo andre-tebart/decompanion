@@ -49,7 +49,7 @@ pub fn toml_json(v: &toml::Value) -> Value {
 }
 
 /// str(Path(s)) on Windows: separators as backslashes, no doubled separators, no `.` parts, no trailing one.
-pub fn py_path(s: &str) -> String {
+pub fn native_path(s: &str) -> String {
     if !cfg!(windows) {
         return s.to_string();
     }
@@ -191,7 +191,7 @@ impl Project {
     /// A path of the configuration: `{toolchain.root}` replaced, relative to the project root.
     pub fn expand(&self, s: &str) -> String {
         let s = s.replace("{toolchain.root}", &self.tc_str("root"));
-        if is_absolute(&s) { py_path(&s) } else { py_path(&format!("{}/{s}", self.root.to_string_lossy())) }
+        if is_absolute(&s) { native_path(&s) } else { native_path(&format!("{}/{s}", self.root.to_string_lossy())) }
     }
 
     /// The toolchain declaration: root from [toolchain]; compiler, linker and cflags from [target]; `from` where each
@@ -290,7 +290,7 @@ impl Project {
     }
 
     pub fn store_path(&self) -> String {
-        py_path(&self.build_dir().join(format!("{}.sqlite", self.target_name)).to_string_lossy())
+        native_path(&self.build_dir().join(format!("{}.sqlite", self.target_name)).to_string_lossy())
     }
 
     /// The toolchain's root, expanded (None when [toolchain] names none).
@@ -309,7 +309,7 @@ impl Project {
         fsmemo::sha256(p).map_err(|e| format!("{p}: {e}"))
     }
 
-    /// The content hash of a named input; None for one only Python computes (scan).
+    /// The content hash of a named input; None for one another module computes (scan).
     pub fn input_hash(&self, name: &str) -> Result<Option<String>, String> {
         if let Some(h) = self.hashes.lock().unwrap().get(name) {
             return Ok(Some(h.clone()));
@@ -318,9 +318,9 @@ impl Project {
         let h = match name {
             "image" => Self::file_hash(&self.target.path)?,
             "config" => {
-                let local = py_path(&format!("{root}/{LOCAL_CONFIG_NAME}"));
+                let local = native_path(&format!("{root}/{LOCAL_CONFIG_NAME}"));
                 let local = if Path::new(&local).exists() { Self::file_hash(&local)? } else { "none".into() };
-                sha256_parts(&[Self::file_hash(&py_path(&format!("{root}/{CONFIG_NAME}")))?, local])
+                sha256_parts(&[Self::file_hash(&native_path(&format!("{root}/{CONFIG_NAME}")))?, local])
             }
             "libs" | "archives" => {
                 let libs = if self.waiting("libs")?.is_empty() { self.lib_archives()? } else { vec![] };
@@ -331,17 +331,17 @@ impl Project {
                 }
                 sha_hex(data.as_bytes())
             }
-            "decl" => fsmemo::tree_hash(&[py_path(&format!("{root}/decl"))], &["*.dcl".into()]).map_err(|e| e.to_string())?,
-            "src" => fsmemo::tree_hash(&[py_path(&format!("{root}/src")), py_path(&format!("{root}/include"))], &["*.c".into(), "*.h".into()])
+            "decl" => fsmemo::tree_hash(&[native_path(&format!("{root}/decl"))], &["*.dcl".into()]).map_err(|e| e.to_string())?,
+            "src" => fsmemo::tree_hash(&[native_path(&format!("{root}/src")), native_path(&format!("{root}/include"))], &["*.c".into(), "*.h".into()])
                 .map_err(|e| e.to_string())?,
             "toolchain" => sha256_parts(&[canonical(&self.toolchain_decl()?)]),
             "target" => sha256_parts(&[canonical(&json!({"name": self.target.name, "path": posix(&self.target.path), "sha256": self.target.sha256}))]),
             "baseline" => {
-                let p = py_path(&format!("{root}/ledger/grades.tsv"));
+                let p = native_path(&format!("{root}/ledger/grades.tsv"));
                 if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }
             }
             "tiebreak" => {
-                let p = py_path(&format!("{root}/{}", crate::tiebreak::LEDGER));
+                let p = native_path(&format!("{root}/{}", crate::tiebreak::LEDGER));
                 if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }
             }
             "objects" | "probe" | "lint" | "drafts" => {
@@ -351,7 +351,7 @@ impl Project {
                 match name {
                     "objects" => {
                         let tu = crate::storedb::tu_hash(&path).map_err(|e| e.to_string())?;
-                        sha256_parts(&[tu.as_str(), if self.toolchain_available() { "True" } else { "False" }])
+                        sha256_parts(&[tu.as_str(), if self.toolchain_available() { "true" } else { "false" }])
                     }
                     k => sha256_parts(&[meta(k)?]),
                 }
@@ -360,7 +360,7 @@ impl Project {
                 let src = self.input_hash("src")?.unwrap_or_default();
                 crate::frontend::scan(&self.root.to_string_lossy(), Some(&src))?.digest()
             }
-            _ => return Err(format!("unknown input {}", crate::decl::py_repr(name))),
+            _ => return Err(format!("unknown input {}", crate::decl::quote_str(name))),
         };
         self.hashes.lock().unwrap().insert(name.to_string(), h.clone());
         Ok(Some(h))
@@ -391,7 +391,7 @@ impl Project {
         } else {
             find_root(&start).ok_or_else(|| cfg_err(format!("no {CONFIG_NAME} in {} or above (run dcp init)", start.display())))?
         };
-        let root = PathBuf::from(py_path(&root.to_string_lossy()));
+        let root = PathBuf::from(native_path(&root.to_string_lossy()));
         Project::open(&root, crate::CORE_HASH).map_err(cfg_err)
     }
 
@@ -515,10 +515,10 @@ reason = "probe"
     }
 
     #[test]
-    fn python_paths() {
+    fn native_paths() {
         if cfg!(windows) {
-            assert_eq!(py_path("C:/a//b/./c/"), r"C:\a\b\c");
-            assert_eq!(py_path("C:/"), r"C:\");
+            assert_eq!(native_path("C:/a//b/./c/"), r"C:\a\b\c");
+            assert_eq!(native_path("C:/"), r"C:\");
         }
     }
 }
@@ -533,7 +533,7 @@ fn parse_target(cfg: &toml::Table, root: &Path) -> Result<Target, String> {
     let Some(path) = tab.get("path").and_then(|v| v.as_str()) else { return Err(format!("{CONFIG_NAME}: [target] has no path")) };
     let tc_root = cfg.get("toolchain").and_then(|t| t.get("root")).and_then(|v| v.as_str()).unwrap_or("");
     let path = path.replace("{toolchain.root}", tc_root);
-    let path = if is_absolute(&path) { py_path(&path) } else { py_path(&format!("{}/{path}", root.to_string_lossy())) };
+    let path = if is_absolute(&path) { native_path(&path) } else { native_path(&format!("{}/{path}", root.to_string_lossy())) };
     let mut unknown: Vec<&str> = tab.keys().map(|k| k.as_str()).filter(|k| !TARGET_KEYS.contains(k)).collect();
     unknown.sort();
     if !unknown.is_empty() {
@@ -560,7 +560,7 @@ fn parse_target(cfg: &toml::Table, root: &Path) -> Result<Target, String> {
         .filter_map(|k| Some(reason_of(Some(tab), k)).filter(|r| !r.is_empty()).map(|r| (k.to_string(), r))).collect();
     let name = tab.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()).unwrap_or_else(|| target_name_of(&path));
     if !is_identifier(&name) {
-        return Err(format!("{CONFIG_NAME}: [target] name {} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)", crate::decl::py_repr(&name)));
+        return Err(format!("{CONFIG_NAME}: [target] name {} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)", crate::decl::quote_str(&name)));
     }
     Ok(Target { name, sha256: tab.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(), path, toolchain, archives,
                 reasons })
@@ -577,7 +577,7 @@ fn paths_table(cfg: &toml::Table, file: &str) -> Result<Vec<(String, String)>, S
         }
         let d = d.as_str().ok_or_else(|| format!("{file}: [paths] {k} is not a directory (a string)"))?;
         if d.contains('{') {
-            return Err(format!("{file}: [paths] {k} = {}: a directory names no other path", crate::decl::py_repr(d)));
+            return Err(format!("{file}: [paths] {k} = {}: a directory names no other path", crate::decl::quote_str(d)));
         }
         out.push((k.clone(), d.replace('\\', "/").trim_end_matches('/').to_string()));
     }

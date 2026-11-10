@@ -1,7 +1,7 @@
 //! The match phase on the synthetic dll: the translation units of the scan, Q6's documentation, the unit targets; with
 //! VC6 installed: compile and byte match, the literal check, asmdiff --symbols, rename against the tree's errors,
 //! escalate, headers --trial, promote / accept, the include-set cache, lint (libclang), Q4, auto-clear and the data
-//! order (tests/test_match.py).
+//! order.
 
 use super::*;
 use crate::store::REPRODUCED;

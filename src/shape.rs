@@ -15,7 +15,7 @@
 //! compares multisets, tries them.
 
 use crate::dis::{self, Reg};
-use crate::x86::py_hex;
+use crate::x86::hex_int;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// A number of an operand: its value, `X` (a relocated field of ours, an address inside the image), or masked by a
@@ -980,7 +980,7 @@ pub fn frame_explain(xa: &[Shape], xb: &[Shape], frame: (i64, i64)) -> Option<St
         }
     }
     let sign = if d < 0 { "-" } else { "" };
-    Some(format!("stack offsets shifted by {sign}{} (frame {} vs {})", py_hex(d.abs()), py_hex(frame.0), py_hex(frame.1)))
+    Some(format!("stack offsets shifted by {sign}{} (frame {} vs {})", hex_int(d.abs()), hex_int(frame.0), hex_int(frame.1)))
 }
 
 /// X86.one_renaming: the whole function equal under one bijective renaming of registers and stack slots.
@@ -1004,7 +1004,7 @@ pub fn parse(text: &str) -> Shape {
         Reg::values().find(|r| *r != Reg::None && format!("{r:?}").to_lowercase() == t)
     }
     fn num(t: &str) -> Num {
-        if t == "X" { Num::X } else { Num::V(crate::x86::py_int0(t)) }
+        if t == "X" { Num::X } else { Num::V(crate::x86::int_auto(t)) }
     }
     fn operand(t: &str) -> Opnd {
         let Some(open) = t.find('[') else {

@@ -1,6 +1,5 @@
-//! The command-line tests: whole dcp commands in this process over a synthetic project (the tests/ of the Python
-//! frontend, ported). The synthetic dll and its archives are conftest.py's, byte for byte, so the expected values are
-//! the ones the Python tests asserted. Tests that need an installation (VC6 from DCP_VC6, libclang, Ghidra) are
+//! The command-line tests: whole dcp commands in this process over a synthetic project (testkit.rs: a synthetic dll
+//! and its archives). Tests that need an installation (VC6 from DCP_VC6, libclang, Ghidra) are
 //! `#[ignore = "e2e: ..."]`: `cargo test -- --ignored` runs them.
 
 mod layout;

@@ -202,7 +202,7 @@ pub fn launch(io: &mut Io, spec_path: &str) -> i32 {
     if let Some(c) = &crash {
         io.say(&format!("run {run}: crashed; report {}", std::path::Path::new(c).join("crash.txt").to_string_lossy()));
     }
-    let code_s = code.map(|c| c.to_string()).unwrap_or_else(|| "None".into());
+    let code_s = code.map(|c| c.to_string()).unwrap_or_else(|| "none".into());
     let after_env = env_of(&spec, &[("DCP_EXIT", code_s.clone()), ("DCP_CRASH", crash.clone().unwrap_or_default())]);
     for (i, cmd) in spec["after"].as_array().cloned().unwrap_or_default().iter().enumerate() {
         let rc = step(io, &strs(cmd), &spec, &after_env, &format!("after {}", i + 1));

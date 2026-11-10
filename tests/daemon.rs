@@ -1,5 +1,5 @@
 //! The dcp binary end to end: a command through the project's daemon (started on demand) answers as the same command
-//! in one process; `dcp serve` starts, refuses a second daemon, reports and stops (tests/test_speed.py). Starts
+//! in one process; `dcp serve` starts, refuses a second daemon, reports and stops. Starts
 //! processes: `cargo test --test daemon -- --ignored`.
 
 use std::path::{Path, PathBuf};

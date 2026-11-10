@@ -1,6 +1,6 @@
 //! The guided decisions (decide.rs): `dcp init` declares nothing, `dcp setup` and `dcp status` name the open
 //! obligations in order, the declarations refuse a missing reason, the rules waiting on a declaration run once it is
-//! made, and an open toolchain or libs obligation fails `dcp session start` (tests/test_obligations.py).
+//! made, and an open toolchain or libs obligation fails `dcp session start`.
 
 use super::*;
 use serde_json::{json, Value};

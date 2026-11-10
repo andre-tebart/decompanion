@@ -12,7 +12,7 @@
 //! Positions (a skip's (line, column)) are in characters, from 1.
 
 use crate::error::Result;
-use crate::project::py_path;
+use crate::project::native_path;
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -60,7 +60,7 @@ pub fn splitlines(t: &str) -> Vec<&str> {
 pub fn sources(root: &str) -> Vec<(String, String)> {
     let mut out = vec![];
     for d in ["src", "include"] {
-        let base = py_path(&format!("{root}/{d}"));
+        let base = native_path(&format!("{root}/{d}"));
         if Path::new(&base).exists() {
             let mut fs: Vec<(String, String)> = crate::fsmemo::walk(&base, &["*.c".into(), "*.h".into()]).into_iter()
                 .filter(|(_, p)| p.ends_with(".c") || p.ends_with(".h"))
@@ -297,11 +297,11 @@ pub fn log_names_each(root: &str, events: &[(Option<i64>, &str, String, String, 
     let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     let by = "main";
     let mut lines: String = events.iter().map(|(a, k, o, n, why)| {
-        let why = why.split(crate::srcscan::py_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+        let why = why.split(crate::srcscan::is_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
         let a = a.map(|a| format!("{a:#010x}")).unwrap_or_else(|| "-".into());
         format!("{ts} {a} {k} {o} -> {n} by:{by} why:{why}\n")
     }).collect();
-    let path = py_path(&format!("{root}/names.log"));
+    let path = native_path(&format!("{root}/names.log"));
     let last = std::fs::read(&path).ok().and_then(|b| b.last().copied());
     if last.is_some_and(|c| c != b'\n') {
         lines.insert(0, '\n');
@@ -367,7 +367,7 @@ pub fn head_end(root: &str, rel: &str) -> Result<usize, String> {
     if let Some(m) = sc.models.get(rel) {
         lines.extend(m.defs.iter().map(|d| d.0));
     }
-    let p = py_path(&format!("{root}/{rel}"));
+    let p = native_path(&format!("{root}/{rel}"));
     let n = if Path::new(&p).exists() { read(&p).matches('\n').count() as i64 + 1 } else { 0 };
     Ok((lines.into_iter().min().unwrap_or(n + 1) - 1).max(0) as usize)
 }

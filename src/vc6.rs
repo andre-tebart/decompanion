@@ -4,7 +4,7 @@
 //! The environment: VC98/Bin and Common/MSDev98/Bin (MSPDB60.DLL) on PATH, VC98/Include on INCLUDE, VC98/Lib on LIB;
 //! `[toolchain] include_dirs` / `lib_dirs` (paths, `{toolchain.root}` expanded) are searched before them.
 
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use std::path::Path;
 use std::process::Command;
 use std::sync::LazyLock;
@@ -43,7 +43,7 @@ pub struct Tools {
 }
 
 fn expand(root: &Option<String>, s: &str) -> String {
-    py_path(&s.replace("{toolchain.root}", root.as_deref().unwrap_or("")))
+    native_path(&s.replace("{toolchain.root}", root.as_deref().unwrap_or("")))
 }
 
 impl Tools {
@@ -61,13 +61,13 @@ impl Tools {
     }
 
     pub fn bindir(&self) -> String {
-        py_path(&format!("{}/VC98/Bin", self.root.as_deref().unwrap_or("")))
+        native_path(&format!("{}/VC98/Bin", self.root.as_deref().unwrap_or("")))
     }
 
     pub fn system_include(&self) -> Vec<String> {
         let mut v = self.extra_include.clone();
         if let Some(r) = &self.root {
-            v.push(py_path(&format!("{r}/VC98/Include")));
+            v.push(native_path(&format!("{r}/VC98/Include")));
         }
         v
     }
@@ -75,15 +75,15 @@ impl Tools {
     pub fn lib_path(&self) -> Vec<String> {
         let mut v = self.extra_lib.clone();
         if let Some(r) = &self.root {
-            v.push(py_path(&format!("{r}/VC98/Lib")));
+            v.push(native_path(&format!("{r}/VC98/Lib")));
         }
         v
     }
 
-    /// Run a tool of VC98/Bin in cwd: (exit code, stdout, stderr), decoded as Python's text mode does (cp1252, an
+    /// Run a tool of VC98/Bin in cwd: (exit code, stdout, stderr), decoded as cp1252 (Windows' ANSI code page; an
     /// undecodable byte replaced).
     pub fn run(&self, tool: &str, args: &[String], cwd: &str) -> Result<(i32, String, String), String> {
-        let mut path = format!("{};{}", self.bindir(), py_path(&format!("{}/Common/MSDev98/Bin", self.root.as_deref().unwrap_or(""))));
+        let mut path = format!("{};{}", self.bindir(), native_path(&format!("{}/Common/MSDev98/Bin", self.root.as_deref().unwrap_or(""))));
         if let Some(old) = std::env::var_os("PATH") {
             path.push(';');
             path.push_str(&old.to_string_lossy());
@@ -95,7 +95,7 @@ impl Tools {
     }
 
     fn missing(&self) -> CompileResult {
-        let msg = format!("VC6 not found under the toolchain root {} (VC98/Bin/CL.EXE)", self.root.as_deref().unwrap_or("None"));
+        let msg = format!("VC6 not found under the toolchain root {} (VC98/Bin/CL.EXE)", self.root.as_deref().unwrap_or("none"));
         CompileResult { ok: false, log: format!("{msg}\n"), diags: vec![Diag { file: "".into(), line: 0, severity: "error".into(), code: "toolchain".into(), message: msg }], refused: vec![] }
     }
 
@@ -146,7 +146,7 @@ impl Tools {
     /// CL /E of a unit: its preprocessed text, or the failure.
     pub fn preprocess(&self, src: &str, flags: &[String], include_dirs: &[String], cwd: &str) -> Result<Result<String, String>, String> {
         if !self.available() {
-            return Ok(Err(format!("VC6 not found under the toolchain root {}", self.root.as_deref().unwrap_or("None"))));
+            return Ok(Err(format!("VC6 not found under the toolchain root {}", self.root.as_deref().unwrap_or("none"))));
         }
         let mut args: Vec<String> = vec!["/nologo".into(), "/E".into()];
         args.extend(flags.iter().filter(|f| {
@@ -190,11 +190,11 @@ pub fn resolved(cwd: &str, raw: &str) -> String {
             let s = c.to_string_lossy().into_owned();
             s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s)
         }
-        Err(_) => py_path(&p),
+        Err(_) => native_path(&p),
     }
 }
 
-/// Bytes as Python decodes them in text mode on this system (cp1252; an undefined byte as U+FFFD).
+/// Bytes decoded as cp1252 (an undefined byte as U+FFFD), line ends normalised.
 pub fn cp1252(b: &[u8]) -> String {
     const HIGH: [u16; 32] = [0x20AC, 0xFFFD, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0xFFFD,
                              0x017D, 0xFFFD, 0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A,
@@ -280,7 +280,7 @@ pub struct LinkResult {
 
 /// A path as the link names it: relative to cwd in posix spelling when it lies below cwd, else as given.
 pub fn rel_to(cwd: &str, p: &str) -> String {
-    let (c, x) = (py_path(cwd), py_path(p));
+    let (c, x) = (native_path(cwd), native_path(p));
     if !Path::new(&x).is_absolute() {
         return x.replace('\\', "/");
     }
@@ -290,7 +290,7 @@ pub fn rel_to(cwd: &str, p: &str) -> String {
     }
 }
 
-/// LINK.EXE's arguments (vc6/link.py link_args): /NOLOGO /OUT /OPT:REF /OPT:ICF /MAP, /DLL /BASE /DEF for a dll, the
+/// LINK.EXE's arguments: /NOLOGO /OUT /OPT:REF /OPT:ICF /MAP, /DLL /BASE /DEF for a dll, the
 /// subsystem, the objects in link order, one /INCLUDE per function symbol, the libraries.
 pub fn link_args(job: &LinkJob) -> Vec<String> {
     let rel = |p: &str| rel_to(&job.cwd, p);
@@ -316,7 +316,7 @@ impl Tools {
     /// LINK.EXE @<response file>; the unresolved externals from the LNK2001 / LNK2019 lines.
     pub fn link(&self, job: &LinkJob) -> Result<LinkResult, String> {
         let args = link_args(job);
-        let rsp_abs = if Path::new(&job.rsp).is_absolute() { job.rsp.clone() } else { py_path(&format!("{}/{}", job.cwd, job.rsp)) };
+        let rsp_abs = if Path::new(&job.rsp).is_absolute() { job.rsp.clone() } else { native_path(&format!("{}/{}", job.cwd, job.rsp)) };
         if let Some(d) = Path::new(&rsp_abs).parent() {
             let _ = std::fs::create_dir_all(d);
         }
@@ -347,7 +347,7 @@ impl Tools {
         Ok(None)
     }
 
-    /// An import library from the image's own import directory (vc6/implib.py): LIB.EXE /DEF writes it; in each
+    /// An import library from the image's own import directory: LIB.EXE /DEF writes it; in each
     /// short import member the name type becomes NAME where the image imports the stored symbol itself (a
     /// decorated stdcall name) and the hint the image's own. The failure, else None.
     pub fn make_import_library(&self, dll: &str, imports: &[crate::pe::Import], out: &str) -> Result<Option<String>, String> {
@@ -419,7 +419,7 @@ impl Tools {
         if !r.ok {
             return Err(format!("the entry stub does not compile:\n{}", r.log));
         }
-        Ok(Some(py_path(&format!("{out_dir}/entry.obj"))))
+        Ok(Some(native_path(&format!("{out_dir}/entry.obj"))))
     }
 }
 

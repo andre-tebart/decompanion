@@ -24,7 +24,7 @@
 //! names by kind): variants with the same code are listed as `= label`, which shows the source levers VC6 ignores.
 
 use crate::error::{Error, Result};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use std::collections::HashMap;
 
 fn err(e: impl std::fmt::Display) -> Error {
@@ -200,7 +200,7 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
     if sfile != t.file {
         return fail(format!("{name} is defined in {sfile}, not in its unit's file {} (an included file: not supported)", t.file));
     }
-    let path = py_path(&format!("{root}/{sfile}"));
+    let path = native_path(&format!("{root}/{sfile}"));
     let raw = crate::fsmemo::read_text(&path).map_err(err)?;
     let crlf = raw.contains("\r\n");
     let text = raw.replace("\r\n", "\n");

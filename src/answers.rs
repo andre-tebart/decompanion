@@ -4,7 +4,7 @@
 //! (the `source` claim) and the section. Made again only when a run holding such claims changed.
 
 use crate::error::Result;
-use crate::store::{self, py_float, Claim, Question, Support};
+use crate::store::{self, canon_float, Claim, Question, Support};
 use crate::{hash_parts, with_db};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::cell::RefCell;
@@ -87,7 +87,7 @@ pub(crate) fn ensure(db: &mut Connection, path: &str) -> rusqlite::Result<String
         };
         if has {
             let mut s = format!("{rule}={rid}@");
-            py_float(&mut s, *at);
+            canon_float(&mut s, *at);
             parts.push(s);
         }
     }

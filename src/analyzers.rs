@@ -22,7 +22,7 @@
 //! code sections (every start fact but the analyzer's own, every walked or placed function; no inner label).
 
 use crate::error::{Error, Result};
-use crate::project::{py_path, sha256_parts, Project};
+use crate::project::{native_path, sha256_parts, Project};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -93,7 +93,7 @@ impl Analyzer {
         let (root, tc_root) = (p.root.to_string_lossy().into_owned(), p.toolchain_root().unwrap_or_default());
         Ok(Analyzer { cfg, expand: Box::new(move |s| {
             let s = s.replace("{toolchain.root}", &tc_root);
-            if Path::new(&s).is_absolute() { py_path(&s) } else { py_path(&format!("{root}/{s}")) }
+            if Path::new(&s).is_absolute() { native_path(&s) } else { native_path(&format!("{root}/{s}")) }
         }) })
     }
 
@@ -189,7 +189,7 @@ impl Analyzer {
         if !out.exists() {
             let text = String::from_utf8_lossy(&std::fs::read(&log).unwrap_or_default()).into_owned();
             let last = text.lines().filter(|l| l.contains("ERROR") || l.contains("Exception")).last().map(|l| l.trim().to_string());
-            let first = last.unwrap_or_else(|| format!("analyzeHeadless exit {}, no export written", code.map(|c| c.to_string()).unwrap_or_else(|| "None".into())));
+            let first = last.unwrap_or_else(|| format!("analyzeHeadless exit {}, no export written", code.map(|c| c.to_string()).unwrap_or_else(|| "none".into())));
             return Err(format!("{first} (log: {})", posix(&log.to_string_lossy())));
         }
         let (digest, entries, failed) = parse(&out.to_string_lossy(), NAME).map_err(|e| e.to_string())?;
@@ -201,7 +201,7 @@ fn hex_of(v: &Value) -> Result<i64, String> {
     let s = v.as_str().ok_or_else(|| format!("{v} is no address"))?;
     let t = s.trim();
     let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
-    i64::from_str_radix(t, 16).map_err(|_| format!("invalid literal for int() with base 16: {}", crate::decl::py_repr(s)))
+    i64::from_str_radix(t, 16).map_err(|_| format!("invalid literal for int() with base 16: {}", crate::decl::quote_str(s)))
 }
 
 /// A file in the batch_decompile shape (what the export script writes): (the analysed binary's sha256 or '', the ok entries as draft values, one
@@ -212,14 +212,14 @@ pub fn parse(path: &str, key: &str) -> Result<(String, Vec<Value>, Vec<String>),
     let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let (mut out, mut failed) = (vec![], vec![]);
     let py = |v: &Value| match v {
-        Value::Null => "None".to_string(),
+        Value::Null => "null".to_string(),
         Value::String(s) => s.clone(),
         v => v.to_string(),
     };
     for it in d["normalized_result"]["items"].as_array().cloned().unwrap_or_default() {
         if it.get("status").and_then(|s| s.as_str()) != Some("ok") || it.get("pseudocode").is_none() {
             let e = it.get("error").map(py).unwrap_or_default();
-            failed.push(crate::srcscan::py_strip(&format!("{}: {} {e}", py(&it["address"]), py(&it["status"]))).to_string());
+            failed.push(crate::srcscan::trim_space(&format!("{}: {} {e}", py(&it["address"]), py(&it["status"]))).to_string());
             continue;
         }
         let req = hex_of(&it["address"])?;
@@ -329,7 +329,7 @@ fn run(p: &Project, force: bool) -> Result<Value> {
         let ours: BTreeSet<i64> = starts.iter().copied().collect();
         !prev.split(',').filter(|x| !x.is_empty()).filter_map(|x| i64::from_str_radix(x, 16).ok()).all(|a| ours.contains(&a))
     });
-    let out_dir = py_path(&format!("{}/build/{NAME}/{}", p.root.to_string_lossy(), p.target_name));
+    let out_dir = native_path(&format!("{}/build/{NAME}/{}", p.root.to_string_lossy(), p.target_name));
     let ex = match az.export(&inst, &target.path, &starts, &out_dir, fresh) {
         Ok(ex) => ex,
         Err(e) => {

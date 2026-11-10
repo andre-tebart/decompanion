@@ -132,7 +132,7 @@ pub struct Missing {
 pub fn compiled_functions(ctx: &Ctx, db: &Connection) -> Result<(Vec<Compiled>, Vec<Missing>)> {
     let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
     let img = image(&ctx.image)?;
-    // the relocation sites only for an image that has base relocations (Python reads them, then drops them)
+    // the relocation sites only for an image that has base relocations
     let relocs = if img.relocations().is_empty() {
         None
     } else {

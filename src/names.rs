@@ -149,7 +149,7 @@ impl Names {
         // an array or a record (END_MIN bytes at least: a scalar has no end pointer) the code refers to
         let best = used.iter().filter(|&&r| r < here && here - r <= 0x100000).filter_map(|&r| holder(r))
             .filter(|o| o.0 < here && o.1 - o.0 >= END_MIN && self.name_of(o.0).is_some()).map(|o| o.0).max()?;
-        Some(format!("{}+{}", self.name_of(best)?, crate::x86::py_hex(a - best)))
+        Some(format!("{}+{}", self.name_of(best)?, crate::x86::hex_int(a - best)))
     }
 
     /// How `dcp disasm` / `dcp dump` spell an address: its name, else `name+off` inside a named symbol (not an
@@ -165,7 +165,7 @@ impl Names {
         }
         if let Some(base) = self.name_of(f.lo) {
             if a != f.lo {
-                return Ok(Some(format!("{base}+{}", crate::x86::py_hex(a - f.lo))));
+                return Ok(Some(format!("{base}+{}", crate::x86::hex_int(a - f.lo))));
             }
         }
         if sk == "string" && a == f.lo {

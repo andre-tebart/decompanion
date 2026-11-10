@@ -20,7 +20,7 @@ static EXPR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:a\d{1,2}|\d+|0x
 static LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?P<lo>0x[0-9a-fA-F]+)(?:\.\.(?P<hi>0x[0-9a-fA-F]+))?(?:\s+(?P<body>.*?))?\s*$").unwrap()
 });
-/// build/tu.py LINE: a `#line N "file"` directive.
+/// A `#line N "file"` directive.
 static LINE_DIRECTIVE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?m)^[ \t]*#[ \t]*line[ \t]+(\d+)(?:[ \t]+"((?:\\.|[^"\\])*)")?"#).unwrap());
 
 #[derive(Clone, Copy, PartialEq)]
@@ -41,7 +41,7 @@ struct Spec {
     range: bool,
 }
 
-/// decl.KINDS (the docs are the Python's).
+/// The kinds of declaration line.
 const KINDS: &[Spec] = &[
     Spec { kind: "boundary", words: &[Shape::Choice(&["start", "end"])], required: &[("tu", Shape::Unit)],
            optional: &[("by", Shape::Choice(&["leaked", "tag", "guess"]))], range: false },
@@ -125,8 +125,8 @@ impl Decl {
     }
 }
 
-/// repr() of a str, as Python spells it.
-pub(crate) fn py_repr(s: &str) -> String {
+/// A string quoted for a message (single quotes, escapes).
+pub(crate) fn quote_str(s: &str) -> String {
     let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
     let mut out = String::from(q);
     for c in s.chars() {
@@ -147,8 +147,8 @@ pub(crate) fn py_repr(s: &str) -> String {
     out
 }
 
-/// repr() of bytes, as Python spells it.
-pub(crate) fn py_bytes_repr(b: &[u8]) -> String {
+/// Bytes quoted for a message (b'..', escapes).
+pub(crate) fn bytes_quoted(b: &[u8]) -> String {
     let q = if b.contains(&b'\'') && !b.contains(&b'"') { b'"' } else { b'\'' };
     let mut out = String::from("b");
     out.push(q as char);
@@ -211,31 +211,31 @@ fn value(kind: &str, key: &str, shape: Shape, v: &str) -> Result<KeyVal, String>
     })
 }
 
-fn py_strip(s: &str) -> &str {
+fn trim_space(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c))
 }
 
 /// decl.parse_line: one declaration line (no comment, not blank); Err the reason it is malformed.
 pub fn parse_line(text: &str, file: &str, line: i64) -> Result<Decl, String> {
     let Some((head, reason)) = text.split_once(" -- ") else {
-        if text.trim_end().ends_with(" --") || py_strip(text).ends_with("--") {
+        if text.trim_end().ends_with(" --") || trim_space(text).ends_with("--") {
             return Err("missing reason after `--`".into());
         }
         return Err("missing reason (` -- why` ends every declaration)".into());
     };
-    let reason = py_strip(reason);
+    let reason = trim_space(reason);
     if reason.is_empty() {
         return Err("missing reason after `--`".into());
     }
-    let h = py_strip(head);
-    let m = LINE.captures(h).ok_or_else(|| format!("cannot parse {}: expected [TARGET:]ADDR[..END] KIND ...", py_repr(h)))?;
+    let h = trim_space(head);
+    let m = LINE.captures(h).ok_or_else(|| format!("cannot parse {}: expected [TARGET:]ADDR[..END] KIND ...", quote_str(h)))?;
     let lo = i64::from_str_radix(&m["lo"][2..], 16).map_err(|e| e.to_string())?;
     let body: Vec<&str> = m.name("body").map(|b| b.as_str().split_whitespace().collect()).unwrap_or_default();
     let Some((&kind, args)) = body.split_first() else { return Err("missing kind".into()) };
     let Some(sp) = spec(kind) else {
         let mut known: Vec<&str> = KINDS.iter().map(|s| s.kind).collect();
         known.sort();
-        return Err(format!("unknown kind {} (known: {})", py_repr(kind), known.join(", ")));
+        return Err(format!("unknown kind {} (known: {})", quote_str(kind), known.join(", ")));
     };
     let hi = if sp.range {
         let Some(h) = m.name("hi") else { return Err(format!("{kind} declares a range: ADDR..END")) };
@@ -254,9 +254,9 @@ pub fn parse_line(text: &str, file: &str, line: i64) -> Result<Decl, String> {
     for a in args {
         if let Some((k, v)) = a.split_once('=') {
             let shape = sp.required.iter().chain(sp.optional).find(|x| x.0 == k).map(|x| x.1)
-                .ok_or_else(|| format!("{kind}: unknown key {}", py_repr(k)))?;
+                .ok_or_else(|| format!("{kind}: unknown key {}", quote_str(k)))?;
             if keys.iter().any(|x| x.0 == k) {
-                return Err(format!("{kind}: key {} given twice", py_repr(k)));
+                return Err(format!("{kind}: key {} given twice", quote_str(k)));
             }
             keys.push((k.to_string(), value(kind, k, shape, v)?));
         } else {
@@ -273,8 +273,8 @@ pub fn parse_line(text: &str, file: &str, line: i64) -> Result<Decl, String> {
     }
     for (w, shape) in words.iter().zip(sp.words) {
         match shape {
-            Shape::Ident if !IDENT.is_match(w) => return Err(format!("{kind}: {} is not an identifier", py_repr(w))),
-            Shape::Choice(c) if !c.contains(&w.as_str()) => return Err(format!("{kind}: {} is not one of {}", py_repr(w), c.join("|"))),
+            Shape::Ident if !IDENT.is_match(w) => return Err(format!("{kind}: {} is not an identifier", quote_str(w))),
+            Shape::Choice(c) if !c.contains(&w.as_str()) => return Err(format!("{kind}: {} is not one of {}", quote_str(w), c.join("|"))),
             _ => {}
         }
     }
@@ -330,7 +330,7 @@ pub fn load(paths: &[std::path::PathBuf], root: &str) -> (Vec<Decl>, Vec<LoadErr
         let mut prev: Option<Decl> = None;
         for (n, raw) in read_lines(path).iter().enumerate() {
             let n = n as i64 + 1;
-            let s = py_strip(raw);
+            let s = trim_space(raw);
             if s.is_empty() || s.starts_with('#') {
                 continue;
             }
@@ -387,7 +387,7 @@ pub fn insert(path: &std::path::Path, d: &Decl) -> std::io::Result<i64> {
     let mut lines = if path.exists() { read_lines(path) } else { vec![] };
     let (mut after, mut before) = (None, None);
     for (i, raw) in lines.iter().enumerate() {
-        let s = py_strip(raw);
+        let s = trim_space(raw);
         if s.is_empty() || s.starts_with('#') {
             continue;
         }
@@ -478,7 +478,7 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
                 let have = img.read(d.lo as u32, want.len());
                 if have != want {
                     out.finding("error", "L.decl", d.lo, d.lo + 1, format!("{}:{}: the image holds {} at {:#x}, not the declared file name {}", d.file, d.line,
-                                                                             py_bytes_repr(&have), d.lo, py_bytes_repr(&want)), &by);
+                                                                             bytes_quoted(&have), d.lo, bytes_quoted(&want)), &by);
                 }
                 let tu = ks("tu");
                 if let Some(f) = file_of.get(&tu) {
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn reprs() {
-        assert_eq!(py_repr("a'b"), "\"a'b\"");
-        assert_eq!(py_bytes_repr(b"c:\\x\x00"), "b'c:\\\\x\\x00'");
+        assert_eq!(quote_str("a'b"), "\"a'b\"");
+        assert_eq!(bytes_quoted(b"c:\\x\x00"), "b'c:\\\\x\\x00'");
     }
 }

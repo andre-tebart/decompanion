@@ -284,7 +284,7 @@ pub fn serve(io: &mut Io, root: Option<&str>, stop: bool, status: bool, foregrou
             Ok(v) if status => {
                 let s = &v["status"];
                 let f = |k: &str| match &s[k] {
-                    Value::Null => "None".to_string(),
+                    Value::Null => "null".to_string(),
                     Value::String(x) => x.clone(),
                     x => x.to_string(),
                 };

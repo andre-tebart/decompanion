@@ -1,4 +1,4 @@
-//! The setup rules (rules/setup.py documents each criterion; checks.py the numbered setup checks): what the
+//! The setup rules (each rule's doc in registry.rs states its criterion): what the
 //! image gives away before a line of source exists.
 
 use crate::error::{Error, Result};
@@ -165,12 +165,12 @@ pub(crate) fn severity_of(a: Support, b: Support) -> &'static str {
     if a.is_top() && b.is_top() { "bug" } else { "error" }
 }
 
-/// A value as Python's str() spells it in a message.
-pub(crate) fn py_str(v: Option<&serde_json::Value>) -> String {
+/// A JSON value in a message (a string as it is).
+pub(crate) fn value_str(v: Option<&serde_json::Value>) -> String {
     match v {
-        None | Some(serde_json::Value::Null) => "None".into(),
+        None | Some(serde_json::Value::Null) => "null".into(),
         Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Bool(b)) => if *b { "True".into() } else { "False".into() },
+        Some(serde_json::Value::Bool(b)) => if *b { "true".into() } else { "false".into() },
         Some(x) => x.to_string(),
     }
 }
@@ -180,7 +180,7 @@ pub fn c_overlap(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let mut items: Vec<(&'static str, Rc<Claim>)> = facts(ctx, db, "symbol")?.into_iter().filter(|f| f.support > OPEN).map(|f| ("symbol", f)).collect();
     items.extend(facts(ctx, db, "region")?.into_iter().map(|f| ("region", f)));
     items.sort_by_key(|(_, f)| (f.lo, f.hi));
-    let label = |f: &Claim| py_str(f.value.get("skind").or(Some(f.value.get("what").unwrap_or(&serde_json::Value::String(String::new())))));
+    let label = |f: &Claim| value_str(f.value.get("skind").or(Some(f.value.get("what").unwrap_or(&serde_json::Value::String(String::new())))));
     let mut active: Vec<&(&str, Rc<Claim>)> = vec![];
     for item in &items {
         let (fk, f) = item;

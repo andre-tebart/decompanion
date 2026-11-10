@@ -16,7 +16,7 @@
 use crate::error::Result;
 use crate::frontend;
 use crate::fsmemo;
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -71,7 +71,7 @@ pub fn units(root: &str, scan: &frontend::Scan, target: &str, default: &str, nam
             (a.is_some() || f.0 .5).then(|| (a, f.0 .3.clone()))
         }).collect();
         if !fns.is_empty() || part.no_unit.is_some() {
-            let path = py_path(&format!("{root}/{rel}"));
+            let path = native_path(&format!("{root}/{rel}"));
             let src_hash = fsmemo::sha256(&path).map_err(|e| format!("{path}: {e}"))?;
             out.push(Tu { target: target.into(), unit: unit.into(), file: rel.into(), functions: fns, file_name: names.get(unit).cloned(), src_hash });
         }
@@ -183,7 +183,7 @@ fn rows(units: &[Tu]) -> Vec<TuRow> {
 /// The translation units of one target of a scan (tu.units).
 #[cfg(test)]
 pub fn plan_scan_units(root: &str, scan: &frontend::Scan, target: &str, default: &str, names: Option<HashMap<String, String>>) -> Result<Vec<TuRow>> {
-    Ok(rows(&units(&py_path(root), scan, target, default, &names.unwrap_or_default()).map_err(crate::error::Error::runtime)?))
+    Ok(rows(&units(&native_path(root), scan, target, default, &names.unwrap_or_default()).map_err(crate::error::Error::runtime)?))
 }
 
 #[cfg(test)]

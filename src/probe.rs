@@ -12,7 +12,7 @@
 
 use crate::error::{Error, Result};
 use crate::fsmemo;
-use crate::project::{py_path, sha256_parts, Project};
+use crate::project::{native_path, sha256_parts, Project};
 use crate::store::{self, canon};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -78,7 +78,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
         let flags = crate::plan::compile_flags(p, unit)?;
         let anchors = rows.iter().filter(|r| r["unit"] == unit)
             .map(|r| { let x = r["addr"].as_i64().unwrap_or(0); (format!("{x:#010x}"), r["name"].as_str().unwrap_or("").to_string(), x) }).collect();
-        let text = fsmemo::read_text(&py_path(&format!("{root}/{}", a.file))).map_err(|e| e.to_string())?;
+        let text = fsmemo::read_text(&native_path(&format!("{root}/{}", a.file))).map_err(|e| e.to_string())?;
         jobs.push(Job { kind: "user", unit: unit.into(), src: a.file.replace('/', "\\"), base: strip_grid(&flags), dirs: vec!["include".into()], anchors, text });
     }
     let all = |k: &str| crate::with_db(&db, |c| store::claims_of(c, &db, k, None, |_| true)).map_err(|e| e.to_string());
@@ -116,9 +116,9 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
                 if anchors.is_empty() {
                     continue;
                 }
-                let ps = py_path(&path.to_string_lossy());
+                let ps = native_path(&path.to_string_lossy());
                 let text = crate::vc6::cp1252(&std::fs::read(&path).map_err(|e| e.to_string())?);
-                jobs.push(Job { kind: "crt", unit: unit.clone(), src: ps, base: vec![], dirs: vec![py_path(&src.to_string_lossy())], anchors, text });
+                jobs.push(Job { kind: "crt", unit: unit.clone(), src: ps, base: vec![], dirs: vec![native_path(&src.to_string_lossy())], anchors, text });
             }
         }
     }
@@ -145,7 +145,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
     let run = |j: &Job, combo: &[String], key: &str| -> Value {
         let flags: Vec<String> = j.base.iter().chain(combo).cloned().collect();
         let tmp = format!("build\\obj\\probe\\{}\\p.obj", &key[..16]);
-        let tmp_abs = py_path(&format!("{root}/{tmp}"));
+        let tmp_abs = native_path(&format!("{root}/{tmp}"));
         let _ = std::fs::create_dir_all(Path::new(&tmp_abs).parent().unwrap());
         let res = match tools.compile(&j.src, &tmp, &flags, &j.dirs, &root) {
             Ok(r) => r,

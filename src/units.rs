@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::decl::{Decl, KeyVal};
 use crate::edit as E;
-use crate::project::py_path;
+use crate::project::native_path;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
@@ -26,7 +26,7 @@ fn s(x: impl Into<String>) -> Tok {
 }
 
 fn p_of(root: &str, rel: &str) -> String {
-    py_path(&format!("{root}/{rel}"))
+    native_path(&format!("{root}/{rel}"))
 }
 
 fn exists(root: &str, rel: &str) -> bool {
@@ -358,7 +358,7 @@ pub fn unit_rename(p: &crate::project::Project, old: &str, new: &str, by: Option
     let root = p.root.to_string_lossy().into_owned();
     let names = view_units(p)?;
     if !UNIT.is_match(new) || !E::IDENT.is_match(&E::c_name(new)) {
-        return Ok((vec![], Some(format!("{} is not a unit name", crate::decl::py_repr(new))), 1));
+        return Ok((vec![], Some(format!("{} is not a unit name", crate::decl::quote_str(new))), 1));
     }
     if !names.iter().any(|n| n == old) && !exists(&root, &format!("src/{old}")) {
         return Ok((vec![], Some(format!("no unit {old}")), 1));

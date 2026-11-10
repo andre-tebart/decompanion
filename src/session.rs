@@ -14,7 +14,7 @@
 
 use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, Tok};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -78,7 +78,7 @@ pub fn session_head(root: &str) -> String {
 }
 
 fn record_path(root: &str) -> String {
-    py_path(&format!("{root}/.dcp/session.json"))
+    native_path(&format!("{root}/.dcp/session.json"))
 }
 
 fn load(root: &str) -> Option<Value> {
@@ -249,7 +249,7 @@ fn changes(root: &str, base: &str) -> Result<Changes, String> {
             drafted.push((unit.clone(), first.1 as i64, file.clone()));
         }
     }
-    let src = py_path(&format!("{root}/src"));
+    let src = native_path(&format!("{root}/src"));
     let stems = |names: Vec<String>| -> BTreeSet<String> { names.into_iter().filter_map(|n| n.strip_suffix(".c").map(|x| x.to_string())).collect() };
     let before = stems(git(root, &["ls-tree", "--name-only", &format!("{base}:src")]).split_whitespace().map(|x| x.to_string()).collect());
     let now: BTreeSet<String> = if Path::new(&src).exists() {
@@ -258,10 +258,10 @@ fn changes(root: &str, base: &str) -> Result<Changes, String> {
         BTreeSet::new()
     };
     let old_decl: Vec<String> = git(root, &["show", &format!("{base}:decl/text.dcl")]).lines().map(|l| l.trim_end_matches('\r').to_string()).collect();
-    let new_decl = read_lines(&py_path(&format!("{root}/decl/text.dcl")));
+    let new_decl = read_lines(&native_path(&format!("{root}/decl/text.dcl")));
     let real = |l: &&String| !l.trim().is_empty() && !l.starts_with('#');
     let old_names: Vec<String> = git(root, &["show", &format!("{base}:names.log")]).lines().map(|l| l.trim_end_matches('\r').to_string()).collect();
-    let new_names = read_lines(&py_path(&format!("{root}/names.log")));
+    let new_names = read_lines(&native_path(&format!("{root}/names.log")));
     let names = if new_names.len() >= old_names.len() && new_names[..old_names.len()] == old_names[..] {
         new_names[old_names.len()..].to_vec()
     } else {
@@ -484,7 +484,7 @@ pub fn session_report(root: &str, base: &str, p: &crate::project::Project, link:
     }
     out.push(format!("gate: {}", if ok { "ok" } else { "FAIL" }));
     let text = out.join("\n") + "\n";
-    crate::edit::write(&py_path(&format!("{root}/build/session/report.md")), &text).map_err(err)?;
+    crate::edit::write(&native_path(&format!("{root}/build/session/report.md")), &text).map_err(err)?;
     Ok(text)
 }
 

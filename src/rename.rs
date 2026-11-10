@@ -29,7 +29,7 @@ use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::edit::{self as E, Skip};
 use crate::names::Names;
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -63,7 +63,7 @@ pub fn local_refs(root: &str, names: &[String]) -> Result<Skip, String> {
     let front = crate::frontend::Front::of(root)?;
     let defines = front.targets[0].1.clone();
     crate::frontend::scan(root, None)?; // every unit's dependencies (its last parse's)
-    let src = py_path(&format!("{root}/src"));
+    let src = native_path(&format!("{root}/src"));
     let files: Vec<(String, String)> = if Path::new(&src).exists() { crate::fsmemo::walk(&src, &["*.c".into()]) } else { vec![] };
     let pat = regex::Regex::new(&format!(r"\b(?:{})\b", names.iter().map(|n| regex::escape(n)).collect::<Vec<_>>().join("|"))).unwrap();
     let mut holds: HashMap<String, bool> = HashMap::new();
@@ -74,7 +74,7 @@ pub fn local_refs(root: &str, names: &[String]) -> Result<Skip, String> {
     };
     let norm = |d: &str| -> String {
         let p = if Path::new(d).is_absolute() { d.to_string() } else { std::env::current_dir().map(|c| c.join(d).to_string_lossy().into_owned()).unwrap_or(d.into()) };
-        py_path(&p).to_lowercase()
+        native_path(&p).to_lowercase()
     };
     let under = {
         let r = std::fs::canonicalize(root).map(|c| c.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(root.into());
@@ -237,7 +237,7 @@ fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> Result<Resul
     let addr = old_arg;
     let mut given = None;
     if !E::IDENT.is_match(new) {
-        return refuse(old_arg, format!("NEW {} is no C identifier", crate::decl::py_repr(new)));
+        return refuse(old_arg, format!("NEW {} is no C identifier", crate::decl::quote_str(new)));
     }
     let old = if addr.to_lowercase().starts_with("0x") {
         let Ok(a) = crate::cliread::parse_addr(addr) else { return refuse(old_arg, format!("{old_arg} is no address")) };
@@ -248,7 +248,7 @@ fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> Result<Resul
         given = Some(a);
         old
     } else if !E::IDENT.is_match(old_arg) {
-        return refuse(old_arg, format!("OLD {} is neither a C identifier nor an address (0xADDR)", crate::decl::py_repr(old_arg)));
+        return refuse(old_arg, format!("OLD {} is neither a C identifier nor an address (0xADDR)", crate::decl::quote_str(old_arg)));
     } else {
         old_arg.to_string()
     };
@@ -353,10 +353,10 @@ fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
     }
     let mapping: BTreeMap<String, String> = plans.iter().map(|p| (p.old.clone(), p.new.clone())).collect();
     let files: BTreeSet<String> = plans.iter().flat_map(|p| p.files.keys().cloned()).collect();
-    let old: Vec<(String, String)> = files.into_iter().map(|rel| { let t = E::read(&py_path(&format!("{root}/{rel}"))); (rel, t) }).collect();
+    let old: Vec<(String, String)> = files.into_iter().map(|rel| { let t = E::read(&native_path(&format!("{root}/{rel}"))); (rel, t) }).collect();
     E::rename_words(root, &mapping, false, Some(&skip))?;
     for (rel, text) in &old {
-        let now = E::read(&py_path(&format!("{root}/{rel}")));
+        let now = E::read(&native_path(&format!("{root}/{rel}")));
         changed_lines(rel, text, &now, plans);
         // the replacements inside comments, for review: prose may argue from the old name (a match-base report: a
         // note about one object with two names read "txt_Random ... txt_Random" after the rename)
@@ -466,7 +466,7 @@ pub fn rename_command(p: &crate::project::Project, pairs: Vec<(String, String, S
     let mut kept: Vec<(String, Vec<u8>)> = vec![];
     {
         let mut seen = BTreeSet::new();
-        let paths = edits.iter().flat_map(|p| p.files.keys().filter(|f| !f.starts_with("decl/")).map(|f| py_path(&format!("{root}/{f}")))
+        let paths = edits.iter().flat_map(|p| p.files.keys().filter(|f| !f.starts_with("decl/")).map(|f| native_path(&format!("{root}/{f}")))
                                            .chain(p.decls.iter().cloned()).collect::<Vec<_>>());
         for path in paths {
             if seen.insert(path.clone()) {
@@ -475,7 +475,7 @@ pub fn rename_command(p: &crate::project::Project, pairs: Vec<(String, String, S
             }
         }
     }
-    let log = py_path(&format!("{root}/names.log"));
+    let log = native_path(&format!("{root}/names.log"));
     if let Ok(b) = std::fs::read(&log) {
         kept.push((log, b));
     }

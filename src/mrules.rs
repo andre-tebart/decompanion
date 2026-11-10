@@ -27,9 +27,9 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let reason = o.get("reason").map(|r| r.as_str().map(|s| s.to_string()).unwrap_or_else(|| crate::project::toml_json(r).to_string())).unwrap_or_default();
         if reason.trim().is_empty() {
             let glob = match o.get("glob") {
-                Some(toml::Value::String(s)) => crate::decl::py_repr(s),
+                Some(toml::Value::String(s)) => crate::decl::quote_str(s),
                 Some(v) => crate::project::toml_json(v).to_string(),
-                None => "None".into(),
+                None => "none".into(),
             };
             out.finding("error", "M.compile", base, base + 1, format!("[[toolchain.unit]] glob={glob}: an override without a reason"), "");
         }
@@ -47,7 +47,7 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 out.finding("error", "M.compile.stale", at, at + 1, format!("unit {} is not compiled (dcp build)", a.unit), "");
             } else {
                 out.finding("warn", "M.compile.stale", at, at + 1, format!("unit {} is not compiled: the toolchain is not available (root {})", a.unit,
-                                                                      tools.root.as_deref().unwrap_or("None")), "");
+                                                                      tools.root.as_deref().unwrap_or("none")), "");
             }
             continue;
         };

@@ -1,5 +1,5 @@
 //! The instruction diff's alignment: a shortest edit script (Myers' O((N+M)D) algorithm in linear space, the
-//! middle-snake divide and conquer) over the lines, as opcodes in the shape of Python's
+//! middle-snake divide and conquer) over the lines, as opcodes in the shape of
 //! difflib.SequenceMatcher.get_opcodes().
 //!
 //! It was SequenceMatcher (Ratcliff/Obershelp: the longest common run first, then both sides of it). On a function

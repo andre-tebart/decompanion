@@ -288,7 +288,7 @@ pub fn parse_shard(text: &str) -> Result<Option<(i64, i64)>, String> {
     if t == "off" {
         return Ok(None);
     }
-    let bad = || format!("a shard is k/N with 0 <= k < N (or off), not {}", crate::decl::py_repr(t));
+    let bad = || format!("a shard is k/N with 0 <= k < N (or off), not {}", crate::decl::quote_str(t));
     let (k, n) = t.split_once('/').ok_or_else(bad)?;
     let digits = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
     if !digits(k) || !digits(n) {
@@ -352,7 +352,7 @@ pub fn parse_baseline(text: &str) -> Vec<((String, i64), Entry)> {
         while f.len() < 8 {
             f.push("");
         }
-        let Some(a) = crate::layout::py_int16(f[1]) else { continue };
+        let Some(a) = crate::layout::int16(f[1]) else { continue };
         let e = Entry { name: f[2].into(), unit: f[3].into(), code: f[4].into(), readability: f[5].into(), level: f[6].into(), accepted: f[7].into() };
         let key = (f[0].to_string(), a);
         match out.iter_mut().find(|x| x.0 == key) {
@@ -729,12 +729,12 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
     // the tag and its reason run to the end of the comment (written last, below): a reason may hold `*`, `/`, `(...)`
     // and line breaks
     static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:\A|\s)\s*@(deep|stuck|hard)\b").unwrap());
-    let path = crate::project::py_path(&format!("{root}/{rel}"));
+    let path = crate::project::native_path(&format!("{root}/{rel}"));
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?.replace("\r\n", "\n");
     let src = crate::readability::Source::new(&text);
     let tx = &src.text;
     let own = |cs: usize| tx[..cs].iter().rposition(|&c| c == '\n').map(|i| i + 1).unwrap_or(0);
-    let c = src.comments.iter().find(|(cs, _, _)| src.line_of(*cs) as i64 == line && tx[own(*cs)..*cs].iter().all(|c| crate::srcscan::py_space(*c)));
+    let c = src.comments.iter().find(|(cs, _, _)| src.line_of(*cs) as i64 == line && tx[own(*cs)..*cs].iter().all(|c| crate::srcscan::is_space(*c)));
     let Some((cs, ce, body)) = c.filter(|c| !crate::srcscan::lead_addrs(&c.2).0.is_empty() || crate::srcscan::UNLINKED.is_match(&c.2)) else {
         return Err(format!("{rel}:{line}: no function's address comment there"));
     };
@@ -742,14 +742,14 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
     let tag = TAG.captures(body);
     let old = tag.as_ref().map(|c| format!("@{}", &c[1]));
     let cut = tag.as_ref().and_then(|c| c.get(0)).map(|m| m.start()).unwrap_or(body.len());
-    let stripped = body[..cut].trim_end_matches(crate::srcscan::py_space).to_string();
+    let stripped = body[..cut].trim_end_matches(crate::srcscan::is_space).to_string();
     let (new_body, action) = match level {
         None => match old {
             None => return Ok("no @deep, @stuck or @hard tag".into()),
             Some(o) => (stripped, format!("{o} removed")),
         },
         Some(l) => {
-            let mut reason = crate::srcscan::py_strip(&reason.unwrap_or("").replace("*/", "* /")).to_string();
+            let mut reason = crate::srcscan::trim_space(&reason.unwrap_or("").replace("*/", "* /")).to_string();
             // the earlier reason stays as `prior:` (else what earlier workers tried is lost on every escalation), the newest first, a reason given again once
             let old_reason = tag.as_ref().and_then(|c| c.get(0)).map(|m| body[m.end()..].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
             let prior = prior_reasons(&reason, &old_reason);

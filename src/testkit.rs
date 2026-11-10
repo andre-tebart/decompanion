@@ -1,4 +1,4 @@
-//! The synthetic project of the tests (tests/conftest.py's dll, archives and project, byte for byte): the
+//! The synthetic project of the tests (a dll, archives and a project): the
 //! command-line tests (src/cli/tests/) and the integration tests (tests/) build their projects with it.
 
 use std::path::{Path, PathBuf};
@@ -140,7 +140,7 @@ fn put16(b: &mut [u8], o: usize, v: u16) {
     b[o..o + 2].copy_from_slice(&v.to_le_bytes());
 }
 
-/// The synthetic dll (conftest.build_pe): `variant` changes one data byte (another binary of the same codebase);
+/// The synthetic dll: `variant` changes one data byte (another binary of the same codebase);
 /// `rich` adds a Rich header with these entries.
 pub fn build_pe(path: &Path, variant: u32, rich: Option<&[(u32, u32, u32)]>) -> PathBuf {
     let va = |rva: u32| BASE + rva;
@@ -267,7 +267,7 @@ reason = "test project"
 root = "C:/nowhere/ghidra"
 "#;
 
-/// The synthetic project (conftest.make_project): tiny.dll as the target `tiny`.
+/// The synthetic project: tiny.dll as the target `tiny`.
 pub fn make_project(d: &Path) -> PathBuf {
     std::fs::create_dir_all(d).unwrap();
     let p1 = build_pe(&d.join("tiny.dll"), 0, Some(RICH_TINY));

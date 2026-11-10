@@ -199,7 +199,7 @@ fn api() -> Result<&'static Api> {
 
 pub(crate) fn load(path: &str) -> Result<(), String> {
     if let Some((have, _)) = LIB.get() {
-        let norm = |p: &str| crate::project::py_path(p).to_lowercase();
+        let norm = |p: &str| crate::project::native_path(p).to_lowercase();
         if norm(have) != norm(path) {
             return Err(format!("libclang {path} asked for, {have} already loaded in this process"));
         }

@@ -113,12 +113,12 @@ impl Changes {
         let mut order: Vec<String> = vec![];
         let mut todo: VecDeque<String> = VecDeque::from([own.clone()]);
         while let Some(f) = todo.pop_front() {
-            let text = crate::fsmemo::read_text(&crate::project::py_path(&format!("{root}/{f}"))).unwrap_or_default();
+            let text = crate::fsmemo::read_text(&crate::project::native_path(&format!("{root}/{f}"))).unwrap_or_default();
             let dir = f.rsplit_once('/').map(|x| x.0.to_string()).unwrap_or_default();
             for c in INCLUDE.captures_iter(&text) {
                 let name = &c[1];
                 let Some(h) = [norm(&format!("{dir}/{name}")), norm(&format!("include/{name}"))].into_iter()
-                    .find(|h| Path::new(&crate::project::py_path(&format!("{root}/{h}"))).exists()) else { continue };
+                    .find(|h| Path::new(&crate::project::native_path(&format!("{root}/{h}"))).exists()) else { continue };
                 if seen.insert(h.clone()) {
                     parent.insert(h.clone(), f.clone());
                     order.push(h.clone());

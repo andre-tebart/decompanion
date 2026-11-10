@@ -11,7 +11,7 @@
 use crate::error::{Error, Result};
 use crate::crt::{place_members, Placed};
 use crate::fsmemo;
-use crate::project::{py_path, sha256_parts, Project};
+use crate::project::{native_path, sha256_parts, Project};
 use crate::store::canon;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
@@ -26,7 +26,7 @@ pub fn library_candidates(root: Option<&str>) -> Vec<String> {
     let Some(root) = root else { return vec![] };
     let d = Path::new(root).join("VC98").join("Lib");
     let have: std::collections::HashMap<String, String> = std::fs::read_dir(&d).into_iter().flatten().flatten()
-        .map(|e| (e.file_name().to_string_lossy().to_uppercase(), py_path(&e.path().to_string_lossy()))).collect();
+        .map(|e| (e.file_name().to_string_lossy().to_uppercase(), native_path(&e.path().to_string_lossy()))).collect();
     CRT_ARCHIVES.iter().filter_map(|a| have.get(*a).cloned()).collect()
 }
 

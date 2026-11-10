@@ -25,7 +25,7 @@
 
 use crate::coff::{FunctionCode, Obj};
 use crate::error::{Error, Result};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use crate::rules::Ctx;
 use crate::store::{self, Out, DERIVED};
 use rusqlite::Connection;
@@ -79,7 +79,7 @@ pub fn parse(text: &str) -> Vec<Record> {
         if f.len() < 8 {
             return None;
         }
-        Some(Record { target: f[0].into(), addr: crate::layout::py_int16(f[1])?, name: f[2].into(), unit: f[3].into(), text: f[4].into(),
+        Some(Record { target: f[0].into(), addr: crate::layout::int16(f[1])?, name: f[2].into(), unit: f[3].into(), text: f[4].into(),
                       sensitive: f[5] == "yes", best: f[6].into(), witness: f[7].into() })
     }).collect()
 }
@@ -95,7 +95,7 @@ pub fn render(recs: &[Record]) -> String {
 }
 
 fn ledger_path(root: &str) -> String {
-    py_path(&format!("{root}/{LEDGER}"))
+    native_path(&format!("{root}/{LEDGER}"))
 }
 
 pub fn read(root: &str) -> Vec<Record> {
@@ -165,7 +165,7 @@ pub fn normalize(text: &str) -> String {
 
 /// The text of a function: its file's lines from its address comment to its definition's end, normalized.
 pub fn fn_text(root: &str, file: &str, comment: i64, end: i64) -> Option<String> {
-    let text = crate::fsmemo::read_text(&py_path(&format!("{root}/{file}"))).ok()?;
+    let text = crate::fsmemo::read_text(&native_path(&format!("{root}/{file}"))).ok()?;
     let lines: Vec<&str> = text.lines().collect();
     let (lo, hi) = ((comment.max(1) - 1) as usize, (end.max(comment) as usize).min(lines.len()));
     (lo < hi).then(|| normalize(&lines[lo..hi].join("\n")))
@@ -322,7 +322,7 @@ pub(crate) fn compile(p: &Project, jobs: &[Job]) -> Result<Vec<std::result::Resu
     if !tools.available() {
         return Ok(jobs.iter().map(|_| Err("the toolchain is not available".to_string())).collect());
     }
-    let full = |r: &str| py_path(&format!("{root}/{r}"));
+    let full = |r: &str| native_path(&format!("{root}/{r}"));
     for d in ["build/trial", "build/obj/trial"] {
         let _ = std::fs::create_dir_all(full(d));
     }
@@ -397,7 +397,7 @@ pub fn probe_units(p: &Project, units: &[String]) -> Result<Vec<(String, std::re
     }
     let mut jobs = vec![];
     for t in &tus {
-        let text = crate::fsmemo::read_text(&py_path(&format!("{root}/{}", t.file))).map_err(err)?;
+        let text = crate::fsmemo::read_text(&native_path(&format!("{root}/{}", t.file))).map_err(err)?;
         for (k, pre) in std::iter::once("").chain(PROBES).enumerate() {
             jobs.push(Job { unit: t, tag: if k == 0 { "control".into() } else { format!("probe{k}") }, prefix: pre.into(), text: text.clone() });
         }
@@ -525,7 +525,7 @@ pub fn probe_command(p: &Project, units: Vec<String>, dry: bool) -> Result<(Vec<
 /// what was probed; nothing when nothing fell, or the toolchain is missing.
 pub fn probe_falls(p: &Project) -> Result<Vec<String>> {
     let root = p.root.to_string_lossy().into_owned();
-    let base = crate::fsmemo::read_text(&py_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default();
+    let base = crate::fsmemo::read_text(&native_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default();
     if base.is_empty() || !crate::vc6::Tools::of(p).available() {
         return Ok(vec![]);
     }

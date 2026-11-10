@@ -1,4 +1,4 @@
-//! The library rules (rules/setup.py documents each criterion; checks.py C.toolchain and S2): the Rich header,
+//! The library rules (each rule's doc in registry.rs states its criterion; C.toolchain and S2): the Rich header,
 //! the library members placed by their bytes (S.crt.code: place_members), the names their relocations resolve
 //! (S.crt.refs), their data sections (S.crt.data), data-only members (S.lib.data), import stubs (S.thunk).
 //!
@@ -700,8 +700,8 @@ fn declared_build(d: &str) -> Option<i64> {
     d[start..end].parse().ok()
 }
 
-/// repr() of a str, as Python spells it.
-fn py_repr(s: &str) -> String {
+/// A string quoted for a message (single quotes, escapes).
+fn quote_str(s: &str) -> String {
     let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
     let mut out = String::from(q);
     for c in s.chars() {
@@ -764,8 +764,8 @@ pub fn c_toolchain(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let b = declared_build(d);
         if !cands.iter().any(|c| c["build"].as_i64() == b) {
             out.finding2("error", "C.toolchain", base, base + 1,
-                          format!("target {t}: declared {key} {} names build {}, no {key} entry of the Rich header has it (candidates: {spelled})", py_repr(d),
-                                  b.map(|b| b.to_string()).unwrap_or_else(|| "None".into())), &by, &rich.by);
+                          format!("target {t}: declared {key} {} names build {}, no {key} entry of the Rich header has it (candidates: {spelled})", quote_str(d),
+                                  b.map(|b| b.to_string()).unwrap_or_else(|| "none".into())), &by, &rich.by);
         }
     }
     Ok(())

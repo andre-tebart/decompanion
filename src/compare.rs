@@ -1,4 +1,4 @@
-//! match/compare.py's compare: one compiled function against the original's bytes (masked byte compare, the
+//! One compiled function against the original's bytes (masked byte compare, the
 //! tail check, the DLL aid of the base relocations).
 
 use crate::coff::{FunctionCode, ABSOLUTE};
@@ -15,7 +15,7 @@ pub struct Compared {
     pub missing_sites: Vec<u32>,
 }
 
-/// The fill forms longest first (stable among equal lengths, as Python's sorted(key=len, reverse=True)): the
+/// The fill forms longest first (stable among equal lengths): the
 /// order is_fill tries them in.
 pub fn fill_order(forms: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let mut fs: Vec<Vec<u8>> = forms.to_vec();
@@ -30,7 +30,7 @@ pub fn is_fill(data: &[u8], fs: &[Vec<u8>]) -> bool {
         match fs.iter().find(|f| !f.is_empty() && data[i..].starts_with(f)) {
             Some(f) => i += f.len(),
             None => {
-                // an empty form matches without advancing: Python loops forever there; no toolchain has one
+                // an empty form matches without advancing: skipped (VC6 has none)
                 return false;
             }
         }

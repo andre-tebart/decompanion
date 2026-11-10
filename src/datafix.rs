@@ -28,14 +28,14 @@
 //! the compare, the reference check against φ, the shape classes, the prover). A unit's edits are accepted together
 //! when the unit compiles and no function falls below its grade; else each group is tried alone and the
 //! groups that pass on their own are tried together, then added one at a time while the unit stays whole.
-//! Positions are in characters, as Python's str offsets were.
+//! Positions are in characters.
 
 use crate::error::{Error, Result};
 use crate::cliread::{record, Tok};
 use crate::clang::{Decl, FileModel};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use crate::readability::Source;
-use crate::srcscan::{py_space, py_strip};
+use crate::srcscan::{is_space, trim_space};
 use crate::store::{self, Claim};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -168,7 +168,7 @@ impl Files {
     }
 
     fn path(&self, rel: &str) -> String {
-        py_path(&format!("{}/{rel}", self.root))
+        native_path(&format!("{}/{rel}", self.root))
     }
 
     fn src(&mut self, rel: &str) -> &Source {
@@ -216,7 +216,7 @@ impl Files {
 
 /// The offset before the white space that ends at off.
 fn end_before(text: &[char], mut off: usize) -> usize {
-    while off > 0 && py_space(text[off - 1]) {
+    while off > 0 && is_space(text[off - 1]) {
         off -= 1;
     }
     off
@@ -273,14 +273,14 @@ fn statement_at(files: &mut Files, rel: &str, line: i64) -> Option<Stmt> {
         }
     }
     let mut end = find(text, '\n', after).map(|e| e + 1).unwrap_or(text.len());
-    if !py_strip(&chars(&code[after.min(end)..end])).is_empty() {
+    if !trim_space(&chars(&code[after.min(end)..end])).is_empty() {
         end = s1; // code after the `;` on its line: the block ends at the `;`
     }
     let mut start = starts[line as usize - 1];
     let k = end_before(text, start);
     let own = src.comments.iter().enumerate().filter(|(_, (cs, _, _))| {
         let bol = rfind(text, '\n', *cs).map(|x| x + 1).unwrap_or(0);
-        py_strip(&chars(&text[bol..*cs])).is_empty()
+        trim_space(&chars(&text[bol..*cs])).is_empty()
     }).filter(|(_, (_, ce, _))| *ce == k).map(|(i, _)| i).last();
     if let Some(ci) = own {
         if text[k..start].iter().filter(|&&c| c == '\n').count() <= 1 {
@@ -335,11 +335,11 @@ fn declarator(files: &mut Files, rel: &str, st: &Stmt, name: &str) -> Option<Dec
         if j < seg.len() && seg[j] == '[' {
             match find(&seg, ']', j) {
                 Some(e) => {
-                    dims.push(py_strip(&chars(&seg[j + 1..e])).to_string());
+                    dims.push(trim_space(&chars(&seg[j + 1..e])).to_string());
                     k = e as i64 + 1;
                 }
                 None => {
-                    dims.push(py_strip(&chars(&seg[j + 1..seg.len().saturating_sub(1).max(j + 1)])).to_string());
+                    dims.push(trim_space(&chars(&seg[j + 1..seg.len().saturating_sub(1).max(j + 1)])).to_string());
                     k = 0;
                 }
             }
@@ -784,7 +784,7 @@ impl<'a> Trial<'a> {
         }
         let (root, tools) = (&self.root, &self.tools);
         let done: Vec<Compiled> = crate::compile_threads(&texts, |(src, obj, text, flags)| {
-            let full = |r: &str| py_path(&format!("{root}/{r}"));
+            let full = |r: &str| native_path(&format!("{root}/{r}"));
             for r in [src, obj] {
                 if let Some(d) = std::path::Path::new(&full(r)).parent() {
                     let _ = std::fs::create_dir_all(d);

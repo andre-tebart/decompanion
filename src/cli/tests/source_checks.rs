@@ -1,6 +1,6 @@
 //! Checks that catch source decisions the link and the byte match let pass: A1 (an image address literal cast to a
 //! pointer), L13 (a data declaration at a function's code), L15 (views), the link's `library` class with its
-//! libs.archives obligation, and `dcp headers conflicts` (tests/test_source_checks.py).
+//! libs.archives obligation, and `dcp headers conflicts`.
 
 use super::*;
 
@@ -265,7 +265,7 @@ fn headers_conflicts_vc6() {
     assert!(code == 1 && out.contains("write=refused"), "{out}");
 }
 
-/// The byte map after a rerun with the same output names current facts only (tests/test_speed.py).
+/// The byte map after a rerun with the same output names current facts only.
 #[test]
 fn answers_name_current_claims_after_same_output_rerun() {
     let t = tiny();

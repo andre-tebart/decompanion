@@ -1,11 +1,11 @@
-//! The read side of cli.py's commands (the CLI refreshes the rules first, then prints these lines): the
+//! The read side of the commands (the CLI refreshes the rules first, then prints these lines): the
 //! setup report, why, facts, conflicts, rules, map, the build summary, fn, target list, decl add, layout next /
 //! units / unit propose. One record per line, key=value tokens, addresses 0x%08x, intervals lo..hi (hi
 //! exclusive), sorted by address, counts before lists; --json gives the same records as JSON lines.
 
 use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, tok, Tok};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use crate::store::{self, Claim, Support};
 use crate::with_db;
 use rusqlite::OptionalExtension;
@@ -39,10 +39,10 @@ fn fmt_range(lo: i64, hi: i64) -> String {
     if hi > lo + 1 { format!("{lo:#010x}..{hi:#010x}") } else { format!("{lo:#010x}") }
 }
 
-/// Python's int(s, 16) for 0x-prefixed text, else int(s, 0).
+/// An address: hex for 0x-prefixed text, else decimal (0o / 0b prefixes too).
 pub fn parse_addr(s: &str) -> Result<i64, String> {
     let t = s.trim();
-    let bad = || format!("invalid literal for int() with base 0: {}", crate::decl::py_repr(t));
+    let bad = || format!("invalid literal for int() with base 0: {}", crate::decl::quote_str(t));
     let (neg, body) = match t.strip_prefix('-') {
         Some(b) => (true, b),
         None => (false, t.strip_prefix('+').unwrap_or(t)),
@@ -75,19 +75,19 @@ fn value_err(e: String) -> Error {
 
 // ------------------------------------------------------------------------------------------------ values
 
-/// str() of a JSON value as Python spells the decoded object.
-fn py_str(v: &Value) -> String {
+/// A JSON value in a message: a string as it is, anything else as `value_repr` spells it.
+fn value_str(v: &Value) -> String {
     match v {
         Value::String(x) => x.clone(),
-        v => py_repr(v),
+        v => quote_str(v),
     }
 }
 
-/// repr() of a JSON value as Python spells the decoded object.
-fn py_repr(v: &Value) -> String {
+/// A JSON value in a message: strings quoted, null / true / false, lists and objects.
+fn quote_str(v: &Value) -> String {
     match v {
-        Value::Null => "None".into(),
-        Value::Bool(b) => if *b { "True" } else { "False" }.into(),
+        Value::Null => "null".into(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.into(),
         Value::Number(n) => match n.as_i64() {
             Some(i) => i.to_string(),
             None => {
@@ -96,9 +96,9 @@ fn py_repr(v: &Value) -> String {
                 o
             }
         },
-        Value::String(x) => crate::decl::py_repr(x),
-        Value::Array(a) => format!("[{}]", a.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
-        Value::Object(m) => format!("{{{}}}", m.iter().map(|(k, x)| format!("{}: {}", crate::decl::py_repr(k), py_repr(x))).collect::<Vec<_>>().join(", ")),
+        Value::String(x) => crate::decl::quote_str(x),
+        Value::Array(a) => format!("[{}]", a.iter().map(quote_str).collect::<Vec<_>>().join(", ")),
+        Value::Object(m) => format!("{{{}}}", m.iter().map(|(k, x)| format!("{}: {}", crate::decl::quote_str(k), quote_str(x))).collect::<Vec<_>>().join(", ")),
     }
 }
 
@@ -111,8 +111,8 @@ fn fmt_value(v: &Value) -> String {
             if i >= 0x1000 { format!("{i:#x}") } else { i.to_string() }
         }
         Value::Array(a) => a.iter().map(fmt_value).collect::<Vec<_>>().join(","),
-        Value::String(x) if x.contains(' ') || x.is_empty() => crate::decl::py_repr(x),
-        v => py_str(v),
+        Value::String(x) if x.contains(' ') || x.is_empty() => crate::decl::quote_str(x),
+        v => value_str(v),
     }
 }
 
@@ -121,7 +121,7 @@ pub fn fact_line(kind: &str, f: &Claim) -> String {
     let vals: Vec<String> = f.value.as_object().map(|m| m.iter().map(|(k, v)| format!("{k}={}", fmt_value(v))).collect()).unwrap_or_default();
     let mut out = format!("{}  {kind}  {}  {}  by={}", fmt_range(f.lo, f.hi), vals.join("  "), level(f.support), f.by);
     if let Some(r) = f.reason.as_ref().filter(|r| !r.is_empty()) {
-        out += &format!("  reason={}", crate::decl::py_repr(r));
+        out += &format!("  reason={}", crate::decl::quote_str(r));
     }
     out
 }
@@ -267,7 +267,7 @@ impl J {
                 Value::Number(n) if n.as_i64().is_some() => Tok::I(n.as_i64().unwrap()),
                 Value::String(x) => Tok::S(x.clone()),
                 Value::Array(a) => J::L(a.iter().cloned().map(J::V).collect()).tok(),
-                v => Tok::S(py_str(v)),
+                v => Tok::S(value_str(v)),
             },
         }
     }
@@ -435,7 +435,7 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
         }
         None => "  rich: none".into(),
     };
-    let r = |x: String| crate::decl::py_repr(&x);
+    let r = |x: String| crate::decl::quote_str(&x);
     out.push(format!("toolchain: compiler={} linker={} cflags={} root={}{rich}", r(ds("compiler")), r(ds("linker")), r(ds("cflags")), r(ds("root"))));
     // bytes per section per owner and support, sections in map order
     let rows = with_db(&db, |c| crate::answers::rows_db(c, &db, None, None))?;
@@ -486,7 +486,7 @@ pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<
     if !game.is_empty() {
         let mut c: BTreeMap<String, usize> = BTreeMap::new();
         for f in &game {
-            *c.entry(py_str(&f.value["status"])).or_default() += 1;
+            *c.entry(value_str(&f.value["status"])).or_default() += 1;
         }
         out.push(format!("units: {}  {}  (dcp layout units)", game.len(), c.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("  ")));
     }
@@ -618,10 +618,10 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
             if q == crate::store::Question::Toolchain {
                 let mut probed: Vec<&Claim> = facts.iter().filter(|(k, f)| k == "toolchain" && f.value.get("flag").is_some()).map(|x| &x.1).collect();
                 if let Some(first) = probed.first().copied() {
-                    probed.sort_by(|x, y| py_str(&x.value["group"]).cmp(&py_str(&y.value["group"])));
+                    probed.sort_by(|x, y| value_str(&x.value["group"]).cmp(&value_str(&y.value["group"])));
                     out.push(format!("  {:<9} {:<7} {}  toolchain probe  {}  (dcp toolchain)  by={}", if cs.is_empty() { "toolchain" } else { "" }, "probe",
                                      fmt_range(first.lo, first.hi),
-                                     probed.iter().map(|f| format!("{}={}", py_str(&f.value["flag"]), level(f.support))).collect::<Vec<_>>().join(" "), first.by));
+                                     probed.iter().map(|f| format!("{}={}", value_str(&f.value["flag"]), level(f.support))).collect::<Vec<_>>().join(" "), first.by));
                 }
             }
         }
@@ -659,10 +659,10 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
         if refs {
             let tgt = |f: &Claim| fmt_addr(f.value.get("to").and_then(|v| v.as_i64()).unwrap_or(0));
             for f in &to {
-                out.push(format!("  ref->  {} from={} to={}  by={}", py_str(&f.value["rkind"]), fmt_addr(f.lo), tgt(f), f.by));
+                out.push(format!("  ref->  {} from={} to={}  by={}", value_str(&f.value["rkind"]), fmt_addr(f.lo), tgt(f), f.by));
             }
             for (_, f) in &from {
-                out.push(format!("  ref<-  {} at={} to={}  by={}", py_str(&f.value["rkind"]), fmt_addr(f.lo), tgt(f), f.by));
+                out.push(format!("  ref<-  {} at={} to={}  by={}", value_str(&f.value["rkind"]), fmt_addr(f.lo), tgt(f), f.by));
             }
         } else {
             out.push(format!("  refs: to={} from={}  (--refs lists them)", to.len(), from.len()));
@@ -810,14 +810,14 @@ pub fn answers_command(p: &crate::project::Project, range: Option<String>) -> Re
     let mut out = vec![format!("target={}  answers={}  range={}", p.target_name, rows.len(), fmt_range(lo, hi))];
     for crate::answers::Answer { lo: rlo, hi: rhi, owner: cls, support: lvl, symbol: sym, unit, .. } in rows {
         let f = sym.map(|id| fact_by_id(&db, id)).transpose()?.flatten();
-        let name = f.as_ref().and_then(|(_, f)| f.value.get("name")).map(py_str).unwrap_or_default();
+        let name = f.as_ref().and_then(|(_, f)| f.value.get("name")).map(value_str).unwrap_or_default();
         let ut = match unit.map(|id| fact_by_id(&db, id)).transpose()?.flatten() {
-            Some((_, u)) => format!("  unit={}", py_str(&u.value["tu"])),
+            Some((_, u)) => format!("  unit={}", value_str(&u.value["tu"])),
             None => String::new(),
         };
         let extra = match f.as_ref().and_then(|(_, f)| f.value.get("text")) {
-            Some(Value::String(x)) => format!("  text={}", crate::decl::py_repr(x)),
-            Some(v) => format!("  text={}", py_repr(v)),
+            Some(Value::String(x)) => format!("  text={}", crate::decl::quote_str(x)),
+            Some(v) => format!("  text={}", quote_str(v)),
             None => String::new(),
         };
         out.push(format!("{}  {:>7}  {cls:<14} {:<9} {name}{ut}{extra}", fmt_range(rlo, rhi), rhi - rlo, level(lvl)));
@@ -866,7 +866,7 @@ pub fn rules_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<S
 pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64), units: bool) -> Result<(Vec<String>, bool)> {
     let db = opened(p)?;
     let mut builds = all(&db, "build")?;
-    builds.sort_by(|a, b| py_str(&a.value["tu"]).cmp(&py_str(&b.value["tu"])));
+    builds.sort_by(|a, b| value_str(&a.value["tu"]).cmp(&value_str(&b.value["tu"])));
     let ok = |f: &Claim| f.value.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
     let bad: Vec<&Rc<Claim>> = builds.iter().filter(|f| !ok(f)).collect();
     let (n, compiled, removed, ms) = compile;
@@ -881,7 +881,7 @@ pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64),
                                                   ("functions", J::V(v.get("functions").cloned().unwrap_or(Value::Null))),
                                                   ("warnings", J::V(v.get("warnings").cloned().unwrap_or(Value::from(0)))), ("errors", J::I(errors.len() as i64)),
                                                   ("flags", J::V(v.get("flags").cloned().unwrap_or(Value::Null)))]))));
-        out.extend(errors.iter().take(10).map(|x| format!("    {}", py_str(x))));
+        out.extend(errors.iter().take(10).map(|x| format!("    {}", value_str(x))));
     }
     let no_unit = no_unit_files(p)?;
     out.extend(no_unit.iter().map(|m| format!("  L.src {m}")));
@@ -889,7 +889,7 @@ pub fn build_summary(p: &crate::project::Project, compile: (i64, i64, i64, i64),
     if !rows.is_empty() {
         let mut c: BTreeMap<(String, String), usize> = BTreeMap::new();
         for r in rows.iter() {
-            let g = |k: &str| r.get(k).map(py_str).unwrap_or_default();
+            let g = |k: &str| r.get(k).map(value_str).unwrap_or_default();
             *c.entry((g("code"), g("readability"))).or_default() += 1;
         }
         out.push(format!("  grades: {}", c.iter().map(|((a, b), v)| format!("{a}+{b}={v}")).collect::<Vec<_>>().join("  ")));
@@ -926,7 +926,7 @@ pub fn gate_target(p: &crate::project::Project, units: i64, quiet: bool) -> Resu
     let db = opened(p)?;
     let obls = crate::decide::gate_records(p)?;
     let builds = all(&db, "build")?;
-    let bad: Vec<String> = builds.iter().filter(|f| !f.value.get("ok").and_then(|x| x.as_bool()).unwrap_or(false)).map(|f| py_str(&f.value["tu"])).collect();
+    let bad: Vec<String> = builds.iter().filter(|f| !f.value.get("ok").and_then(|x| x.as_bool()).unwrap_or(false)).map(|f| value_str(&f.value["tu"])).collect();
     let errors: Vec<FindingRow> = findings(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
     let link = if !builds.is_empty() && p.toolchain_available() { Some(crate::matchcmd::link_lines(p)?) } else { None };
     let good = obls.is_empty() && bad.is_empty() && errors.is_empty() && link.as_ref().is_none_or(|l| l.1);
@@ -975,7 +975,7 @@ pub fn fn_command(p: &crate::project::Project, key: &str) -> Result<Out> {
     }
     let mut out = vec![];
     for ((file, _, unit, name, addrs, ..), (_, _, _, comment_line, _, end_line, ..)) in hits {
-        let text = crate::fsmemo::read_text(&py_path(&format!("{root}/{file}"))).map_err(err)?;
+        let text = crate::fsmemo::read_text(&native_path(&format!("{root}/{file}"))).map_err(err)?;
         let lines: Vec<&str> = text.split('\n').collect();
         let last = if *end_line > 0 { *end_line as usize } else { lines.len() };
         out.push(record(&[("fn", addr_of(addrs).map(Tok::I).unwrap_or(Tok::No)), ("name", s(name.clone())), ("unit", s(unit.clone())),
@@ -1112,7 +1112,7 @@ pub fn layout_units(p: &crate::project::Project, verbose: bool, json: bool) -> R
         J::V(Value::String(x)) | J::S(x) => x,
         _ => String::new(),
     };
-    let lib: BTreeSet<String> = all(&db, "unit")?.iter().filter(|f| f.value.get("lib").is_some()).map(|f| py_str(&f.value["tu"])).collect();
+    let lib: BTreeSet<String> = all(&db, "unit")?.iter().filter(|f| f.value.get("lib").is_some()).map(|f| value_str(&f.value["tu"])).collect();
     let mut out = vec![record(&[("target", s(p.target_name.clone())), ("units", Tok::I(rows.len() as i64)),
                                 ("separated", Tok::I(rows.iter().filter(|r| status(r) == "separated").count() as i64)),
                                 ("open", Tok::I(rows.iter().filter(|r| status(r) == "open").count() as i64)), ("game", Tok::R(glo, ghi)),
@@ -1172,7 +1172,7 @@ pub fn propose_command(p: &crate::project::Project, range: &str, name: &str, why
     };
     static UNIT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z_][A-Za-z0-9_.\-]*$").unwrap());
     if !UNIT.is_match(name) {
-        return Ok((vec![], Some(format!("{} is not a unit name", crate::decl::py_repr(name))), 1, false));
+        return Ok((vec![], Some(format!("{} is not a unit name", crate::decl::quote_str(name))), 1, false));
     }
     let v = crate::session::view_of(p)?;
     if let Some(b) = v.bounds.iter().find(|b| b.2 == name && b.1 == "start") {
@@ -1217,7 +1217,7 @@ pub fn propose_command(p: &crate::project::Project, range: &str, name: &str, why
 /// The verdict on a written proposal after the refresh: its own errors apart from the others'; exit 1 on its own.
 pub fn propose_verdict(p: &crate::project::Project, name: &str) -> Result<(Vec<String>, i32)> {
     let db = opened(p)?;
-    let text = crate::fsmemo::read_text(&py_path(&p.root.join("decl").join("text.dcl").to_string_lossy())).map_err(err)?;
+    let text = crate::fsmemo::read_text(&native_path(&p.root.join("decl").join("text.dcl").to_string_lossy())).map_err(err)?;
     let bys: HashSet<String> = text.lines().enumerate().filter(|(_, l)| format!("{l} ").contains(&format!("tu={name} ")))
         .map(|(i, _)| format!("decl:decl/text.dcl:{}", i + 1)).collect();
     let bad: Vec<FindingRow> = findings(&db, None)?.into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect();
@@ -1244,7 +1244,7 @@ mod tests {
         assert_eq!((fmt_range(16, 17), fmt_range(16, 32)), ("0x00000010".to_string(), "0x00000010..0x00000020".to_string()));
         let v: Value = serde_json::from_str(r#"{"a": 4096, "b": [1, "x y"], "c": true, "d": "", "e": {"k": null}}"#).unwrap();
         let f = Claim { id: 1, rule: Rc::from("r"), lo: 0x1000, hi: 0x1004, text: String::new(), value: v, support: store::DERIVED, by: "rule:r@1".into(), reason: Some("why".into()) };
-        assert_eq!(fact_line("symbol", &f), "0x00001000..0x00001004  symbol  a=0x1000  b=1,'x y'  c=yes  d=''  e={'k': None}  derived  by=rule:r@1  reason='why'");
+        assert_eq!(fact_line("symbol", &f), "0x00001000..0x00001004  symbol  a=0x1000  b=1,'x y'  c=yes  d=''  e={'k': null}  derived  by=rule:r@1  reason='why'");
         assert_eq!(J::O(o(vec![("a", J::R(1, 2)), ("b", J::V(serde_json::json!({"x": "é"})))])).json().replace('\\', "/"), r#"{"a": [1, 2], "b": {"x": "/u00e9"}}"#);
     }
 }

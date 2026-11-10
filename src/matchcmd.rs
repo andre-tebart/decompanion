@@ -4,7 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::cliread::{fmt_addr, record, Tok};
-use crate::project::{py_path, Project};
+use crate::project::{native_path, Project};
 use crate::queues::{self, Entry};
 use crate::shape::Shape;
 use serde_json::{Map, Value};
@@ -220,7 +220,7 @@ pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>
 // ------------------------------------------------------------------------------------------------ asmdiff / diffclass
 
 /// One graded function's reading, or the lines to stop with: no such function (exit 1), no reading (a
-/// configuration error, as the Python raised it).
+/// configuration error).
 fn reading(p: &Project, key: &str, cmd: &str, symbols: bool) -> Result<Result<crate::asmcmd::Reading, Out>> {
     let db = opened(p)?;
     let Some(row) = crate::asmcmd::find_function(&db, key)? else {
@@ -658,7 +658,7 @@ pub fn diffclass_command(p: &crate::project::Project, name: &str, all: bool) -> 
 // ------------------------------------------------------------------------------------------------ promote / accept
 
 fn baseline_path(root: &str) -> String {
-    py_path(&format!("{root}/ledger/grades.tsv"))
+    native_path(&format!("{root}/ledger/grades.tsv"))
 }
 
 fn read_baseline(root: &str) -> String {

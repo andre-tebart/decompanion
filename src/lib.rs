@@ -296,7 +296,7 @@ pub fn forget_conns_under(dir: &std::path::Path) {
     });
 }
 
-/// The store's native connection for code that reports Python errors itself (a native rule).
+/// The store's connection for code that reports its errors itself (a rule).
 pub(crate) fn with_conn<T>(path: &str, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
     with_db(path, |_| Ok(()))?;
     CONNS.with(|c| f(c.borrow_mut().get_mut(path).unwrap()))
