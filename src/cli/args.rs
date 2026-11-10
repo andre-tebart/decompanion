@@ -30,21 +30,21 @@ pub enum Cmd {
     Claims(ClaimsArgs),
     /// the answers of a range: per run of bytes the owner at its highest support, its unit and section
     Answers(AnswersArgs),
-    /// φ, the correspondence: an address's our objects, a name's addresses; without either a summary
+    /// φ, the name map: the objects of ours at an address, a name's addresses; without either a summary
     Phi(PhiArgs),
     /// the exceptions: the sources' `@original why` (the original was inconsistent here) and `@vc6 why` (the checker
     /// differs from the toolchain here) markers and the declared `overrun`s (the original's access at an instruction
     /// overruns its object), each with its reason
     Exceptions,
-    /// the findings: contradictions, ill-formed H or φ, gaps, stale results, debt
+    /// the findings: contradictions, ill-formed sources or names, gaps, stale results, debt
     Findings(FindingsArgs),
-    /// the gate: build, no bug or error finding, the link resolves (every target unless --target)
+    /// the gate: build, no bug or error finding, the link resolves
     Check(CheckArgs),
     /// the project's daemon: every dcp command of the project runs in it (started on demand)
     Serve(ServeArgs),
     /// the rule graph and run status
     Rules(RulesArgs),
-    /// the phase and the open obligations in order, with the next step (every target unless --target)
+    /// the phase and the open obligations in order, with the next step
     Status(StatusArgs),
     /// the toolchain evidence; `probe`: the flag probe; `declare`: a declaration
     Toolchain(ToolchainArgs),
@@ -75,8 +75,8 @@ pub enum Cmd {
     Escalate(EscalateArgs),
     /// write `@stuck why` into a function's address comment (--clear removes the tag)
     Stuck(StuckArgs),
-    /// raise the grade baseline ledger/grades.tsv to the current grades (main checkout only; a fall no dcp debt add
-    /// covers is refused)
+    /// raise the grade baseline ledger/grades.tsv to the current grades (a fall no dcp debt add covers is
+    /// refused)
     Promote(PromoteArgs),
     /// the debt: regressions declared on purpose, each with its last witness; `add` declares one, `list` lists them
     Debt(DebtArgs),
@@ -155,7 +155,7 @@ impl Severity {
 #[derive(Subcommand, Debug)]
 pub enum DebtCmd {
     /// declare a regression: lower one function's baseline entry to the grade it fell to, with the reason, what it
-    /// waits for and the last witness commit (main checkout only)
+    /// waits for and the last witness commit
     Add(DebtAddArgs),
     /// every debt item of the baseline: function, the grade before and now, the witness, why, what it waits for
     List,
