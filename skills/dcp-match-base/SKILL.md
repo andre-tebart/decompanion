@@ -125,7 +125,7 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   pairs with, shared slots, holes. `dcp asmdiff NAME --lines`: our lines with their source lines.
 - `dcp draft 0xADDR --show` - the analyzer's pseudocode, unchanged: a second reading, not the truth.
 - `dcp why 0xADDR|NAME` - everything the ledger knows about an address or a function / data name, by question (section,
-  owner, start, unit, ref, toolchain): the answer first, the claims stacked under it; then φ there (the objects of H
+  owner, start, unit, ref, toolchain): the answer first, the claims stacked under it; then φ there (the our objects
   at the address: `dcp phi NAME|0xADDR` for one, `dcp phi --many` for the addresses with several), the findings.
 - `dcp lint` - clang over the units: cross-unit conflicts (M5), calls without a prototype (M7: the consistency
   convention, a contradiction; `dcp grade NAME` lists them on the function's experiment).

@@ -192,7 +192,7 @@ fn asmdiff_symbols_marks_an_alias_equal() {
     assert!(out.contains("C.name.alias") && out.contains("counter (src/net.c:2), net_Counter (include/other.h:1)"), "{out}");
 }
 
-/// Containment (§8.7): a view one past a 1-byte char (our object pads it: D7 reads the declared size), and a
+/// Containment: a view one past a 1-byte char (our object pads it: D7 reads the declared size), and a
 /// reference `&flag + 8` outside it (M.contain, ill-formed whatever the bytes; asmdiff marks the line).
 #[test]
 #[ignore = "e2e: VC6"]

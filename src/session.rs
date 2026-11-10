@@ -62,8 +62,8 @@ pub fn session_dirty(root: &str) -> Vec<String> {
     }).map(|l| l.trim_end().to_string()).collect()
 }
 
-/// The dirty paths of H's source (src/, include/, decl/: session_dirty's lines under them). A grade promoted from
-/// them has a witness in no history (docs/mental-model.md §8.6): promote and the wrap refuse.
+/// The dirty paths of our source (src/, include/, decl/: session_dirty's lines under them). A grade promoted from
+/// them has a witness in no history: promote and the wrap refuse.
 pub fn source_dirty(root: &str) -> Vec<String> {
     session_dirty(root).into_iter().filter(|l| {
         let path = l.get(3..).unwrap_or("").trim().trim_matches('"');
@@ -314,8 +314,8 @@ fn grade_changes(root: &str, base: &str, target: &str, rows: &[Map<String, Value
     out
 }
 
-/// The wrap's hand-up line of a target's grade changes (the tier bounds are tuned against it, docs/mental-model.md
-/// §7): the functions raised to shape + readable, and those that gained a @hard / @deep / @stuck tag.
+/// The wrap's hand-up line of a target's grade changes (the tier bounds are tuned against it)
+/// : the functions raised to shape + readable, and those that gained a @hard / @deep / @stuck tag.
 fn handups(ch: &[(i64, String, String, Option<String>, Option<String>)]) -> String {
     // a grade text: "code+readability[ level]"
     let parse = |g: &Option<String>| -> (String, String, String) {

@@ -1069,7 +1069,7 @@ pub fn data_fix(p: &Project, checks: Option<String>, unit: Option<String>, write
         let still = fallen(&before, &now).len();
         let before_units: HashSet<&String> = before.values().map(|x| &x.0).collect();
         // the scan's rules on the written H (an address comment detached from its datum: L.src, M.gen), not only
-        // the compile: a new error sends the batch back (docs/mental-model.md §5)
+        // the compile: a new error sends the batch back
         let new_errors: Vec<(String, i64, String)> = errors_of(&db)?.into_iter().filter(|e| !errors_before.contains(e)).collect();
         for e in new_errors.iter().take(10) {
             say(format!("  new error {} {:#010x}: {}", e.0, e.1, e.2))?;

@@ -570,7 +570,7 @@ fn why_line(k: &str, f: &Claim) -> String {
 
 /// `dcp why ADDR|NAME...`: everything known about an address (the project's question: what is here?): the answer
 /// row, the value of a datum (value_line), then per question the claims covering it, the answer first and the
-/// claims stacked under it after (docs/mental-model.md §3), φ at the address (the objects of H there), what is no
+/// claims stacked under it after, φ at the address (the our objects there), what is no
 /// claim (experiments, builds, intermediate results), the findings touching it, references to and from it. Exit 1
 /// when a name is unknown.
 pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -> Result<Out> {
@@ -626,7 +626,7 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
                 }
             }
         }
-        // φ: the objects of H at this address (and at the start of the object holding it)
+        // φ: the our objects at this address (and at the start of the object holding it)
         if phi.is_none() {
             let names = with_db(&db, |c| store::claims_of(c, &db, "name", None, |_| true))?;
             phi = Some(crate::phi::Phi::new(&names, &[]));
@@ -639,7 +639,7 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
                                  e.view.as_ref().map(|v| format!("  view={v}")).unwrap_or_default()));
             }
         }
-        // the rows that are no claims about I
+        // the rows that are no claims about the original
         for (k, f) in facts.iter().filter(|(k, _)| !matches!(crate::store::role(k), crate::store::Role::Claim(_) | crate::store::Role::Phi)) {
             out.push(format!("  {:<9} {:<7} {}", role_name(k), "", why_line(k, f)));
         }
@@ -672,7 +672,7 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
     Ok((out, None, if missing > 0 { 1 } else { 0 }))
 }
 
-/// `dcp phi [ADDR|NAME] [--many]`: φ at an address (its objects of H), of a name (its addresses), or a summary (the
+/// `dcp phi [ADDR|NAME] [--many]`: φ at an address (its our objects), of a name (its addresses), or a summary (the
 /// entries per origin); `--many` the addresses where φ is many-to-one with the reason, `reason=none` where nothing
 /// explains it (ill-formed: C.name.alias, N2). Exit 1 when a name is unknown.
 pub fn phi_command(p: &crate::project::Project, key: Option<String>, many: bool) -> Result<Out> {

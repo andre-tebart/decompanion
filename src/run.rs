@@ -1,4 +1,4 @@
-//! Running a build (docs/run.md): build variants, run setups and run profiles of decompanion.toml.
+//! Running a build: build variants, run setups and run profiles of decompanion.toml.
 //!
 //!   [[variant]]  name, targets, cflags, reason; [[variant.unit]] glob (a unit name pattern or a list), cflags, reason.
 //!                Extra flags on top of a target's build. A variant compiles only the units its flags reach, into

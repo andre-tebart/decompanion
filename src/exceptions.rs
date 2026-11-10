@@ -1,10 +1,10 @@
-//! The exceptions (docs/mental-model.md §5, §8.8): a declared statement that a convention does not hold at one
+//! The exceptions: a declared statement that a convention does not hold at one
 //! site, with its reason. It removes the convention's premise there; it does not outvote it. Two kinds live in the
 //! sources, as a marker on the line they exempt (lint.rs `exemption`):
 //! - `@original why`: the original itself was inconsistent here (it called a function through another spelling);
 //!   its evidence is an experiment whose bytes need the spelling.
-//! - `@vc6 why`: the checker's model of C (clang) differs from H's toolchain at this site; the gap is the checker's.
-//! One kind is a declaration of I's instruction, since the sources have no line for it (decl/text.dcl):
+//! - `@vc6 why`: the checker's model of C (clang) differs from our toolchain at this site; the gap is the checker's.
+//! One kind is a declaration of the original's instruction, since the sources have no line for it (decl/text.dcl):
 //! - `0xADDR overrun -- why`: the original's access at that instruction overruns its object (a memset one int
 //!   past a field); S.extent takes it for no evidence of the object's extent.
 //!

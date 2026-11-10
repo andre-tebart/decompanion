@@ -43,7 +43,7 @@ fn disasm_dump_refs() {
     assert!(out.contains("instructions=2") && out.contains("mov eax, dword ptr [0x10002000]"), "{out}");
     let (code, out) = dcp(&t, &["why", "GetCounter"]); // why takes a name too
     assert!(code == 0 && out.starts_with("addr=0x10001020") && out.contains("owner=func"), "{out}");
-    // grouped by question: the answer first, the claims stacked under it after; φ names the object of H there
+    // grouped by question: the answer first, the claims stacked under it after; φ names the object of ours there
     let line = |q: &str| out.lines().find(|l| l.trim_start().starts_with(q)).unwrap_or("").to_string();
     assert!(line("owner").contains("answer") && line("start").contains("answer") && line("section").contains("answer"), "{out}");
     assert!(out.lines().any(|l| l.trim_start().starts_with("phi") && l.contains("GetCounter") && l.contains("origin=decl")), "{out}");

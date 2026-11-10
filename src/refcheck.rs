@@ -1,14 +1,14 @@
-//! The reference check of the object experiment (docs/mental-model.md §4, §8.4): a relocated field's value is
+//! The reference check of the object experiment: a relocated field's value is
 //! masked by the compare, so the experiment checks instead that the field refers to the same thing on both sides.
 //! For each relocation of ours whose instruction lines up with the original's (a byte match: every one, at its
-//! offset; else the instruction alignment's pairs, the function's one alignment, §4), the address the original's
+//! offset; else the instruction alignment's pairs, the function's one alignment), the address the original's
 //! field refers to is compared with φ(our symbol):
 //!
 //! - equal: the reference is reproduced;
 //! - different: the experiment fails (a concrete difference naming both targets);
 //! - φ undefined (our symbol has no address comment, declaration or library placement): open, listed, never learned.
 //!
-//! A literal (a string, a floating constant) has no name of H: its bytes are its identity, and the original's field
+//! A literal (a string, a floating constant) has no name of ours: its bytes are its identity, and the original's field
 //! must refer to the same bytes. Where φ gives that address one of our data objects, the two declarations
 //! contradict each other (our literal, or the datum the original loads: VC6 pools its literals, and a layout may
 //! have named one as a datum): open, listed, and the literal binds only in read-only data. G.grade, `dcp asmdiff`, `dcp
@@ -44,7 +44,7 @@ pub enum Target {
     /// a string literal or a floating constant: its bytes and its rule (M9 / M10); `delta` the offset of the
     /// literal from the symbol the field is relocated against
     Lit { bytes: Vec<u8>, rule: &'static str, delta: u32 },
-    /// a named object of H: its C name and its offset from the symbol the field is relocated against (a section
+    /// a named object of ours: its C name and its offset from the symbol the field is relocated against (a section
     /// symbol plus an addend: the object at that offset of the section)
     Name { name: String, delta: u32 },
     /// a symbol nothing names (a section without a named object at the offset)
@@ -114,7 +114,7 @@ pub fn target(obj: &Obj, code: &FunctionCode, r: &Reloc) -> Target {
     Target::Name { name: crate::coff::undecorate(sym.name.strip_prefix("__imp_").unwrap_or(&sym.name)), delta: 0 }
 }
 
-/// φ(name): the addresses φ gives an object of H, sorted; without any, the address a placeholder name spells
+/// φ(name): the addresses φ gives an object of ours, sorted; without any, the address a placeholder name spells
 /// (`net_Unk5eb9b8`).
 pub fn phi_addrs(phi: &Phi, name: &str) -> Vec<i64> {
     match phi.of(name) {
@@ -128,7 +128,7 @@ pub fn phi_addrs(phi: &Phi, name: &str) -> Vec<i64> {
 pub struct Refs {
     pub targets: Vec<Target>,
     pub expect: Vec<Vec<i64>>,
-    /// our references outside their object (containment, docs/mental-model.md §8.7): ill-formed
+    /// our references outside their object (containment): ill-formed
     pub outside: Vec<Outside>,
     /// our addresses used as numbers (an immediate of a bitwise or multiplicative operation): M.addrnum
     pub numeric: Vec<Numeric>,

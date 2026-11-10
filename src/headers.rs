@@ -412,7 +412,7 @@ fn included_already(text: &str, headers: &[String]) -> Vec<String> {
 
 /// What a new text of a unit's file does to φ against the old one (srcscan's rules on both): each L.src error the
 /// new text has and the old does not, each function or datum whose address comment no longer attaches to it.
-/// A command that writes H refuses on any (docs/mental-model.md §5: never write an ill-formed φ).
+/// A command that writes H refuses on any (never write an ill-formed φ).
 fn phi_breaks(x: &Texts, rel: &str, old: &str, new: &str) -> Result<Vec<String>, String> {
     let scan = |text: &str| {
         let m = x.model_of(rel, text).unwrap_or_else(|| x.model_alone(rel, text));

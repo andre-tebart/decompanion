@@ -189,12 +189,12 @@ impl Project {
         }).unwrap_or_default()
     }
 
-    /// The gate's bound on debt items (docs/mental-model.md §8.6): `[gate] max_debt`; -1 (no bound) when not set.
+    /// The gate's bound on debt items: `[gate] max_debt`; -1 (no bound) when not set.
     pub fn max_debt(&self) -> i64 {
         self.cfg.get("gate").and_then(|g| g.get("max_debt")).and_then(|v| v.as_integer()).unwrap_or(-1)
     }
 
-    /// The easy tier's bounds (crate::queues, docs/mental-model.md §7): `[queue] easy_max_bytes`, `easy_max_dist`,
+    /// The easy tier's bounds (crate::queues): `[queue] easy_max_bytes`, `easy_max_dist`,
     /// `easy_read_max_bytes`, each the default when not set.
     pub fn tiers(&self) -> crate::queues::Tiers {
         let d = crate::queues::Tiers::default();

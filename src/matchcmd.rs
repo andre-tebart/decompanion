@@ -91,7 +91,7 @@ fn function_lines(out: &mut Vec<String>, r: &Row, verbose: bool) {
         if let Some(Value::Array(o)) = r.get("open") {
             out.extend(o.iter().filter_map(|x| x.as_str()).map(|x| format!("  open: {x}")));
         }
-        // the consistency convention (§8.8): calls without a declaration, the experiment's side
+        // the consistency convention: calls without a declaration, the experiment's side
         if let Some(Value::Array(c)) = r.get("consistency") {
             let calls: Vec<&str> = c.iter().filter_map(|x| x.as_str()).collect();
             out.push(format!("  M7 consistency: {}", calls[..calls.len().min(6)].join(", ")));
@@ -678,7 +678,7 @@ fn write_baseline(root: &str, text: &str) -> Result<()> {
 /// `dcp promote` (every target built): ledger/grades.tsv from the current grades of every target; refused when the
 /// source (src/, include/, decl/) has uncommitted changes, and when a grade fell against it unless `accept_falls`.
 pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> Result<Out> {
-    // a witness is a commit (docs/mental-model.md §8.6): grades of uncommitted source are in no history
+    // a witness is a commit: grades of uncommitted source are in no history
     let dirty = crate::session::source_dirty(root);
     if !dirty.is_empty() {
         let mut out = vec![record(&[("promote", s("refused")), ("dirty", Tok::I(dirty.len() as i64))])
@@ -732,7 +732,7 @@ pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> 
 
 const CODE: [&str; 3] = ["draft", "shape", "byte"];
 
-/// `dcp debt add FN --to GRADE --why TEXT [--waits-for WHAT]`: declare a regression (docs/mental-model.md §8.6): lower one
+/// `dcp debt add FN --to GRADE --why TEXT [--waits-for WHAT]`: declare a regression: lower one
 /// function's baseline entry to the grade it fell to, its accepted column the grade before, the last witness commit,
 /// the reason and what it waits for (M1 then holds it there and lists it as debt).
 pub fn debt_add_command(project: Option<&Project>, name: &str, to: Option<String>, readability: Option<String>, why: Option<String>,
@@ -972,7 +972,7 @@ mod tests {
         crate::testkit::write(&d, "ledger/grades.tsv", "target\taddress\n");
         git(&["init", "-q"]);
         crate::testkit::write(&d, "notes.md", "x");
-        assert!(crate::session::source_dirty(&root).is_empty()); // the ledger, a note: not H's source
+        assert!(crate::session::source_dirty(&root).is_empty()); // the ledger, a note: not our source
         crate::testkit::write(&d, "include/net.h", "int f(void);\n");
         let (out, _, code) = promote_command(&root, &[], false).unwrap();
         assert!(code == 1 && out[0].starts_with("promote=refused  dirty=1") && out[1] == "  dirty ?? include/net.h", "{out:?}");

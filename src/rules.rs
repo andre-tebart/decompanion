@@ -122,7 +122,7 @@ thread_local! {
 
 /// A sourced function without compiled code: its source, why, and whether its experiment ran. With no object of
 /// its unit (it failed to compile, or is not compiled yet) the experiment is not run: open, not a fall
-/// (docs/mental-model.md §3, §4); an object without the function is H's failure: the experiment ran.
+///; an object without the function is our failure: the experiment ran.
 pub struct Missing {
     pub src: Rc<Claim>,
     pub why: String,
@@ -326,8 +326,8 @@ pub(crate) fn missing_refs(lo: i64, len: i64, fields: &[(u32, u32)], refs: &[(i6
     }).copied().collect()
 }
 
-/// M.ref.missing (docs/mental-model.md §8.3): a byte-matched function whose instruction holds, as a constant, the
-/// address an absolute memory operand of the original refers to. The analysis of I claims a reference (derived),
+/// M.ref.missing: a byte-matched function whose instruction holds, as a constant, the
+/// address an absolute memory operand of the original refers to. The analysis of the original claims a reference (derived),
 /// our code none (declared): our bytes equal the original's only at this layout.
 fn m_ref_missing(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
@@ -594,7 +594,7 @@ fn extent_ends(ctx: &Ctx, objs: &[DataObj]) -> Result<Vec<i64>> {
 }
 
 /// match_data.site_confirmed: address -> C name of every data address a byte-matched function's absolute
-/// relocation confirms (the first such relocation wins). Only a near-certain reference is evidence (§8.2): a
+/// relocation confirms (the first such relocation wins). Only a near-certain reference is evidence: a
 /// memory operand's displacement, or an immediate at a base relocation of the image. An immediate otherwise may
 /// be a number (`&g_Ring + 0x4973c0` is the mask 0xf00500): the original's field minus our addend confirms
 /// nothing.
@@ -815,8 +815,8 @@ pub(crate) struct ExtentEv {
 /// declaration overlaps, or that reaches past the one declaration's object size or starts before it, is a
 /// conflict (severity, lo, hi, message, the first declaration's producer), always an error: declarations that are
 /// pieces of one unit and section kind tiling the object without a hole link where the original's bytes are (a
-/// unit's definitions keep their order and adjacency), but one object of I as several of H is no valid φ
-/// (docs/mental-model.md §8.3, §8.7); their message names the merge. `named`: a registered name of an address.
+/// unit's definitions keep their order and adjacency), but one object of the original as several of ours is no valid φ
+///; their message names the merge. `named`: a registered name of an address.
 pub(crate) fn d8(decls: &[ExtentDecl], ev: &[ExtentEv], named: impl Fn(i64) -> Option<String>) -> Vec<(&'static str, i64, i64, String, String)> {
     let mut ev: Vec<&ExtentEv> = ev.iter().collect();
     ev.sort_by_key(|e| (e.lo, -e.hi));
@@ -885,7 +885,7 @@ pub(crate) fn d8(decls: &[ExtentDecl], ev: &[ExtentEv], named: impl Fn(i64) -> O
 /// object): the padding is the bytes between the two, cut at the next known start of the image (`starts`,
 /// sorted). Per such definition (its index) its end, where the padding ends and the targets of `into` (target ->
 /// sites) in it, in address order. Undeclared bytes after the last definition of a unit are a gap (no claim of
-/// H), not padding.
+/// ours), not padding.
 fn room_refs(defs: &[(i64, i64, i64)], starts: &[i64], into: &std::collections::BTreeMap<i64, Vec<i64>>) -> Vec<(usize, i64, i64, Vec<(i64, Vec<i64>)>)> {
     let mut out = vec![];
     for (k, &(lo, n, size)) in defs.iter().enumerate() {

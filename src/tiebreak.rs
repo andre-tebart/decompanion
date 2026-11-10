@@ -1,7 +1,7 @@
-//! Declaration-set tie-breaks (docs/mental-model.md §4, §8.5, §8.6): VC6 /O2 breaks ties in its register allocation
+//! Declaration-set tie-breaks: VC6 /O2 breaks ties in its register allocation
 //! by the declaration set a unit sees, so a change in a widely included header (a union member, a field, an unused
 //! typedef) moves functions that never use the changed type between byte, shape and draft. That is the headers'
-//! business, not the function's: the object experiment would be reporting on something else (§4).
+//! business, not the function's: the object experiment would be reporting on something else.
 //!
 //! The probe is the experiment that measures it once instead of per change: the unit compiled as the build compiles
 //! it (the control) and with a no-meaning perturbation before its text (PROBES: unused typedefs, one, two, three and

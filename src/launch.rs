@@ -1,4 +1,4 @@
-//! Launching a staged run (docs/run.md): the steps of the setup, the program, the `after` steps.
+//! Launching a staged run: the steps of the setup, the program, the `after` steps.
 //!
 //! The core builds and stages and writes the launch spec build/run/<run>.json (run.rs); this module runs it in the
 //! process the user typed `dcp` in (the daemon has no window to start a program in: it hands the spec to the client,

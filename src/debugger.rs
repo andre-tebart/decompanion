@@ -1,4 +1,4 @@
-//! Crash capture for `dcp run --debug` (docs/run.md "Crashes"): the program runs under a minimal Win32 debugger in
+//! Crash capture for `dcp run --debug`: the program runs under a minimal Win32 debugger in
 //! the process the user typed `dcp` in (the debug loop must run on the thread that created the process); a crash
 //! writes build/crash/<run>-<stamp>/ with crash.txt, crash.dmp and the launch spec, and build/crash/LATEST.txt.
 //!

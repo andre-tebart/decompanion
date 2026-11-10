@@ -1,4 +1,4 @@
-//! The cause candidates of a grade change (docs/mental-model.md §8.6: many falls share one cause, M1 names it): which inputs of a unit's compile changed since
+//! The cause candidates of a grade change (many falls share one cause, M1 names it): which inputs of a unit's compile changed since
 //! a commit. A unit compiles from its own file and the headers it includes, so a function whose grade moved names
 //! one of three things:
 //! - its unit's own text changed;

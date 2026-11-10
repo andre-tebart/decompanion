@@ -1,9 +1,9 @@
-//! φ, the correspondence (docs/mental-model.md §1): which object of H is which address of I. Its entries come from
+//! φ, the correspondence: which object of ours is which address of the original. Its entries come from
 //! the `name` claims: our address comments (`source`) and declarations (`decl`) are φ for our own objects, a placed
-//! library member's symbols (`lib`) φ for the toolchain's part of H, the export and import tables (`export`,
+//! library member's symbols (`lib`) φ for the toolchain's part of ours, the export and import tables (`export`,
 //! `import`) and the CRT's user entry (`entry`) names the image itself holds; an analyzer's drafts (`analyzer`) add
 //! names for display only, never a correspondence. One index, built from those claims, answers both directions:
-//! φ(name) (the addresses an object of H is at, with their support) and φ⁻¹(address) (the objects of H there).
+//! φ(name) (the addresses an object of ours is at, with their support) and φ⁻¹(address) (the our objects there).
 //!
 //! φ is many-to-one where the toolchain folds objects (identical library members `a|b`, pooled literals) or an
 //! alias is declared; two of our own definitions at one address without such a reason are ill-formed (L.src, N2,
@@ -61,7 +61,7 @@ impl Origin {
     }
 }
 
-/// One entry of φ: the C name of an object of H at an address of I.
+/// One entry of φ: the C name of an object of ours at an address of the original.
 #[derive(Clone, Debug)]
 pub struct Entry {
     /// the C spelling (a library symbol undecorated, an import's symbol without its DLL)
@@ -77,7 +77,7 @@ pub struct Entry {
     pub folded: bool,
     /// a view (`(*(T *)((char *)&C + OFF))`): the container's name
     pub view: Option<String>,
-    /// a data object's declared size (sizeof, the front end's): its extent in H
+    /// a data object's declared size (sizeof, the front end's): its extent in our sources
     pub size: Option<i64>,
 }
 
@@ -147,13 +147,13 @@ impl Phi {
         Phi { entries, by_name, by_addr, sizes }
     }
 
-    /// φ(name): the addresses the object of H of this C name corresponds to, each at its best support (no
+    /// φ(name): the addresses the object of ours of this C name corresponds to, each at its best support (no
     /// analyzer name: those are no correspondence).
     pub fn of(&self, name: &str) -> Option<&BTreeMap<i64, Support>> {
         self.by_name.get(name)
     }
 
-    /// The declared size of the object of H of this C name (sizeof, the front end's), when a declaration with an
+    /// The declared size of the object of ours of this C name (sizeof, the front end's), when a declaration with an
     /// address gives one: references stay inside [0, size] of it (one past the end allowed).
     pub fn size_of(&self, name: &str) -> Option<i64> {
         self.sizes.get(name).copied()
@@ -164,7 +164,7 @@ impl Phi {
         self.by_addr.get(&addr).into_iter().flatten().map(|&i| &self.entries[i])
     }
 
-    /// The C names of the objects of H at an address (no analyzer name), sorted.
+    /// The C names of the our objects at an address (no analyzer name), sorted.
     pub fn names_at(&self, addr: i64) -> BTreeSet<String> {
         self.at(addr).filter(|e| e.origin != Origin::Analyzer).map(|e| e.name.clone()).collect()
     }
@@ -188,7 +188,7 @@ impl Phi {
         self.ranked(addr).into_iter().next()
     }
 
-    /// The addresses where φ is many-to-one: several distinct C names of H (no analyzer's, a view is its own
+    /// The addresses where φ is many-to-one: several distinct C names of ours (no analyzer's, a view is its own
     /// object), with the entries.
     pub fn many(&self) -> Vec<(i64, Vec<&Entry>)> {
         self.by_addr.keys().filter_map(|&a| {

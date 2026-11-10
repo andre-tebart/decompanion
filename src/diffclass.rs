@@ -484,7 +484,7 @@ struct Piece {
     inside: Inside,
 }
 
-/// The cut correspondence of one function's two listings (§4: the alignment, one per function). A cut is a
+/// The cut correspondence of one function's two listings (the alignment, one per function). A cut is a
 /// place between instructions, cut k before line k (k = len: the end); a jump target is a cut. The equal runs and
 /// the hunks of the alignment are pieces in a row on both sides; a cut corresponds:
 /// - at a piece's boundary, always (an empty side's one cut with both of the other side's);

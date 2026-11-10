@@ -33,7 +33,7 @@ pub enum Cmd {
     Claims(ClaimsArgs),
     /// the answers of a range: per run of bytes the owner at its highest support, its unit and section
     Answers(AnswersArgs),
-    /// φ, the correspondence: an address's objects of H, a name's addresses; without either a summary
+    /// φ, the correspondence: an address's our objects, a name's addresses; without either a summary
     Phi(PhiArgs),
     /// the exceptions: the sources' `@original why` (the original was inconsistent here) and `@vc6 why` (the checker
     /// differs from the toolchain here) markers and the declared `overrun`s (the original's access at an instruction

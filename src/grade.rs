@@ -1,6 +1,6 @@
-//! G.grade: per sourced function the object experiment (docs/mental-model.md §4: its outcome byte / shape / draft
+//! G.grade: per sourced function the object experiment (its outcome byte / shape / draft
 //! from the compare and the instruction diff, diffclass.rs; what failed, B1..B3; the calls the consistency
-//! convention finds without a declaration, M7) as an `experiment` claim, and its readability (§9, readability.rs:
+//! convention finds without a declaration, M7) as an `experiment` claim, and its readability (readability.rs:
 //! Q1..Q6, Q8) as a `readability` row, kept apart; the same per unit.
 
 use crate::error::{Error, Result};
@@ -23,7 +23,7 @@ fn err(e: rusqlite::Error) -> Error {
 pub(crate) const CODE: [&str; 3] = ["draft", "shape", "byte"];
 
 /// The outcome of an experiment that did not run (its unit has no object): open, no grade, so below none of CODE
-/// and no fall (docs/mental-model.md §3, §4); M.compile / M.compile.stale say why, M1 counts it per unit.
+/// and no fall; M.compile / M.compile.stale say why, M1 counts it per unit.
 pub(crate) const NOT_RUN: &str = "open";
 
 /// The reference differences a function's failing lines name one by one (the rest by their count).
@@ -188,8 +188,8 @@ pub(crate) fn code_grade(matched: bool, structural: bool, proved: bool, chk: &cr
 }
 
 /// The code grade of one function from its reference check and (when needed: not a byte match whose every reference
-/// agrees) its verdict. The one decision G.grade, the header trial and data fix's trial share (docs/mental-model.md
-/// §4: an experiment has one implementation).
+/// agrees) its verdict. The one decision G.grade, the header trial and data fix's trial share (an
+/// experiment has one implementation).
 fn decide<'a>(is_byte: bool, chk: &crate::refcheck::Check, judged: impl Fn() -> &'a Judged) -> &'static str {
     if is_byte {
         if chk.differs().next().is_none() {
@@ -421,7 +421,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             out.finding("warn", "M.addrnum", site, site + 4, format!("{name} at {lo:#x}: {l}"), &f.src.by);
         }
         // the findings view (M8 / M9 / M10): a byte match whose reference φ contradicts, at the site (the bytes are
-        // equal at this layout only, docs/mental-model.md §8.3); the positional pairing is exact there. Elsewhere
+        // equal at this layout only); the positional pairing is exact there. Elsewhere
         // the difference is the experiment's failing line (the alignment pairs reordered code crosswise).
         if is_byte && g == "draft" {
             let name = f.src.s("symbol").unwrap_or("");
@@ -430,7 +430,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 out.finding("error", r.rule, site, site + 4, format!("{name} at {lo:#x}: {l}"), &f.src.by);
             }
         }
-        // containment (§8.7): a reference of ours outside its object's declared size is no address of it, whatever
+        // containment: a reference of ours outside its object's declared size is no address of it, whatever
         // the bytes compare (ill-formed: it moves with the object in a relinked image)
         for o in &refs[i].outside {
             let site = lo + o.off as i64;
@@ -513,7 +513,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let has = |k: &str| v.get(k).is_some_and(|x| !x.is_null());
         let tag = if has("stuck") { "stuck" } else if has("deep") { "deep" } else if has("hard") { "hard" } else { "" };
         // the experiment: its outcome, what failed (B1..B3), the distance; the calls the consistency convention
-        // (docs/mental-model.md §8.8, M7) finds without a declaration belong to it, not to readability
+        // (M7) finds without a declaration belong to it, not to readability
         let mut e = json!({"of": "function", "name": v["symbol"], "unit": v["unit"], "file": v["file"], "comment": comment,
                            "outcome": r.code, "tag": tag, "failing": r.why, "dist": r.dist});
         if r.hunks.as_object().is_some_and(|h| !h.is_empty()) {
@@ -549,7 +549,7 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         // a passing byte experiment reproduces; anything less rests on the address comment
         out.claim(s.lo, s.lo + 1, "experiment", e, if r.code == "byte" { REPRODUCED } else { DECLARED });
-        // readability: H against its own standard (§9), no claim about I
+        // readability: our source against its own standard, no claim about the original
         out.claim(s.lo, s.lo + 1, "readability", json!({"of": "function", "name": v["symbol"], "unit": v["unit"], "file": v["file"],
                                                         "grade": q, "failing": qf}), DECLARED);
         per_unit.entry(unit).or_default().push((r.code.clone(), q));

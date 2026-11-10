@@ -7,7 +7,7 @@
 //!          code draft comes before any readability-only work: first the draft functions, units with the fewest
 //!          drafts first, then the functions at shape / byte that are not readable, units with the fewest such
 //!          functions first; address order inside a unit.
-//! Tiers (docs/mental-model.md §7): every base item is easy or hard, for workers of different strength. Easy: a
+//! Tiers: every base item is easy or hard, for workers of different strength. Easy: a
 //! readability-only item of an original at most `[queue] easy_read_max_bytes`, or a code draft of an original at
 //! most `easy_max_bytes` whose instruction distance is at most `easy_max_dist`. Everything else is hard, and so
 //! is every function a worker handed up with @hard (`dcp escalate --hard`), and every deep item.
@@ -390,7 +390,7 @@ pub fn at_least(code: &str, readability: &str, grade: &str) -> bool {
     rank(code).map(|x| x as i64).unwrap_or(-1) >= rank(gc).map(|x| x as i64).unwrap_or(-1) && (gr != "readable" || readability == "readable")
 }
 
-/// The accepted column, a debt item (docs/mental-model.md §8.6): `byte+readable -> shape+readable at 897b411: why`,
+/// The accepted column, a debt item: `byte+readable -> shape+readable at 897b411: why`,
 /// with ` [waits for: what]` when it names what it waits for (whitespace runs as one space). The commit is the last
 /// witness: the source that reproduced the higher grade.
 pub fn accept_note(before: &str, after: &str, commit: &str, why: &str) -> String {

@@ -426,7 +426,7 @@ pub fn l5_placeholder(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 
 // ------------------------------------------------------------------------------------------------ C.name.alias
 
-/// C.name.alias: φ many-to-one without a reason (docs/mental-model.md §8.7). One object has one name:
+/// C.name.alias: φ many-to-one without a reason. One object has one name:
 /// - several names of ours (address comments of definitions, externs, functions; `decl` names) at one address, unless
 ///   the toolchain or the image explains it (Phi::many_reason) or an alias is declared (a view, `#define B A`); two
 ///   definitions at one address are L.src's;
@@ -873,7 +873,7 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let mut falls: Vec<(String, Option<&serde_json::Value>)> = vec![];
         match now.get(a) {
             None => falls.push((format!("graded {code} + {readability} in the baseline, no grade now (its source is gone?)"), None)),
-            // the premise is missing, not the grade: no fall (docs/mental-model.md §4), one line per unit below
+            // the premise is missing, not the grade: no fall, one line per unit below
             Some(g) if g.s("outcome") == Some(crate::grade::NOT_RUN) => {
                 let e = not_run.entry(g.s("unit").unwrap_or("").to_string()).or_insert((*a, 0));
                 e.1 += 1;
@@ -924,7 +924,7 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };
         out.finding("error", "M1", at, at + 1, format!("unit {unit} has no object (M.compile): {n} baseline function(s) have no experiment, their grades are not checked (baseline ledger/grades.tsv)"), "");
     }
-    // the debt (§8.6): every declared regression is listed, never a gate failure, while the target holds no more
+    // the debt: every declared regression is listed, never a gate failure, while the target holds no more
     // than the gate's max_debt of them (when [gate] max_debt sets one)
     let debts: Vec<crate::queues::Debt> = crate::queues::debts(&text).into_iter().filter(|d| d.target == target).collect();
     for d in &debts {
@@ -1282,7 +1282,7 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         }
         let mut nv = serde_json::json!({"name": name, "origin": "source"});
         if *size > 0 {
-            nv["size"] = serde_json::json!(size); // the object's extent in H (φ's containment, refcheck)
+            nv["size"] = serde_json::json!(size); // the object's extent in our sources (φ's containment, refcheck)
         }
         decl(out, a, "name", nv, &by, &reason);
         data_at.entry(key).or_insert(a);

@@ -1,7 +1,7 @@
-//! Readability (docs/mental-model.md §9): H against its own standard, whatever the original was; no claim about I.
+//! Readability: our source against its own standard, whatever the original was; no claim about the original.
 //! The rules Q1..Q6 and Q8 on a function's text, over srcscan.Source's lexing: comments and strings blanked for
 //! the code tests. Positions are in characters. (Q7, the calls without a declaration, is the consistency
-//! convention of §8.8: the experiment's, grade.rs.)
+//! convention: the experiment's, grade.rs.)
 
 use regex::Regex;
 use std::collections::HashSet;

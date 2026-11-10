@@ -1,4 +1,4 @@
-//! The claims (docs/mental-model.md §3): `(range, kind, value, support, by, why)`, each a statement about the
+//! The claims: `(range, kind, value, support, by, why)`, each a statement about the
 //! original I made by one rule run. Here: their support, what question their kind answers, and the store's claims in
 //! memory: the native core holds the claims of every current run of a store, decoded once when the run is first
 //! seen; SQLite stays the store of record (every run is written there when it is recorded). A run never changes
@@ -47,12 +47,12 @@ CREATE TABLE IF NOT EXISTS tu (
 CREATE TABLE IF NOT EXISTS include_set (key TEXT PRIMARY KEY, files TEXT NOT NULL);
 ";
 
-/// How hard a claim is to overturn (docs/mental-model.md §3), by where it comes from:
+/// How hard a claim is to overturn, by where it comes from:
 /// - `Open`: nothing is known (the catch-all S.unknown).
 /// - `Declared`: H through φ, or an external tool's analysis: only our word supports it.
-/// - `Derived`: an analysis of I under a named convention (VC6 fill, LINK order, the walk's W1..W5): overturned
+/// - `Derived`: an analysis of the original under a named convention (VC6 fill, LINK order, the walk's W1..W5): overturned
 ///   where the convention does not hold (an exception).
-/// - `Observed`: read from I under its format's spec (the section table, base relocations, exports).
+/// - `Observed`: read from the original under its format's spec (the section table, base relocations, exports).
 /// - `Reproduced`: a passing experiment (a byte match, a placed library member, a discriminating probe).
 ///
 /// `Observed` and `Reproduced` are the top rank: overturning either means a rule has a bug (`is_top`). The order
@@ -84,7 +84,7 @@ impl Support {
         Support::ALL.get(c as usize).copied().unwrap_or(OPEN)
     }
 
-    /// The rank of §3: open 0, declared 1, derived 2, observed and reproduced 3.
+    /// The rank: open 0, declared 1, derived 2, observed and reproduced 3.
     pub fn rank(self) -> i64 {
         (self as i64).min(3)
     }
@@ -121,14 +121,14 @@ impl rusqlite::types::FromSql for Support {
     }
 }
 
-/// The structural questions of §2: what a claim of a kind answers. Each has at most one answer per byte (the
+/// The structural questions: what a claim of a kind answers. Each has at most one answer per byte (the
 /// answer: the covering claims at their highest support, answers.rs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Question {
     /// which section holds the byte (`section`)
     Section,
     /// which object owns the byte: function, datum, string, table, fill, a format region (`symbol`, `region`), and
-    /// which object of H that is (`source`)
+    /// which object of ours that is (`source`)
     Owner,
     /// does a function start here (`start`)
     Start,
@@ -171,20 +171,20 @@ impl Question {
     }
 }
 
-/// What a stored kind is in the model. Most kinds are claims answering a question; the rest are kept in the same
-/// runs but are no claims about I.
+/// What a stored kind is. Most kinds are claims answering a question; the rest are kept in the same
+/// runs but are no claims about the original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Claim(Question),
-    /// φ: an object of H (or of the toolchain's libraries, or a name the image itself holds) at an address of I
+    /// φ: an object of ours (or of the toolchain's libraries, or a name the image itself holds) at an address of the original
     /// (`name`): phi.rs
     Phi,
     /// an experiment's result over one object (`experiment`: G.grade, the outcome byte / shape / draft; `tiebreak`:
     /// M.tiebreak, the declaration-set probe of a function, tiebreak.rs)
     Experiment,
-    /// H against its own standard (`readability`: G.grade), no claim about I (§9)
+    /// our source against its own standard (`readability`: G.grade), no claim about the original
     Readability,
-    /// H's build state (`build`: one per unit)
+    /// our build state (`build`: one per unit)
     Build,
     /// a rule's intermediate result, read by other rules (`evidence`)
     Aux,
@@ -512,7 +512,7 @@ impl Out {
         self.rows.push(ClaimRow { lo, hi, kind: kind.to_string(), value: text, support, by: self.by.clone(), reason });
     }
 
-    /// A declared claim of a loader rule: its producer a line of H or φ (src:<file>:<line>, decl:<file>:<line>), with
+    /// A declared claim of a loader rule: its producer a line of our sources or φ (src:<file>:<line>, decl:<file>:<line>), with
     /// a reason.
     pub fn declared(&mut self, lo: i64, hi: i64, kind: &str, value: Value, by: &str, reason: &str) {
         let mut text = String::new();

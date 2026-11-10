@@ -1,4 +1,4 @@
-//! The answers (docs/mental-model.md §5): for every byte of the image and each byte-level question, the value
+//! The answers: for every byte of the image and each byte-level question, the value
 //! the covering claims agree on at their highest support. Kept as the store's `answer` table: one row per run of
 //! bytes with the same answers, naming the claims that give the owner (a symbol or a region), the unit, the H object
 //! (the `source` claim) and the section. Made again only when a run holding such claims changed.
@@ -164,7 +164,7 @@ pub(crate) fn rows_db(db: &mut Connection, path: &str, lo: Option<i64>, hi: Opti
 }
 
 /// Every answer at one address, question by question: the claims of each question covering it, highest support
-/// first (the first is the answer; the rest stack under it, §3), for `dcp why`.
+/// first (the first is the answer; the rest stack under it), for `dcp why`.
 pub fn stacked(db: &Connection, path: &str, addr: i64) -> Result<Vec<(Question, Vec<(String, Rc<Claim>)>)>> {
     let mut out = vec![];
     for q in Question::ALL {
