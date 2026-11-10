@@ -83,7 +83,6 @@ mod toolchain;
 mod units;
 mod vc6;
 mod walk;
-mod wt;
 mod shape;
 mod slotmap;
 mod x86;

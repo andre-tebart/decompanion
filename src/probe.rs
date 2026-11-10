@@ -62,7 +62,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
     let t0 = std::time::Instant::now();
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db).map_err(|e| e.to_string())?;
     let tools = crate::vc6::Tools::of(p);
     let target = &p.target;
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;

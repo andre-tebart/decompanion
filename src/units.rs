@@ -291,10 +291,9 @@ fn rename(root: &str, old: &str, new: &str, by: Option<&str>) -> Result<Rename, 
 
 fn view_units(p: &crate::project::Project) -> Result<Vec<String>> {
     let db = p.store_path();
-    let main = p.main_uri();
-    crate::storedb::st_open(&db, &main)?;
+    crate::storedb::st_open(&db)?;
     let image = p.target.path.clone();
-    Ok(crate::layoutview::View::load(&db, &main, &image)?.units.iter().map(|u| u.tu.clone()).collect())
+    Ok(crate::layoutview::View::load(&db, &image)?.units.iter().map(|u| u.tu.clone()).collect())
 }
 
 /// ({function address: code grade}, the number of bug / error conflicts).

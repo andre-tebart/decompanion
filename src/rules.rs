@@ -17,7 +17,6 @@ pub struct Ctx {
     pub code_hash: String,
     pub input_hash: String,
     pub db: String,
-    pub main: String, // a worktree's main store (a read-only file: URI), '' outside one
     pub needed: Vec<String>,
     pub root: String,
     pub image: String,
@@ -1206,7 +1205,7 @@ pub(crate) mod testkit {
 
         pub fn ctx(&self, rule: &str, needed: &[&str], extra: &str) -> Ctx {
             Ctx { rule: rule.into(), version: "1".into(), code_hash: "test".into(), input_hash: format!("test:{rule}"), db: self.db.clone(),
-                  main: String::new(), needed: needed.iter().map(|s| s.to_string()).collect(), root: self.dir.to_string_lossy().into_owned(),
+                  needed: needed.iter().map(|s| s.to_string()).collect(), root: self.dir.to_string_lossy().into_owned(),
                   image: self.image.clone(), fill_forms: vec![vec![0x90], vec![0xcc], vec![0x8b, 0xff], vec![0x8d, 0x49, 0x00]],
                   record: true, shortcuts: true, inputs: Rc::new(Inputs::of(extra)) }
         }

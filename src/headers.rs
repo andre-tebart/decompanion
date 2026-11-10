@@ -796,7 +796,7 @@ fn analyse(x: &Ctx, unit: &str, headers: &[String], at: Option<i64>) -> Result<R
     let mut rd = Reader { root: root.clone(), memo: HashMap::new() };
     let db = x.p.store_path();
     let target = x.p.target.path.clone();
-    let names = crate::names::Names::build(&db, &x.p.main_uri(), &target)?;
+    let names = crate::names::Names::build(&db, &target)?;
     let mut trial_calls: HashSet<(String, String)> = HashSet::new();
     for g in &t.tri {
         let d = &g[0];
@@ -1170,7 +1170,7 @@ pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<S
             }
         }
     }
-    crate::storedb::st_open(&p.store_path(), &p.main_uri())?;
+    crate::storedb::st_open(&p.store_path())?;
     let scan = frontend::scan(&root, p.input_hash("src").map_err(err)?.as_deref()).map_err(err)?;
     let x = Ctx { p, t: Texts { root: root.clone(), front: Front::of(&root).map_err(err)?, scan: Some(scan.clone()) }, scan };
     let an = match analyse(&x, unit, &hdrs, at)? {

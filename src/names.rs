@@ -24,16 +24,11 @@ pub fn analyzer_placeholder(analyzer: &str, name: &str) -> bool {
     })
 }
 
-/// The drafts of a store (main's and the overlay's, by start, the overlay's replacing main's), sorted by start.
-pub fn draft_values(db: &rusqlite::Connection, main: &str) -> rusqlite::Result<Vec<Value>> {
+/// The drafts of a store, sorted by start (one per start).
+pub fn draft_values(db: &rusqlite::Connection) -> rusqlite::Result<Vec<Value>> {
     let mut by_start: std::collections::BTreeMap<i64, Value> = std::collections::BTreeMap::new();
-    let mut sources = vec![];
-    if crate::storedb::ensure_main(db, main)? {
-        sources.push("main_store.blob");
-    }
-    sources.push("blob");
-    for s in sources {
-        let mut st = db.prepare(&format!("SELECT data FROM {s} WHERE kind='drafts'"))?;
+    {
+        let mut st = db.prepare("SELECT data FROM blob WHERE kind='drafts'")?;
         let rows = st.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         for d in rows {
             let v: Value = serde_json::from_slice(&d?).unwrap_or(Value::Null);
@@ -73,11 +68,11 @@ pub struct Names {
 }
 
 impl Names {
-    pub fn build(db_path: &str, main: &str, image: &str) -> Result<Names> {
+    pub fn build(db_path: &str, image: &str) -> Result<Names> {
         let (names, symbols, drafts) = with_db(db_path, |db| {
             let names = store::claims_of(db, db_path, "name", None, |_| true)?;
             let symbols = store::claims_of(db, db_path, "symbol", None, |f| !f.rule.starts_with("M."))?;
-            Ok((names, symbols, draft_values(db, main)?))
+            Ok((names, symbols, draft_values(db)?))
         })?;
         let phi = Phi::new(&names, &drafts);
         let mut shown: HashMap<String, Vec<i64>> = HashMap::new();

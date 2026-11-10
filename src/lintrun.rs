@@ -101,7 +101,7 @@ fn private_violations(root: &str, private: &BTreeMap<String, BTreeSet<String>>) 
 pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db).map_err(|e| e.to_string())?;
     let front = Front::of(&root)?;
     let version = crate::clang::clang_version().map_err(|e| e.to_string())?;
     let clang = [CPARSE_VERSION.to_string(), version, canonical(&json!(frontend::ARGS)), canonical(&json!(front.sysdirs))];
@@ -197,7 +197,7 @@ pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
 /// was no lint run.
 pub fn stale(p: &Project) -> Result<Option<Vec<String>>, String> {
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db).map_err(|e| e.to_string())?;
     let Some(m) = crate::storedb::st_meta(&db, "lint").map_err(|e| e.to_string())? else { return Ok(None) };
     let m: Value = serde_json::from_str(&m).unwrap_or(Value::Null);
     let tus = crate::compile::tu_keys(&db).map_err(|e| e.to_string())?;

@@ -1,7 +1,7 @@
 //! The derived-state store: one SQLite file per target
 //! (build/<target>.sqlite) holding every rule run, its facts and conflicts, content-addressed blobs, the translation
 //! units' compile keys, and the materialised byte map. The connection is the core's (the one the native rules
-//! use); a worktree's store reads the main checkout's store through an overlay (main_store, read-only).
+//! use).
 //!
 //! Claims come back as the core's Claim values (store.rs holds the facts of the current runs).
 
@@ -11,18 +11,6 @@ use crate::{hash_parts, with_db};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::rc::Rc;
-
-/// Attach the main checkout's store (a read-only file: URI) when this connection has not yet.
-pub(crate) fn ensure_main(db: &Connection, main: &str) -> rusqlite::Result<bool> {
-    if main.is_empty() {
-        return Ok(false);
-    }
-    let attached: i64 = db.query_row("SELECT count(*) FROM pragma_database_list WHERE name='main_store'", [], |r| r.get(0))?;
-    if attached == 0 {
-        db.execute("ATTACH DATABASE ? AS main_store", [main])?;
-    }
-    Ok(true)
-}
 
 // ------------------------------------------------------------------------------------------------ facts
 
@@ -104,9 +92,8 @@ pub fn st_findings(path: &str, severity: Option<String>, rules: Option<Vec<Strin
 
 /// Open (or create) the store at path: the tables when the schema version differs; a store of schema 1 (facts,
 /// conflicts, the byte map) loses its runs, which every rule recomputes, and keeps what is no rule's output (the
-/// compiled units, the analyzer's drafts and other blobs); an error for a store of an unknown schema. The main
-/// checkout's store attached when `main` (a file: URI) is given.
-pub fn st_open(path: &str, main: &str) -> Result<()> {
+/// compiled units, the analyzer's drafts and other blobs); an error for a store of an unknown schema.
+pub fn st_open(path: &str) -> Result<()> {
     let v = with_db(path, |db| {
         let mut v: Option<String> = match db.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r.get(0)).optional() {
             Ok(v) => v,
@@ -124,7 +111,6 @@ pub fn st_open(path: &str, main: &str) -> Result<()> {
         if v.is_none() {
             db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?)", [SCHEMA_VERSION])?;
         }
-        ensure_main(db, main)?;
         Ok(v)
     })?;
     match v {
@@ -146,15 +132,6 @@ pub fn st_set_meta(path: &str, key: &str, value: &str) -> Result<()> {
     with_db(path, |db| db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [key, value]).map(|_| ()))
 }
 
-pub fn st_main_meta(path: &str, main: &str, key: &str) -> Result<Option<String>> {
-    with_db(path, |db| {
-        if !ensure_main(db, main)? {
-            return Ok(None);
-        }
-        db.query_row("SELECT value FROM main_store.meta WHERE key=?", [key], |r| r.get(0)).optional()
-    })
-}
-
 /// (id, input_hash, out_hash) of the rule's current run in this store.
 pub fn st_current_run(path: &str, rule: &str) -> Result<Option<(i64, String, String)>> {
     with_db(path, |db| {
@@ -172,44 +149,21 @@ pub fn st_current_runs(path: &str) -> Result<std::collections::HashMap<String, (
     })
 }
 
-/// A run of this rule with these inputs, in this store or the main store: (where, id, out_hash).
-pub fn st_find_run(path: &str, main: &str, rule: &str, input_hash: &str) -> Result<Option<(String, i64, String)>> {
-    with_db(path, |db| find_run(db, main, rule, input_hash))
+/// A run of this rule with these inputs: (id, out_hash).
+pub fn st_find_run(path: &str, rule: &str, input_hash: &str) -> Result<Option<(i64, String)>> {
+    with_db(path, |db| find_run(db, rule, input_hash))
 }
 
-pub(crate) fn find_run(db: &Connection, main: &str, rule: &str, input_hash: &str) -> rusqlite::Result<Option<(String, i64, String)>> {
-    let row: Option<(i64, String)> = db.query_row("SELECT id, out_hash FROM run WHERE rule=? AND input_hash=?", [rule, input_hash],
-                                                  |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
-    if let Some((id, out)) = row {
-        return Ok(Some(("main".into(), id, out)));
-    }
-    if ensure_main(db, main)? {
-        let row: Option<(i64, String)> = db.query_row("SELECT id, out_hash FROM main_store.run WHERE rule=? AND input_hash=?", [rule, input_hash],
-                                                      |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
-        if let Some((id, out)) = row {
-            return Ok(Some(("main_store".into(), id, out)));
-        }
-    }
-    Ok(None)
+pub(crate) fn find_run(db: &Connection, rule: &str, input_hash: &str) -> rusqlite::Result<Option<(i64, String)>> {
+    db.query_row("SELECT id, out_hash FROM run WHERE rule=? AND input_hash=?", [rule, input_hash], |r| Ok((r.get(0)?, r.get(1)?))).optional()
 }
 
-/// Make the run current in this store, copying it from the main store if it lives there. Returns the local id.
-pub fn st_make_current(path: &str, main: &str, rule: &str, place: &str, run_id: i64) -> Result<i64> {
-    with_db(path, |db| make_current(db, main, rule, place, run_id))
+/// Make the run current. Returns its id.
+pub fn st_make_current(path: &str, rule: &str, run_id: i64) -> Result<i64> {
+    with_db(path, |db| make_current(db, rule, run_id))
 }
 
-pub(crate) fn make_current(db: &Connection, main: &str, rule: &str, place: &str, mut run_id: i64) -> rusqlite::Result<i64> {
-    if place == "main_store" {
-        ensure_main(db, main)?;
-        db.execute("INSERT INTO run (rule, version, code_hash, input_hash, out_hash, ms, at) \
-                    SELECT rule, version, code_hash, input_hash, out_hash, ms, at FROM main_store.run WHERE id=?", [run_id])?;
-        let new_id = db.last_insert_rowid();
-        db.execute("INSERT INTO claim (run_id, lo, hi, kind, value, support, by, reason) \
-                    SELECT ?, lo, hi, kind, value, support, by, reason FROM main_store.claim WHERE run_id=?", [new_id, run_id])?;
-        db.execute("INSERT INTO finding (run_id, severity, check_id, lo, hi, message, a, b) \
-                    SELECT ?, severity, check_id, lo, hi, message, a, b FROM main_store.finding WHERE run_id=?", [new_id, run_id])?;
-        run_id = new_id;
-    }
+pub(crate) fn make_current(db: &Connection, rule: &str, run_id: i64) -> rusqlite::Result<i64> {
     db.execute("UPDATE run SET current=0 WHERE rule=? AND id<>?", params![rule, run_id])?;
     db.execute("UPDATE run SET current=1 WHERE id=?", [run_id])?;
     Ok(run_id)
@@ -246,24 +200,13 @@ pub fn st_drop_blobs(path: &str, kind: &str) -> Result<()> {
     with_db(path, |db| db.execute("DELETE FROM blob WHERE kind=?", [kind]).map(|_| ()))
 }
 
-/// Every blob of one kind, main store first, the overlay's own replacing it: {hash: data}.
+/// Every blob of one kind: {hash: data}.
 #[cfg(test)]
-pub fn st_blobs(path: &str, main: &str, kind: &str) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+pub fn st_blobs(path: &str, kind: &str) -> Result<std::collections::HashMap<String, Vec<u8>>> {
     let rows: Vec<(String, Vec<u8>)> = with_db(path, |db| {
-        let mut out = vec![];
-        let mut sources = vec![];
-        if ensure_main(db, main)? {
-            sources.push("main_store.blob");
-        }
-        sources.push("blob");
-        for s in sources {
-            let mut st = db.prepare(&format!("SELECT hash, data FROM {s} WHERE kind=?"))?;
-            let rows = st.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            for r in rows {
-                out.push(r?);
-            }
-        }
-        Ok(out)
+        let mut st = db.prepare("SELECT hash, data FROM blob WHERE kind=?")?;
+        let rows = st.query_map([kind], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
     })?;
     Ok(rows.into_iter().collect())
 }
@@ -309,7 +252,7 @@ mod tests {
                 CREATE TABLE blob (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, data BLOB NOT NULL);
                 INSERT INTO blob VALUES ('h', 'drafts', x'00');").unwrap();
         }
-        super::st_open(&path, "").unwrap();
+        super::st_open(&path).unwrap();
         let (runs, blobs, schema, lint) = crate::with_db(&path, |c| Ok((
             c.query_row("SELECT count(*) FROM run", [], |r| r.get::<_, i64>(0))?,
             c.query_row("SELECT count(*) FROM blob", [], |r| r.get::<_, i64>(0))?,

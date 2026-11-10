@@ -58,18 +58,9 @@ struct Draft {
     seeded: bool, // made by the tool at one of our starts on our request: no claim of the tool's
 }
 
-/// ledger/drafts.entries: every draft blob, the main store's first (ctx.main: a worktree's overlay), sorted by start.
-fn drafts(ctx: &Ctx, db: &Connection) -> Result<Vec<Draft>> {
-    let mut sources = vec![];
-    if !ctx.main.is_empty() {
-        let attached: bool = db.query_row("SELECT count(*) FROM pragma_database_list WHERE name='main_store'", [], |r| r.get::<_, i64>(0))
-            .map_err(err)? > 0;
-        if !attached {
-            db.execute("ATTACH DATABASE ? AS main_store", [&ctx.main]).map_err(err)?;
-        }
-        sources.push("main_store.blob");
-    }
-    sources.push("blob");
+/// ledger/drafts.entries: every draft blob, sorted by start.
+fn drafts(_ctx: &Ctx, db: &Connection) -> Result<Vec<Draft>> {
+    let sources = ["blob"];
     let mut by_hash: Vec<Draft> = vec![];
     let mut at: HashMap<String, usize> = HashMap::new();
     for t in sources {

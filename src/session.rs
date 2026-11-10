@@ -88,7 +88,7 @@ fn load(root: &str) -> Option<Value> {
 /// The counts a session report compares: functions, units, grades, errors.
 fn state(p: &Project) -> Result<Value> {
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri())?;
+    crate::storedb::st_open(&db)?;
     let rows = crate::queues::function_grades(&db)?;
     let str_of = |r: &Map<String, Value>, k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let units = crate::with_db(&db, |c| crate::store::claims_of(c, &db, "unit", None, |f| f.value.get("status").is_some()))?;
@@ -170,11 +170,10 @@ pub(crate) fn unit_rows(v: &crate::layoutview::View) -> Vec<UnitRow> {
 /// The layout view of a target's store, made once per state of its current runs (and of the drafts it reads).
 pub(crate) fn view_of(p: &Project) -> Result<std::rc::Rc<crate::layoutview::View>> {
     let db = p.store_path();
-    let main = p.main_uri();
-    crate::storedb::st_open(&db, &main)?;
+    crate::storedb::st_open(&db)?;
     let image = p.target.path.clone();
-    let drafts = (crate::storedb::st_meta(&db, "drafts")?, crate::storedb::st_main_meta(&db, &main, "drafts")?);
-    crate::store::derived(&db, &format!("view {main} {image} {drafts:?}"), || crate::layoutview::View::load(&db, &main, &image))
+    let drafts = crate::storedb::st_meta(&db, "drafts")?;
+    crate::store::derived(&db, &format!("view {image} {drafts:?}"), || crate::layoutview::View::load(&db, &image))
 }
 
 /// The unit table summary, the first open function, the toolchain level and the analyzer of one target.
@@ -210,7 +209,7 @@ pub fn session_overview(p: &crate::project::Project, analyzer: &str) -> Result<V
     let cflags = decl["cflags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" ")).filter(|c| !c.is_empty());
     let level = if proven.is_empty() { "declared".to_string() } else { format!("reproduced:{}", proven.join(",")) };
     out.push(format!("  {}", record(&[("toolchain", os(compiler)), ("cflags", os(cflags)), ("level", s(level))])));
-    let n = crate::with_db(&db, |c| crate::names::draft_values(c, &p.main_uri()))?.len();
+    let n = crate::with_db(&db, |c| crate::names::draft_values(c))?.len();
     out.push(format!("  {}", if analyzer == "none" && n == 0 {
         record(&[("analyzer", s(analyzer))])
     } else {

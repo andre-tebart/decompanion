@@ -352,7 +352,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let t0 = std::time::Instant::now();
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db).map_err(|e| e.to_string())?;
     let target = p.target.clone();
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let x = Ctx { p, root: root.clone(), db: db.clone(), img: img.clone(), tools: Tools::of(p) };
@@ -567,7 +567,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
 #[cfg(test)]
 pub fn link_classify(p: &crate::project::Project, names: Vec<String>) -> Result<Vec<(String, Vec<String>)>> {
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri())?;
+    crate::storedb::st_open(&db)?;
     let img = crate::image(&p.target.path)?;
     let x = Ctx { p, root: p.root.to_string_lossy().into_owned(), db, img, tools: Tools::of(p) };
     Ok(x.classify(&names).map_err(crate::error::Error::runtime)?.into_iter().map(|(k, v)| (k.to_string(), v)).collect())

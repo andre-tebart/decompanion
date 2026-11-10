@@ -141,7 +141,7 @@ struct Ctx<'a> {
 impl<'a> Ctx<'a> {
     fn new(p: &'a Project) -> Result<Ctx<'a>> {
         let db = p.store_path();
-        crate::storedb::st_open(&db, &p.main_uri())?;
+        crate::storedb::st_open(&db)?;
         let img = crate::image(&p.target.path)?;
         let tc = crate::toolchain::Vc6;
         let decl = p.toolchain_decl().map_err(err)?;
@@ -388,7 +388,7 @@ fn analyzer_obligation(c: &Ctx) -> Result<Option<Obligation>> {
         None => format!("found at {}", inst.at),
         Some(r) => format!("not available: {r}"),
     };
-    let n = with_db(&c.db, |db| crate::names::draft_values(db, &p.main_uri()))?.len();
+    let n = with_db(&c.db, |db| crate::names::draft_values(db))?.len();
     let written = p.table("analyzer").and_then(|t| t.get("root")).is_some_and(|v| v.as_str() != Some(""));
     let origin = if written { "as dcp init found it" } else { "no [analyzer] root written" };
     Ok(Some(Obligation::new("analyzer", None, "the Ghidra installation whose pseudocode the drafts start from (computed, not confirmed)".into(),

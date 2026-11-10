@@ -2,8 +2,8 @@
 //! its inputs, so a run whose inputs did not change is never repeated.
 //!
 //! - A rule's run key is sha256(code hash, version, image, the core's hash, the out_hash of every needed rule's current run,
-//!   the hash of every named input it reads). A run with the same key (in this store, or in the main checkout's
-//!   store under a worktree overlay) is made current instead of running again.
+//!   the hash of every named input it reads). A run with the same key is made current instead of running
+//!   again.
 //! - A rule's code hash is the core's source hash with its id and version.
 //! - A rule whose inputs wait on a human's declaration (Project.waiting_for: `libs` without archives, `toolchain`
 //!   without compiler / linker) does not run its criterion: its run is empty, keyed by what it waits on, so the
@@ -160,7 +160,6 @@ pub struct Result_ {
 pub struct Engine<'a> {
     pub project: &'a Project,
     pub db: String,
-    pub main: String,
     pub core_hash: String,
     base: Option<Rc<Inputs>>,
     scans: Vec<Rc<crate::frontend::Scan>>, // the scans whose pieces the rules of this run read
@@ -168,7 +167,7 @@ pub struct Engine<'a> {
 
 impl<'a> Engine<'a> {
     pub fn new(project: &'a Project, core_hash: &str) -> Engine<'a> {
-        Engine { project, db: project.store_path(), main: project.main_uri(), core_hash: core_hash.into(), base: None, scans: vec![] }
+        Engine { project, db: project.store_path(), core_hash: core_hash.into(), base: None, scans: vec![] }
     }
 
     pub fn code_hash(&self, r: &RuleDef) -> Result<String> {
@@ -267,16 +266,16 @@ impl<'a> Engine<'a> {
     }
 
     /// Make the run current unless it is already (`was`: the rule's current run id before this refresh).
-    fn make_current_if(&self, r: &RuleDef, place: &str, run_id: i64, was: Option<i64>) -> Result<()> {
-        if was != Some(run_id) || place != "main" {
-            crate::storedb::st_make_current(&self.db, &self.main, r.id, place, run_id)?;
+    fn make_current_if(&self, r: &RuleDef, run_id: i64, was: Option<i64>) -> Result<()> {
+        if was != Some(run_id) {
+            crate::storedb::st_make_current(&self.db, r.id, run_id)?;
         }
         Ok(())
     }
 
     /// Bring the rules (all, or `ids` and what they need) up to date.
     pub fn run(&mut self, ids: Option<&[String]>, force: bool) -> Result<Vec<Result_>> {
-        crate::storedb::st_open(&self.db, &self.main)?;
+        crate::storedb::st_open(&self.db)?;
         // each rule's current run, read once: the engine is the store's one writer during a refresh, and each rule's
         // step names the output of the run it makes current (its needs come before it in the order)
         let was = crate::storedb::st_current_runs(&self.db)?;
@@ -306,8 +305,8 @@ impl<'a> Engine<'a> {
             let mut parts = vec![code.clone(), r.version.to_string(), "waiting".into()];
             parts.extend(waits.iter().cloned());
             let ih = sha256_parts(&parts);
-            if let Some((place, run_id, out)) = crate::storedb::st_find_run(&self.db, &self.main, r.id, &ih)? {
-                self.make_current_if(r, &place, run_id, was)?;
+            if let Some((run_id, out)) = crate::storedb::st_find_run(&self.db, r.id, &ih)? {
+                self.make_current_if(r, run_id, was)?;
                 results.push(Result_ { rule: r.id, waiting: waits, ..Default::default() });
                 return Ok(out);
             }
@@ -316,16 +315,16 @@ impl<'a> Engine<'a> {
             return Ok(out);
         }
         let ih = self.run_key(r, &code, needed, outs)?;
-        let found = if force { None } else { crate::storedb::st_find_run(&self.db, &self.main, r.id, &ih)? };
-        if let Some((place, run_id, out)) = found {
-            self.make_current_if(r, &place, run_id, was)?;
+        let found = if force { None } else { crate::storedb::st_find_run(&self.db, r.id, &ih)? };
+        if let Some((run_id, out)) = found {
+            self.make_current_if(r, run_id, was)?;
             results.push(Result_ { rule: r.id, ..Default::default() });
             return Ok(out);
         }
         let t0 = std::time::Instant::now();
         let inputs = self.inputs(r)?;
         let ctx = Ctx {
-            rule: r.id.into(), version: r.version.into(), code_hash: code, input_hash: ih, db: self.db.clone(), main: self.main.clone(),
+            rule: r.id.into(), version: r.version.into(), code_hash: code, input_hash: ih, db: self.db.clone(),
             needed: needed.iter().map(|s| s.to_string()).collect(), root: self.project.root.to_string_lossy().into_owned(),
             image: self.project.target.path.clone(),
             fill_forms: crate::toolchain::Vc6.fill_forms().iter().map(|f| f.to_vec()).collect(),

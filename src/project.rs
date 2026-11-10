@@ -293,28 +293,6 @@ impl Project {
         py_path(&self.build_dir().join(format!("{}.sqlite", self.target_name)).to_string_lossy())
     }
 
-    /// The main checkout's build directory when this checkout is a worktree (.dcp/main_store), else None.
-    pub fn main_build_dir(&self) -> Option<PathBuf> {
-        let marker = self.root.join(".dcp").join("main_store");
-        let p = PathBuf::from(std::fs::read_to_string(marker).ok()?.trim());
-        Some(if p.extension().is_some_and(|e| e == "sqlite") { p.parent()?.to_path_buf() } else { p })
-    }
-
-    /// The main checkout's store of this target as a read-only file: URI ('' outside a worktree).
-    pub fn main_uri(&self) -> String {
-        let Some(d) = self.main_build_dir() else { return String::new() };
-        let p = d.join(format!("{}.sqlite", self.target_name));
-        let Ok(abs) = std::fs::canonicalize(&p) else { return String::new() };
-        let s = abs.to_string_lossy().trim_start_matches("\\\\?\\").replace('\\', "/");
-        let enc: String = s.chars().map(|c| match c {
-            ' ' => "%20".to_string(),
-            '#' => "%23".to_string(),
-            '?' => "%3F".to_string(),
-            '%' => "%25".to_string(),
-            c => c.to_string(),
-        }).collect();
-        format!("file:///{enc}?mode=ro")
-    }
     /// The toolchain's root, expanded (None when [toolchain] names none).
     pub fn toolchain_root(&self) -> Option<String> {
         let r = self.tc_str("root");
@@ -368,17 +346,12 @@ impl Project {
             }
             "objects" | "probe" | "lint" | "drafts" => {
                 let path = self.store_path();
-                let main = self.main_uri();
-                crate::storedb::st_open(&path, &main).map_err(|e| e.to_string())?;
+                crate::storedb::st_open(&path).map_err(|e| e.to_string())?;
                 let meta = |k: &str| crate::storedb::st_meta(&path, k).map_err(|e| e.to_string()).map(|v| v.unwrap_or_default());
                 match name {
                     "objects" => {
                         let tu = crate::storedb::tu_hash(&path).map_err(|e| e.to_string())?;
                         sha256_parts(&[tu.as_str(), if self.toolchain_available() { "True" } else { "False" }])
-                    }
-                    "drafts" => {
-                        let m = crate::storedb::st_main_meta(&path, &main, "drafts").map_err(|e| e.to_string())?.unwrap_or_default();
-                        sha256_parts(&[m, meta("drafts")?])
                     }
                     k => sha256_parts(&[meta(k)?]),
                 }

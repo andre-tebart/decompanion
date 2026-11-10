@@ -35,7 +35,7 @@ pub fn open(sel: &Sel) -> Result<Project> {
         if known.is_none() || known != Some(id) || id.is_none() {
             crate::storedb::st_close(&db);
         }
-        crate::storedb::st_open(&db, &p.main_uri())?;
+        crate::storedb::st_open(&db)?;
         m.insert(db.clone(), identity(&db));
         Ok(p)
     })

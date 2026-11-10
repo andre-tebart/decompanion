@@ -33,7 +33,7 @@ pub struct View {
 }
 
 impl View {
-    pub fn load(db: &str, main: &str, image: &str) -> Result<View> {
+    pub fn load(db: &str, image: &str) -> Result<View> {
         let img = crate::image(image)?;
         let all = |k: &str| with_db(db, |c| store::claims_of(c, db, k, None, |_| true));
         let syms: Vec<Rc<Claim>> = all("symbol")?.into_iter().filter(|f| !f.rule.starts_with("M.")).collect();
@@ -54,7 +54,7 @@ impl View {
         let units = layout::game_units(&unit_facts);
         let ev = all("evidence")?;
         let fills = ev.iter().filter(|f| f.s("ekind") == Some("fill")).map(|f| (f.lo, f.value.clone())).collect();
-        let drafted = with_db(db, |c| crate::names::draft_values(c, main))?.iter().filter_map(|v| v.get("start").and_then(|s| s.as_i64())).collect();
+        let drafted = with_db(db, |c| crate::names::draft_values(c))?.iter().filter_map(|v| v.get("start").and_then(|s| s.as_i64())).collect();
         Ok(View {
             image: image.to_string(), game, funcs, starts, sources, units, lits: layout::lits_of(&ev), leaks: layout::leaks_of(&ev), fills,
             bounds: layout::bounds_of(&all("boundary")?), refs: all("ref")?, drafted, syms, unit_facts, src_facts,

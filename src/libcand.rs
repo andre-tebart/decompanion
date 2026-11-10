@@ -84,7 +84,7 @@ fn conflicts(results: &[Value]) -> Vec<Value> {
 pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, Vec<String>), String> {
     let t0 = std::time::Instant::now();
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
+    crate::storedb::st_open(&db).map_err(|e| e.to_string())?;
     let target = &p.target;
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let img_sha = fsmemo::sha256(&target.path).map_err(|e| e.to_string())?;

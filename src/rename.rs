@@ -394,10 +394,9 @@ fn errors_of(db: &str) -> Result<Vec<(String, String, i64, String)>> {
 pub fn rename_command(p: &crate::project::Project, pairs: Vec<(String, String, String)>, rebuild: &mut dyn FnMut() -> Result<()>)
     -> Result<(Vec<String>, Vec<String>, i32)> {
     let db = p.store_path();
-    let main = p.main_uri();
-    crate::storedb::st_open(&db, &main)?;
+    crate::storedb::st_open(&db)?;
     let image = p.target.path.clone();
-    let mut x = Ctx { p, root: p.root.to_string_lossy().into_owned(), names: Names::build(&db, &main, &image)?, out: vec![] };
+    let mut x = Ctx { p, root: p.root.to_string_lossy().into_owned(), names: Names::build(&db, &image)?, out: vec![] };
     let before: HashSet<(String, i64, String)> = errors_of(&db)?.into_iter().map(|e| (e.1, e.2, e.3)).collect();
     let mut plans: Vec<Plan> = vec![];
     let mut refusals: Vec<Refusal> = vec![];

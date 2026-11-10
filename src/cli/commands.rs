@@ -205,9 +205,6 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         Cmd::Stuck(StuckArgs { name, why, clear }) => level(io, sel, "stuck", &name, why, clear, None, None),
         Cmd::Promote(PromoteArgs { accept_falls }) => promote(io, sel, accept_falls),
         Cmd::Debt(DebtArgs { sub: DebtCmd::Add(DebtAddArgs { name, to, readability, why, waits_for }) }) => {
-            if in_worktree(io, sel, "debt add", "changed")? {
-                return Ok(1);
-            }
             let blank = why.split_whitespace().next().is_none();
             if blank || (to.is_none() && readability.is_none()) {
                 let (l, e, c) = crate::matchcmd::debt_add_command(None, &name, to, readability, Some(why), waits_for)?;
@@ -293,12 +290,6 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Cmd::Run(a) => run(io, sel, a),
-        Cmd::Wt(WtArgs { sub }) => match sub {
-            WtCmd::New(WtNewArgs { name }) => wt(io, sel, "new", Some(name), false),
-            WtCmd::List => wt(io, sel, "list", None, false),
-            WtCmd::Drop(WtDropArgs { name, force }) => wt(io, sel, "drop", Some(name), force),
-        },
-        Cmd::Seed(SeedArgs { path }) => wt(io, sel, "seed", Some(path), false),
         Cmd::SelfCmd(SelfCmdArgs { sub: SelfSub::Install }) => Ok(crate::selfinstall::install(io)),
     }
 }
@@ -456,20 +447,7 @@ fn level(io: &mut Io, sel: &Sel, lvl: &str, name: &str, why: Option<String>, cle
     Ok(io.report(label, &lines, error.as_deref(), status))
 }
 
-/// Refused in a worktree: the baseline changes on main only.
-fn in_worktree(io: &mut Io, sel: &Sel, cmd: &str, what: &str) -> Result<bool> {
-    let p0 = Project::find(sel.root.as_deref())?;
-    if p0.main_build_dir().is_some() {
-        io.warn(&format!("dcp {cmd}: refused in a worktree (the baseline is {what} on main only)"));
-        return Ok(true);
-    }
-    Ok(false)
-}
-
 fn promote(io: &mut Io, sel: &Sel, accept_falls: bool) -> Result<i32> {
-    if in_worktree(io, sel, "promote", "promoted")? {
-        return Ok(1);
-    }
     let (p, _) = build_target(io, sel, true, false)?;
     let (l, e, c) = crate::matchcmd::promote_command(&p, accept_falls)?;
     Ok(io.report("promote", &l, e.as_deref(), c))
@@ -678,8 +656,7 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
                 return Ok(1);
             }
             let d = crate::session::session_dirty(&root);
-            let checkout = if p0.main_build_dir().is_some() { "worktree" } else { "main" };
-            io.say(&rec(&[("session", s("start")), ("checkout", s(checkout)), ("base", s(head.chars().take(8).collect::<String>())),
+            io.say(&rec(&[("session", s("start")), ("base", s(head.chars().take(8).collect::<String>())),
                           ("clean", Tok::B(d.is_empty()))]));
             for l in d.iter().take(10) {
                 io.say(&format!("  dirty {l}"));
@@ -714,7 +691,7 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
                           ("started", started.map(Tok::S).unwrap_or(Tok::No))]));
             let (mut ok, p, link_ok, undrafted, state) = gate(io, sel)?;
             let (mut promoted, mut refused) = (None, false);
-            if ok && p0.main_build_dir().is_none() {
+            if ok {
                 // the gate passed M1, so promote finds no fall; it still checks
                 let mut buf: Vec<u8> = vec![];
                 let code = {
@@ -732,7 +709,7 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
     }
 }
 
-// ------------------------------------------------------------------------------------------------ run / worktrees
+// ------------------------------------------------------------------------------------------------ run
 
 fn run(io: &mut Io, sel: &Sel, a: RunArgs) -> Result<i32> {
     let p = open(sel)?;
@@ -756,13 +733,3 @@ fn run(io: &mut Io, sel: &Sel, a: RunArgs) -> Result<i32> {
     Ok(crate::launch::launch(io, &spec))
 }
 
-/// `dcp wt new|list|drop`, `dcp seed` (wt.rs); its error exits 2.
-fn wt(io: &mut Io, sel: &Sel, cmd: &str, arg: Option<String>, force: bool) -> Result<i32> {
-    let p = glue::config(sel)?;
-    let (lines, error) = crate::wt::wt_command(&p.root.to_string_lossy(), cmd, arg, force);
-    if let Some(e) = error {
-        io.warn(&format!("dcp: {e}"));
-        return Ok(2);
-    }
-    Ok(io.report(cmd, &lines, None, 0))
-}

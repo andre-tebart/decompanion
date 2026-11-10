@@ -48,7 +48,7 @@ fn int(r: &Row, k: &str) -> i64 {
 
 fn opened(p: &crate::project::Project) -> Result<String> {
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri())?;
+    crate::storedb::st_open(&db)?;
     Ok(db)
 }
 
@@ -227,7 +227,7 @@ fn reading(p: &Project, key: &str, cmd: &str, symbols: bool) -> Result<Result<cr
         return Ok(Err((vec![], Some(format!("no graded function {key}")), 1)));
     };
     let name = row["name"].as_str().unwrap_or("").to_string();
-    let names = if symbols { Some(crate::names::Names::build(&db, &p.main_uri(), &p.target.path)?) } else { None };
+    let names = if symbols { Some(crate::names::Names::build(&db, &p.target.path)?) } else { None };
     match crate::asmcmd::reading(p, row, names.as_ref())? {
         Ok(r) => Ok(Ok(r)),
         Err(why) => {

@@ -8,7 +8,7 @@
 //!     <ts> <addr|-> <kind> <old> -> <new> by:<checkout> why:<text>
 //!
 //! ts is the local time in ISO form to the second; addr the target address the name belongs to (`-` for a unit, a
-//! type or a name without one); kind one of func, data, ident, unit; checkout `main` or the worktree's name.
+//! type or a name without one); kind one of func, data, ident, unit; checkout `main` (the field of earlier logs).
 //! Positions (a skip's (line, column)) are in characters, from 1.
 
 use crate::error::Result;
@@ -282,14 +282,6 @@ pub fn code_uses(root: &str, name: &str, skip: Option<&Skip>) -> Vec<(String, i6
     out
 }
 
-pub fn checkout_name(root: &str) -> String {
-    if Path::new(root).join(".dcp").join("main_store").exists() {
-        Path::new(root).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
-    } else {
-        "main".into()
-    }
-}
-
 /// Append one names.log line per (addr, kind, old, new).
 pub fn log_names(root: &str, events: &[(Option<i64>, &str, String, String)], why: &str) -> Result<(), String> {
     let events: Vec<(Option<i64>, &str, String, String, &str)> = events.iter().map(|(a, k, o, n)| (*a, *k, o.clone(), n.clone(), why)).collect();
@@ -303,7 +295,7 @@ pub fn log_names_each(root: &str, events: &[(Option<i64>, &str, String, String, 
         return Ok(());
     }
     let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
-    let by = checkout_name(root);
+    let by = "main";
     let mut lines: String = events.iter().map(|(a, k, o, n, why)| {
         let why = why.split(crate::srcscan::py_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
         let a = a.map(|a| format!("{a:#010x}")).unwrap_or_else(|| "-".into());

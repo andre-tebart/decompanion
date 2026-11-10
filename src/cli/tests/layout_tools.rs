@@ -241,7 +241,7 @@ fn bytes_dead_owned_by_the_unit() {
     assert!(line.contains("open_bytes=0") && out.contains("dead_bytes=9") && line.contains("end=open"), "{out}");
     let p = project(&root);
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri()).unwrap();
+    crate::storedb::st_open(&db).unwrap();
     crate::answers::ensure_at(&db).unwrap();
     let crate::answers::Answer { owner, unit, source: src, .. } = crate::answers::at(&db, 0x10001059).unwrap().unwrap();
     assert_eq!(owner, "dead");

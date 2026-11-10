@@ -115,10 +115,6 @@ pub enum Cmd {
     Skills(SkillsArgs),
     /// build a [[run]] profile, stage its directory, run its setup steps and start the program
     Run(RunArgs),
-    /// worktrees with an overlay store
-    Wt(WtArgs),
-    /// copy this checkout's stores into another checkout (fallback for the overlay)
-    Seed(SeedArgs),
     /// dcp itself: `self install` builds this checkout and replaces the installed dcp
     #[command(name = "self")]
     SelfCmd(SelfCmdArgs),
@@ -304,16 +300,6 @@ pub struct RunArgs {
     /// the minidump of a crash (default: the profile's dump, else full)
     #[arg(long, value_parser = ["full", "state", "normal", "none"])]
     pub dump: Option<String>,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum WtCmd {
-    /// create ../<project>-wt/NAME on branch wt/NAME
-    New(WtNewArgs),
-    /// list the worktrees
-    List,
-    /// remove a worktree (and its branch when merged)
-    Drop(WtDropArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -743,13 +729,6 @@ pub struct SkillsArgs {
     pub sub: SkillsCmd,
 }
 
-/// `Cmd::Wt`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct WtArgs {
-    #[command(subcommand)]
-    pub sub: WtCmd,
-}
-
 /// `Cmd::SelfCmd`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct SelfCmdArgs {
@@ -1040,30 +1019,10 @@ pub struct SkillsInstallArgs {
     pub force: bool,
 }
 
-/// `WtCmd::Drop`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct WtDropArgs {
-    pub name: String,
-    #[arg(long)]
-    pub force: bool,
-}
-
 /// `Cmd::Answers`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct AnswersArgs {
     pub range: Option<String>,
-}
-
-/// `Cmd::Seed`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct SeedArgs {
-    pub path: String,
-}
-
-/// `WtCmd::New`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct WtNewArgs {
-    pub name: String,
 }
 
 #[cfg(test)]

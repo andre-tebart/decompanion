@@ -13,7 +13,7 @@ Hard rules
 - Every tool is `dcp ...` from the project root.
   Every `dcp` of the project runs in the project's daemon, which the first command starts (and a new dcp
   build restarts: `dcp: the daemon restarts ...` once, then the command runs). `dcp serve --status` shows it,
-  `dcp serve --stop` stops it (before deleting build/). A worktree has a daemon of its own.
+  `dcp serve --stop` stops it (before deleting build/).
   `dcp <command> -h` explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings; any editing tool will do. Never edit `build/` (derived
   state, the store) or `ledger/grades.tsv` (only `dcp session wrap` / `dcp promote` / `dcp debt add` write it).

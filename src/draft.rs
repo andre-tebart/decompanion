@@ -412,13 +412,12 @@ fn declare_uses(x: &Ctx, head: &str, rel: &str, unit: &str, uses: &BTreeMap<Stri
 
 fn open<'a>(p: &'a Project) -> Result<Ctx<'a>> {
     let db = p.store_path();
-    let main = p.main_uri();
-    crate::storedb::st_open(&db, &main)?;
+    crate::storedb::st_open(&db)?;
     let image = p.target.path.clone();
-    let v = View::load(&db, &main, &image)?;
-    let names = Names::build(&db, &main, &image)?;
+    let v = View::load(&db, &image)?;
+    let names = Names::build(&db, &image)?;
     let tc = crate::toolchain::Vc6;
-    let all = crate::with_db(&db, |c| crate::names::draft_values(c, &main))?;
+    let all = crate::with_db(&db, |c| crate::names::draft_values(c))?;
     let entries: BTreeMap<i64, Entry> = all.iter().map(|v| (v["start"].as_i64().unwrap_or(0), entry_of(v))).collect();
     let labels: BTreeMap<String, i64> = entries.values().filter(|e| !e.name.is_empty()).map(|e| (e.name.clone(), e.start)).collect();
     Ok(Ctx { p, root: p.root.to_string_lossy().into_owned(), v, names, tc, entries, labels })

@@ -92,7 +92,7 @@ pub fn project(root: &Path) -> crate::project::Project {
 pub fn facts(root: &Path, kind: &str) -> Vec<Rc<Claim>> {
     let p = project(root);
     let db = p.store_path();
-    storedb::st_open(&db, &p.main_uri()).unwrap();
+    storedb::st_open(&db).unwrap();
     storedb::st_facts(&db, Some(kind), None, None, None).unwrap().into_iter().map(|(_, f)| f).collect()
 }
 
@@ -102,7 +102,7 @@ pub type FindingRow = (String, String, i64, i64, String, String, String);
 pub fn findings(root: &Path) -> Vec<FindingRow> {
     let p = project(root);
     let db = p.store_path();
-    storedb::st_open(&db, &p.main_uri()).unwrap();
+    storedb::st_open(&db).unwrap();
     storedb::st_findings(&db, None, None).unwrap()
 }
 
@@ -113,7 +113,7 @@ pub fn findings_of(root: &Path, check: &str) -> Vec<FindingRow> {
 /// The rules of a target refreshed as a command refreshes them: whether any ran.
 pub fn engine_ran(root: &Path) -> bool {
     let p = project(root);
-    storedb::st_open(&p.store_path(), &p.main_uri()).unwrap();
+    storedb::st_open(&p.store_path()).unwrap();
     crate::engine::engine_run(&p, None, false).unwrap().iter().any(|r| r.ran)
 }
 

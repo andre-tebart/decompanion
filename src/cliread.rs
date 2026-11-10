@@ -148,11 +148,10 @@ struct Reader<'a> {
 impl<'a> Reader<'a> {
     fn open(p: &'a Project) -> Result<Reader<'a>> {
         let db = p.store_path();
-        let main = p.main_uri();
-        crate::storedb::st_open(&db, &main)?;
+        crate::storedb::st_open(&db)?;
         let path = p.target.path.clone();
         let img = crate::image(&path)?;
-        let names = Names::build(&db, &main, &path)?;
+        let names = Names::build(&db, &path)?;
         let fills = crate::toolchain::Vc6.fill_forms().iter().map(|f| f.to_vec()).collect();
         Ok(Reader { p, db, img, names, fills })
     }
@@ -550,7 +549,7 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
             for f in r.facts_in("start", a, a + 1)?.iter().filter(|f| f.lo == a) {
                 out.push(format!("  {}", record(&[("start", os(f.s("how"))), ("support", s(f.support.name())), ("by", s(f.by.clone()))])));
             }
-            let drafts = crate::with_db(&r.db, |c| crate::names::draft_values(c, &r.p.main_uri()))?;
+            let drafts = crate::with_db(&r.db, |c| crate::names::draft_values(c))?;
             if let Some(d) = drafts.iter().find(|d| d["start"].as_i64() == Some(a)) {
                 let name = d["name"].as_str().filter(|n| !n.is_empty());
                 out.push(format!("  {}  (dcp draft {a:#x} --show)", record(&[("analyzer", s(d["analyzer"].as_str().unwrap_or(""))), ("draft", os(name)),
@@ -869,7 +868,7 @@ pub fn read_command(p: &crate::project::Project, cmd: &str, args: HashMap<String
     let r = Reader::open(p)?;
     let arg = |k: &str| args.get(k).cloned().flatten();
     let flag = |k: &str| arg(k).is_some_and(|v| v == "1");
-    let view = || View::load(&r.db, &r.p.main_uri(), &r.p.target.path);
+    let view = || View::load(&r.db, &r.p.target.path);
     match cmd {
         "disasm" => {
             let lv = ListingView::of(flag("no_bytes"), arg("range").as_deref()).map_err(Error::value)?;

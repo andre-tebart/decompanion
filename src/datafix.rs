@@ -924,7 +924,7 @@ fn scan_of(p: &Project) -> Result<Rc<crate::frontend::Scan>> {
 
 /// `dcp data map [UNIT]`: (the lines, the exit status).
 pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool) -> Result<(Vec<String>, i32)> {
-    crate::storedb::st_open(&p.store_path(), &p.main_uri())?;
+    crate::storedb::st_open(&p.store_path())?;
     let model = data_model(p, &*scan_of(p)?)?;
     let mut out = vec![];
     let Some(unit) = unit.filter(|u| !u.is_empty()) else {

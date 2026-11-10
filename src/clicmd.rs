@@ -208,7 +208,7 @@ fn all(db: &str, kind: &str) -> Result<store::Claims> {
 
 fn opened(p: &Project) -> Result<String> {
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri())?;
+    crate::storedb::st_open(&db)?;
     Ok(db)
 }
 
@@ -343,7 +343,7 @@ fn get(r: &[(String, J)], k: &str) -> J {
 fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -> Result<()> {
     let v = crate::session::view_of(p)?;
     let mut ents: BTreeMap<i64, Value> = BTreeMap::new();
-    for e in with_db(db, |c| crate::names::draft_values(c, &p.main_uri()))? {
+    for e in with_db(db, |c| crate::names::draft_values(c))? {
         if let Some(a) = e.get("start").and_then(|x| x.as_i64()) {
             ents.insert(a, e);
         }
@@ -676,8 +676,7 @@ pub fn why_command(p: &crate::project::Project, keys: Vec<String>, refs: bool) -
 /// explains it (ill-formed: C.name.alias, N2). Exit 1 when a name is unknown.
 pub fn phi_command(p: &crate::project::Project, key: Option<String>, many: bool) -> Result<Out> {
     let db = opened(p)?;
-    let main = p.main_uri();
-    let (names, drafts) = with_db(&db, |c| Ok((store::claims_of(c, &db, "name", None, |_| true)?, crate::names::draft_values(c, &main)?)))?;
+    let (names, drafts) = with_db(&db, |c| Ok((store::claims_of(c, &db, "name", None, |_| true)?, crate::names::draft_values(c)?)))?;
     let phi = crate::phi::Phi::new(&names, &drafts);
     let t = &p.target_name;
     let entry = |e: &crate::phi::Entry| {

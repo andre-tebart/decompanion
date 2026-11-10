@@ -124,7 +124,7 @@ fn link_library_class() {
     assert_eq!(out["library"], [format!("_IID_Foo  ->  {l}  (undeclared: dcp libs declare <the declared archives> {l} --why \"...\")")]);
     assert_eq!(out["other"], ["_nowhere"]);
     // the index is in the store, by content
-    assert!(!crate::storedb::st_blobs(&p.store_path(), &p.main_uri(), "archive.symbols").unwrap().is_empty());
+    assert!(!crate::storedb::st_blobs(&p.store_path(), "archive.symbols").unwrap().is_empty());
     // the obligation reads the last link's classes
     write(&t, "build/link/tiny/link.json", &serde_json::json!({"unresolved": out}).to_string());
     let obl: Vec<String> = crate::decide::decide_gate(&p).unwrap().into_iter().filter(|o| o.contains("obligation=libs.archives")).collect();
@@ -273,7 +273,7 @@ fn answers_name_current_claims_after_same_output_rerun() {
     assert_eq!(dcp(&t, &["setup", "--no-analyzer", "--force"]).0, 0); // every rule again, the same output
     let p = project(&t);
     let db = p.store_path();
-    crate::storedb::st_open(&db, &p.main_uri()).unwrap();
+    crate::storedb::st_open(&db).unwrap();
     crate::answers::ensure_at(&db).unwrap();
     let ids: std::collections::BTreeSet<i64> = crate::answers::rows(&db, None, None).unwrap().iter().filter_map(|r| r.symbol).collect();
     assert!(!ids.is_empty() && ids.iter().all(|&i| crate::storedb::st_fact(&db, i).unwrap().is_some()));
