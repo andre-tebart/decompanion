@@ -1,0 +1,43 @@
+# A release: push a tag v<version> (Cargo.toml's version) and this builds the dcp wheel (pyproject.toml: maturin,
+# the binary only) and attaches it to the GitHub release of the tag. A project pins it with uv:
+#   [dependency-groups] dcp = ["decompanion==<version>"]
+#   [tool.uv.sources] decompanion = { url = "https://github.com/<owner>/decompanion/releases/download/v<version>/decompanion-<version>-py3-none-win_amd64.whl" }
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  wheel:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag names Cargo.toml's version
+        shell: bash
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then echo "tag $GITHUB_REF_NAME, Cargo.toml version $v"; exit 1; fi
+
+      - uses: astral-sh/setup-uv@v6
+
+      # rust-toolchain.toml selects the toolchain; rustup on the runner installs it on first use
+      - name: Build the wheel
+        run: uvx maturin build --release --out dist
+
+      - name: The wheel runs
+        shell: bash
+        run: |
+          uv venv .wheel-check
+          uv pip install --python .wheel-check dist/*.whl
+          .wheel-check/Scripts/dcp.exe --version
+
+      - name: Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.whl --title "dcp $GITHUB_REF_NAME" --generate-notes

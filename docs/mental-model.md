@@ -677,7 +677,6 @@ The source names the model's concepts, and the command line speaks them:
 | readability (§9) | `readability.rs` (Q1..Q6, Q8), `G.grade`'s `readability` row, apart from the experiment | `dcp grade`: `readability=` |
 | an exception | `exceptions.rs`: `@original why`, `@vc6 why` with their reasons; `0xADDR overrun -- why` in decl/text.dcl (an instruction of I has no line in H) | `dcp exceptions` |
 | a queue item and its tier (§7) | `queues::queue` (base / deep / names), `queues::tier` with `queues::Tiers` (`[queue]`); the `@hard` tag (`level` hard: still base work) | `dcp next [--deep\|--names] [--tier easy\|hard]` (`tier=` per item, `easy=` / `hard=` counts); `dcp escalate NAME --hard "why"`; the wrap's `hand-ups:` line |
-| H's build without dcp | `export.rs`: the link's `LinkPlan` (link.rs) with the units and their flags as data, `export/<target>.json` and the inputs dcp generates (entry stub, alias object, import library) in `export/<target>/`; paths outside the project are spelled with a name of `[paths]` (`decompanion.local.toml` gives a machine's own directories) or `{toolchain}/...`. The archives dcp writes carry no time stamps (`coff::archive_without_times`), so the export only changes when H does | `dcp export`, `dcp export --check` (stale / missing / extra files, exit 1) |
 | debt, a witness | the accepted column of `ledger/grades.tsv` (`queues::Debt`: the grade before and now, the witness commit, why, what it waits for); `M1.debt` lists them and bounds them by `[gate] max_debt` | `dcp debt add NAME --to G --why W --waits-for X`, `dcp debt list` |
 
 What the code does not do yet:
@@ -692,7 +691,6 @@ What the code does not do yet:
 | Types are claims | `M.lint` reports clang's M5 / M6 / M7; types are no claims of their own |
 | An exception must discriminate (8.8) | `dcp exceptions` lists them and counts the ones without a reason; that the consistent spelling would change the bytes is not checked (a trial build without the exception) |
 | Warnings | Not part of the model: hints, not findings; they stay lint output |
-| A stale export is a finding | `dcp export --check` reports it and fails; no rule emits a stale finding for it, so `dcp status` / `dcp check` do not show it |
 
 ## Glossary
 

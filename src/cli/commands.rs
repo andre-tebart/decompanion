@@ -246,16 +246,6 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             }
             Ok(failed as i32)
         }
-        Cmd::Export(ExportArgs { check, all_targets }) => {
-            let mut failed = 0;
-            for name in target_names(sel, all_targets)? {
-                let (p, _) = build_target(io, sel, name.as_deref(), true, false)?;
-                let (lines, code) = crate::export::export_command(&p, check).map_err(Error::runtime)?;
-                io.report("export", &lines, None, 0);
-                failed = failed.max(code);
-            }
-            Ok(failed)
-        }
         Cmd::Lint(LintArgs { all_targets }) => {
             let mut failed = false;
             for name in target_names(sel, all_targets)? {

@@ -1,0 +1,18 @@
+# The `dcp` binary as a Python wheel (maturin, bindings = "bin"): no Python code, only packaging, so a project can pin
+# dcp with uv (`uv sync --group dcp`, uv.lock) and contributors need no Rust. The version is Cargo.toml's.
+# Local development builds with cargo as before (`dcp self install`); .github/workflows/release.yml builds the wheel
+# of a tag v<version> and attaches it to the GitHub release.
+
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "decompanion"
+description = "dcp: a framework tool for decompilation projects"
+requires-python = ">=3.8"
+dynamic = ["version"]
+
+[tool.maturin]
+bindings = "bin"
+strip = true

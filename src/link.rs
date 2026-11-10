@@ -28,46 +28,6 @@ pub struct LinkReport {
     /// the linked game objects (unit, path) and the link map: the record layout check reads them (layoutcheck.rs)
     pub linked: Vec<(String, String)>,
     pub map: String,
-    /// what the link reads, by origin rather than by build path (export.rs writes it out for a build without dcp)
-    pub plan: Option<LinkPlan>,
-}
-
-/// One object of the link, in link order.
-#[derive(Clone, Debug, PartialEq)]
-pub enum PlanObject {
-    /// the object of a unit
-    Unit(String),
-    /// the entry stub (vc6::entry_stub) of this text
-    Entry(String),
-    /// the alias object (coff::alias_object) of these (alias, canonical symbol) pairs
-    Aliases(Vec<(String, String)>),
-}
-
-/// One archive of the link, in link order: where it comes from and the library units added to it.
-#[derive(Clone, Debug)]
-pub struct PlanLibrary {
-    /// the archive as found (before the library units join it): a declared archive, one of a library directory,
-    /// or one built from the image's import directory
-    pub path: String,
-    /// Some(dll) when the archive is built from the image's imports of that dll
-    pub imports_of: Option<String>,
-    /// the library units whose objects join the archive
-    pub members: Vec<String>,
-}
-
-/// The link as data.
-#[derive(Clone, Debug)]
-pub struct LinkPlan {
-    pub objects: Vec<PlanObject>,
-    pub libraries: Vec<PlanLibrary>,
-    pub includes: Vec<String>,
-    pub dll: bool,
-    pub base: u32,
-    pub subsystem: String,
-    /// the output's file name (the original's)
-    pub out_name: String,
-    /// a dll's module definition
-    pub def_text: Option<String>,
 }
 
 fn name_of(p: &str) -> String {
@@ -470,10 +430,8 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
         .map(|f| (f.lo, f.s("symbol").unwrap_or("").to_string())).collect();
     let user = entry_at.iter().find_map(|a| src_names.get(a)).cloned();
     let mut extra: Vec<String> = vec![];
-    let mut plan_extra: Vec<PlanObject> = vec![];
     if let Some(e) = x.tools.entry_object(kind, &out_dir, user.as_deref())? {
         extra.push(e);
-        plan_extra.push(PlanObject::Entry(crate::vc6::entry_stub(kind, user.as_deref()).unwrap_or_default()));
     }
     // aliases: several source names of one data address
     let mut by_addr: BTreeMap<i64, BTreeSet<String>> = BTreeMap::new();
@@ -490,10 +448,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
         let path = py_path(&format!("{out_dir}/aliases.obj"));
         std::fs::write(&path, crate::coff::alias_object(&aliases)).map_err(|e| e.to_string())?;
         extra.push(path);
-        plan_extra.push(PlanObject::Aliases(aliases.clone()));
     }
-    let mut imports_of: HashMap<String, String> = HashMap::new();
-    let mut lib_origin: HashMap<String, (String, Vec<String>)> = HashMap::new();
     let mut libs: Vec<String> = p.lib_archives(None).unwrap_or_default();
     let mut missing_libs = vec![];
     let imports = img.imports();
@@ -513,7 +468,6 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
                     continue;
                 }
                 rep.notes.push(format!("import library {name} for {dll} built from the image's import directory"));
-                imports_of.insert(path.clone(), dll.clone());
                 path
             }
         };
@@ -525,7 +479,6 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
             continue;
         };
         let dest = py_path(&format!("{out_dir}/{}", name_of(&libs[k])));
-        lib_origin.insert(dest.clone(), (libs[k].clone(), units.iter().map(|u| u.0.clone()).collect()));
         if crate::vc6::resolved("", &libs[k]).to_lowercase() != crate::vc6::resolved("", &dest).to_lowercase() {
             std::fs::copy(&libs[k], &dest).map_err(|e| e.to_string())?;
             libs[k] = dest.clone();
@@ -566,15 +519,6 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
         rsp: py_path(&format!("{out_dir}/link.rsp")),
     };
     rep.out = crate::vc6::rel_to(&root, &out);
-    rep.plan = Some(LinkPlan {
-        objects: plan_extra.into_iter().chain(objs.iter().map(|o| PlanObject::Unit(o.0.clone()))).collect(),
-        libraries: libs.iter().map(|l| {
-            let (path, members) = lib_origin.get(l).cloned().unwrap_or_else(|| (l.clone(), vec![]));
-            PlanLibrary { imports_of: imports_of.get(&path).cloned(), path, members }
-        }).collect(),
-        includes: includes.clone(), dll: img.is_dll, base: img.base, subsystem: job.subsystem.clone(), out_name: name_of(&target.path),
-        def_text: def_file.as_ref().and_then(|d| std::fs::read_to_string(d).ok()),
-    });
     let mut parts = vec![py_json_list(&objects.iter().chain(&libs).chain(&includes).cloned().collect::<Vec<_>>())];
     parts.extend(objects.iter().chain(&libs).map(|f| file_digest(f)));
     parts.push(def_file.as_deref().map(file_digest).unwrap_or_default());

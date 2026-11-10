@@ -85,9 +85,6 @@ pub enum Cmd {
     Debt(DebtArgs),
     /// the full link of a target with the unresolved externals classified
     Link(LinkArgs),
-    /// the build of a target as data for a build without dcp (export/<target>.json, export/<target>/): the units
-    /// and their flags, the link in its order, the generated inputs; --check lists what is older than H
-    Export(ExportArgs),
     /// clang as the declaration checker (M5 / M6, and M7: the consistency convention)
     Lint(LintArgs),
     /// create a target project (declares nothing: dcp setup, then dcp status)
@@ -627,16 +624,6 @@ pub struct DebtArgs {
 /// `Cmd::Link`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct LinkArgs {
-    #[arg(long)]
-    pub all_targets: bool,
-}
-
-/// `Cmd::Export`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct ExportArgs {
-    /// write nothing: list the stale, missing and extra files and fail when there is one
-    #[arg(long)]
-    pub check: bool,
     #[arg(long)]
     pub all_targets: bool,
 }

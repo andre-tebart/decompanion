@@ -30,9 +30,14 @@ doctest = false
 name = "dcp"
 path = "src/main.rs"
 
+# a dev tool, not part of a release (the wheel packages every built binary): cargo run --release --features bench --bin dcp-bench
 [[bin]]
 name = "dcp-bench"
 path = "tools/bench.rs"
+required-features = ["bench"]
+
+[features]
+bench = []
 
 [profile.dev]
 opt-level = 0
