@@ -250,37 +250,28 @@ pub fn build_pe(path: &Path, variant: u32, rich: Option<&[(u32, u32, u32)]>) -> 
     path.to_path_buf()
 }
 
-const CONFIG: &str = r#"[[target]]
-name = "{n1}"
+const CONFIG: &str = r#"[target]
+name = "tiny"
 path = "{p1}"
-image = "pe32"
-{second}
-[toolchain]
-root = "C:/nowhere/vc6"
 compiler = "cl 12.00.9044"
 linker = "link 6.00.8447"
 cflags = ["/O2"]
+archives = []
 reason = "test project"
 
-[libs]
-archives = []
-reason = "test project: no static library"
+[toolchain]
+root = "C:/nowhere/vc6"
+reason = "test project"
 
 [analyzer]
 root = "C:/nowhere/ghidra"
 "#;
 
-/// The synthetic project (conftest.make_project): tiny.dll as target `tiny` (and tiny2.dll as `other`).
-pub fn make_project(d: &Path, two: bool) -> PathBuf {
+/// The synthetic project (conftest.make_project): tiny.dll as the target `tiny`.
+pub fn make_project(d: &Path) -> PathBuf {
     std::fs::create_dir_all(d).unwrap();
     let p1 = build_pe(&d.join("tiny.dll"), 0, Some(RICH_TINY));
-    let second = if two {
-        let p2 = build_pe(&d.join("tiny2.dll"), 1, Some(RICH_OTHER));
-        format!("\n[[target]]\nname = \"other\"\npath = \"{}\"\nimage = \"pe32\"\n", posix(&p2))
-    } else {
-        String::new()
-    };
-    write(d, "decompanion.toml", &CONFIG.replace("{n1}", "tiny").replace("{p1}", &posix(&p1)).replace("{second}", &second));
+    write(d, "decompanion.toml", &CONFIG.replace("{p1}", &posix(&p1)));
     write(d, "decl/text.dcl", "# code\n");
     write(d, "decl/data.dcl", "# data\n");
     d.to_path_buf()

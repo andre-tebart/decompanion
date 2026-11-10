@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 fn project_of(ctx: &Ctx) -> Result<Project> {
-    Project::open(std::path::Path::new(&ctx.root), Some(&ctx.inputs.target), "").map_err(Error::runtime)
+    Project::open(std::path::Path::new(&ctx.root), "").map_err(Error::runtime)
 }
 
 /// M.compile: one `build` fact per translation unit of the current target (its compile's outcome), the gate errors
@@ -39,7 +39,7 @@ pub fn m_compile(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let root = p.root.to_string_lossy().into_owned();
     for a in plan::plan(&p).map_err(err)?.iter() {
         let at = a.first_addr().filter(|&x| in_image(x)).unwrap_or(base);
-        let flags = plan::compile_flags(&p, &a.target, &a.unit).map_err(err)?;
+        let flags = plan::compile_flags(&p, &a.unit).map_err(err)?;
         let Some(row) = rows.get(&a.unit) else {
             out.claim(at, at + 1, "build", json!({"tu": a.unit, "ok": false, "stale": true, "errors": ["not compiled"], "warnings": 0,
                                                  "functions": a.functions.len()}), OBSERVED);

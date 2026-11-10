@@ -8,8 +8,9 @@ use serde_json::json;
 #[test]
 fn evidence() {
     let t = tiny();
-    assert_eq!(dcp(&t, &["setup"]).0, 0);
-    let ev = facts(&t, "evidence", None);
+    let (c, o, e) = dcp3(&t, &["setup"]);
+    assert_eq!(c, 0, "{o}{e}");
+    let ev = facts(&t, "evidence");
     let leak: Vec<(i64, String, String)> = ev.iter().filter(|f| f.value["ekind"] == "leak")
         .map(|f| (f.lo, f.value["path"].as_str().unwrap().to_string(), f.value["stem"].as_str().unwrap().to_string())).collect();
     assert_eq!(leak, [(0x10001030, "c:\\src\\net\\net.c".to_string(), "net".to_string())]);
@@ -18,7 +19,7 @@ fn evidence() {
     assert_eq!(lit(0x10002038), Some(0x10001050));
     let fill = ev.iter().find(|f| f.value["ekind"] == "fill" && f.lo == 0x10001020).map(|f| f.value["pre"].as_str().unwrap().to_string());
     assert_eq!(fill.as_deref(), Some("nop"));
-    assert!(findings(&t, None).iter().all(|c| c.0 == "warn"));
+    assert!(findings(&t).iter().all(|c| c.0 == "warn"));
 }
 
 #[test]
@@ -35,15 +36,15 @@ fn units_from_decl_and_sources() {
     for w in ["range=0x10001020..0x10001060", "status=open", "end=open", "named_by=leaked", "functions=3", "sourced=1", "leaks=c:\\src\\net\\net.c"] {
         assert!(line.contains(w), "{w} in {line}");
     }
-    let mut names: Vec<(String, i64)> = facts(&t, "name", None).iter().filter(|f| f.value.get("origin") == Some(&json!("source")))
+    let mut names: Vec<(String, i64)> = facts(&t, "name").iter().filter(|f| f.value.get("origin") == Some(&json!("source")))
         .map(|f| (f.value["name"].as_str().unwrap().to_string(), f.lo)).collect();
     names.sort();
     assert_eq!(names, [("counter".to_string(), 0x10002000), ("get".to_string(), 0x10001020)]);
-    let src = facts(&t, "source", None);
+    let src = facts(&t, "source");
     assert!(!src.is_empty() && src.iter().all(|f| f.support == DECLARED && f.by.starts_with("src:") && f.reason.as_deref().is_some_and(|r| !r.is_empty())));
     // no object of the unit: the datum owns its declared type's size (the front end's), not one byte
     assert!(src.iter().any(|f| f.lo == 0x10002000 && f.value.get("size") == Some(&json!(4))), "{:?}", src.iter().map(|f| &f.value).collect::<Vec<_>>());
-    let owner: Vec<(i64, i64)> = facts(&t, "symbol", None).iter().filter(|f| f.value.get("name") == Some(&json!("counter"))).map(|f| (f.lo, f.hi)).collect();
+    let owner: Vec<(i64, i64)> = facts(&t, "symbol").iter().filter(|f| f.value.get("name") == Some(&json!("counter"))).map(|f| (f.lo, f.hi)).collect();
     assert_eq!(owner, [(0x10002000, 0x10002004)]);
     let (_, out) = dcp(&t, &["why", "0x10002000"]);
     // the value line reads past the answer run (the one-byte source claim cuts it) up to the next owner
@@ -71,7 +72,7 @@ fn l4_l6_l1_l5_l7() {
     unit(&t, "x", &["/* 0x10001031, inside f3 */\nvoid f(void)\n{\n    FUN_10001044();\n}\n"]);
     let (code, out) = dcp(&t, &["check"]);
     assert_eq!(code, 1, "{out}");
-    let all = findings(&t, None);
+    let all = findings(&t);
     for c in ["L4", "L6", "L1", "L5", "L7"] {
         assert!(all.iter().any(|x| x.1 == c), "{c}: {out}");
     }
@@ -85,7 +86,7 @@ fn decl_errors_fail_check() {
     write(&t, "decl/text.dcl", "0x10001020 start -- b\n0x10001000 start -- a\n0x10001000 frob -- x\n0x10002000 start -- data address in text.dcl\n");
     let (code, _) = dcp(&t, &["check"]);
     assert_eq!(code, 1);
-    let msgs: Vec<String> = findings_of(&t, None, "L.decl").into_iter().map(|c| c.4).collect();
+    let msgs: Vec<String> = findings_of(&t, "L.decl").into_iter().map(|c| c.4).collect();
     assert!(msgs.iter().any(|m| m.contains("out of order")) && msgs.iter().any(|m| m.contains("unknown kind")) && msgs.iter().any(|m| m.contains("text.dcl holds code")), "{msgs:?}");
 }
 
@@ -121,7 +122,7 @@ fn ghidra_analyzer() {
     let (code, out) = dcp(&t, &["setup"]);
     assert!(code == 0 && out.contains("analyzer=ghidra  exported=1  failed=1"), "{out}");
     assert!(out.contains("analyzer=ghidra  drafts=1  export=up-to-date"), "{out}");
-    let starts: Vec<(i64, crate::store::Support, Option<String>, String)> = facts(&t, "start", None).iter().filter(|s| s.value["how"] == "ghidra")
+    let starts: Vec<(i64, crate::store::Support, Option<String>, String)> = facts(&t, "start").iter().filter(|s| s.value["how"] == "ghidra")
         .map(|s| (s.lo, s.support, s.reason.clone(), s.by.clone())).collect();
     assert_eq!(starts, [(0x10001050, DECLARED, Some("ghidra analysis".to_string()), "decl:analyzer:ghidra:export.json".to_string())]);
     let (code, out) = dcp(&t, &["setup"]);
@@ -134,7 +135,7 @@ fn ghidra_analyzer() {
     std::fs::write(&f, j.to_string()).unwrap();
     let (_, out) = dcp(&t, &["setup", "--analyzer-force"]);
     assert!(out.contains("analyzer=ghidra  exported=1"), "{out}"); // forced: exported again
-    let names = |t: &Path| facts(t, "start", None).iter().filter(|s| s.value["how"] == "ghidra").map(|s| s.value["name"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+    let names = |t: &Path| facts(t, "start").iter().filter(|s| s.value["how"] == "ghidra").map(|s| s.value["name"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
     assert_eq!(names(&t), ["Answer"]);
     let (_, out) = dcp(&t, &["refs", "Answer"]);
     assert!(out.contains("origin=analyzer"), "{out}");

@@ -39,11 +39,11 @@ impl Tu {
     }
 }
 
-/// unit -> its declared original file name (`file` declarations of one target; the first per unit).
-pub fn unit_files(decls: &[crate::decl::Decl], target: &str, default: &str) -> HashMap<String, String> {
+/// unit -> its declared original file name (`file` declarations; the first per unit).
+pub fn unit_files(decls: &[crate::decl::Decl]) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for d in decls {
-        if d.kind == "file" && d.target.as_deref().unwrap_or(default) == target {
+        if d.kind == "file" {
             if let (Some(tu), Some(path)) = (d.key("tu"), d.key("path")) {
                 out.entry(tu.s().to_string()).or_insert_with(|| path.s().to_string());
             }
@@ -88,15 +88,14 @@ thread_local! {
 pub fn plan(p: &Project) -> Result<Rc<Vec<Tu>>, String> {
     let h = |n: &str| p.input_hash(n).map(|x| x.unwrap_or_default());
     let root = p.root.to_string_lossy().into_owned();
-    let key = vec![root.clone(), p.target_name.clone(), p.targets[0].name.clone(), h("src")?, h("decl")?, h("targets")?];
+    let key = vec![root.clone(), p.target_name.clone(), h("src")?, h("decl")?, h("target")?];
     if let Some(hit) = PLANS.with(|c| c.borrow().iter().find(|x| x.0 == key).map(|x| x.1.clone())) {
         return Ok(hit);
     }
-    let scan = frontend::scan(&root, Some(&key[3]))?;
-    let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
-    let (decls, _) = crate::decl::load(&crate::decl::files(&root), &root, &targets);
-    let names = unit_files(&decls, &p.target_name, &targets[0]);
-    let out = Rc::new(units(&root, &scan, &p.target_name, &targets[0], &names)?);
+    let scan = frontend::scan(&root, Some(&key[2]))?;
+    let (decls, _) = crate::decl::load(&crate::decl::files(&root), &root);
+    let names = unit_files(&decls);
+    let out = Rc::new(units(&root, &scan, &p.target_name, &p.target_name, &names)?);
     PLANS.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() > 2 {
@@ -118,15 +117,11 @@ fn strings(v: Option<&toml::Value>) -> Vec<String> {
 }
 
 /// (flags, the override table that applied): the target's declared cflags, then the cflags of the first
-/// [[toolchain.unit]] whose glob matches the unit name (and whose `targets`, when given, list the target).
-pub fn flags_for(p: &Project, target: &str, unit: &str) -> Result<(Vec<String>, Option<toml::Table>), String> {
-    let decl = p.toolchain_decl(Some(target))?;
+/// [[toolchain.unit]] whose glob matches the unit name.
+pub fn flags_for(p: &Project, unit: &str) -> Result<(Vec<String>, Option<toml::Table>), String> {
+    let decl = p.toolchain_decl()?;
     let mut flags: Vec<String> = decl["cflags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
     for o in unit_overrides(p) {
-        let ts = strings(o.get("targets"));
-        if !ts.is_empty() && !ts.iter().any(|t| t == target) {
-            continue;
-        }
         let glob = o.get("glob").map(|g| g.as_str().map(|s| s.to_string()).unwrap_or_else(|| crate::project::toml_json(g).to_string())).unwrap_or_default();
         if fsmemo::fnmatch(unit.as_bytes(), glob.as_bytes()) {
             flags.extend(strings(o.get("cflags")));
@@ -136,11 +131,9 @@ pub fn flags_for(p: &Project, target: &str, unit: &str) -> Result<(Vec<String>, 
     Ok((flags, None))
 }
 
-/// The flags a unit compiles with: flags_for's and the target's define.
-pub fn compile_flags(p: &Project, target: &str, unit: &str) -> Result<Vec<String>, String> {
-    let mut f = flags_for(p, target, unit)?.0;
-    f.push(format!("/D{}", frontend::target_macro(target)));
-    Ok(f)
+/// The flags a unit compiles with: the declared cflags and the unit's override.
+pub fn compile_flags(p: &Project, unit: &str) -> Result<Vec<String>, String> {
+    Ok(flags_for(p, unit)?.0)
 }
 
 /// (name, first reported line, n lines, first physical line) of every stretch of the text one `#line` directive

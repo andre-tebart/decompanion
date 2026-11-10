@@ -35,9 +35,9 @@ fn init_writes_no_decision() {
     let cfg: toml::Table = toml::from_str(&read(&f, "decompanion.toml")).unwrap();
     let keys: std::collections::BTreeSet<&str> = cfg.keys().map(|k| k.as_str()).collect();
     assert_eq!(keys, ["analyzer", "sources", "target"].into()); // no [toolchain], no [libs]
-    let t = cfg["target"].as_array().unwrap()[0].as_table().unwrap();
+    let t = cfg["target"].as_table().unwrap();
     let tk: std::collections::BTreeSet<&str> = t.keys().map(|k| k.as_str()).collect();
-    assert_eq!(tk, ["image", "isa", "name", "path", "sha256"].into()); // computed from the file
+    assert_eq!(tk, ["path", "sha256"].into()); // computed from the file
     assert!(!cfg["analyzer"].as_table().unwrap().contains_key("reason")); // the analyzer is computed, to be confirmed
 }
 
@@ -50,7 +50,7 @@ fn status_after_setup_lists_the_toolchain_obligations() {
     assert!(tail.contains("phase  setup") && tail.contains("open   7 (6 to do now, 1 waiting)"), "{tail}");
     assert_eq!(obligations(tail), ["toolchain.compiler", "toolchain.linker", "toolchain.root", "toolchain.cflags", "libs.archives", "analyzer", "layout"]);
     assert!(flat(tail).contains("Rich compilers cl 12.00.8047 x5, cl 12.00.9044 x3; built"), "{tail}");
-    assert!(tail.contains("5. libs.archives      target t") && tail.contains("wait  on toolchain.root: declare that first"), "{tail}");
+    assert!(tail.contains("5. libs.archives") && tail.contains("wait  on toolchain.root: declare that first"), "{tail}");
     assert!(tail.contains("next: dcp toolchain declare compiler="), "{tail}");
     let (code, again) = dcp(&f, &["status"]);
     assert!(code == 0 && obligations(&again) == obligations(tail));
@@ -99,7 +99,7 @@ fn declarations_end_the_waits() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("C.toolchain: ok") && obligations(&out) == ["libs.archives", "analyzer", "layout"], "{out}");
     assert!(out.contains("flags  '/O2' '/Gy'"), "{out}"); // the flags as stored, one token each
-    let d = project(&f, None).toolchain_decl(None).unwrap();
+    let d = project(&f).toolchain_decl().unwrap();
     let why = "the Rich builds of the user's objects";
     assert_eq!(d["reasons"], json!({"root": why, "compiler": why, "linker": why, "cflags": why}));
     assert_eq!(d["cflags"], json!(["/O2", "/Gy"]));
@@ -111,7 +111,7 @@ fn declarations_end_the_waits() {
     let (_, rules) = dcp(&f, &["rules"]);
     assert!(!rules.split_once('\n').unwrap().1.contains("waiting") || rules.contains("waiting=0"), "{rules}");
     assert!(rules.contains("waiting=0"), "{rules}");
-    let tc = facts(&f, "toolchain", None)[0].value.clone();
+    let tc = facts(&f, "toolchain")[0].value.clone();
     let rich = tc["compilers"].as_array().unwrap().iter().find(|c| c["build"] == 8047).unwrap().clone();
     assert_eq!(rich["archive_objects"], 2); // S.rich reads the declared archives now
     let (code, out) = dcp(&f, &["analyzer", "declare", "--why", "no drafts in a unit test"]);

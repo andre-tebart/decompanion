@@ -3,7 +3,7 @@
 //!
 //! - The front end: the project's libclang (`[lint] libclang = "<path>"`, else the libclang.dll beside `clang` on
 //!   PATH, else the LLVM default install path), the toolchain's headers as system headers, include/ for the
-//!   quoted includes, the target's `DCP_TARGET_<name>` defined.
+//!   quoted includes.
 //! - models: each unit file src/<unit>.c is one translation unit; a header takes the model of the first unit (by
 //!   name) that includes it; a file no unit holds is parsed alone. Each parse is kept by its text, arguments and
 //!   libclang (in memory and in build/cache/cparse/<key>.json) as long as every file it read is unchanged. The
@@ -54,11 +54,6 @@ pub fn clang_library() -> Option<String> {
     library(None)
 }
 
-/// The macro every compile of a target defines (a function of some targets only stands under `#if` on it).
-pub fn target_macro(name: &str) -> String {
-    format!("DCP_TARGET_{}", name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>())
-}
-
 /// What a parse of the project needs: its root, the system include directories, the include directories, the
 /// targets with the macros their compiles define (the default first; one unnamed target without a configuration).
 pub struct Front {
@@ -77,9 +72,9 @@ impl Front {
             clang::load(&library(None).ok_or(NOT_FOUND)?)?;
             return Ok(Front { root: root.into(), sysdirs: vec![], incdirs, targets: vec![(None, vec![])] });
         }
-        let p = Project::open(r, None, "")?;
+        let p = Project::open(r, "")?;
         clang::load(&library(Some(&p.cfg)).ok_or(NOT_FOUND)?)?;
-        Ok(Front { root: root.into(), sysdirs: system_dirs(&p), incdirs, targets: p.targets.iter().map(|t| (Some(t.name.clone()), vec![target_macro(&t.name)])).collect() })
+        Ok(Front { root: root.into(), sysdirs: system_dirs(&p), incdirs, targets: vec![(Some(p.target_name.clone()), vec![])] })
     }
 
     pub fn args(&self, defines: &[String]) -> Vec<String> {
@@ -401,7 +396,7 @@ fn guards(functions: &[&srcscan::FnRow], targets: &[String]) -> Vec<srcscan::Err
         if !extra.is_empty() {
             out.push((file.clone(), *line, "L16".to_string(), format!(
                 "{name} is compiled into {}, its address comment lists no address there (guard it: #if on {})", join(&extra),
-                listed.iter().map(|t| target_macro(t)).collect::<Vec<_>>().join(", "))));
+                listed.iter().map(|t| format!("DCP_TARGET_{t}")).collect::<Vec<_>>().join(", "))));
         }
         if !missing.is_empty() {
             out.push((file.clone(), *line, "L16".to_string(), format!("{name}: its address comment lists {}, whose compile does not hold it (its #if)", join(&missing))));

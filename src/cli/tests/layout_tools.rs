@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 
 fn errors(root: &Path) -> Vec<FindingRow> {
-    findings(root, None).into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect()
+    findings(root).into_iter().filter(|c| c.0 == "bug" || c.0 == "error").collect()
 }
 
 /// Drafts from a Ghidra export (a stand-in installation writes the batch_decompile file in dcp setup) with these
@@ -146,7 +146,7 @@ fn unit_new_draft_rename() {
     assert!(code == 1 && err.contains("no Ghidra draft at 0x10001030"), "{err}");
     assert!(!unit_text(&t).0.contains("/* 0x10001030"));
     assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
-    assert!(!findings(&t, None).iter().any(|c| ["L5", "L.src", "L1", "L7"].contains(&c.1.as_str())));
+    assert!(!findings(&t).iter().any(|c| ["L5", "L.src", "L1", "L7"].contains(&c.1.as_str())));
     // rename: whole words, names.log, collision refused, the check count unchanged
     let (code, out) = dcp(&t, &["rename", "net_10001020", "GetCounter", "--why", "returns the counter"]);
     assert_eq!(code, 0, "{out}");
@@ -207,7 +207,7 @@ fn l9_and_analyzer_report() {
     let t = tiny();
     assert_eq!(dcp(&t, &["setup"]).0, 0);
     analyze(&t, &[(0x10001000, "FUN_10001000", F1, &[(0x10001000, 0x10001040)]), (0x10001058, "FUN_10001058", F2, &[(0x10001058, 0x1000105b)])]);
-    let l9 = findings_of(&t, None, "L9");
+    let l9 = findings_of(&t, "L9");
     assert!(l9.len() == 1 && l9[0].0 == "warn" && l9[0].4.contains("0x10001020") && l9[0].4.contains("0x10001030"), "{l9:?}");
     let (code, out) = dcp(&t, &["report"]);
     assert!(code == 0 && out.contains("analyzer=ghidra  drafts=2  export=up-to-date"), "{out}");
@@ -219,7 +219,7 @@ fn l9_and_analyzer_report() {
 /// The synthetic dll with `xor eax, eax; ret` at 0x10001058 in the fill after f4: 0x10001057..0x10001060 is unknown
 /// code (no fill run any more).
 fn patched() -> PathBuf {
-    let root = make_project(&tmp("dead").join("dead"), false);
+    let root = make_project(&tmp("dead").join("dead"));
     let dll = root.join("tiny.dll");
     let mut data = std::fs::read(&dll).unwrap();
     data[0x400 + 0x58..0x400 + 0x5b].copy_from_slice(&[0x33, 0xc0, 0xc3]);
@@ -239,7 +239,7 @@ fn bytes_dead_owned_by_the_unit() {
     let line = line_with(&out, "unit=tail");
     // explained now; the unit stays open only because f4, the last function of the game code, has no source
     assert!(line.contains("open_bytes=0") && out.contains("dead_bytes=9") && line.contains("end=open"), "{out}");
-    let p = project(&root, None);
+    let p = project(&root);
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri()).unwrap();
     crate::answers::ensure_at(&db).unwrap();
@@ -260,9 +260,9 @@ fn declared_start_is_walked() {
     stub_drafts(&root, &[0x10001058]);
     let (code, out) = dcp(&root, &["draft", "0x10001058"]);
     assert_eq!(code, 0, "{out}");
-    let w = facts(&root, "symbol", None).into_iter().find(|f| &*f.rule == "S.codewalk" && f.lo == 0x10001058).unwrap();
+    let w = facts(&root, "symbol").into_iter().find(|f| &*f.rule == "S.codewalk" && f.lo == 0x10001058).unwrap();
     assert!(w.support == DECLARED && w.hi == 0x1000105b); // xor eax,eax; ret
-    assert!(findings_of(&root, None, "L10").is_empty());
+    assert!(findings_of(&root, "L10").is_empty());
     // the only errors: the Ghidra types header's system includes, which the test machine's lint has no headers for
     let (_, out) = dcp(&root, &["check"]);
     assert!(!out.lines().any(|l| l.starts_with("error") && !l.contains("include/dcp_ghidra.h")), "{out}");
@@ -277,11 +277,11 @@ fn source_only_start_owns_its_code() {
     let f = read(&root, "src/tail.c");
     write(&root, "src/tail.c", &(f + "\n/* 0x10001058, only the source names this start */\nint f5(void)\n{\n    return 0;\n}\n"));
     dcp(&root, &["layout", "units", "-v"]);
-    let own: Vec<_> = facts(&root, "symbol", None).into_iter().filter(|f| &*f.rule == "L.src.extent").collect();
+    let own: Vec<_> = facts(&root, "symbol").into_iter().filter(|f| &*f.rule == "L.src.extent").collect();
     let funcs: Vec<(i64, i64)> = own.iter().filter(|f| f.value["skind"] == "func").map(|f| (f.lo, f.hi)).collect();
     assert_eq!(funcs, [(0x10001058, 0x1000105b)]); // xor eax,eax; ret
     assert!(own.iter().all(|f| f.support == DECLARED));
-    assert!(findings_of(&root, None, "L10").is_empty());
+    assert!(findings_of(&root, "L10").is_empty());
     assert_eq!(dcp(&root, &["check"]).0, 0);
 }
 
@@ -300,10 +300,10 @@ fn unlinked_helper_builds_without_a_grade() {
     assert!(code == 0 && out.contains("failed=0") && !out.contains("ok=yes"), "{out}"); // only failed units get a row
     let (code, out) = dcp(&t, &["build", "--units"]);
     assert!(code == 0 && out.contains("tu=net") && out.contains("ok=yes"), "{out}");
-    let rows = crate::queues::function_grades(&project(&t, None).store_path()).unwrap();
+    let rows = crate::queues::function_grades(&project(&t).store_path()).unwrap();
     let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
     assert!(names == ["get"] && rows[0]["code"] == "byte", "{names:?}");
-    assert!(!findings(&t, None).iter().any(|c| c.1 == "M.gen" || c.1 == "M.compile"));
+    assert!(!findings(&t).iter().any(|c| c.1 == "M.gen" || c.1 == "M.compile"));
     let (_, out) = dcp(&t, &["layout", "units", "-v"]);
     assert!(out.contains("unlinked=twice  file=src/net.c"), "{out}");
     let (code, out) = dcp(&t, &["disasm", "--ours", "get"]);
@@ -457,8 +457,8 @@ fn rename_reports_every_outcome() {
     let (code, out) = dcp(&t, &["rename", "a_Unk10002000B", "a_CounterLo", "--why", "the low half"]);
     assert!(code == 0 && out.contains("kind=data  at=0x10002000  files=2"), "{out}");
     assert!(read(&t, "include/a.h").contains("#define a_CounterLo (*(short *)&a_Counter)"));
-    // an address, plain and target-prefixed: the ledger's name of it
-    let (code, out) = dcp(&t, &["rename", "tiny:0x10001000", "a_Main", "--why", "the entry"]);
+    // an address: the ledger's name of it
+    let (code, out) = dcp(&t, &["rename", "0x10001000", "a_Main", "--why", "the entry"]);
     assert!(code == 0 && out.contains("is a_10001000") && out.contains("renamed=a_10001000  to=a_Main  kind=func  at=0x10001000"), "{out}");
     let (code, out) = dcp(&t, &["rename", "0x10001000", "a_Entry", "--why", "the entry"]);
     assert!(code == 0 && out.contains("renamed=a_Main  to=a_Entry"), "{out}");
@@ -467,7 +467,7 @@ fn rename_reports_every_outcome() {
     refused("a_InString", "a_Other", "only inside string literals");
     refused("a_10001020", "a_Counter", "a_Counter exists already");
     refused("a_Nowhere", "a_Other", "occurs nowhere");
-    refused("nosuch:0x10001000", "a_Other", "no target 'nosuch'");
+    refused("nosuch:0x10001000", "a_Other", "neither a C identifier nor an address");
     refused("0x10001040", "a_Other", "knows no name of 0x10001040");
     refused("a_10001020", "9bad", "no C identifier");
     refused("a-b", "a_Other", "neither a C identifier nor an address");

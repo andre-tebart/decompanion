@@ -106,7 +106,7 @@ pub fn lint(p: &Project) -> Result<(Value, usize, usize), String> {
     let version = crate::clang::clang_version().map_err(|e| e.to_string())?;
     let clang = [CPARSE_VERSION.to_string(), version, canonical(&json!(frontend::ARGS)), canonical(&json!(front.sysdirs))];
     let units = crate::plan::plan(p)?;
-    let defines = vec![frontend::target_macro(&p.target_name)];
+    let defines: Vec<String> = vec![];
     let tus = crate::compile::tu_keys(&db).map_err(|e| e.to_string())?;
     let args = front.args(&defines);
     let blob = |k: &str| -> Result<Option<Vec<CDiag>>, String> {

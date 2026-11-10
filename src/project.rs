@@ -1,16 +1,15 @@
-//! The target project: decompanion.toml and what hangs off it that is plain data: the targets, the toolchain and
+//! The project: decompanion.toml and what hangs off it that is plain data: the target, its toolchain and
 //! library-archive declarations with their reasons, the obligations an input waits on, and the content hashes of
 //! the named external inputs.
 //!
 //! decompanion.toml
-//!   [[target]]     name, path, sha256, image, isa; compiler, linker, cflags, archives; reason.<key> (or the older
-//!                  reason = "..." for every key of the table). The first target is the default one.
-//!   [toolchain]    root, and compiler / linker / cflags as defaults a target without its own inherits.
-//!   [libs]         archives, reason: the default of every target without its own archives.
+//!   [target]       name, path, sha256; compiler, linker, cflags, archives; reason.<key> (or reason = "..." for every
+//!                  key of the table). The name (the store's file name, the ledgers' first column, `target=` in the
+//!                  output) defaults to the binary's stem.
+//!   [toolchain]    root, include_dirs, lib_dirs, [[toolchain.unit]] flag overrides.
 //!   [[variant]], [[setup]], [[run]]  build variants and running a build (run.rs).
 //!   [paths]        name = "directory": the directories outside the project the configuration reads, each the
 //!                  default of a machine; `{name}` in any string of the configuration (reasons excepted) stands for it.
-//! The single-table form `[target]` of milestone 1 is still read (one target named after the file's stem).
 //!
 //! decompanion.local.toml (beside it, not committed: one machine's)
 //!   [paths]        name = "directory": this machine's directories, over the defaults of decompanion.toml.
@@ -29,9 +28,8 @@ pub const LOCAL_CONFIG_NAME: &str = "decompanion.local.toml";
 /// The placeholders other code expands (run.rs: {root}): no path name may take them.
 const RESERVED_NAMES: [&str; 1] = ["root"];
 const TOOLCHAIN_KEYS: [&str; 3] = ["compiler", "linker", "cflags"];
-const TARGET_KEYS: [&str; 10] = ["name", "path", "sha256", "image", "isa", "archives", "compiler", "linker", "cflags", "reason"];
+const TARGET_KEYS: [&str; 8] = ["name", "path", "sha256", "archives", "compiler", "linker", "cflags", "reason"];
 const REASON_KEYS: [&str; 5] = ["compiler", "linker", "cflags", "archives", "root"];
-pub const IMAGE_FORMATS: [&str; 1] = ["pe32"];
 
 pub(crate) fn cfg_err(msg: String) -> Error {
     Error::config(msg)
@@ -118,15 +116,12 @@ pub struct Target {
     pub name: String,
     pub path: String, // as str(Path) spells it
     pub sha256: String,
-    pub image: Option<String>,
-    pub legacy: bool,
-    pub toolchain: Vec<(String, Value)>, // the toolchain keys the target table declares itself
+    pub toolchain: Vec<(String, Value)>, // compiler, linker, cflags as the table declares them
     pub archives: Option<Vec<String>>,
-    pub isa: Option<String>,
     pub reasons: Vec<(String, String)>,
 }
 
-/// The default name of a target: the binary's stem, lower case, reduced to [a-z0-9_-].
+/// The name of a target: the binary's stem, lower case, reduced to [a-z0-9_-].
 pub fn target_name_of(path: &str) -> String {
     let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
     let n: String = stem.chars().map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' { c } else { '_' }).collect();
@@ -141,7 +136,7 @@ pub(crate) fn is_identifier(name: &str) -> bool {
 pub struct Project {
     pub root: PathBuf,
     pub cfg: toml::Table,
-    pub targets: Vec<Target>,
+    pub target: Target,
     pub target_name: String,
     pub(crate) core_hash: String,
     hashes: Mutex<HashMap<String, String>>,
@@ -154,16 +149,12 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 }
 
 impl Project {
-    pub fn open(root: &Path, target: Option<&str>, core_hash: &str) -> Result<Project, String> {
+    pub fn open(root: &Path, core_hash: &str) -> Result<Project, String> {
         let text = std::fs::read_to_string(root.join(CONFIG_NAME)).map_err(|e| format!("{}: {e}", root.join(CONFIG_NAME).display()))?;
         let (cfg, _) = load_config(root, &text)?;
-        let mut p = Project { root: root.to_path_buf(), cfg, targets: vec![], target_name: String::new(), core_hash: core_hash.into(),
+        let target = parse_target(&cfg, root)?;
+        let p = Project { root: root.to_path_buf(), cfg, target_name: target.name.clone(), target, core_hash: core_hash.into(),
                               hashes: Mutex::new(HashMap::new()), waits: Mutex::new(HashMap::new()) };
-        p.targets = p.parse_targets()?;
-        p.target_name = match target {
-            None => p.targets[0].name.clone(),
-            Some(n) => p.target(Some(n))?.name.clone(),
-        };
         if ["variant", "setup", "run"].iter().any(|k| p.cfg.contains_key(*k)) {
             p.run_cfg()?; // a contradiction in the run tables is an error of every command, as one in the targets is
         }
@@ -203,83 +194,11 @@ impl Project {
         if is_absolute(&s) { py_path(&s) } else { py_path(&format!("{}/{s}", self.root.to_string_lossy())) }
     }
 
-    fn parse_targets(&self) -> Result<Vec<Target>, String> {
-        let tables: Vec<&toml::Table> = match self.cfg.get("target") {
-            None => return Err(format!("{CONFIG_NAME}: no [[target]] table")),
-            Some(toml::Value::Table(t)) => vec![t],
-            Some(toml::Value::Array(a)) => a.iter().filter_map(|v| v.as_table()).collect(),
-            Some(_) => return Err(format!("{CONFIG_NAME}: no [[target]] table")),
-        };
-        let legacy = matches!(self.cfg.get("target"), Some(toml::Value::Table(_)));
-        let mut out: Vec<Target> = vec![];
-        for (i, tab) in tables.iter().enumerate() {
-            let Some(path) = tab.get("path").and_then(|v| v.as_str()) else {
-                return Err(format!("{CONFIG_NAME}: target #{} has no path", i + 1));
-            };
-            let path = self.expand(path);
-            let name = tab.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string())
-                .unwrap_or_else(|| target_name_of(&path));
-            let rn = crate::decl::py_repr(&name);
-            if !is_identifier(&name) {
-                return Err(format!("{CONFIG_NAME}: target name {rn} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)"));
-            }
-            if out.iter().any(|o| o.name == name) {
-                return Err(format!("{CONFIG_NAME}: target {rn} declared twice"));
-            }
-            let mut unknown: Vec<&str> = tab.keys().map(|k| k.as_str()).filter(|k| !TARGET_KEYS.contains(k)).collect();
-            unknown.sort();
-            if !unknown.is_empty() {
-                return Err(format!("{CONFIG_NAME}: target {rn} has unknown keys {} (known: {})", unknown.join(", "), TARGET_KEYS.join(", ")));
-            }
-            let archives = match tab.get("archives") {
-                None => None,
-                Some(toml::Value::Array(a)) if a.iter().all(|x| x.is_str()) => Some(a.iter().map(|x| x.as_str().unwrap().to_string()).collect()),
-                Some(_) => return Err(format!("{CONFIG_NAME}: target {rn}: archives is not a list of paths")),
-            };
-            match tab.get("reason") {
-                Some(toml::Value::Table(r)) => {
-                    let mut bad: Vec<&str> = r.keys().map(|k| k.as_str()).filter(|k| !REASON_KEYS.contains(k)).collect();
-                    bad.sort();
-                    if let Some(b) = bad.first() {
-                        return Err(format!("{CONFIG_NAME}: target {rn}: reason.{b} names no declaration (known: {})", REASON_KEYS.join(", ")));
-                    }
-                }
-                Some(toml::Value::String(_)) | None => {}
-                Some(_) => return Err(format!("{CONFIG_NAME}: target {rn}: reason is neither a string nor reason.<key> = ...")),
-            }
-            let toolchain = TOOLCHAIN_KEYS.iter().filter_map(|k| tab.get(*k).map(|v| (k.to_string(), toml_json(v)))).collect();
-            let reasons = ["compiler", "linker", "cflags", "archives"].iter()
-                .filter_map(|k| Some(reason_of(Some(tab), k)).filter(|r| !r.is_empty()).map(|r| (k.to_string(), r))).collect();
-            let image = tab.get("image").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string())
-                .or_else(|| (IMAGE_FORMATS.len() == 1).then(|| IMAGE_FORMATS[0].to_string()));
-            out.push(Target {
-                name, path, sha256: tab.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(), image, legacy, toolchain, archives,
-                isa: tab.get("isa").and_then(|v| v.as_str()).map(|s| s.to_string()), reasons,
-            });
-        }
-        if out.is_empty() {
-            return Err(format!("{CONFIG_NAME}: the [[target]] list is empty"));
-        }
-        Ok(out)
-    }
-
-    /// The named target; None: the current one.
-    pub fn target(&self, name: Option<&str>) -> Result<&Target, String> {
-        let name = match name {
-            Some(n) => n,
-            None if self.target_name.is_empty() => return Ok(&self.targets[0]),
-            None => self.target_name.as_str(),
-        };
-        self.targets.iter().find(|t| t.name == name).ok_or_else(|| {
-            format!("no target {} (targets: {})", crate::decl::py_repr(name), self.targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "))
-        })
-    }
-
-    /// The toolchain declaration of a target: root from [toolchain]; compiler, linker and cflags from the
-    /// target's own table, else the [toolchain] defaults; `from` where each came from, `reasons` their reasons.
-    pub fn toolchain_decl(&self, name: Option<&str>) -> Result<Value, String> {
+    /// The toolchain declaration: root from [toolchain]; compiler, linker and cflags from [target]; `from` where each
+    /// came from (toolchain / target / missing), `reasons` their reasons.
+    pub fn toolchain_decl(&self) -> Result<Value, String> {
         let tc = self.table("toolchain");
-        let t = self.target(name)?;
+        let t = &self.target;
         let own: HashMap<&str, &Value> = t.toolchain.iter().map(|(k, v)| (k.as_str(), v)).collect();
         let own_reasons: HashMap<&str, &str> = t.reasons.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let root = tc.and_then(|t| t.get("root")).map(toml_json).unwrap_or(Value::String(String::new()));
@@ -293,8 +212,6 @@ impl Project {
         for k in TOOLCHAIN_KEYS {
             let (v, from, reason) = if let Some(v) = own.get(k) {
                 ((*v).clone(), "target", own_reasons.get(k).copied().unwrap_or("").to_string())
-            } else if let Some(v) = tc.and_then(|t| t.get(k)) {
-                (toml_json(v), "toolchain", reason_of(tc, k))
             } else {
                 (if k == "cflags" { json!([]) } else { json!("") }, "missing", String::new())
             };
@@ -307,33 +224,23 @@ impl Project {
         Ok(Value::Object(out))
     }
 
-    /// The library-archive declaration of a target: the archives as written (None when nothing declares any),
-    /// where they come from (target | libs | missing), the reason.
-    pub fn archives_decl(&self, name: Option<&str>) -> Result<(Option<Vec<String>>, &'static str, String), String> {
-        let t = self.target(name)?;
-        if let Some(a) = &t.archives {
-            let r = t.reasons.iter().find(|(k, _)| k == "archives").map(|(_, r)| r.clone()).unwrap_or_default();
-            return Ok((Some(a.clone()), "target", r));
+    /// The library-archive declaration: the archives as written (None when the target declares none), where they
+    /// come from (target | missing), the reason.
+    pub fn archives_decl(&self) -> (Option<Vec<String>>, &'static str, String) {
+        let t = &self.target;
+        match &t.archives {
+            Some(a) => (Some(a.clone()), "target", t.reasons.iter().find(|(k, _)| k == "archives").map(|(_, r)| r.clone()).unwrap_or_default()),
+            None => (None, "missing", String::new()),
         }
-        let libs = self.table("libs");
-        if let Some(a) = libs.and_then(|l| l.get("archives")) {
-            let list = a.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
-            return Ok((Some(list), "libs", reason_of(libs, "archives")));
-        }
-        Ok((None, "missing", String::new()))
     }
 
-    /// The library archives of a target (expanded; each must exist).
-    pub fn lib_archives(&self, name: Option<&str>) -> Result<Vec<String>, String> {
-        let t = self.target(name)?;
-        let own = t.archives.is_some();
-        let (libs, _, _) = self.archives_decl(name)?;
+    /// The target's library archives (expanded; each must exist).
+    pub fn lib_archives(&self) -> Result<Vec<String>, String> {
         let mut out = vec![];
-        for s in libs.unwrap_or_default() {
+        for s in self.archives_decl().0.unwrap_or_default() {
             let p = self.expand(&s);
             if !Path::new(&p).exists() {
-                let where_ = if own { format!("target {} archives", t.name) } else { "[libs] archives".into() };
-                return Err(format!("{where_}: {p} does not exist"));
+                return Err(format!("[target] archives: {p} does not exist"));
             }
             out.push(p);
         }
@@ -347,7 +254,7 @@ impl Project {
         }
         let out = match name {
             "libs" => {
-                let (a, _, _) = self.archives_decl(None)?;
+                let (a, _, _) = self.archives_decl();
                 match a {
                     None => vec!["libs.archives".to_string()],
                     Some(a) if self.tc_str("root").is_empty() && a.iter().any(|s| s.contains("{toolchain.root}")) => vec!["toolchain.root".to_string()],
@@ -355,7 +262,7 @@ impl Project {
                 }
             }
             "toolchain" => {
-                let d = self.toolchain_decl(None)?;
+                let d = self.toolchain_decl()?;
                 ["compiler", "linker"].iter().filter(|k| d[**k].as_str().map(|s| s.is_empty()).unwrap_or(d[**k].is_null()))
                     .map(|k| format!("toolchain.{k}")).collect()
             }
@@ -408,11 +315,6 @@ impl Project {
         }).collect();
         format!("file:///{enc}?mode=ro")
     }
-
-    pub fn targets_value(&self) -> Value {
-        Value::Array(self.targets.iter().map(|t| json!({"name": t.name, "path": posix(&t.path), "sha256": t.sha256, "image": t.image})).collect())
-    }
-
     /// The toolchain's root, expanded (None when [toolchain] names none).
     pub fn toolchain_root(&self) -> Option<String> {
         let r = self.tc_str("root");
@@ -436,14 +338,14 @@ impl Project {
         }
         let root = self.root.to_string_lossy().into_owned();
         let h = match name {
-            "image" => Self::file_hash(&self.target(None)?.path)?,
+            "image" => Self::file_hash(&self.target.path)?,
             "config" => {
                 let local = py_path(&format!("{root}/{LOCAL_CONFIG_NAME}"));
                 let local = if Path::new(&local).exists() { Self::file_hash(&local)? } else { "none".into() };
                 sha256_parts(&[Self::file_hash(&py_path(&format!("{root}/{CONFIG_NAME}")))?, local])
             }
             "libs" | "archives" => {
-                let libs = if self.waiting("libs")?.is_empty() { self.lib_archives(None)? } else { vec![] };
+                let libs = if self.waiting("libs")?.is_empty() { self.lib_archives()? } else { vec![] };
                 let mut data = String::new();
                 for p in &libs {
                     let n = Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -454,8 +356,8 @@ impl Project {
             "decl" => fsmemo::tree_hash(&[py_path(&format!("{root}/decl"))], &["*.dcl".into()]).map_err(|e| e.to_string())?,
             "src" => fsmemo::tree_hash(&[py_path(&format!("{root}/src")), py_path(&format!("{root}/include"))], &["*.c".into(), "*.h".into()])
                 .map_err(|e| e.to_string())?,
-            "toolchain" => sha256_parts(&[canonical(&self.toolchain_decl(None)?)]),
-            "targets" => sha256_parts(&[canonical(&self.targets_value())]),
+            "toolchain" => sha256_parts(&[canonical(&self.toolchain_decl()?)]),
+            "target" => sha256_parts(&[canonical(&json!({"name": self.target.name, "path": posix(&self.target.path), "sha256": self.target.sha256}))]),
             "baseline" => {
                 let p = py_path(&format!("{root}/ledger/grades.tsv"));
                 if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }
@@ -505,7 +407,7 @@ impl Project {
 impl Project {
     /// The project at `root` (None: the directory holding decompanion.toml at or above the working directory), with
     /// a target selected (None: the default one). A missing configuration is an Error::Config.
-    pub fn find(root: Option<&str>, target: Option<&str>) -> Result<Project> {
+    pub fn find(root: Option<&str>) -> Result<Project> {
         let start = match root {
             Some(r) => PathBuf::from(r),
             None => std::env::current_dir().map_err(|e| cfg_err(e.to_string()))?,
@@ -517,16 +419,13 @@ impl Project {
             find_root(&start).ok_or_else(|| cfg_err(format!("no {CONFIG_NAME} in {} or above (run dcp init)", start.display())))?
         };
         let root = PathBuf::from(py_path(&root.to_string_lossy()));
-        Project::open(&root, target, crate::CORE_HASH).map_err(cfg_err)
+        Project::open(&root, crate::CORE_HASH).map_err(cfg_err)
     }
 
-    /// The current target's image, checked: a known format, the file exists, its sha256 is the declared one.
+    /// The target's image, checked: the file exists, its sha256 is the declared one.
     #[cfg(test)]
     pub fn image_checked(&self) -> Result<std::rc::Rc<crate::pe::Image>> {
-        let t = self.target(None).map_err(cfg_err)?;
-        if let Some(f) = t.image.as_ref().filter(|f| !IMAGE_FORMATS.contains(&f.as_str())) {
-            return Err(cfg_err(format!("target {}: unknown image format {} (known: {})", t.name, crate::decl::py_repr(f), IMAGE_FORMATS.join(", "))));
-        }
+        let t = &self.target;
         if !Path::new(&t.path).exists() {
             return Err(cfg_err(format!("target {}: {} does not exist", t.name, t.path)));
         }
@@ -548,7 +447,7 @@ mod tests {
         let d = crate::testkit::scratch(&format!("project-{}", sha_hex(toml.as_bytes())));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(CONFIG_NAME), toml).unwrap();
-        let p = Project::open(&d, None, "core");
+        let p = Project::open(&d, "core");
         let _ = std::fs::remove_dir_all(&d);
         p
     }
@@ -607,32 +506,23 @@ name = "s"
     #[test]
     fn targets_and_declarations() {
         let p = project(r#"
-[[target]]
-name = "server"
-path = "C:/g/server.dll"
+[target]
+path = "C:/g/Some Game.exe"
 compiler = "cl 12.00.9044"
 reason.compiler = "rich"
-[[target]]
-path = "C:/g/Some Game.exe"
+archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB"]
+reason.archives = "S.rich"
 [toolchain]
 root = "C:/Tools/VC"
-linker = "link 6.00.8447"
-cflags = ["/O2"]
 reason = "probe"
-[libs]
-archives = ["{toolchain.root}/VC98/Lib/LIBC.LIB"]
-reason = "S.rich"
 "#).unwrap();
-        assert_eq!(p.targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["server", "some_game"]);
-        assert_eq!(p.target_name, "server");
-        let d = p.toolchain_decl(None).unwrap();
-        assert_eq!(d["compiler"], "cl 12.00.9044");
-        assert_eq!(d["linker"], "link 6.00.8447");
-        assert_eq!(d["from"], json!({"root": "toolchain", "compiler": "target", "linker": "toolchain", "cflags": "toolchain"}));
-        assert_eq!(d["reasons"]["compiler"], "rich");
-        assert_eq!(d["reasons"]["cflags"], "probe");
-        let (a, from, r) = p.archives_decl(None).unwrap();
-        assert_eq!((a.unwrap()[0].as_str(), from, r.as_str()), ("{toolchain.root}/VC98/Lib/LIBC.LIB", "libs", "S.rich"));
+        assert_eq!(p.target_name, "some_game");
+        let d = p.toolchain_decl().unwrap();
+        assert_eq!((d["compiler"].as_str(), d["linker"].as_str()), (Some("cl 12.00.9044"), Some("")));
+        assert_eq!(d["from"], json!({"root": "toolchain", "compiler": "target", "linker": "missing", "cflags": "missing"}));
+        assert_eq!((d["reasons"]["compiler"].as_str(), d["reasons"]["root"].as_str()), (Some("rich"), Some("probe")));
+        let (a, from, r) = p.archives_decl();
+        assert_eq!((a.unwrap()[0].as_str(), from, r.as_str()), ("{toolchain.root}/VC98/Lib/LIBC.LIB", "target", "S.rich"));
         assert!(p.waiting("libs").unwrap().is_empty());
         if cfg!(windows) {
             assert_eq!(p.expand("{toolchain.root}/VC98/Lib/LIBC.LIB"), r"C:\Tools\VC\VC98\Lib\LIBC.LIB");
@@ -641,10 +531,11 @@ reason = "S.rich"
 
     #[test]
     fn errors_and_waiting() {
-        assert_eq!(project("x = 1").err().unwrap(), "decompanion.toml: no [[target]] table");
-        assert!(project("[[target]]\npath = \"a.dll\"\nbogus = 1\n").err().unwrap().contains("has unknown keys bogus"));
-        assert!(project("[[target]]\nname = \"1x\"\npath = \"a.dll\"\n").err().unwrap().contains("is not an identifier"));
-        let p = project("[[target]]\npath = \"a.dll\"\n").unwrap();
+        assert_eq!(project("x = 1").err().unwrap(), "decompanion.toml: no [target] table");
+        assert!(project("[[target]]\npath = \"a.dll\"\n").err().unwrap().contains("one [target] table"));
+        assert!(project("[target]\npath = \"a.dll\"\nbogus = 1\n").err().unwrap().contains("has unknown keys bogus"));
+        assert!(project("[target]\nname = \"1x\"\npath = \"a.dll\"\n").err().unwrap().contains("is not an identifier"));
+        let p = project("[target]\npath = \"a.dll\"\n").unwrap();
         assert_eq!(p.waiting("libs").unwrap(), ["libs.archives"]);
         assert_eq!(p.waiting_for(&["libs".into(), "toolchain".into()]).unwrap(), ["libs.archives", "toolchain.compiler", "toolchain.linker"]);
         assert_eq!(target_name_of("C:/x/123.dll"), "t123");
@@ -657,6 +548,49 @@ reason = "S.rich"
             assert_eq!(py_path("C:/"), r"C:\");
         }
     }
+}
+
+/// The [target] table of a configuration.
+fn parse_target(cfg: &toml::Table, root: &Path) -> Result<Target, String> {
+    let tab = match cfg.get("target") {
+        Some(toml::Value::Table(t)) => t,
+        Some(toml::Value::Array(_)) => return Err(format!("{CONFIG_NAME}: one [target] table, not a [[target]] list")),
+        _ => return Err(format!("{CONFIG_NAME}: no [target] table")),
+    };
+    let Some(path) = tab.get("path").and_then(|v| v.as_str()) else { return Err(format!("{CONFIG_NAME}: [target] has no path")) };
+    let tc_root = cfg.get("toolchain").and_then(|t| t.get("root")).and_then(|v| v.as_str()).unwrap_or("");
+    let path = path.replace("{toolchain.root}", tc_root);
+    let path = if is_absolute(&path) { py_path(&path) } else { py_path(&format!("{}/{path}", root.to_string_lossy())) };
+    let mut unknown: Vec<&str> = tab.keys().map(|k| k.as_str()).filter(|k| !TARGET_KEYS.contains(k)).collect();
+    unknown.sort();
+    if !unknown.is_empty() {
+        return Err(format!("{CONFIG_NAME}: [target] has unknown keys {} (known: {})", unknown.join(", "), TARGET_KEYS.join(", ")));
+    }
+    let archives = match tab.get("archives") {
+        None => None,
+        Some(toml::Value::Array(a)) if a.iter().all(|x| x.is_str()) => Some(a.iter().map(|x| x.as_str().unwrap().to_string()).collect()),
+        Some(_) => return Err(format!("{CONFIG_NAME}: [target] archives is not a list of paths")),
+    };
+    match tab.get("reason") {
+        Some(toml::Value::Table(r)) => {
+            let mut bad: Vec<&str> = r.keys().map(|k| k.as_str()).filter(|k| !REASON_KEYS.contains(k)).collect();
+            bad.sort();
+            if let Some(b) = bad.first() {
+                return Err(format!("{CONFIG_NAME}: [target] reason.{b} names no declaration (known: {})", REASON_KEYS.join(", ")));
+            }
+        }
+        Some(toml::Value::String(_)) | None => {}
+        Some(_) => return Err(format!("{CONFIG_NAME}: [target] reason is neither a string nor reason.<key> = ...")),
+    }
+    let toolchain = TOOLCHAIN_KEYS.iter().filter_map(|k| tab.get(*k).map(|v| (k.to_string(), toml_json(v)))).collect();
+    let reasons = ["compiler", "linker", "cflags", "archives"].iter()
+        .filter_map(|k| Some(reason_of(Some(tab), k)).filter(|r| !r.is_empty()).map(|r| (k.to_string(), r))).collect();
+    let name = tab.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()).unwrap_or_else(|| target_name_of(&path));
+    if !is_identifier(&name) {
+        return Err(format!("{CONFIG_NAME}: [target] name {} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)", crate::decl::py_repr(&name)));
+    }
+    Ok(Target { name, sha256: tab.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(), path, toolchain, archives,
+                reasons })
 }
 
 /// `[paths]` of a configuration table: (name, directory) in name order, the names checked.
@@ -740,13 +674,5 @@ pub fn load_config(root: &Path, text: &str) -> Result<(toml::Table, BTreeMap<Str
         return Err(format!("{CONFIG_NAME}: {} names no directory: give it in [paths] of {LOCAL_CONFIG_NAME} (name = \"DIR\")", m.join(", ")));
     }
     Ok((cfg, names))
-}
-
-/// The targets (name, path) a configuration's text declares.
-pub fn targets_of(root: &str, text: &str) -> Result<Vec<(String, String)>, String> {
-    let (cfg, _) = load_config(Path::new(root), text)?;
-    let p = Project { root: PathBuf::from(root), cfg, targets: vec![], target_name: String::new(), core_hash: String::new(),
-                      hashes: Mutex::new(HashMap::new()), waits: Mutex::new(HashMap::new()) };
-    Ok(p.parse_targets()?.into_iter().map(|t| (t.name, t.path)).collect())
 }
 

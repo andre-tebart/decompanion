@@ -85,7 +85,7 @@ pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, V
     let t0 = std::time::Instant::now();
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
-    let target = p.target(None)?;
+    let target = &p.target;
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let img_sha = fsmemo::sha256(&target.path).map_err(|e| e.to_string())?;
     let code = crate::engine::native_code_hash(crate::engine::rule("S.crt.code").map_err(|e| e.to_string())?, core_hash);
@@ -118,7 +118,7 @@ pub fn candidates(p: &Project, core_hash: &str, force: bool) -> Result<(Value, V
         results.push(r);
     }
     results.sort_by(|a, b| (-a["bytes"].as_i64().unwrap_or(0), a["archive"].as_str()).cmp(&(-b["bytes"].as_i64().unwrap_or(0), b["archive"].as_str())));
-    let decl = p.toolchain_decl(None)?;
+    let decl = p.toolchain_decl()?;
     let mut summary = json!({
         "root": decl["root"].as_str().unwrap_or(""), "image": img_sha,
         "archives": results.iter().map(|r| json!({"archive": r["archive"], "members": r["members"], "placed": r["placed"], "bytes": r["bytes"]})).collect::<Vec<_>>(),
@@ -136,7 +136,7 @@ pub fn libs_candidates_lines(p: &crate::project::Project, core_hash: &str, force
     use crate::cliread::{record, Tok};
     let _ = core_hash; // the build's own (crate::CORE_HASH, through the project)
     let (v, log) = candidates(p, &p.core_hash, force).map_err(Error::runtime)?;
-    let declared: Vec<String> = p.archives_decl(None).map_err(Error::runtime)?.0.unwrap_or_default().iter()
+    let declared: Vec<String> = p.archives_decl().0.unwrap_or_default().iter()
         .map(|a| a.rsplit(['/', '\\']).next().unwrap_or(a).to_uppercase()).collect();
     let i = |x: &Value| Tok::I(x.as_i64().unwrap_or(0));
     let st = |x: &Value| Tok::S(x.as_str().unwrap_or("").to_string());

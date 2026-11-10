@@ -771,8 +771,8 @@ pub fn compute_units(game: (i64, i64, Support), bounds: &[Bound], srcs: &[SrcFn]
 /// L.unit.extent: the units of the game code as `unit` facts, the L7 issues of their computation.
 pub fn l_unit_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
-    let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
-    let lib_decls = crate::decl::lib_units(&decls, &target, targets.first().map(|s| s.as_str()).unwrap_or(""));
+    let (decls, _) = crate::decl::project_decls(ctx);
+    let lib_decls = crate::decl::lib_units(&decls);
     let libs: HashSet<&str> = lib_decls.keys().map(|s| s.as_str()).collect();
     let fs = |kind: &str| store::claims(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
     let syms = fs("symbol")?;
@@ -1157,8 +1157,8 @@ pub fn unit_status(start_support: Support, end_support: Support, open_bytes: i64
 /// L14.unit.outside: a sourced function of a declared unit (or a library unit) outside its extent.
 pub fn l14_unit_outside(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
-    let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
-    let mut libs: Vec<LibUnit> = crate::decl::lib_units(&decls, &target, targets.first().map(|s| s.as_str()).unwrap_or(""))
+    let (decls, _) = crate::decl::project_decls(ctx);
+    let mut libs: Vec<LibUnit> = crate::decl::lib_units(&decls)
         .into_iter().map(|(k, d)| (k, d.lo, d.hi, d.by())).collect();
     libs.sort();
     let syms = store::claims(db, &ctx.db, "symbol", &ctx.needed, |_| true).map_err(err)?;

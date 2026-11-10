@@ -11,9 +11,6 @@ pub struct Cli {
     /// the target project (default: the decompanion.toml above the cwd)
     #[arg(long, global = true)]
     pub root: Option<String>,
-    /// the target to work on (default: the first [[target]] of decompanion.toml)
-    #[arg(long, global = true)]
-    pub target: Option<String>,
     /// run in this process, not in the project's daemon
     #[arg(long, global = true)]
     pub no_daemon: bool,
@@ -84,13 +81,11 @@ pub enum Cmd {
     /// the debt: regressions declared on purpose, each with its last witness; `add` declares one, `list` lists them
     Debt(DebtArgs),
     /// the full link of a target with the unresolved externals classified
-    Link(LinkArgs),
+    Link,
     /// clang as the declaration checker (M5 / M6, and M7: the consistency convention)
-    Lint(LintArgs),
+    Lint,
     /// create a target project (declares nothing: dcp setup, then dcp status)
     Init(InitArgs),
-    /// the binaries of the project
-    Target(TargetArgs),
     /// declarations (decl/*.dcl)
     Decl(DeclArgs),
     /// the layout phase
@@ -215,14 +210,6 @@ pub enum HeadersCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum TargetCmd {
-    /// list the targets
-    List(TargetListArgs),
-    /// add a target
-    Add(TargetAddArgs),
-}
-
-#[derive(Subcommand, Debug)]
 pub enum DeclCmd {
     /// insert a declaration line in address order
     Add(DeclAddArgs),
@@ -343,9 +330,6 @@ pub struct SetupArgs {
     /// rerun every rule
     #[arg(long)]
     pub force: bool,
-    /// every target in config order
-    #[arg(long)]
-    pub all_targets: bool,
     /// skip the analyzer's export
     #[arg(long)]
     pub no_analyzer: bool,
@@ -357,9 +341,6 @@ pub struct SetupArgs {
 /// `Cmd::Report`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct ReportArgs {
-    /// every target in config order
-    #[arg(long)]
-    pub all_targets: bool,
     /// list every analyzer-only and ours-only start
     #[arg(short, long)]
     pub verbose: bool,
@@ -621,20 +602,6 @@ pub struct DebtArgs {
     pub sub: DebtCmd,
 }
 
-/// `Cmd::Link`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct LinkArgs {
-    #[arg(long)]
-    pub all_targets: bool,
-}
-
-/// `Cmd::Lint`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct LintArgs {
-    #[arg(long)]
-    pub all_targets: bool,
-}
-
 /// `Cmd::Init`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct InitArgs {
@@ -644,16 +611,6 @@ pub struct InitArgs {
     /// the project's name (default: the directory's)
     #[arg(long)]
     pub name: Option<String>,
-    /// the target's name (default: the binary's stem)
-    #[arg(long)]
-    pub target_name: Option<String>,
-}
-
-/// `Cmd::Target`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct TargetArgs {
-    #[command(subcommand)]
-    pub sub: TargetCmd,
 }
 
 /// `Cmd::Decl`'s arguments (its own type: clap builds and reads them in a function of their own).
@@ -673,9 +630,6 @@ pub struct LayoutArgs {
 /// `Cmd::Build`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct BuildArgs {
-    /// every target in config order
-    #[arg(long)]
-    pub all_targets: bool,
     /// compile every unit
     #[arg(long)]
     pub force: bool,
@@ -966,13 +920,6 @@ pub struct TryArgs {
     pub apply: Option<String>,
 }
 
-/// `TargetCmd::List`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct TargetListArgs {
-    #[arg(long)]
-    pub json: bool,
-}
-
 /// `DeclCmd::Add`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct DeclAddArgs {
@@ -1110,13 +1057,6 @@ pub struct AnswersArgs {
 /// `Cmd::Seed`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct SeedArgs {
-    pub path: String,
-}
-
-/// `TargetCmd::Add`'s arguments (its own type: clap builds and reads them in a function of their own).
-#[derive(Args, Debug)]
-pub struct TargetAddArgs {
-    pub name: String,
     pub path: String,
 }
 

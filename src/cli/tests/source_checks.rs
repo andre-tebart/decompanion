@@ -6,7 +6,7 @@ use super::*;
 
 
 fn errors(root: &Path, check: &str) -> Vec<FindingRow> {
-    findings(root, None).into_iter().filter(|c| c.1 == check && c.0 == "error").collect()
+    findings(root).into_iter().filter(|c| c.1 == check && c.0 == "error").collect()
 }
 
 fn has_clang() -> bool {
@@ -83,7 +83,7 @@ fn l15_views() {
     assert_eq!(l15.iter().map(|c| c.2).collect::<Vec<_>>(), [0x10002008, 0x1000200c], "{out}");
     assert!(l15[0].4.contains("view rec_Names: its container table has no data declaration with an address"), "{}", l15[0].4);
     assert!(l15[1].4.contains("view rec_Bad at 0x1000200c, but records (0x10002000) + 0x8 is 0x10002008"), "{}", l15[1].4);
-    let names: std::collections::BTreeMap<String, i64> = facts(&t, "name", None).iter().filter(|f| f.value.get("view").is_some_and(|v| !v.is_null() && v != false))
+    let names: std::collections::BTreeMap<String, i64> = facts(&t, "name").iter().filter(|f| f.value.get("view").is_some_and(|v| !v.is_null() && v != false))
         .map(|f| (f.value["name"].as_str().unwrap().to_string(), f.lo)).collect();
     assert_eq!(names, [("rec_Alias".to_string(), 0x10002000), ("rec_All".to_string(), 0x10002000), ("rec_Count".to_string(), 0x10002004)].into());
 }
@@ -118,7 +118,7 @@ fn link_library_class() {
     let t = tiny();
     assert_eq!(dcp(&t, &["setup"]).0, 0);
     let lib = build_symlib(&t.join("libs").join("guids.lib"), &["_IID_Foo"]);
-    let p = project(&t, None);
+    let p = project(&t);
     let out: std::collections::HashMap<String, Vec<String>> = crate::link::link_classify(&p, vec!["_IID_Foo".into(), "_nowhere".into()]).unwrap().into_iter().collect();
     let l = posix(&lib);
     assert_eq!(out["library"], [format!("_IID_Foo  ->  {l}  (undeclared: dcp libs declare <the declared archives> {l} --why \"...\")")]);
@@ -142,7 +142,7 @@ fn link_library_class_dx6() {
     set_config(&t, "root = \"C:/nowhere/vc6\"\n", &format!("root = \"{vc6}\"\nlib_dirs = [\"{dx6}\"]\n"));
     assert_eq!(dcp(&t, &["setup"]).0, 0);
     let out: std::collections::HashMap<String, Vec<String>> =
-        crate::link::link_classify(&project(&t, None), vec!["_IID_IDirectDraw4".into(), "_GUID_SysMouse".into()]).unwrap().into_iter().collect();
+        crate::link::link_classify(&project(&t), vec!["_IID_IDirectDraw4".into(), "_GUID_SysMouse".into()]).unwrap().into_iter().collect();
     let line = out["library"].iter().find(|l| l.starts_with("_IID_IDirectDraw4")).unwrap();
     assert!(line.starts_with(&format!("_IID_IDirectDraw4  ->  {dx6}/dxguid.lib  (")), "{line}");
     let mouse = out["library"].iter().find(|l| l.starts_with("_GUID_SysMouse")).unwrap();
@@ -271,7 +271,7 @@ fn answers_name_current_claims_after_same_output_rerun() {
     let t = tiny();
     assert_eq!(dcp(&t, &["setup", "--no-analyzer"]).0, 0);
     assert_eq!(dcp(&t, &["setup", "--no-analyzer", "--force"]).0, 0); // every rule again, the same output
-    let p = project(&t, None);
+    let p = project(&t);
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri()).unwrap();
     crate::answers::ensure_at(&db).unwrap();
@@ -294,7 +294,7 @@ fn name_alias_and_extern_only() {
     assert_eq!(alias.len(), 2, "{alias:?}");
     assert!(alias[0].4.starts_with("src/net.c:6: net_Unk10001020 spells 0x10001020, which is get: a stale name"), "{}", alias[0].4);
     assert!(alias[1].4.starts_with("2 names of ours at 0x10002000: counter (src/net.c:1), net_Count (src/net.c:2)"), "{}", alias[1].4);
-    let ext = findings_of(&t, None, "C.name.extern");
+    let ext = findings_of(&t, "C.name.extern");
     assert!(ext.len() == 1 && ext[0].0 == "warn" && ext[0].4.contains("extern lost at 0x10002040"), "{ext:?}");
     // a rename names the other names at OLD's address
     let (_, out) = dcp(&t, &["rename", "counter", "net_Total", "--why", "what it counts"]);

@@ -236,7 +236,7 @@ pub fn ensure(p: &Project, force: bool, jobs: Option<usize>) -> Result<Report, S
     let mut work: Vec<(&Tu, Vec<String>, String)> = vec![];
     let mut todo_pre = vec![];
     for a in units.iter() {
-        let flags = plan::compile_flags(p, &a.target, &a.unit)?;
+        let flags = plan::compile_flags(p, &a.unit)?;
         let key = sha256_parts(&[a.src_hash.clone(), sha256_parts(&[canonical(&json!(flags))]), memo.listing_hash(&search)]);
         let row = rows.get(&a.unit);
         if include_set(&db, &key).map_err(|e| e.to_string())?.is_none() && row.is_some_and(|r| r.src_hash == a.src_hash) && !force {
@@ -429,7 +429,7 @@ pub fn ensure_variant(p: &Project, v: &crate::run::Variant, force: bool) -> Resu
     search.extend(tools.system_include().into_iter().map(|d| if Path::new(&d).is_absolute() { d } else { py_path(&format!("{root}/{d}")) }));
     let mut work: Vec<(&Tu, Vec<String>, String)> = vec![];
     for (a, extra) in mine {
-        let mut flags = plan::compile_flags(p, &a.target, &a.unit)?;
+        let mut flags = plan::compile_flags(p, &a.unit)?;
         flags.extend(extra);
         let fh = sha256_parts(&[canonical(&json!(flags))]);
         work.push((a, flags, fh));
@@ -547,7 +547,7 @@ pub fn rename_before(p: &Project, touched: &[String]) -> Result<Vec<Before>, Str
     let mut todo: Vec<(&Tu, Vec<String>)> = vec![];
     for a in units.iter() {
         let (Some(row), Some(k)) = (rows.get(&a.unit), keys.get(&a.unit)) else { continue };
-        let flags = plan::compile_flags(p, &a.target, &a.unit)?;
+        let flags = plan::compile_flags(p, &a.unit)?;
         let fh = sha256_parts(&[canonical(&json!(flags))]);
         let key = sha256_parts(&[a.src_hash.clone(), fh.clone(), memo.listing_hash(&search)]);
         let Some(files) = include_set(&db, &key).map_err(|e| e.to_string())? else { continue };

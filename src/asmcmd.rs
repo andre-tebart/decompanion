@@ -311,7 +311,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
         return Ok(Err(format!("the object of unit {unit} defines no {name}")));
     };
     let code = obj.function_code(k);
-    let img = crate::timing::phase("r.img", || crate::image(&p.target(None).map_err(Error::runtime)?.path))?;
+    let img = crate::timing::phase("r.img", || crate::image(&p.target.path))?;
     let tc = crate::toolchain::Vc6;
     let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
     let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();

@@ -287,7 +287,7 @@ fn replace(db: &str, sha: &str, entries: &[Value]) -> Result<usize> {
 }
 
 fn sha_of(p: &Project) -> Result<String> {
-    crate::fsmemo::sha256(&p.target(None).map_err(err)?.path).map_err(err)
+    crate::fsmemo::sha256(&p.target.path).map_err(err)
 }
 
 /// up-to-date | stale | none (never exported).
@@ -295,7 +295,7 @@ pub fn state(p: &Project) -> Result<String> {
     let db = p.store_path();
     let Some(have) = crate::storedb::st_meta(&db, EXPORT)? else { return Ok("none".into()) };
     let az = Analyzer::of(p).map_err(crate::project::cfg_err)?;
-    let img = crate::image(&p.target(None).map_err(err)?.path)?;
+    let img = crate::image(&p.target.path)?;
     let key = export_key(&az, &sha_of(p)?, &our_starts(p, &img)?);
     Ok(if have == key { "up-to-date" } else { "stale" }.into())
 }
@@ -313,7 +313,7 @@ fn run(p: &Project, force: bool) -> Result<Value> {
         return Ok(o);
     }
     let db = p.store_path();
-    let target = p.target(None).map_err(err)?.clone();
+    let target = p.target.clone();
     let img = crate::image(&target.path)?;
     let sha = sha_of(p)?;
     let starts = our_starts(p, &img)?;

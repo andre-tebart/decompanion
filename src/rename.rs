@@ -2,8 +2,7 @@
 //! and include/ (code and comments; string literals and #include lines are left alone), the `name` declarations of
 //! decl/*.dcl. Several pairs are renamed in one call: one refresh, one rebuild, one check for all of them, and nothing
 //! is written unless every pair passes (a refusal record per failing pair). OLD is a C identifier or an address
-//! (`0xADDR`, `TARGET:0xADDR`): the ledger's name of the address on that target (every pair of a call on one
-//! target). Refused (an error record, exit 1, nothing written) when OLD names nothing renamable: no such address
+//! (`0xADDR`): the ledger's name of the address. Refused (an error record, exit 1, nothing written) when OLD names nothing renamable: no such address
 //! name, OLD occurs nowhere, or only inside string literals / #include lines; when NEW is no C identifier or equals
 //! OLD; when NEW occurs already and is not OLD's own (the ledger names another address NEW, or OLD has no address):
 //! NEW written by hand in part for OLD's address is completed; when the pairs of a call chain or repeat. A success
@@ -127,19 +126,18 @@ pub fn local_refs(root: &str, names: &[String]) -> Result<Skip, String> {
 
 /// The (OLD, NEW, why) of a rename call: the OLD NEW pairs of the command line with --why, then the lines of
 /// --from FILE (`OLD NEW [why]`, a line without a why takes --why; blank lines and `#` lines skipped); a message
-/// instead when the call is malformed. With them: the target the address OLDs name ('' the default; None when no
-/// OLD is an address) and the first such OLD.
+/// instead when the call is malformed. With them: the first OLD that is an address.
 #[allow(clippy::type_complexity)]
 pub fn rename_pairs(words: Vec<String>, from_file: Option<String>, why: Option<String>)
-    -> (Option<String>, Vec<(String, String, String)>, Option<String>, Option<String>) {
+    -> (Option<String>, Vec<(String, String, String)>, Option<String>) {
     match pairs_of(words, from_file, why) {
-        Ok((pairs, tgt, first)) => (None, pairs, tgt, first),
-        Err(e) => (Some(e), vec![], None, None),
+        Ok((pairs, first)) => (None, pairs, first),
+        Err(e) => (Some(e), vec![], None),
     }
 }
 
 #[allow(clippy::type_complexity)]
-fn pairs_of(words: Vec<String>, from_file: Option<String>, why: Option<String>) -> Result<(Vec<(String, String, String)>, Option<String>, Option<String>), String> {
+fn pairs_of(words: Vec<String>, from_file: Option<String>, why: Option<String>) -> Result<(Vec<(String, String, String)>, Option<String>), String> {
     if words.len() % 2 == 1 {
         return Err(format!("OLD NEW pairs expected, got {} word(s): {}", words.len(), words.join(" ")));
     }
@@ -190,14 +188,9 @@ fn pairs_of(words: Vec<String>, from_file: Option<String>, why: Option<String>) 
     if pairs.iter().any(|p| p.2.is_none()) {
         return Err("--why is required (or a why on each --from line)".into());
     }
-    let is_addr = |o: &str| o.trim().rsplit(':').next().unwrap_or("").to_lowercase().starts_with("0x");
-    let tgts: BTreeSet<String> = pairs.iter().filter(|p| is_addr(&p.0)).map(|p| p.0.trim().rsplit_once(':').map(|x| x.0.to_string()).unwrap_or_default()).collect();
-    if tgts.len() > 1 {
-        let names: Vec<String> = tgts.iter().map(|t| if t.is_empty() { "(default)".to_string() } else { t.clone() }).collect();
-        return Err(format!("the pairs name several targets ({}): one call renames on one target", names.join(", ")));
-    }
+    let is_addr = |o: &str| o.trim().to_lowercase().starts_with("0x");
     let first = pairs.iter().find(|p| is_addr(&p.0)).map(|p| p.0.trim().to_string());
-    Ok((pairs.into_iter().map(|(o, n, w)| (o, n, w.unwrap())).collect(), tgts.into_iter().next(), first))
+    Ok((pairs.into_iter().map(|(o, n, w)| (o, n, w.unwrap())).collect(), first))
 }
 
 /// One pair of a rename call, checked and not yet written.
@@ -241,7 +234,7 @@ struct Ctx<'a> {
 /// One pair checked against the tree as it stands (nothing written): a plan, or (old, new, message) when refused.
 fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> Result<Result<Plan, Refusal>> {
     let refuse = |o: &str, m: String| Ok(Err((o.to_string(), new.to_string(), m)));
-    let (_, addr) = old_arg.rsplit_once(':').unwrap_or(("", old_arg));
+    let addr = old_arg;
     let mut given = None;
     if !E::IDENT.is_match(new) {
         return refuse(old_arg, format!("NEW {} is no C identifier", crate::decl::py_repr(new)));
@@ -255,7 +248,7 @@ fn plan_rename(x: &mut Ctx, old_arg: &str, new: &str, why: &str) -> Result<Resul
         given = Some(a);
         old
     } else if !E::IDENT.is_match(old_arg) {
-        return refuse(old_arg, format!("OLD {} is neither a C identifier nor an address (0xADDR, TARGET:0xADDR)", crate::decl::py_repr(old_arg)));
+        return refuse(old_arg, format!("OLD {} is neither a C identifier nor an address (0xADDR)", crate::decl::py_repr(old_arg)));
     } else {
         old_arg.to_string()
     };
@@ -403,7 +396,7 @@ pub fn rename_command(p: &crate::project::Project, pairs: Vec<(String, String, S
     let db = p.store_path();
     let main = p.main_uri();
     crate::storedb::st_open(&db, &main)?;
-    let image = p.target(None).map_err(err)?.path.clone();
+    let image = p.target.path.clone();
     let mut x = Ctx { p, root: p.root.to_string_lossy().into_owned(), names: Names::build(&db, &main, &image)?, out: vec![] };
     let before: HashSet<(String, i64, String)> = errors_of(&db)?.into_iter().map(|e| (e.1, e.2, e.3)).collect();
     let mut plans: Vec<Plan> = vec![];

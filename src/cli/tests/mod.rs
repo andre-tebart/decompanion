@@ -7,10 +7,8 @@ mod layout;
 mod launch;
 mod layout_tools;
 mod matching;
-mod multitarget;
 mod obligations;
 mod source_checks;
-mod targets;
 
 use crate::storedb;
 use crate::store::Claim;
@@ -50,11 +48,7 @@ pub fn target_table(root: &Path, name: &str, extra: &str) {
 
 
 pub fn tiny() -> PathBuf {
-    make_project(&tmp("proj").join("proj"), false)
-}
-
-pub fn tiny2() -> PathBuf {
-    make_project(&tmp("proj2").join("proj2"), true)
+    make_project(&tmp("proj").join("proj"))
 }
 
 /// Write src/<name>.c from its parts, a blank line between two parts; an empty part is left out.
@@ -90,13 +84,13 @@ pub fn dcp_bare(args: &[&str]) -> (i32, String, String) {
     (code, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned())
 }
 
-pub fn project(root: &Path, target: Option<&str>) -> crate::project::Project {
-    crate::project::Project::find(Some(&root.to_string_lossy()), target).unwrap()
+pub fn project(root: &Path) -> crate::project::Project {
+    crate::project::Project::find(Some(&root.to_string_lossy())).unwrap()
 }
 
 /// The facts of one kind of a target's current runs.
-pub fn facts(root: &Path, kind: &str, target: Option<&str>) -> Vec<Rc<Claim>> {
-    let p = project(root, target);
+pub fn facts(root: &Path, kind: &str) -> Vec<Rc<Claim>> {
+    let p = project(root);
     let db = p.store_path();
     storedb::st_open(&db, &p.main_uri()).unwrap();
     storedb::st_facts(&db, Some(kind), None, None, None).unwrap().into_iter().map(|(_, f)| f).collect()
@@ -105,20 +99,20 @@ pub fn facts(root: &Path, kind: &str, target: Option<&str>) -> Vec<Rc<Claim>> {
 /// A finding: (severity, check, lo, hi, message, a, b).
 pub type FindingRow = (String, String, i64, i64, String, String, String);
 
-pub fn findings(root: &Path, target: Option<&str>) -> Vec<FindingRow> {
-    let p = project(root, target);
+pub fn findings(root: &Path) -> Vec<FindingRow> {
+    let p = project(root);
     let db = p.store_path();
     storedb::st_open(&db, &p.main_uri()).unwrap();
     storedb::st_findings(&db, None, None).unwrap()
 }
 
-pub fn findings_of(root: &Path, target: Option<&str>, check: &str) -> Vec<FindingRow> {
-    findings(root, target).into_iter().filter(|c| c.1 == check).collect()
+pub fn findings_of(root: &Path, check: &str) -> Vec<FindingRow> {
+    findings(root).into_iter().filter(|c| c.1 == check).collect()
 }
 
 /// The rules of a target refreshed as a command refreshes them: whether any ran.
-pub fn engine_ran(root: &Path, target: Option<&str>) -> bool {
-    let p = project(root, target);
+pub fn engine_ran(root: &Path) -> bool {
+    let p = project(root);
     storedb::st_open(&p.store_path(), &p.main_uri()).unwrap();
     crate::engine::engine_run(&p, None, false).unwrap().iter().any(|r| r.ran)
 }

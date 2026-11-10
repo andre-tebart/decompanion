@@ -72,28 +72,6 @@ fn q6_reads_a_functions_own_documentation() {
     assert_eq!(crate::frontend::context(&scan(&t)).1, [0x10001020, 0x10001050, 0x10001060]);
 }
 
-#[test]
-fn unit_targets() {
-    let t = tiny2();
-    unit(&t, "net", &["/* 0x10001020, other:0x10001020, both */\nint get(void)\n{\n    return 1;\n}\n",
-                      "#if defined(DCP_TARGET_other)\n/* other:0x10001030, only the second target */\nvoid only(void)\n{\n}\n#endif\n",
-                      "#ifdef DCP_TARGET_tiny\n/* 0x10001050, only the default target */\nvoid first(void)\n{\n}\n#endif\n"]);
-    unit(&t, "lone", &["#ifdef DCP_TARGET_other\n/* other:0x10001040, a unit of the second target only */\nvoid lone(void)\n{\n}\n#endif\n"]);
-    let sc = scan(&t);
-    assert!(all_errors(&sc).is_empty(), "{:?}", all_errors(&sc));
-    let names = |u: std::collections::BTreeMap<String, Vec<(Option<i64>, String)>>| u.into_iter().map(|(k, v)| (k, v.into_iter().map(|x| x.1).collect::<Vec<_>>())).collect::<Vec<_>>();
-    assert_eq!(names(units(&t, &sc, "tiny")), [("net".to_string(), vec!["get".to_string(), "first".to_string()])]);
-    assert_eq!(names(units(&t, &sc, "other")), [("lone".to_string(), vec!["lone".to_string()]), ("net".to_string(), vec!["get".to_string(), "only".to_string()])]);
-    // L16: a function the guard and the comment disagree on
-    unit(&t, "lone", &["/* other:0x10001040, unguarded */\nvoid lone(void)\n{\n}\n"]);
-    let errs = errors(&scan(&t), "L16");
-    assert!(errs.len() == 1 && errs[0].3.contains("lone is compiled into tiny") && errs[0].3.contains("DCP_TARGET_other"), "{errs:?}");
-    unit(&t, "lone", &["#ifdef DCP_TARGET_tiny\n/* other:0x10001040, the wrong guard */\nvoid lone(void)\n{\n}\n#endif\n"]);
-    let mut msgs: Vec<String> = errors(&scan(&t), "L16").into_iter().map(|e| e.3).collect();
-    msgs.sort();
-    assert!(msgs.len() == 2 && msgs[1].contains("lists other, whose compile does not hold it"), "{msgs:?}");
-}
-
 /// The declarations of the VC6 tests: f2 is the unit net, f3 another.
 fn net_decl(t: &Path) {
     write(t, "decl/text.dcl", "# code\n0x10001020 boundary start tu=net by=tag -- f2 reads the counter\n0x10001030 boundary end tu=net -- f3 is another unit\n");
@@ -114,7 +92,7 @@ fn compile_and_byte_match() {
     let (code, out) = dcp(&t, &["build"]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("compiled=1") && out.contains("grades: byte+readable=1"), "{out}");
-    let sym: Vec<(i64, i64, crate::store::Support, String)> = facts(&t, "symbol", None).iter().filter(|f| &*f.rule == "M.match")
+    let sym: Vec<(i64, i64, crate::store::Support, String)> = facts(&t, "symbol").iter().filter(|f| &*f.rule == "M.match")
         .map(|f| (f.lo, f.hi, f.support, f.value["relocs"].as_str().unwrap_or("").to_string())).collect();
     assert_eq!(sym, [(0x10001020, 0x10001026, REPRODUCED, "1/1".to_string())]);
     assert!(dcp(&t, &["build"]).1.contains("compiled=0")); // nothing changed: nothing compiles, no rule runs
@@ -161,7 +139,7 @@ fn byte_match_with_a_differing_literal_is_no_byte() {
     assert!(out.contains("   0x10001020  mov eax, dword ptr [0x10002000]") && !out.contains("\n!  "), "{out}");
     unit(&t, "net", &[&f("\\x34\\x13")]);
     dcp(&t, &["build"]);
-    assert_eq!(facts(&t, "symbol", None).iter().filter(|f| &*f.rule == "M.match").map(|f| f.lo).collect::<Vec<_>>(), [0x10001020]);
+    assert_eq!(facts(&t, "symbol").iter().filter(|f| &*f.rule == "M.match").map(|f| f.lo).collect::<Vec<_>>(), [0x10001020]);
     let (_, out) = dcp(&t, &["grade", "get"]);
     assert!(out.contains("experiment=draft") && out.contains("B1 byte: the bytes match; M9 at +0x0: our literal \"4\\x13\" where the original's field refers to \"4\\x12\" at 0x10002000"), "{out}");
     assert!(out.contains("B3 draft: 1 reference(s) differ from the original's (M9): a meaning difference"), "{out}");
@@ -230,7 +208,7 @@ fn rename_counts_the_errors_of_the_tree_as_from_before() {
     let (code, out) = dcp(&t, &["rename", "get", "read_counter", "--why", "reads the counter"]);
     assert!(code == 0 && out.contains("renamed=get") && out.contains("check: 0 new error(s) after the rename, 1 from before"), "{out}");
     assert!(out.contains("build: 1 of 1 unit(s) that read the renamed files keep their objects"), "{out}");
-    let db = project(&t, None).store_path();
+    let db = project(&t).store_path();
     let h: String = rusqlite::Connection::open(&db).unwrap().query_row("SELECT obj_hash FROM tu WHERE unit='net'", [], |r| r.get(0)).unwrap();
     let obj = std::fs::read(t.join("build/obj").join(format!("{h}.obj"))).unwrap();
     assert!(obj.windows(13).any(|w| w == b"_read_counter"));
@@ -493,7 +471,7 @@ fn auto_clear_and_data_order() {
     assert!(read(&t, "src/net.c").contains("\n/* 0x10001020, reads the counter */\nint get(void)\n"));
     let (_, out) = dcp(&t, &["findings"]);
     assert!(out.contains("D4") && out.contains("counter (0x10002000) is defined after pad (0x10002004)"), "{out}");
-    let syms: std::collections::HashMap<i64, String> = facts(&t, "symbol", None).iter().filter(|f| f.rule.starts_with("M.data"))
+    let syms: std::collections::HashMap<i64, String> = facts(&t, "symbol").iter().filter(|f| f.rule.starts_with("M.data"))
         .map(|f| (f.lo, f.value["extent"].as_str().unwrap_or("").to_string())).collect();
     assert!(syms[&0x10002000] == "site" && syms[&0x10002004] == "draft", "{syms:?}");
 }

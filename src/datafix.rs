@@ -102,7 +102,7 @@ fn vstr(f: &Claim, k: &str) -> String {
 /// Every data declaration of the current target with an address, joined with its facts (module docs).
 pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataDef>> {
     let db = p.store_path();
-    let default = p.targets[0].name.clone();
+    let default = p.target_name.clone();
     let mut out = vec![];
     for part in &scan.parts {
         for (file, line, unit, name, kind, addrs, _, statik, _) in &part.data {
@@ -114,7 +114,7 @@ pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataD
             }
         }
     }
-    let img = crate::image(&p.target(None).map_err(err)?.path)?;
+    let img = crate::image(&p.target.path)?;
     let code: Vec<(i64, i64)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va as i64, s.end() as i64)).collect();
     let syms = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |_| true))?;
     let mut glob: HashMap<i64, Rc<Claim>> = HashMap::new();
@@ -735,7 +735,7 @@ impl<'a> Trial<'a> {
     fn new(p: &'a Project) -> Result<Trial<'a>> {
         let db = p.store_path();
         let root = p.root.to_string_lossy().into_owned();
-        let img = crate::image(&p.target(None).map_err(err)?.path)?;
+        let img = crate::image(&p.target.path)?;
         let units = crate::plan::plan(p).map_err(err)?.iter().map(|t| (t.unit.clone(), t.clone())).collect();
         let (relocs, starts, srcs, walk) = crate::with_db(&db, |c| {
             let los = |kind: &str, keep: &dyn Fn(&Claim) -> bool| store::claims_of(c, &db, kind, None, keep).map(|fs| fs.iter().map(|f| f.lo).collect::<Vec<i64>>());
@@ -779,7 +779,7 @@ impl<'a> Trial<'a> {
             let a = &self.units[*unit];
             let text = match new.get(&a.file) { Some(t) => chars(t), None => chars(files.text(&a.file)) };
             let k = TRIAL.fetch_add(1, Ordering::Relaxed);
-            let flags = crate::plan::compile_flags(self.p, &a.target, unit).map_err(err)?;
+            let flags = crate::plan::compile_flags(self.p, unit).map_err(err)?;
             texts.push((format!("build/trial/{unit}-{k}.c"), format!("build/obj/trial/{unit}-{k}.obj"), text, flags));
         }
         let (root, tools) = (&self.root, &self.tools);
@@ -964,7 +964,7 @@ pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool
     }
     out.push(record(&[("unit", s(unit)), ("declarations", Tok::I(ds.len() as i64))]));
     // the original's absolute memory operands (no register: D9's), target -> sites, for the rooms
-    let img = crate::image(&p.target(None).map_err(err)?.path)?;
+    let img = crate::image(&p.target.path)?;
     let db = p.store_path();
     let mut into: BTreeMap<i64, Vec<i64>> = BTreeMap::new();
     for f in crate::with_db(&db, |c| store::claims_of(c, &db, "ref", None, |f| f.s("rkind") == Some("operand")))? {

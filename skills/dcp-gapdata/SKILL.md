@@ -22,7 +22,7 @@ bodies first, then those only reached through view macros; `scope=all` adds the 
 `unit=NAME` keeps only the blocks with a user in `src/NAME.c`; both options may be given).
 
 Hard rules
-- Every tool is `dcp ...` from the project root (`--target NAME` for a target other than the first). Every
+- Every tool is `dcp ...` from the project root. Every
   `dcp` of the project runs in the project's daemon, which the first command starts. `dcp <command> -h`
   explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings. Change C text only with a file-editing tool, never with

@@ -10,7 +10,7 @@ use crate::cliread::{record, Tok};
 use crate::decl::{Decl, KeyVal};
 use crate::edit as E;
 use crate::project::py_path;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -199,10 +199,10 @@ fn join(root: &str, a: &str, b: &str) -> Result<Join, String> {
         }
     }
     // decl: b's start goes, b's end becomes a's end, a's own end (at b's start) goes
-    let mut b_start: HashMap<Option<String>, i64> = HashMap::new();
+    let mut b_start: Option<i64> = None;
     rewrite_boundaries(root, &mut |d: &Decl| {
         if tu_of(d) == Some(b) && d.words.first().map(|w| w.as_str()) == Some("start") {
-            b_start.insert(d.target.clone(), d.lo);
+            b_start = Some(d.lo);
         }
         Some(d.clone())
     })?;
@@ -212,7 +212,7 @@ fn join(root: &str, a: &str, b: &str) -> Result<Join, String> {
         if tu == Some(b) && w == Some("start") {
             return None;
         }
-        if tu == Some(a) && w == Some("end") && b_start.get(&d.target) == Some(&d.lo) {
+        if tu == Some(a) && w == Some("end") && b_start == Some(d.lo) {
             return None;
         }
         if tu == Some(b) && w == Some("end") {
@@ -293,7 +293,7 @@ fn view_units(p: &crate::project::Project) -> Result<Vec<String>> {
     let db = p.store_path();
     let main = p.main_uri();
     crate::storedb::st_open(&db, &main)?;
-    let image = p.target(None).map_err(err)?.path.clone();
+    let image = p.target.path.clone();
     Ok(crate::layoutview::View::load(&db, &main, &image)?.units.iter().map(|u| u.tu.clone()).collect())
 }
 

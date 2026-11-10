@@ -108,7 +108,9 @@ pub fn session_state(p: &crate::project::Project) -> Result<Value> {
 }
 
 /// Record .dcp/session.json: the base commit, the start time, the states of the targets.
-pub fn session_save(root: &str, base: &str, states: &Value) -> Result<()> {
+pub fn session_save(root: &str, base: &str, target: &str, state: &Value) -> Result<()> {
+    let mut states = Map::new();
+    states.insert(target.to_string(), state.clone());
     let rec = json!({"base": base, "started": iso(now()), "states": states});
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, serde_json::ser::PrettyFormatter::with_indent(b" "));
@@ -170,7 +172,7 @@ pub(crate) fn view_of(p: &Project) -> Result<std::rc::Rc<crate::layoutview::View
     let db = p.store_path();
     let main = p.main_uri();
     crate::storedb::st_open(&db, &main)?;
-    let image = p.target(None).map_err(err)?.path.clone();
+    let image = p.target.path.clone();
     let drafts = (crate::storedb::st_meta(&db, "drafts")?, crate::storedb::st_main_meta(&db, &main, "drafts")?);
     crate::store::derived(&db, &format!("view {main} {image} {drafts:?}"), || crate::layoutview::View::load(&db, &main, &image))
 }
@@ -199,7 +201,7 @@ pub fn session_overview(p: &crate::project::Project, analyzer: &str) -> Result<V
         }
         None => out.push("  next: nothing open in the game code (layout complete when every unit is separated and named)".into()),
     }
-    let decl = p.toolchain_decl(None).map_err(err)?;
+    let decl = p.toolchain_decl().map_err(err)?;
     let db = p.store_path();
     let probed = crate::with_db(&db, |c| crate::store::claims_of(c, &db, "toolchain", None, |f| &*f.rule == "M.flags.probe"))?;
     let mut proven: Vec<String> = probed.iter().filter(|f| f.support == crate::store::REPRODUCED).filter_map(|f| f.s("flag").map(|x| x.to_string())).collect();
@@ -343,13 +345,15 @@ fn handups(ch: &[(i64, String, String, Option<String>, Option<String>)]) -> Stri
 /// `dcp session wrap`'s report (written to build/session/report.md too): `targets` are (name, project, link ok or
 /// None when skipped, the undrafted externals), `states` the gate's states now, `promoted` what promote printed.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::project::Project, Option<bool>, Option<usize>)>,
-                      states: &Value, promoted: Option<String>, refused: bool, ok: bool) -> Result<String> {
+#[allow(clippy::too_many_arguments)]
+pub fn session_report(root: &str, base: &str, p: &crate::project::Project, link: Option<bool>, undrafted: Option<usize>, state: &Value,
+                      promoted: Option<String>, refused: bool, ok: bool) -> Result<String> {
     let rec = load(root).unwrap_or(json!({}));
     let c = changes(root, base).map_err(err)?;
     let mut out = vec![format!("# session {} (base {}, head {}, {} commits)", &iso(now())[..10], c.base, c.head, c.commits), String::new()];
-    for (name, _, link, undrafted) in &targets {
-        let (b, a) = (&rec["states"][name], &states[name]);
+    {
+        let name = &p.target_name;
+        let (b, a) = (&rec["states"][name], state);
         let bv = |k: &str| b.get(k).map(|v| v.to_string()).unwrap_or_else(|| "?".into());
         let av = |k: &str| a.get(k).map(|v| v.to_string()).unwrap_or_default();
         let lk = if link.is_none_or(|l| l) { "ok" } else { "FAILED" };
@@ -369,7 +373,6 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
     out.extend(c.decl_added.iter().map(|l| format!("  decl + {l}")));
     out.extend(c.decl_removed.iter().map(|l| format!("  decl - {l}")));
     out.push(String::new());
-    let p = targets[0].1;
     let rows0 = crate::queues::function_grades(&p.store_path())?;
     let st = |r: &Map<String, Value>, k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let by_addr: HashMap<i64, &Map<String, Value>> = rows0.iter().map(|r| (r.get("addr").and_then(|v| v.as_i64()).unwrap_or(0), r)).collect();
@@ -402,7 +405,8 @@ pub fn session_report(root: &str, base: &str, targets: Vec<(String, &crate::proj
         }
         c
     });
-    for (name, tp, _, _) in &targets {
+    {
+        let (name, tp) = (&p.target_name, p);
         let rows = crate::queues::function_grades(&tp.store_path())?;
         let ch: Vec<_> = grade_changes(root, base, name, &rows).into_iter().filter(|x| !drafted_at.contains(&x.0) || x.3.is_some()).collect();
         graded_units.extend(ch.iter().map(|x| x.1.clone()));

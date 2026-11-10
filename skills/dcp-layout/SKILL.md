@@ -10,7 +10,7 @@ original); (2) draft C for every function of each unit in address order, no gaps
 draft marked `@rough` in its address comment, it is never skipped); (3) quick byte fixes only.
 
 Hard rules
-- Every tool is `dcp ...` from the project root (`--target NAME` for a target other than the first).
+- Every tool is `dcp ...` from the project root.
   Every `dcp` of the project runs in the project's daemon, which the first command starts (and a new dcp
   build restarts: `dcp: the daemon restarts ...` once, then the command runs). `dcp serve --status` shows it,
   `dcp serve --stop` stops it (before deleting build/). A worktree has a daemon of its own.

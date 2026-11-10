@@ -1,14 +1,14 @@
 //! Running a build: build variants, run setups and run profiles of decompanion.toml.
 //!
-//!   [[variant]]  name, targets, cflags, reason; [[variant.unit]] glob (a unit name pattern or a list), cflags, reason.
-//!                Extra flags on top of a target's build. A variant compiles only the units its flags reach, into
+//!   [[variant]]  name, cflags, reason; [[variant.unit]] glob (a unit name pattern or a list), cflags, reason.
+//!                Extra flags on top of the build. A variant compiles only the units its flags reach, into
 //!                the shared object store; its rows live in build/variant/<target>/<variant>.json, never in the
 //!                store's tu table, so the matching build stays as it is. Its link: build/link/<target>/<variant>/.
 //!   [[setup]]    name, dir, exe, reason; [[setup.stage]] from, link, copy; [[setup.step]] / [[setup.after]] run.
 //!                The run directory: the original's folders linked (junctions) and its files copied (once, when
 //!                missing) into it, the built exe copied next to them, then the project's own
 //!                steps (any command: a registry value, an ini edit, ...) before the launch, `after` once it exited.
-//!   [[run]]      name, target, variant, setup, args, env, seconds, reason: what `dcp run NAME` builds, stages and
+//!   [[run]]      name, variant, setup, args, env, seconds, reason: what `dcp run NAME` builds, stages and
 //!                starts.
 //!
 //! The core builds and stages and writes the launch spec build/run/<run>.json; the process the user typed `dcp`
@@ -22,12 +22,12 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-const VARIANT_KEYS: [&str; 5] = ["name", "targets", "cflags", "unit", "reason"];
+const VARIANT_KEYS: [&str; 4] = ["name", "cflags", "unit", "reason"];
 const VARIANT_UNIT_KEYS: [&str; 3] = ["glob", "cflags", "reason"];
 const SETUP_KEYS: [&str; 7] = ["name", "dir", "exe", "stage", "step", "after", "reason"];
 const STAGE_KEYS: [&str; 4] = ["from", "link", "copy", "reason"];
 const STEP_KEYS: [&str; 2] = ["run", "reason"];
-const RUN_KEYS: [&str; 10] = ["name", "target", "variant", "setup", "args", "env", "seconds", "debug", "dump", "reason"];
+const RUN_KEYS: [&str; 9] = ["name", "variant", "setup", "args", "env", "seconds", "debug", "dump", "reason"];
 pub const DUMPS: [&str; 4] = ["full", "state", "normal", "none"];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -39,7 +39,6 @@ pub struct VariantUnit {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Variant {
     pub name: String,
-    pub targets: Vec<String>,
     pub cflags: Vec<String>,
     pub units: Vec<VariantUnit>,
 }
@@ -53,10 +52,6 @@ impl Variant {
             out.extend(u.cflags.iter().cloned());
         }
         out
-    }
-
-    pub fn applies_to(&self, target: &str) -> bool {
-        self.targets.is_empty() || self.targets.iter().any(|t| t == target)
     }
 }
 
@@ -80,7 +75,6 @@ pub struct Setup {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunProfile {
     pub name: String,
-    pub target: Option<String>,
     pub variant: Option<String>,
     pub setup: String,
     pub args: Vec<String>,
@@ -162,17 +156,13 @@ fn dup(names: &[&str], kind: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The [[variant]], [[setup]] and [[run]] tables, checked against each other and the targets.
-pub fn parse(cfg: &toml::Table, targets: &[String]) -> Result<RunCfg, String> {
+/// The [[variant]], [[setup]] and [[run]] tables, checked against each other.
+pub fn parse(cfg: &toml::Table) -> Result<RunCfg, String> {
     let mut out = RunCfg::default();
     for (i, t) in tables(cfg.get("variant"), "variant")?.into_iter().enumerate() {
         let name = name_of(t, "variant", i)?;
         let what = format!("variant {}", crate::decl::py_repr(&name));
         check_keys(t, &VARIANT_KEYS, &what)?;
-        let ts = strs(t, "targets", &what)?;
-        if let Some(bad) = ts.iter().find(|x| !targets.contains(x)) {
-            return Err(format!("{CONFIG_NAME}: {what}: no target {} (targets: {})", crate::decl::py_repr(bad), targets.join(", ")));
-        }
         let mut units = vec![];
         for (k, u) in tables(t.get("unit"), "variant.unit")?.into_iter().enumerate() {
             let w = format!("{what} unit #{}", k + 1);
@@ -183,7 +173,7 @@ pub fn parse(cfg: &toml::Table, targets: &[String]) -> Result<RunCfg, String> {
             }
             units.push(VariantUnit { globs, cflags: strs(u, "cflags", &w)? });
         }
-        out.variants.push(Variant { name, targets: ts, cflags: strs(t, "cflags", &what)?, units });
+        out.variants.push(Variant { name, cflags: strs(t, "cflags", &what)?, units });
     }
     for (i, t) in tables(cfg.get("setup"), "setup")?.into_iter().enumerate() {
         let name = name_of(t, "setup", i)?;
@@ -212,18 +202,10 @@ pub fn parse(cfg: &toml::Table, targets: &[String]) -> Result<RunCfg, String> {
         let what = format!("run {}", crate::decl::py_repr(&name));
         check_keys(t, &RUN_KEYS, &what)?;
         let str_of = |k: &str| t.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
-        let target = str_of("target");
-        if let Some(bad) = target.as_ref().filter(|x| !targets.contains(x)) {
-            return Err(format!("{CONFIG_NAME}: {what}: no target {} (targets: {})", crate::decl::py_repr(bad), targets.join(", ")));
-        }
         let variant = str_of("variant");
         if let Some(v) = &variant {
-            let Some(var) = out.variants.iter().find(|x| &x.name == v) else {
+            if !out.variants.iter().any(|x| &x.name == v) {
                 return Err(format!("{CONFIG_NAME}: {what}: no [[variant]] {}", crate::decl::py_repr(v)));
-            };
-            let tn = target.clone().unwrap_or_else(|| targets.first().cloned().unwrap_or_default());
-            if !var.applies_to(&tn) {
-                return Err(format!("{CONFIG_NAME}: {what}: variant {} is not for target {tn} (its targets: {})", crate::decl::py_repr(v), var.targets.join(", ")));
             }
         }
         let setup = str_of("setup").ok_or_else(|| format!("{CONFIG_NAME}: {what} names no setup"))?;
@@ -253,7 +235,7 @@ pub fn parse(cfg: &toml::Table, targets: &[String]) -> Result<RunCfg, String> {
         if !DUMPS.contains(&dump.as_str()) {
             return Err(format!("{CONFIG_NAME}: {what}: dump {} is none of {}", crate::decl::py_repr(&dump), DUMPS.join(", ")));
         }
-        out.runs.push(RunProfile { name, target, variant, setup, args: strs(t, "args", &what)?, env, seconds, debug, dump });
+        out.runs.push(RunProfile { name, variant, setup, args: strs(t, "args", &what)?, env, seconds, debug, dump });
     }
     dup(&out.variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), "variant")?;
     dup(&out.setups.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), "setup")?;
@@ -263,16 +245,12 @@ pub fn parse(cfg: &toml::Table, targets: &[String]) -> Result<RunCfg, String> {
 
 impl Project {
     pub fn run_cfg(&self) -> Result<RunCfg, String> {
-        parse(&self.cfg, &self.targets.iter().map(|t| t.name.clone()).collect::<Vec<_>>())
+        parse(&self.cfg)
     }
 
     pub fn variant(&self, name: &str) -> Result<Variant, String> {
         let c = self.run_cfg()?;
-        let v = c.variants.into_iter().find(|v| v.name == name).ok_or_else(|| format!("no [[variant]] {}", crate::decl::py_repr(name)))?;
-        if !v.applies_to(&self.target_name) {
-            return Err(format!("variant {} is not for target {} (its targets: {})", v.name, self.target_name, v.targets.join(", ")));
-        }
-        Ok(v)
+        c.variants.into_iter().find(|v| v.name == name).ok_or_else(|| format!("no [[variant]] {}", crate::decl::py_repr(name)))
     }
 }
 
@@ -411,16 +389,15 @@ pub fn run_list(p: &crate::project::Project) -> Result<Vec<String>> {
     let mut out = vec![record(&[("runs", Tok::I(c.runs.len() as i64)), ("variants", Tok::I(c.variants.len() as i64)), ("setups", Tok::I(c.setups.len() as i64))])];
     for r in &c.runs {
         let opt = |x: &Option<String>| x.clone().map(Tok::S).unwrap_or(Tok::No);
-        out.push(format!("  {}", record(&[("run", Tok::S(r.name.clone())), ("target", Tok::S(r.target.clone().unwrap_or_else(|| p.targets[0].name.clone()))),
+        out.push(format!("  {}", record(&[("run", Tok::S(r.name.clone())),
                                           ("variant", opt(&r.variant)), ("setup", Tok::S(r.setup.clone())), ("args", Tok::S(r.args.join(" ")))])));
     }
     Ok(out)
 }
 
-/// The target a run profile builds (None: no such profile).
-pub fn run_target(p: &crate::project::Project, name: &str) -> Result<Option<String>> {
-    let c = p.run_cfg().map_err(err)?;
-    Ok(c.runs.iter().find(|r| r.name == name).map(|r| r.target.clone().unwrap_or_else(|| p.targets[0].name.clone())))
+/// Whether a run profile of this name exists.
+pub fn run_exists(p: &crate::project::Project, name: &str) -> Result<bool> {
+    Ok(p.run_cfg().map_err(err)?.runs.iter().any(|r| r.name == name))
 }
 
 fn compile_lines(rep: &crate::compile::Report, variant: &str) -> Vec<String> {
@@ -452,7 +429,7 @@ pub fn run_prepare(p: &crate::project::Project, name: &str, no_build: bool, seco
         return Ok((vec![], Some(format!("no [[run]] {} (runs: {})", crate::decl::py_repr(name), if names.is_empty() { "none".into() } else { names.join(", ") })), None));
     };
     let setup = c.setups.iter().find(|s| s.name == r.setup).cloned().ok_or_else(|| err(format!("no [[setup]] {}", r.setup)))?;
-    let target = p.target(None).map_err(err)?.clone();
+    let target = &p.target;
     let root = p.root.to_string_lossy().into_owned();
     let mut lines = vec![];
     // the program: the variant's link, else the main link
@@ -562,7 +539,7 @@ fn run_symbols(p: &Project, map: &str, out: &str, variant: Option<&str>) -> Resu
     }
     let root = p.root.to_string_lossy().into_owned();
     let scan = crate::frontend::scan(&root, Some(&src))?;
-    let default = p.targets[0].name.clone();
+    let default = p.target_name.clone();
     let mut source: HashMap<(String, String), (i64, Option<u32>)> = HashMap::new();
     for f in scan.functions() {
         let Some(unit) = f.0 .0.strip_prefix("src/").and_then(|r| r.strip_suffix(".c")) else { continue };
@@ -584,7 +561,6 @@ mod tests {
     const GOOD: &str = r#"
 [[variant]]
 name = "debug"
-targets = ["exe"]
   [[variant.unit]]
   glob = ["dd_*", "gfx"]
   cflags = ["/DFIX"]
@@ -611,7 +587,7 @@ seconds = 20
 
     #[test]
     fn parses_and_resolves_flags() {
-        let c = parse(&cfg(GOOD), &["exe".into()]).unwrap();
+        let c = parse(&cfg(GOOD)).unwrap();
         let v = &c.variants[0];
         assert_eq!(v.extra("dd_vesa"), ["/DFIX"]);
         assert_eq!(v.extra("main"), ["/DSTART"]);
@@ -624,16 +600,14 @@ seconds = 20
 
     #[test]
     fn contradictions_are_errors() {
-        let t = ["exe".to_string()];
-        let e = |s: &str| parse(&cfg(s), &t).unwrap_err();
+        let e = |s: &str| parse(&cfg(s)).unwrap_err();
         assert!(e("[[variant]]\nname = \"d\"\ncflag = []\n").contains("unknown keys cflag"));
-        assert!(e("[[variant]]\nname = \"d\"\ntargets = [\"dll\"]\n").contains("no target 'dll'"));
         assert!(e("[[setup]]\nname = \"s\"\n[[run]]\nname = \"r\"\nsetup = \"s\"\nvariant = \"x\"\n").contains("no [[variant]] 'x'"));
         assert!(e("[[run]]\nname = \"r\"\nsetup = \"s\"\n").contains("no [[setup]] 's'"));
         assert!(e("[[setup]]\nname = \"s\"\n[[setup.step]]\nrun = []\n").contains("run is missing or empty"));
         assert!(e("[[setup]]\nname = \"s\"\n[[setup]]\nname = \"s\"\n").contains("declared twice"));
         assert!(e("[[setup]]\nname = \"s\"\nexe = \"a/b.exe\"\n").contains("not a path"));
-        assert!(e("[[variant]]\nname = \"d\"\ntargets = [\"exe\"]\n[[setup]]\nname = \"s\"\n[[run]]\nname = \"r\"\nsetup = \"s\"\nvariant = \"d\"\ntarget = \"exe\"\nseconds = -1\n")
+        assert!(e("[[variant]]\nname = \"d\"\n[[setup]]\nname = \"s\"\n[[run]]\nname = \"r\"\nsetup = \"s\"\nvariant = \"d\"\nseconds = -1\n")
             .contains("seconds"));
     }
 

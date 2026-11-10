@@ -137,7 +137,7 @@ impl Ctx<'_> {
             return Ok(out);
         }
         let canon_path = |p: &str| crate::vc6::resolved("", p).to_lowercase();
-        let declared: HashSet<String> = self.p.lib_archives(None).unwrap_or_default().iter().map(|a| canon_path(a)).collect();
+        let declared: HashSet<String> = self.p.lib_archives().unwrap_or_default().iter().map(|a| canon_path(a)).collect();
         let want: HashSet<&String> = names.iter().collect();
         let mut seen = HashSet::new();
         for d in self.library_dirs() {
@@ -353,7 +353,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let root = p.root.to_string_lossy().into_owned();
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
-    let target = p.target(None)?.clone();
+    let target = p.target.clone();
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let x = Ctx { p, root: root.clone(), db: db.clone(), img: img.clone(), tools: Tools::of(p) };
     let mut rep = LinkReport { target: p.target_name.clone(), unresolved: CLASSES.iter().map(|c| (c.to_string(), vec![])).collect(), ..Default::default() };
@@ -390,9 +390,8 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let parsed: Vec<(String, crate::coff::Obj)> = objs.iter()
         .filter_map(|(u, path)| std::fs::read(path).ok().and_then(|d| crate::coff::Obj::parse(&d).ok()).map(|o| (u.clone(), o))).collect();
     // library units (decl `libunit`): their objects go into their archive, not the object list
-    let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
-    let (decls, _) = crate::decl::load(&crate::decl::files(&root), &root, &targets);
-    let lu = crate::decl::lib_units(&decls, &p.target_name, &targets[0]);
+    let (decls, _) = crate::decl::load(&crate::decl::files(&root), &root);
+    let lu = crate::decl::lib_units(&decls);
     let lib_of = |u: &str| lu.get(u).and_then(|d| d.key("lib")).map(|k| k.s().to_string());
     let mut members: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (u, path) in &objs {
@@ -449,7 +448,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
         std::fs::write(&path, crate::coff::alias_object(&aliases)).map_err(|e| e.to_string())?;
         extra.push(path);
     }
-    let mut libs: Vec<String> = p.lib_archives(None).unwrap_or_default();
+    let mut libs: Vec<String> = p.lib_archives().unwrap_or_default();
     let mut missing_libs = vec![];
     let imports = img.imports();
     let mut dlls: Vec<String> = imports.iter().map(|i| i.dll.clone()).collect::<BTreeSet<_>>().into_iter().collect();
@@ -569,8 +568,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
 pub fn link_classify(p: &crate::project::Project, names: Vec<String>) -> Result<Vec<(String, Vec<String>)>> {
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri())?;
-    let target = p.target(None).map_err(crate::error::Error::runtime)?;
-    let img = crate::image(&target.path)?;
+    let img = crate::image(&p.target.path)?;
     let x = Ctx { p, root: p.root.to_string_lossy().into_owned(), db, img, tools: Tools::of(p) };
     Ok(x.classify(&names).map_err(crate::error::Error::runtime)?.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }

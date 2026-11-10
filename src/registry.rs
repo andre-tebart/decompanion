@@ -199,7 +199,7 @@ pub static RULES: &[RuleDef] = &[
     },
     RuleDef {
         id: "C.name.alias", version: "2", max_support: REPRODUCED, phase: "C", loader: false,
-        needs: &["kind:name", "kind:source", "kind:symbol"], outputs: &[], inputs: &["scan", "targets"],
+        needs: &["kind:name", "kind:source", "kind:symbol"], outputs: &[], inputs: &["scan", "target"],
         doc: "φ many-to-one without a reason, an error: several names of ours at one address\n(the address comments of functions, data definitions and externs; decl names) that neither the toolchain\nnor the image explains (a library fold, an export of our function) and no alias declares (a view, `#define B\nA`); two definitions at one address are L.src's. Also a placeholder spelling (`ai_Unk5049e0`, a cast macro\n`ai_Unk5a9e40K`) of an address φ names otherwise while the spelling is no object of φ: a stale name a rename\ndid not reach. C.name.extern (a gap, a warning): an extern no definition holds whose address no symbol owns\n(unknown data). Native: native/dcp_core/src/layout.rs c_name_alias.",
     },
     RuleDef {
@@ -229,7 +229,7 @@ pub static RULES: &[RuleDef] = &[
     },
     RuleDef {
         id: "M.compile", version: "2", max_support: REPRODUCED, phase: "M", loader: false,
-        needs: &["S.sections"], outputs: &["build"], inputs: &["objects", "src", "decl", "targets", "config", "toolchain"],
+        needs: &["S.sections"], outputs: &["build"], inputs: &["objects", "src", "decl", "target", "config", "toolchain"],
         doc: "One `build` fact per translation unit of the current target (build/tu.py: a unit with at least one\nfunction of the target), at its least function address (the image base when it has none): tu, ok, the\nobject's hash, the flags, its errors (the compiler's diagnostics, file and line in the unit's file) and its\nwarning count, and `stale` when the unit's text or flags changed since the compile the tu table records.\nGate errors (check M.compile): a unit that failed to compile (the first errors), a unit never compiled\n(a warning when the toolchain is not installed: nothing can be compiled on this machine); a stale unit is a\nwarning (`dcp build` compiles it; `dcp check` builds first). An override table\n([[toolchain.unit]]) without a reason is an error. M.gen, the object-vs-source cross-check (the first\nattempt's gen.py): every function the unit's object defines has an address comment of the target (or\n`unlinked`) in the unit, and every such function is defined by the object; either side alone is an error.",
     },
     RuleDef {
@@ -280,7 +280,7 @@ paired with, a `slotmap:` line and a warning M.slotmap.",
     },
     RuleDef {
         id: "M.tiebreak", version: "1", max_support: DERIVED, phase: "M", loader: false,
-        needs: &["L.src"], outputs: &["tiebreak"], inputs: &["tiebreak", "src", "targets"],
+        needs: &["L.src"], outputs: &["tiebreak"], inputs: &["tiebreak", "src", "target"],
         doc: "The declaration-set probes of ledger/tiebreak.tsv (written by `dcp headers probe` and by `dcp build` for the
 units of functions that fell below the baseline without a record; never by hand): the unit compiled as the
 build compiles it and with unused typedefs before its text, each function graded (tiebreak.rs). A record of the
@@ -302,17 +302,17 @@ the same as at the baseline's commit and its unit's compile inputs changed is no
     },
     RuleDef {
         id: "L.decl", version: "6", max_support: DECLARED, phase: "L", loader: true,
-        needs: &[], outputs: &["boundary", "symbol", "name"], inputs: &["decl", "targets", "src"],
+        needs: &[], outputs: &["boundary", "symbol", "name"], inputs: &["decl", "target", "src"],
         doc: "Every line of decl/*.dcl that belongs to the current target becomes one declared fact, producer\ndecl:<file>:<line>, reason = the text after `--` (grammar: ledger/decl.py). boundary -> boundary fact\n{side, tu, named_by}; bytes dead -> symbol dead; jumptable / idxtable fn= -> symbol of that kind; foreign\nkind= -> symbol foreign; fptr -> symbol fptr; name N -> name (origin decl); start: L.decl.start; file tu= path=\n-> checked only: the image holds the path, NUL-terminated, at the address, one unit has one file name, and\nthe unit's file src/<tu>.c names it in a `#line` directive (its `__FILE__`); writes ptr=aK size=EXPR (the\nfunction writes EXPR bytes, a product of its arguments and numbers such as a1*a2, at its argument K: S.extent\nreads it) -> checked only: K is one argument and the address lies in code; overrun (an exception: the\noriginal's access at the instruction overruns its object; S.extent reads it) -> checked only: the address\nlies in code.\nErrors (check L.decl, severity error): a malformed line, an unknown kind or key, a missing reason, an\nunknown target prefix, an unsorted file, a duplicate key, an address outside the image or a range across\nsections, a text.dcl line outside a code section or a data.dcl line inside one. An error is reported in\nthe store of the target its line names (a line whose target is unknown: the default target's).",
     },
     RuleDef {
         id: "L.decl.start", version: "1", max_support: DECLARED, phase: "L", loader: true,
-        needs: &[], outputs: &["start"], inputs: &["decl", "targets"],
+        needs: &[], outputs: &["start"], inputs: &["decl", "target"],
         doc: "The `start` lines of decl/*.dcl for the current target, inside a code section, as declared start facts\n(how decl). Its own loader so that the setup walk, which takes them as roots, reruns only when a start\ndeclaration changes, not on every boundary edit (the run key follows this rule's output). Malformed lines\nare L.decl's errors.",
     },
     RuleDef {
         id: "L.src", version: "6", max_support: DECLARED, phase: "L", loader: true,
-        needs: &[], outputs: &["source", "name", "start"], inputs: &["scan", "targets"],
+        needs: &[], outputs: &["source", "name", "start"], inputs: &["scan", "target"],
         doc: "The address comments of the sources (grammar: ledger/srcscan.py), for the current target: every function\nwith an address gives a `source` fact {file, line, comment (the address comment's line), end (the\ndefinition's last line), unit, symbol, what: func, deep / stuck / rough tags}, a `name` fact (origin source)\nand a `start` fact (how source); every data definition with an address a `source` fact (what: data) and a\n`name`; every extern with an address a `name`. Producer src:<file>:<line>, reason = the comment's\ndescription. Errors: a parse error of the scan (L.src: a function without its address comment directly\nabove its definition, a function outside a unit file, a stray file, a unit file with code
 but no addressed function: no unit, still compiled so its build shows why), L16 (a function compiled into a target\nits comment does not list, or listed for one whose compile does not hold it), an unknown target prefix, an\naddress outside the image, a function address outside a code section, two definitions at one address\n(L.src), one name at two addresses (N2; a `static` name is compared within its unit only, two units may each\nkeep their own), L15 (a view's address is not its container's plus its offset, or its container has no data\ndeclaration with an address; a view gives a `name` fact {view: container}). Errors of the text itself (the\nscan's, an unknown target prefix) are reported in the default target's store; errors about an address in the\nstore of its target.\nA function or datum whose comment lists another target's address only is no fact of this target. Native:\nnative/dcp_core/src/layout.rs.",
     },
@@ -328,7 +328,7 @@ but no addressed function: no unit, still compiled so its build shows why), L16 
     },
     RuleDef {
         id: "L.unit.extent", version: "3", max_support: DECLARED, phase: "L", loader: false,
-        needs: &["L.decl", "L.src", "S.sections", "S.crt.code", "S.thunk", "S.codewalk", "S.unknown"], outputs: &["unit"], inputs: &["decl", "targets"],
+        needs: &["L.decl", "L.src", "S.sections", "S.crt.code", "S.thunk", "S.codewalk", "S.unknown"], outputs: &["unit"], inputs: &["decl", "target"],
         doc: "The units of the game code (compute_units in rules/layout.py: a unit runs from its declared start\nboundary or first source to its declared end, the next unit's start or the end of the game code; the\nfirst library byte ends the game code). Each unit is a `unit` fact over its extent with its boundary\nlevels and producers, the count of function starts inside, how many have a source, its open bytes\n(unknown code: no rule claims them), its declared dead / foreign bytes (`bytes dead`, `foreign`: explained,\nnot open) and the C.walk conflicts inside it (a walk that runs into another function's bytes: one of the\ntwo starts is wrong). Status: separated when both boundaries are at least declared, no open byte and no\nC.walk conflict lies inside, else open. Level: the lower of the two boundary levels (at most declared).\nIssues of the computation are L7 conflicts. A unit declared `libunit` (a library member compiled from source)\nis no game unit: its functions are left out (L14 checks them against the member's range). Native:\nnative/dcp_core/src/layout.rs.",
     },
     RuleDef {
@@ -348,22 +348,22 @@ but no addressed function: no unit, still compiled so its build shows why), L16 
     },
     RuleDef {
         id: "L5.placeholder", version: "3", max_support: REPRODUCED, phase: "L5", loader: false,
-        needs: &["kind:start", "S.sections", "S.codewalk", "S.crt.code"], outputs: &[], inputs: &["scan", "targets"],
+        needs: &["kind:start", "S.sections", "S.codewalk", "S.crt.code"], outputs: &[], inputs: &["scan", "target"],
         doc: "L5: an identifier that spells an address (`Unk<hex>`, `FUN_<hex>`, `DAT_<hex>`, `<name>_<6-8 hex with a\ndigit>`, in any .c / .h of src/ and include/) names a real address: on a line of the current target (inside\na function the target holds, or outside every function with an address) a number inside a section of the\ntarget's image must, inside a code section, be a function start (a `start` fact of any producer, or an inner\nlabel). A number inside no section of any target the file belongs to is a dropped or extra digit, reported\nin the default target's store only (at the line that spells it). A function's span ends with its definition\n(line_targets). Native:\nnative/dcp_core/src/layout.rs.",
     },
     RuleDef {
         id: "A1.addr.cast", version: "1", max_support: REPRODUCED, phase: "A1", loader: false,
-        needs: &["kind:name", "kind:symbol"], outputs: &[], inputs: &["scan", "targets"],
+        needs: &["kind:name", "kind:symbol"], outputs: &[], inputs: &["scan", "target"],
         doc: "A1: an integer literal cast to a pointer type in the sources (srcscan's PtrCast: `(void (*)(void))0x5de470`,\n`(char *)0x6f242c`, `(T *)(unsigned)0x...`; the cast's type spells its `*`, a typedef'd pointer name is not\nrecognised; comments, strings and `#if 0` / `#else` text do not count, `#define` bodies do) whose value lies in\nthe current target's image [base, end), on a line of the current target (line_targets: inside a function\nthe target holds, or outside every function with an address). Such a pointer is the original's address\nfrozen into the code: the relinked image places that object elsewhere, so the pointer goes wrong. An error;\nthe message names what the facts know at the address (its name, else the symbol containing it, else nothing\nknown) and asks for the symbol by name. The address of a symbol (`(unsigned)&x`, `(char *)&x`) is no literal\nand is not reported. Native:\nnative/dcp_core/src/layout.rs.",
     },
     RuleDef {
         id: "L13.data.code", version: "1", max_support: REPRODUCED, phase: "L13", loader: false,
-        needs: &["kind:name", "kind:start", "S.codewalk", "S.crt.code", "S.thunk", "M.match", "L.decl"], outputs: &[], inputs: &["scan", "targets"],
+        needs: &["kind:name", "kind:start", "S.codewalk", "S.crt.code", "S.thunk", "M.match", "L.decl"], outputs: &[], inputs: &["scan", "target"],
         doc: "L13: a data declaration of the sources (a definition or an `extern` with an address comment, srcscan Data)\nwhose address, for the current target, is a known function start (a `start` fact above declared: the walk,\nthe library placement, the entry, an export; or the start of a function symbol above declared) or lies inside\na known function's extent (a `func` symbol above declared: walked, placed or byte-matched), unless a table\nsymbol covers it (the walk's or a declared jumptable / idxtable, a declared fptr range: data a code section\nholds). The name declares data at code: whatever reads or calls it through that declaration, the relinked\nimage gives it a data object instead of the function. An error naming the function there. Native:\nnative/dcp_core/src/layout.rs.",
     },
     RuleDef {
         id: "L14.unit.outside", version: "2", max_support: DECLARED, phase: "L14", loader: false,
-        needs: &["L.unit.extent", "L.src", "L.decl", "S.crt.code", "S.thunk"], outputs: &[], inputs: &["decl", "targets"],
+        needs: &["L.unit.extent", "L.src", "L.decl", "S.crt.code", "S.thunk"], outputs: &[], inputs: &["decl", "target"],
         doc: "L14 (outside_unit_issues in rules/layout.py): a sourced function outside the game code (in the library\ncode after it) whose unit has a declared boundary (`boundary start|end tu=UNIT` in decl/text.dcl) and an\nextent: every function of such a unit lies inside the extent. Inside the game code L7 checks the same.\nAn error: no game unit owns library code, and a unit compiled with that function is not the\nunit's translation unit. Library code with a source belongs to a library unit (`libunit` in decl/text.dcl):\nits functions lie inside the declared member range, which lies outside the game code. Native:\nnative/dcp_core/src/layout.rs.",
     },
     RuleDef {
@@ -513,7 +513,7 @@ but no addressed function: no unit, still compiled so its build shows why), L16 
     },
     RuleDef {
         id: "S.extent", version: "3", max_support: DERIVED, phase: "S", loader: false,
-        needs: &["S.codewalk", "S.crt.code", "S.crt.refs", "S.sections"], outputs: &["evidence"], inputs: &["decl", "targets"],
+        needs: &["S.codewalk", "S.crt.code", "S.crt.refs", "S.sections"], outputs: &["evidence"], inputs: &["decl", "target"],
         doc: "How far the original's code proves a data object reaches. Every walked function is read once, callees\nbefore callers, tracking what its registers and stack slots hold: a constant, a data address (exact, or\nwalking up from it through an added index or a loop), a stack argument plus an offset. Evidence that a\nrange is one object (C: a pointer stays inside its object): an access [r + disp] through a data address\n(field); `cmp r, END` before an ordering jump with r walking up from B (bound: B .. END is one array);\nrep movs / stos with a constant count (copy); an address passed to a function whose summary reaches\nthrough that argument (call). A summary is per stack argument the range around the pointer the\nfunction's accesses reach, a constant or a product of its arguments; seeds are the library's copiers by\nname (memcpy, memmove, memset, memcmp, strncpy, fread, fwrite, _read, _write) and the `writes ptr=aK\nsize=EXPR` declarations (decl/text.dcl: the function writes EXPR bytes, a product of arguments and numbers,\nat its argument K). An `overrun` declaration (decl/text.dcl: `0xADDR overrun -- why`) is an exception: the\noriginal's access at that instruction overruns its object (C's bounds do not hold there), so it is no evidence\nand feeds no summary; one whose instruction proves nothing is stale (S.extent.overrun, warning). Per base\naddress the union of its evidence is one `evidence` fact {ekind: extent, base, site, how, fn} over the proven\nrange, derived. Native: native/dcp_core/src/extent.rs.",
     },
 ];

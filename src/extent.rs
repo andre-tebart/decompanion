@@ -869,13 +869,11 @@ pub fn s_extent(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             }
         }
     }
-    let (decls, _, targets, target) = crate::decl::project_decls(ctx)?;
-    let default = targets.first().cloned().unwrap_or_default();
-    let overrun_decls: Vec<&crate::decl::Decl> = decls.iter()
-        .filter(|d| d.kind == "overrun" && d.target.as_deref().unwrap_or(&default) == target).collect();
+    let (decls, _) = crate::decl::project_decls(ctx);
+    let overrun_decls: Vec<&crate::decl::Decl> = decls.iter().filter(|d| d.kind == "overrun").collect();
     let overrun: HashSet<u32> = overrun_decls.iter().map(|d| d.lo as u32).collect();
     let mut hit: HashSet<u32> = HashSet::new();
-    for d in decls.iter().filter(|d| d.kind == "writes" && d.target.as_deref().unwrap_or(&default) == target) {
+    for d in decls.iter().filter(|d| d.kind == "writes") {
         let (Some(p), Some(s)) = (d.key("ptr"), d.key("size")) else { continue };
         if let Some((k, t)) = writes_seed(p.s(), s.s()) {
             seeds.entry(d.lo as u32).or_default().add(k as usize, t);

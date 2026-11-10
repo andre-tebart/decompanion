@@ -150,7 +150,7 @@ impl<'a> Reader<'a> {
         let db = p.store_path();
         let main = p.main_uri();
         crate::storedb::st_open(&db, &main)?;
-        let path = p.target(None).map_err(Error::runtime)?.path.clone();
+        let path = p.target.path.clone();
         let img = crate::image(&path)?;
         let names = Names::build(&db, &main, &path)?;
         let fills = crate::toolchain::Vc6.fill_forms().iter().map(|f| f.to_vec()).collect();
@@ -869,7 +869,7 @@ pub fn read_command(p: &crate::project::Project, cmd: &str, args: HashMap<String
     let r = Reader::open(p)?;
     let arg = |k: &str| args.get(k).cloned().flatten();
     let flag = |k: &str| arg(k).is_some_and(|v| v == "1");
-    let view = || View::load(&r.db, &r.p.main_uri(), &r.p.target(None).map(|t| t.path.clone()).unwrap_or_default());
+    let view = || View::load(&r.db, &r.p.main_uri(), &r.p.target.path);
     match cmd {
         "disasm" => {
             let lv = ListingView::of(flag("no_bytes"), arg("range").as_deref()).map_err(Error::value)?;

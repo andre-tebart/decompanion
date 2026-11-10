@@ -64,7 +64,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
     let db = p.store_path();
     crate::storedb::st_open(&db, &p.main_uri()).map_err(|e| e.to_string())?;
     let tools = crate::vc6::Tools::of(p);
-    let target = p.target(None)?;
+    let target = &p.target;
     let img = crate::image(&target.path).map_err(|e| e.to_string())?;
     let all_combos = combos();
     let rows: Vec<serde_json::Map<String, Value>> = crate::queues::function_grades(&db).map_err(|e| e.to_string())?
@@ -75,7 +75,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
     let row_units: BTreeSet<&str> = rows.iter().filter_map(|r| r["unit"].as_str()).collect();
     for unit in row_units {
         let Some(a) = units.get(unit) else { continue };
-        let flags = crate::plan::compile_flags(p, &a.target, unit)?;
+        let flags = crate::plan::compile_flags(p, unit)?;
         let anchors = rows.iter().filter(|r| r["unit"] == unit)
             .map(|r| { let x = r["addr"].as_i64().unwrap_or(0); (format!("{x:#010x}"), r["name"].as_str().unwrap_or("").to_string(), x) }).collect();
         let text = fsmemo::read_text(&py_path(&format!("{root}/{}", a.file))).map_err(|e| e.to_string())?;
@@ -244,7 +244,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
         }
         out_combos.push(json!({"flags": combo, "matched": matched, "refused": refused, "failed": failed}));
     }
-    let decl = p.toolchain_decl(None)?;
+    let decl = p.toolchain_decl()?;
     let result = json!({"grid": GRID.iter().map(|(g, a)| json!([g, a])).collect::<Vec<_>>(), "anchors": anchors_out, "combos": out_combos,
                         "declared": decl["cflags"], "defaults": DEFAULTS});
     crate::storedb::st_set_meta(&db, "probe", &canonical(&result)).map_err(|e| e.to_string())?;

@@ -57,9 +57,9 @@ pub fn of_text(file: &str, text: &str) -> Vec<Exception> {
 }
 
 /// The exceptions the declarations make (decl/*.dcl `overrun` lines of any target), by file and line.
-pub fn of_decls(root: &Path, targets: &[String]) -> Vec<Exception> {
+pub fn of_decls(root: &Path) -> Vec<Exception> {
     let r = root.to_string_lossy();
-    let (ds, _) = crate::decl::load(&crate::decl::files(&r), &r, targets);
+    let (ds, _) = crate::decl::load(&crate::decl::files(&r), &r);
     ds.into_iter()
         .filter(|d| d.kind == "overrun")
         .map(|d| Exception { file: d.file.clone(), line: d.line as usize, kind: Kind::Overrun, why: d.reason.trim().to_string() })

@@ -11,7 +11,7 @@ fn dcp(root: &Path, args: &[&str]) -> (i32, String, String) {
 }
 
 fn project(name: &str) -> PathBuf {
-    dcp::testkit::make_project(&dcp::testkit::scratch(&format!("daemon-{name}")).join("proj"), false)
+    dcp::testkit::make_project(&dcp::testkit::scratch(&format!("daemon-{name}")).join("proj"))
 }
 
 fn stop(root: &Path) {

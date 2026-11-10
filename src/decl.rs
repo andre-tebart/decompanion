@@ -1,7 +1,5 @@
 //! Declarations: decl/*.dcl, the typed state a human writes about addresses that have no source yet (the grammar is the
 //! parser's, below), and the loader rules L.decl / L.decl.start.
-//!
-//! native_inputs of the rules: {"targets": [names, the default first], "target": the current one}.
 
 use crate::error::Result;
 use crate::image;
@@ -20,7 +18,7 @@ static PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^[^\s"]+$"#).unwra
 /// a product of argument indexes (a0: the first stack argument) and constants: `a2`, `a1*a2`, `0x60`, `4*a1`
 static EXPR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:a\d{1,2}|\d+|0x[0-9a-fA-F]+)(?:\*(?:a\d{1,2}|\d+|0x[0-9a-fA-F]+))*$").unwrap());
 static LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:(?P<target>[A-Za-z][A-Za-z0-9_-]*):)?(?P<lo>0x[0-9a-fA-F]+)(?:\.\.(?P<hi>0x[0-9a-fA-F]+))?(?:\s+(?P<body>.*?))?\s*$").unwrap()
+    Regex::new(r"^(?P<lo>0x[0-9a-fA-F]+)(?:\.\.(?P<hi>0x[0-9a-fA-F]+))?(?:\s+(?P<body>.*?))?\s*$").unwrap()
 });
 /// build/tu.py LINE: a `#line N "file"` directive.
 static LINE_DIRECTIVE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?m)^[ \t]*#[ \t]*line[ \t]+(\d+)(?:[ \t]+"((?:\\.|[^"\\])*)")?"#).unwrap());
@@ -95,7 +93,6 @@ pub struct Decl {
     pub words: Vec<String>,
     pub keys: Vec<(String, KeyVal)>, // in the line's order
     pub reason: String,
-    pub target: Option<String>,
     pub file: String,
     pub line: i64,
 }
@@ -107,13 +104,10 @@ impl Decl {
     pub fn key(&self, name: &str) -> Option<&KeyVal> {
         self.keys.iter().find(|k| k.0 == name).map(|k| &k.1)
     }
-    fn sort_key(&self, order: &HashMap<String, usize>, default: &str) -> (usize, i64) {
-        (*order.get(self.target.as_deref().unwrap_or(default)).unwrap_or(&order.len()), self.lo)
-    }
     /// The canonical spelling (what `dcp decl add` writes).
     pub fn text(&self) -> String {
         let range = spec(&self.kind).is_some_and(|s| s.range);
-        let mut s = self.target.as_ref().map(|t| format!("{t}:")).unwrap_or_default() + &format!("{:#010x}", self.lo);
+        let mut s = format!("{:#010x}", self.lo);
         if range {
             s += &format!("..{:#010x}", self.hi);
         }
@@ -289,17 +283,16 @@ pub fn parse_line(text: &str, file: &str, line: i64) -> Result<Decl, String> {
             return Err(format!("{kind}: missing {k}="));
         }
     }
-    Ok(Decl { lo, hi, kind: kind.into(), words, keys, reason: reason.into(), target: m.name("target").map(|t| t.as_str().into()), file: file.into(), line })
+    Ok(Decl { lo, hi, kind: kind.into(), words, keys, reason: reason.into(), file: file.into(), line })
 }
 
-/// decl.LoadError: (file, line, lo or None, message, target or None).
+/// A line decl.load refuses: (file, line, lo or None, message).
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoadError {
     pub file: String,
     pub line: i64,
     pub lo: Option<i64>,
     pub message: String,
-    pub target: Option<String>,
 }
 
 fn read_lines(p: &std::path::Path) -> Vec<String> {
@@ -327,13 +320,11 @@ fn rel(root: &str, p: &std::path::Path) -> String {
     }
 }
 
-/// decl.load: every declaration of the files (all targets) and the errors: malformed lines, unknown targets,
-/// lines out of order, duplicate keys (across files too).
-pub fn load(paths: &[std::path::PathBuf], root: &str, targets: &[String]) -> (Vec<Decl>, Vec<LoadError>) {
-    let default = targets.first().cloned().unwrap_or_default();
-    let order: HashMap<String, usize> = targets.iter().enumerate().map(|(i, t)| (t.clone(), i)).collect();
+/// decl.load: every declaration of the files and the errors: malformed lines, lines out of order, duplicate keys
+/// (across files too).
+pub fn load(paths: &[std::path::PathBuf], root: &str) -> (Vec<Decl>, Vec<LoadError>) {
     let (mut out, mut errors) = (vec![], vec![]);
-    let mut seen: HashMap<(String, i64, String, String), String> = HashMap::new();
+    let mut seen: HashMap<(i64, String, String), String> = HashMap::new();
     for path in paths {
         let rel = rel(root, path);
         let mut prev: Option<Decl> = None;
@@ -346,34 +337,24 @@ pub fn load(paths: &[std::path::PathBuf], root: &str, targets: &[String]) -> (Ve
             let d = match parse_line(s, &rel, n) {
                 Ok(d) => d,
                 Err(e) => {
-                    let head = py_strip(s.split_once(" -- ").map(|x| x.0).unwrap_or(s));
-                    let t = LINE.captures(head).and_then(|m| m.name("target").map(|t| t.as_str().to_string())).filter(|t| order.contains_key(t));
-                    errors.push(LoadError { file: rel.clone(), line: n, lo: None, message: e, target: t });
+                    errors.push(LoadError { file: rel.clone(), line: n, lo: None, message: e });
                     continue;
                 }
             };
-            if let Some(t) = &d.target {
-                if !order.contains_key(t) {
-                    errors.push(LoadError { file: rel.clone(), line: n, lo: Some(d.lo), message: format!("unknown target {} (targets: {})", py_repr(t), targets.join(", ")), target: None });
-                    continue;
-                }
-            }
             if let Some(p) = &prev {
-                if d.sort_key(&order, &default) < p.sort_key(&order, &default) {
+                if d.lo < p.lo {
                     let first = |x: &Decl| x.text().split(' ').next().unwrap_or("").to_string();
                     errors.push(LoadError { file: rel.clone(), line: n, lo: Some(d.lo),
-                                            message: format!("out of order: {} after line {} ({}); the file is sorted by target, address", first(&d), p.line, first(p)),
-                                            target: Some(d.target.clone().unwrap_or(default.clone())) });
+                                            message: format!("out of order: {} after line {} ({}); the file is sorted by address", first(&d), p.line, first(p)) });
                 }
             }
             prev = Some(d.clone());
-            let k = (d.target.clone().unwrap_or(default.clone()), d.lo, d.kind.clone(), d.words.first().cloned().unwrap_or_default());
+            let k = (d.lo, d.kind.clone(), d.words.first().cloned().unwrap_or_default());
             match seen.get(&k) {
                 Some(at) => {
                     let mut what = vec![d.kind.clone()];
                     what.extend(d.words.iter().cloned());
-                    errors.push(LoadError { file: rel.clone(), line: n, lo: Some(d.lo), message: format!("duplicate {} at {:#x} (also {at})", what.join(" "), d.lo),
-                                            target: Some(d.target.clone().unwrap_or(default.clone())) });
+                    errors.push(LoadError { file: rel.clone(), line: n, lo: Some(d.lo), message: format!("duplicate {} at {:#x} (also {at})", what.join(" "), d.lo) });
                 }
                 None => {
                     seen.insert(k, format!("{rel}:{n}"));
@@ -385,11 +366,11 @@ pub fn load(paths: &[std::path::PathBuf], root: &str, targets: &[String]) -> (Ve
     (out, errors)
 }
 
-/// unit -> its `libunit` declaration (of one target; the first per unit).
-pub fn lib_units<'a>(decls: &'a [Decl], target: &str, default: &str) -> BTreeMap<String, &'a Decl> {
+/// unit -> its `libunit` declaration (the first per unit).
+pub fn lib_units(decls: &[Decl]) -> BTreeMap<String, &Decl> {
     let mut out = BTreeMap::new();
     for d in decls {
-        if d.kind == "libunit" && d.target.as_deref().unwrap_or(default) == target {
+        if d.kind == "libunit" {
             out.entry(d.key("tu").map(|k| k.s().to_string()).unwrap_or_default()).or_insert(d);
         }
     }
@@ -401,10 +382,8 @@ pub fn lib_units<'a>(decls: &'a [Decl], target: &str, default: &str) -> BTreeMap
 
 /// decl.insert: d's canonical line into the sorted file at path, after the last declaration whose sort key is
 /// not larger (before the first larger one when there is none; at the end of an empty file); its line number.
-pub fn insert(path: &std::path::Path, d: &Decl, targets: &[String]) -> std::io::Result<i64> {
-    let default = targets.first().cloned().unwrap_or_default();
-    let order: HashMap<String, usize> = targets.iter().enumerate().map(|(i, t)| (t.clone(), i)).collect();
-    let key = d.sort_key(&order, &default);
+pub fn insert(path: &std::path::Path, d: &Decl) -> std::io::Result<i64> {
+    let key = d.lo;
     let mut lines = if path.exists() { read_lines(path) } else { vec![] };
     let (mut after, mut before) = (None, None);
     for (i, raw) in lines.iter().enumerate() {
@@ -413,7 +392,7 @@ pub fn insert(path: &std::path::Path, d: &Decl, targets: &[String]) -> std::io::
             continue;
         }
         let Ok(o) = parse_line(s, "", 0) else { continue };
-        if o.sort_key(&order, &default) <= key {
+        if o.lo <= key {
             after = Some(i);
         } else if before.is_none() {
             before = Some(i);
@@ -430,37 +409,24 @@ pub fn insert(path: &std::path::Path, d: &Decl, targets: &[String]) -> std::io::
 
 // ------------------------------------------------------------------------------------------------ the rules
 
-fn inputs(ctx: &Ctx) -> Result<(Vec<String>, String)> {
-    Ok((ctx.inputs.targets.clone(), ctx.inputs.target.clone()))
-}
-
 /// The declarations of the project (decl.load over decl/*.dcl).
-pub(crate) fn project_decls(ctx: &Ctx) -> Result<(Vec<Decl>, Vec<LoadError>, Vec<String>, String)> {
-    let (targets, target) = inputs(ctx)?;
-    let (ds, es) = load(&files(&ctx.root), &ctx.root, &targets);
-    Ok((ds, es, targets, target))
+pub(crate) fn project_decls(ctx: &Ctx) -> (Vec<Decl>, Vec<LoadError>) {
+    load(&files(&ctx.root), &ctx.root)
 }
 
-/// L.decl: every declaration line of the current target as one declared fact; the lines' errors.
+/// L.decl: every declaration line as one declared fact; the lines' errors.
 pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
-    let (decls, errors, targets, target) = project_decls(ctx)?;
-    let default = targets.first().cloned().unwrap_or_default();
+    let (decls, errors) = project_decls(ctx);
     let base = img.base as i64;
     let inimg = |a: i64| img.in_image(a as u32) && a >= 0;
     for e in &errors {
-        if e.target.as_deref().unwrap_or(&default) != target {
-            continue;
-        }
         let lo = e.lo.filter(|&l| inimg(l)).unwrap_or(base);
         out.finding("error", "L.decl", lo, lo + 1, format!("{}:{}: {}", e.file, e.line, e.message), &format!("decl:{}:{}", e.file, e.line));
     }
     let code = crate::layout::code_ranges(&img);
     let mut file_of: HashMap<String, String> = HashMap::new();
     for d in &decls {
-        if d.target.as_deref().unwrap_or(&default) != target {
-            continue;
-        }
         let by = d.by();
         let (s_lo, s_hi) = (img.section_of(d.lo as u32), img.section_of((d.hi - 1) as u32));
         if s_lo.is_none() || s_lo.map(|s| s.index) != s_hi.map(|s| s.index) {
@@ -537,14 +503,13 @@ pub fn l_decl(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     Ok(())
 }
 
-/// L.decl.start: the current target's `start` lines inside a code section, as declared starts.
+/// L.decl.start: the `start` lines inside a code section, as declared starts.
 pub fn l_decl_start(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
-    let (decls, _, targets, target) = project_decls(ctx)?;
-    let default = targets.first().cloned().unwrap_or_default();
+    let (decls, _) = project_decls(ctx);
     let code = crate::layout::code_ranges(&img);
     for d in &decls {
-        if d.kind == "start" && d.target.as_deref().unwrap_or(&default) == target && code.iter().any(|&(a, b)| a <= d.lo && d.lo < b) {
+        if d.kind == "start" && code.iter().any(|&(a, b)| a <= d.lo && d.lo < b) {
             out.declared(d.lo, d.lo + 1, "start", json!({"skind": "func", "how": "decl"}), &d.by(), &d.reason);
         }
     }
@@ -557,10 +522,11 @@ mod tests {
 
     #[test]
     fn grammar() {
-        let d = parse_line("exe:0x10001000..0x10001010 jumptable fn=0x10000ff0 -- a table", "decl/text.dcl", 3).unwrap();
-        assert_eq!((d.lo, d.hi, d.kind.as_str(), d.target.as_deref(), d.key("fn"), d.by()), (0x10001000, 0x10001010, "jumptable", Some("exe"),
-                   Some(&KeyVal::Int(0x10000ff0)), "decl:decl/text.dcl:3".to_string()));
-        assert_eq!(d.text(), "exe:0x10001000..0x10001010 jumptable fn=0x10000ff0 -- a table");
+        let d = parse_line("0x10001000..0x10001010 jumptable fn=0x10000ff0 -- a table", "decl/text.dcl", 3).unwrap();
+        assert_eq!((d.lo, d.hi, d.kind.as_str(), d.key("fn"), d.by()), (0x10001000, 0x10001010, "jumptable", Some(&KeyVal::Int(0x10000ff0)),
+                   "decl:decl/text.dcl:3".to_string()));
+        assert_eq!(d.text(), "0x10001000..0x10001010 jumptable fn=0x10000ff0 -- a table");
+        assert!(parse_line("exe:0x10001000 start -- a target prefix", "", 0).is_err());
         let b = parse_line("0x10008cb0 boundary start tu=dllmain by=guess -- DllMain", "", 0).unwrap();
         assert_eq!(b.text(), "0x10008cb0 boundary start by=guess tu=dllmain -- DllMain");
         let w = parse_line("0x430bd0 writes size=a1*a2 ptr=a0 -- vfs_fread", "", 0).unwrap();
@@ -586,18 +552,18 @@ mod tests {
     }
 
     #[test]
-    fn load_order_duplicates_targets() {
+    fn load_order_duplicates() {
         let dir = crate::testkit::scratch("decl");
         std::fs::create_dir_all(dir.join("decl")).unwrap();
         std::fs::write(dir.join("decl/text.dcl"), "# c\n0x20 start -- b\n0x10 start -- a\n0x10 start -- dup\nxbox:0x5 start -- t\n0x30 frob -- x\n").unwrap();
         let root = dir.to_string_lossy().into_owned();
-        let (ds, es) = load(&files(&root), &root, &["exe".into()]);
+        let (ds, es) = load(&files(&root), &root);
         assert_eq!(ds.len(), 3);
         let m: Vec<(i64, &str)> = es.iter().map(|e| (e.line, e.message.as_str())).collect();
-        assert_eq!(m[0], (3, "out of order: 0x00000010 after line 2 (0x00000020); the file is sorted by target, address"));
+        assert_eq!(m[0], (3, "out of order: 0x00000010 after line 2 (0x00000020); the file is sorted by address"));
         assert_eq!(m[1].0, 4);
         assert!(m[1].1.starts_with("duplicate start at 0x10 (also decl/text.dcl:3)"));
-        assert_eq!(m[2], (5, "unknown target 'xbox' (targets: exe)"));
+        assert_eq!(m[2].0, 5); // a target prefix: malformed
         assert_eq!(m[3].0, 6);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -606,24 +572,24 @@ mod tests {
     fn good_lines_round_trip() {
         let k = |pairs: &[(&str, KeyVal)]| pairs.iter().map(|(a, b)| (a.to_string(), b.clone())).collect::<Vec<_>>();
         let s = |v: &str| KeyVal::Str(v.into());
-        for (line, kind, lo, hi, words, keys, target) in [
+        for (line, kind, lo, hi, words, keys) in [
             ("0x10008cb0 boundary start tu=dllmain by=guess -- the dll's entry points", "boundary", 0x10008cb0, 0x10008cb1, vec!["start"],
-             k(&[("tu", s("dllmain")), ("by", s("guess"))]), None),
-            ("server:0x10008d20 boundary end tu=dllmain -- next unit", "boundary", 0x10008d20, 0x10008d21, vec!["end"], k(&[("tu", s("dllmain"))]), Some("server")),
-            ("0x10001000..0x10001010 bytes dead -- unreachable tail", "bytes", 0x10001000, 0x10001010, vec!["dead"], k(&[]), None),
-            ("0x10001000..0x10001004 idxtable fn=0x10000ff0 -- byte index", "idxtable", 0x10001000, 0x10001004, vec![], k(&[("fn", KeyVal::Int(0x10000ff0))]), None),
-            ("0x10001000..0x10001100 foreign kind=masm -- hand-written asm", "foreign", 0x10001000, 0x10001100, vec![], k(&[("kind", s("masm"))]), None),
-            ("0x10001000 name NetInit -- leaked by a log string", "name", 0x10001000, 0x10001001, vec!["NetInit"], k(&[]), None),
-            ("0x10001000..0x10001008 fptr -- two handlers", "fptr", 0x10001000, 0x10001008, vec![], k(&[]), None),
-            ("exe:0x401000 start -- reached through a computed jump", "start", 0x401000, 0x401001, vec![], k(&[]), Some("exe")),
+             k(&[("tu", s("dllmain")), ("by", s("guess"))])),
+            ("0x10008d20 boundary end tu=dllmain -- next unit", "boundary", 0x10008d20, 0x10008d21, vec!["end"], k(&[("tu", s("dllmain"))])),
+            ("0x10001000..0x10001010 bytes dead -- unreachable tail", "bytes", 0x10001000, 0x10001010, vec!["dead"], k(&[])),
+            ("0x10001000..0x10001004 idxtable fn=0x10000ff0 -- byte index", "idxtable", 0x10001000, 0x10001004, vec![], k(&[("fn", KeyVal::Int(0x10000ff0))])),
+            ("0x10001000..0x10001100 foreign kind=masm -- hand-written asm", "foreign", 0x10001000, 0x10001100, vec![], k(&[("kind", s("masm"))])),
+            ("0x10001000 name NetInit -- leaked by a log string", "name", 0x10001000, 0x10001001, vec!["NetInit"], k(&[])),
+            ("0x10001000..0x10001008 fptr -- two handlers", "fptr", 0x10001000, 0x10001008, vec![], k(&[])),
+            ("0x401000 start -- reached through a computed jump", "start", 0x401000, 0x401001, vec![], k(&[])),
             ("0x5de460..0x5de480 libunit lib=mss32.lib tu=mss32lib -- mss32.lib's code member", "libunit", 0x5de460, 0x5de480, vec![],
-             k(&[("lib", s("mss32.lib")), ("tu", s("mss32lib"))]), None),
+             k(&[("lib", s("mss32.lib")), ("tu", s("mss32lib"))])),
             (r"0x5fbd94 file tu=gfx_surface path=D:\work\src\gfx\gfx_surface.c -- its __FILE__", "file", 0x5fbd94, 0x5fbd95, vec![],
-             k(&[("tu", s("gfx_surface")), ("path", s(r"D:\work\src\gfx\gfx_surface.c"))]), None),
+             k(&[("tu", s("gfx_surface")), ("path", s(r"D:\work\src\gfx\gfx_surface.c"))])),
         ] {
             let d = parse_line(line, "", 0).unwrap();
-            assert_eq!((d.kind.as_str(), d.lo, d.hi, d.words.iter().map(|w| w.as_str()).collect::<Vec<_>>(), &d.keys, d.target.as_deref()),
-                       (kind, lo, hi, words, &keys, target), "{line}");
+            assert_eq!((d.kind.as_str(), d.lo, d.hi, d.words.iter().map(|w| w.as_str()).collect::<Vec<_>>(), &d.keys),
+                       (kind, lo, hi, words, &keys), "{line}");
             let mut back = parse_line(&d.text(), "", 0).unwrap(); // the canonical spelling parses back to the same declaration
             back.keys.sort_by(|a, b| a.0.cmp(&b.0));
             let mut sorted = d.clone();
@@ -651,24 +617,20 @@ mod tests {
     fn load_and_insert() {
         let dir = crate::testkit::scratch("decl2");
         std::fs::create_dir_all(dir.join("decl")).unwrap();
-        let t: Vec<String> = vec!["tiny".into(), "other".into()];
         std::fs::write(dir.join("decl/text.dcl"), "# comment\n\n0x10002000 start -- b\n0x10001000 start -- a: out of order\n0x10002000 start -- again\n\
-            0x10003000 frob -- unknown kind\nnope:0x10004000 start -- unknown target\nother:0x10000000 start -- the second target sorts after\n\
-            0x10005000 start -- a default-target line after another target's\n").unwrap();
+            0x10003000 frob -- unknown kind\n0x10005000 start -- last\n").unwrap();
         let root = dir.to_string_lossy().into_owned();
-        let (ds, es) = load(&files(&root), &root, &t);
+        let (ds, es) = load(&files(&root), &root);
         let at = |n: i64, m: &str| es.iter().any(|e| e.line == n && e.message.contains(m));
-        assert!(at(4, "out of order") && at(5, "duplicate") && at(6, "unknown kind") && at(7, "unknown target") && at(9, "out of order"));
-        assert!(!es.iter().any(|e| e.line == 8));
-        assert_eq!(ds.iter().map(|d| d.line).collect::<Vec<_>>(), [3, 4, 5, 8, 9]);
+        assert!(at(4, "out of order") && at(5, "duplicate") && at(6, "unknown kind"));
+        assert_eq!(ds.iter().map(|d| d.line).collect::<Vec<_>>(), [3, 4, 5, 7]);
         assert_eq!(ds[0].by(), "decl:decl/text.dcl:3");
         let f = dir.join("ins.dcl");
-        std::fs::write(&f, "# header\n0x10001000 start -- a\n0x10003000 start -- c\nother:0x10000000 start -- o\n").unwrap();
-        let ins = |line: &str| insert(&f, &parse_line(line, "", 0).unwrap(), &t).unwrap();
-        assert_eq!([ins("0x10002000 start -- b"), ins("0x10000000 start -- first"), ins("other:0x20000000 start -- last"),
-                    ins("0x10003000 boundary start tu=u -- same address, after")], [3, 2, 7, 6]);
+        std::fs::write(&f, "# header\n0x10001000 start -- a\n0x10003000 start -- c\n").unwrap();
+        let ins = |line: &str| insert(&f, &parse_line(line, "", 0).unwrap()).unwrap();
+        assert_eq!([ins("0x10002000 start -- b"), ins("0x10000000 start -- first"), ins("0x10003000 boundary start tu=u -- same address, after")], [3, 2, 6]);
         assert_eq!(read_lines(&f), ["# header", "0x10000000 start -- first", "0x10001000 start -- a", "0x10002000 start -- b", "0x10003000 start -- c",
-                                    "0x10003000 boundary start tu=u -- same address, after", "other:0x10000000 start -- o", "other:0x20000000 start -- last"]);
+                                    "0x10003000 boundary start tu=u -- same address, after"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

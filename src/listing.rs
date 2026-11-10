@@ -21,7 +21,7 @@ pub fn unit_listing(p: &Project, tu: &crate::plan::Tu, text: &str) -> Result<std
     for d in ["build/trial", "build/obj/trial"] {
         let _ = std::fs::create_dir_all(full(d));
     }
-    let mut flags = crate::plan::compile_flags(p, &tu.target, &tu.unit).map_err(err)?;
+    let mut flags = crate::plan::compile_flags(p, &tu.unit).map_err(err)?;
     let (src, obj, asm) = (format!("build/trial/{}-lst.c", tu.unit), format!("build/obj/trial/{}-lst.obj", tu.unit), format!("build/trial/{}-lst.asm", tu.unit));
     flags.push("/FAc".into());
     flags.push(format!("/Fa{}", asm.replace('/', "\\")));

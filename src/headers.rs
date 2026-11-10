@@ -283,7 +283,7 @@ impl Texts {
 impl Ctx<'_> {
     /// (file, line) -> the target's function whose span holds the line.
     fn spans(&self) -> Spans {
-        let default = self.p.targets[0].name.clone();
+        let default = self.p.target_name.clone();
         let mut by: HashMap<String, Vec<(i64, i64, i64)>> = HashMap::new();
         for ((file, _, _, _, addrs, _, _), (_, _, _, comment_line, _, end_line, ..)) in self.scan.functions() {
             if let Some((_, a)) = addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == self.p.target_name) {
@@ -591,7 +591,7 @@ fn vc6_diags(p: &Project, tools: &crate::vc6::Tools, a: &crate::plan::Tu, rel: &
     if !tools.available() {
         return Ok(None);
     }
-    let flags = crate::plan::compile_flags(p, &a.target, &a.unit)?;
+    let flags = crate::plan::compile_flags(p, &a.unit)?;
     let res = tools.syntax_check(rel, &flags, &["include".to_string()], root)?;
     Ok(Some(res.diags.iter().map(|d| Dg {
         file: if d.file.is_empty() { String::new() } else { project_rel(root, &d.file) },
@@ -646,7 +646,7 @@ fn trial(x: &Ctx, unit: &str, headers: &[String], drop: &BTreeMap<i64, HashSet<S
     let (rb, rn) = (format!("{dir}/{unit}.base.c"), format!("{dir}/{unit}.trial.c"));
     std::fs::write(py_path(&format!("{}/{rb}", x.root)), &old).map_err(|e| e.to_string())?;
     std::fs::write(py_path(&format!("{}/{rn}", x.root)), &new).map_err(|e| e.to_string())?;
-    let args = x.front.args(&[frontend::target_macro(&p.target_name)]);
+    let args = x.front.args(&[]);
     let tools = crate::vc6::Tools::of(p);
     let root = x.root.as_str();
     let clang = |rel: &str, text: &str| -> Result<Vec<Dg>, String> {
@@ -795,7 +795,7 @@ fn analyse(x: &Ctx, unit: &str, headers: &[String], at: Option<i64>) -> Result<R
     let mut conflicting: HashSet<String> = HashSet::new();
     let mut rd = Reader { root: root.clone(), memo: HashMap::new() };
     let db = x.p.store_path();
-    let target = x.p.target(None).map_err(err)?.path.clone();
+    let target = x.p.target.path.clone();
     let names = crate::names::Names::build(&db, &x.p.main_uri(), &target)?;
     let mut trial_calls: HashSet<(String, String)> = HashSet::new();
     for g in &t.tri {
@@ -1056,7 +1056,7 @@ fn call_evidence(x: &Ctx, names: &crate::names::Names, func: Option<i64>, callee
     let db = x.p.store_path();
     let syms = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |f| f.lo == func && f.s("skind") == Some("func") && !f.rule.starts_with("M.")))?;
     let Some(sym) = syms.iter().next() else { return Ok(vec![]) };
-    let img = crate::image(&x.p.target(None).map_err(err)?.path)?;
+    let img = crate::image(&x.p.target.path)?;
     let fills = crate::toolchain::Vc6.fill_forms().iter().map(|f| f.to_vec()).collect();
     let lines = crate::x86::x86_disasm(&img.read(sym.lo as u32, (sym.hi - sym.lo).max(0) as usize), sym.lo as u32, fills);
     let (mut out, mut pushes) = (vec![], 0);

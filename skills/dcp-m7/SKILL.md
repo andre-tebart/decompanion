@@ -19,7 +19,7 @@ Scope: `$ARGUMENTS` (`unit=NAME` restricts the session to `src/NAME.c`; nothing 
 unit with the most M7 lines first).
 
 Hard rules
-- Every tool is `dcp ...` from the project root (`--target NAME` for a target other than the first).
+- Every tool is `dcp ...` from the project root.
   Every `dcp` of the project runs in the project's daemon, which the first command starts. `dcp <command> -h`
   explains each one; output is one record per line, `key=value`, addresses `0x%08x`.
 - Files stay UTF-8 without BOM with LF line endings. Change C text only with a file-editing tool, never with

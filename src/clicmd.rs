@@ -214,8 +214,8 @@ fn opened(p: &Project) -> Result<String> {
 
 /// The image of a target, checked as config.Project.image checks it (the file exists, its sha256 is the
 /// declared one).
-fn image_of(p: &Project, name: Option<&str>) -> Result<Rc<crate::pe::Image>, String> {
-    let t = p.target(name)?;
+fn image_of(p: &Project) -> Result<Rc<crate::pe::Image>, String> {
+    let t = &p.target;
     if !Path::new(&t.path).exists() {
         return Err(format!("target {}: {} does not exist", t.name, t.path));
     }
@@ -230,7 +230,7 @@ fn image_of(p: &Project, name: Option<&str>) -> Result<Rc<crate::pe::Image>, Str
 }
 
 fn checked_image(p: &Project) -> Result<Rc<crate::pe::Image>> {
-    image_of(p, None).map_err(crate::project::cfg_err)
+    image_of(p).map_err(crate::project::cfg_err)
 }
 
 // ------------------------------------------------------------------------------------------------ ordered JSON
@@ -415,13 +415,13 @@ fn analyzer_lines(p: &Project, db: &str, verbose: bool, out: &mut Vec<String>) -
 pub fn report_command(p: &crate::project::Project, verbose: bool) -> Result<Vec<String>> {
     let db = opened(p)?;
     let img = checked_image(p)?;
-    let t = p.target(None).map_err(err)?;
+    let t = &p.target;
     let sha = crate::fsmemo::sha256(&t.path).map_err(err)?;
     let file = Path::new(&t.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut out = vec![format!("target={}  file={file}  sha256={}  base={}  entry={}  {}  linker={}.{}  sections={}", p.target_name, &sha[..16],
                                fmt_addr(img.base as i64), fmt_addr(img.entry as i64), if img.is_dll { "dll" } else { "exe" },
                                img.linker_version.0, img.linker_version.1, img.sections.len())];
-    let decl = p.toolchain_decl(None).map_err(err)?;
+    let decl = p.toolchain_decl().map_err(err)?;
     let ds = |k: &str| match &decl[k] {
         Value::String(x) if !x.is_empty() => x.clone(),
         Value::Array(a) if !a.is_empty() => a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "),
@@ -968,7 +968,7 @@ pub fn fn_command(p: &crate::project::Project, key: &str) -> Result<Out> {
     let src = p.input_hash("src").map_err(err)?.unwrap_or_default();
     let sc = crate::frontend::scan(&root, Some(&src)).map_err(err)?;
     let a = if key.to_lowercase().starts_with("0x") { parse_addr(key).ok() } else { None };
-    let default = p.targets[0].name.clone();
+    let default = p.target_name.clone();
     let addr_of = |addrs: &[(Option<String>, u64)]| addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == p.target_name).map(|x| x.1 as i64);
     let hits: Vec<&crate::srcscan::FnRow> = sc.functions().filter(|f| f.0 .3 == key || (a.is_some() && addr_of(&f.0 .4) == a)).collect();
     if hits.is_empty() {
@@ -989,79 +989,34 @@ pub fn fn_command(p: &crate::project::Project, key: &str) -> Result<Out> {
 
 // ------------------------------------------------------------------------------------------------ targets
 
-/// `dcp target list [--json]`.
-pub fn target_list(p: &crate::project::Project, json: bool) -> Result<Vec<String>> {
-    let mut rows = vec![];
-    for (i, t) in p.targets.iter().enumerate() {
-        let isa = match &t.isa {
-            Some(x) => x.clone(),
-            None => match image_of(p, Some(&t.name)) {
-                Ok(img) => format!("{}(machine)", img.default_isa().map(|x| x.to_string()).unwrap_or_else(|| "None".into())),
-                Err(_) => "-".into(), // missing file or sha256 mismatch: the list still prints
-            },
-        };
-        let store = format!("build/{}.sqlite", t.name);
-        rows.push(o(vec![("target", J::S(t.name.clone())), ("default", J::B(i == 0)), ("path", J::S(t.path.replace('\\', "/"))),
-                         ("sha256", J::S(t.sha256.chars().take(16).collect())), ("image", t.image.clone().map(J::S).unwrap_or(J::Null)),
-                         ("isa", J::S(isa)), ("exists", J::B(Path::new(&t.path).exists())), ("store", J::S(store.clone())),
-                         ("store_exists", J::B(p.root.join(&store).exists())), ("form", J::S(if t.legacy { "legacy" } else { "list" }.into()))]));
-    }
-    if json {
-        return Ok(rows.iter().map(|r| {
-            let m: serde_json::Map<String, Value> = r.iter().map(|(k, x)| (k.clone(), match x {
-                J::S(v) => Value::String(v.clone()),
-                J::B(b) => Value::Bool(*b),
-                _ => Value::Null,
-            })).collect();
-            let mut o = String::new();
-            crate::store::canon(&mut o, &Value::Object(m));
-            o
-        }).collect());
-    }
-    let mut out = vec![format!("targets={}  default={}", rows.len(), p.targets[0].name)];
-    out.extend(rows.iter().map(|r| rec_line(r)));
-    Ok(out)
-}
-
 // ------------------------------------------------------------------------------------------------ decl add
 
-/// `dcp decl add LINE`: the declaration inserted in address order; (lines, error, exit code, (target, producer)
-/// of the new line: the caller refreshes that target and reports its conflicts with `decl_conflicts`).
+/// `dcp decl add LINE`: the declaration inserted in address order; (lines, error, exit code, the producer of the
+/// new line: the caller refreshes and reports its conflicts with `decl_conflicts`).
 #[allow(clippy::type_complexity)]
-pub fn decl_add(p: &crate::project::Project, line: &str) -> Result<(Vec<String>, Option<String>, i32, Option<(String, String)>)> {
+pub fn decl_add(p: &crate::project::Project, line: &str) -> Result<(Vec<String>, Option<String>, i32, Option<String>)> {
     let fail = |m: String| Ok((vec![], Some(m), 1, None));
-    let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
-    let default = targets[0].clone();
-    let mut d = match crate::decl::parse_line(line.trim(), "", 0) {
+    let d = match crate::decl::parse_line(line.trim(), "", 0) {
         Ok(d) => d,
         Err(e) => return fail(e),
     };
-    if d.target.is_none() && p.target_name != default {
-        d.target = Some(p.target_name.clone());
-    }
-    let tname = d.target.clone().unwrap_or(default.clone());
-    if !targets.contains(&tname) {
-        return fail(format!("unknown target {} (targets: {})", crate::decl::py_repr(&tname), targets.join(", ")));
-    }
-    let img = image_of(p, Some(&tname)).map_err(crate::project::cfg_err)?;
+    let tname = p.target_name.clone();
+    let img = image_of(p).map_err(crate::project::cfg_err)?;
     let Some(sec) = img.section_of(d.lo as u32) else {
         return fail(format!("{:#x} is not in a section of {tname}", d.lo));
     };
-    if d.target.as_deref() == Some(default.as_str()) {
-        d.target = None; // a bare address is the default target
-    }
     let fname = if sec.holds_code() { "text.dcl" } else { "data.dcl" };
     let root = p.root.to_string_lossy().into_owned();
-    let (existing, _) = crate::decl::load(&crate::decl::files(&root), &root, &targets);
-    let key = |x: &crate::decl::Decl| (x.target.clone().unwrap_or(default.clone()), x.lo, x.kind.clone(), x.words.first().cloned().unwrap_or_default());
+    let (existing, _) = crate::decl::load(&crate::decl::files(&root), &root);
+    let key = |x: &crate::decl::Decl| (x.lo, x.kind.clone(), x.words.first().cloned().unwrap_or_default());
     if let Some(dup) = existing.iter().find(|x| key(x) == key(&d)) {
         return fail(format!("duplicate of {}:{}: {}", dup.file, dup.line, dup.text()));
     }
     let path = p.root.join("decl").join(fname);
-    let n = crate::decl::insert(&path, &d, &targets).map_err(err)?;
+    let n = crate::decl::insert(&path, &d).map_err(err)?;
     crate::fsmemo::new_epoch();
     let rel = format!("decl/{fname}");
-    Ok((vec![format!("added {rel}:{n}  {}", d.text())], None, 0, Some((tname, format!("decl:{rel}:{n}")))))
+    Ok((vec![format!("added {rel}:{n}  {}", d.text())], None, 0, Some(format!("decl:{rel}:{n}"))))
 }
 
 /// The conflicts a producer takes part in (after `dcp decl add` refreshed the target); exit 1 on a bug or error.
@@ -1245,8 +1200,6 @@ pub fn propose_command(p: &crate::project::Project, range: &str, name: &str, why
         out.push("dry run: nothing written".into());
         return Ok((out, None, 0, false));
     }
-    let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
-    let prefix = (p.target_name != targets[0]).then(|| p.target_name.clone());
     let path = p.root.join("decl").join("text.dcl");
     for (addr, side) in &pr.lines {
         let mut keys = vec![("tu".to_string(), crate::decl::KeyVal::Str(name.into()))];
@@ -1254,8 +1207,8 @@ pub fn propose_command(p: &crate::project::Project, range: &str, name: &str, why
             keys.push(("by".into(), crate::decl::KeyVal::Str(b.clone())));
         }
         let d = crate::decl::Decl { lo: *addr, hi: addr + 1, kind: "boundary".into(), words: vec![side.to_string()], keys, reason: why.into(),
-                                    target: prefix.clone(), file: String::new(), line: 0 };
-        let n = crate::decl::insert(&path, &d, &targets).map_err(err)?;
+                                    file: String::new(), line: 0 };
+        let n = crate::decl::insert(&path, &d).map_err(err)?;
         out.push(format!("added decl/text.dcl:{n}  {}", d.text()));
     }
     crate::fsmemo::new_epoch();
