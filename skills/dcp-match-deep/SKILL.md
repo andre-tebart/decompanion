@@ -41,6 +41,9 @@ Hard rules
 - `dcp asmdiff NAME --changed` (`--regs auto` when only a register renaming is left), `dcp diffclass NAME` (the
   hunk classes and `proof:`).
 - `dcp fn NAME` prints the function with its file lines (`at=src/<unit>.c:FIRST-LAST`).
+- `dcp asmdiff NAME --changed --lines`: each of our lines with the source line VC6 compiled it from (`; unit.c:LINE`),
+  so a hunk points at the statements a variant has to change. `dcp listing NAME`: VC6's own listing of the function
+  (offsets, bytes, `; Line N`, its frame symbols `_x$ = N`).
 
 ### 2.2 The declaration set first
 When `tiebreak:` says `not measured` or `under the four probes only`, run `dcp headers sample NAME` before anything
@@ -83,9 +86,11 @@ introduced or removed, a narrower or wider type), many variants per round, keep 
 
 ### 2.4 Stack slots (`dcp frame NAME`)
 When `slots` / `frame` hunks are left, `dcp frame NAME` lists both frames: each of our slots as `[esp+X]` after the
-prologue with its size and use (`array`, `rN wN`), the original's slots the alignment pairs it with (`<- moved`,
-`<- several`), the original's slots no slot of ours pairs with, `shared in the original:` (one slot of the
-original for two locals of ours: their lifetimes do not overlap there, so VC6 packed them), and the holes. The
+prologue (`[ebp-X]` in an ebp frame) with the variable VC6 put there (from its listing; `buf+0x8` inside an array,
+`a/b` for locals VC6 packed into one slot), its size and use (`array`, `rN wN`), the original's slots the alignment
+pairs it with (`<- moved`, `<- several`), the original's slots no slot of ours pairs with, `shared in the
+original:` (one slot of the original for two locals of ours, named: their lifetimes do not overlap there, so VC6
+packed them), and the holes. The
 locals' order and sizes decide the layout: reorder declarations (`--move-line`), merge or split locals, change an
 array's size or element type until the frames agree.
 

@@ -193,9 +193,9 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::matchcmd::next_command(&p, which, tier.as_deref(), shard, unit, n)?;
             Ok(io.report("next", &l, e.as_deref(), c))
         }
-        Cmd::Asmdiff(AsmdiffArgs { name, regs, all, symbols, plain, changed, at, context, side }) => {
+        Cmd::Asmdiff(AsmdiffArgs { name, regs, all, symbols, plain, changed, at, context, side, lines }) => {
             let (p, _) = build_target(io, sel, None, true, false)?;
-            let view = crate::matchcmd::View { changed, at, context, side };
+            let view = crate::matchcmd::View { changed, at, context, side, lines };
             let (l, e, c) = crate::matchcmd::asmdiff_command(&p, &name, regs, all, symbols, plain, view)?;
             Ok(io.report("asmdiff", &l, e.as_deref(), c))
         }
@@ -203,6 +203,11 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (p, _) = build_target(io, sel, None, true, false)?;
             let (l, e, c) = crate::matchcmd::diffclass_command(&p, &name, all)?;
             Ok(io.report("diffclass", &l, e.as_deref(), c))
+        }
+        Cmd::Listing(ListingArgs { name }) => {
+            let (p, _) = build_target(io, sel, None, true, false)?;
+            let (lines, status) = crate::listing::listing_command(&p, &name)?;
+            Ok(io.report("listing", &lines, None, status))
         }
         Cmd::Frame(FrameArgs { name }) => {
             let (p, _) = build_target(io, sel, None, true, false)?;

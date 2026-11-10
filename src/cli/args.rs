@@ -71,6 +71,9 @@ pub enum Cmd {
     /// both stack frames of one function: each slot as `[esp+X]` after the prologue with its size and use, the
     /// original's slots the alignment pairs it with, the slots one side shares, the holes
     Frame(FrameArgs),
+    /// VC6's own assembly listing of one function (/FAc: offsets, bytes, `; Line N`, the frame symbols `_x$ = N`),
+    /// its unit compiled as the build compiles it
+    Listing(ListingArgs),
     /// write `@deep why` into a function's address comment (--clear removes the tag); with --hard, `@hard why`
     Escalate(EscalateArgs),
     /// write `@stuck why` into a function's address comment (--clear removes the tag)
@@ -546,6 +549,9 @@ pub struct AsmdiffArgs {
     /// one side's listing alone, in its own order: ours or original (names with --symbols, renamed with --regs)
     #[arg(long, value_name = "SIDE", value_parser = ["ours", "original"])]
     pub side: Option<String>,
+    /// each of our lines with its source line (`; unit.c:LINE`, from VC6's listing of the unit)
+    #[arg(long)]
+    pub lines: bool,
 }
 
 /// `Cmd::Diffclass`'s arguments (its own type: clap builds and reads them in a function of their own).
@@ -560,6 +566,12 @@ pub struct DiffclassArgs {
 /// `Cmd::Frame`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct FrameArgs {
+    pub name: String,
+}
+
+/// `Cmd::Listing`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct ListingArgs {
     pub name: String,
 }
 

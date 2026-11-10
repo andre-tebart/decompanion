@@ -16,15 +16,43 @@ use crate::dis::{self, Flow, Ins, OpType, Reg};
 use crate::x86::Line;
 use std::collections::{BTreeSet, HashMap};
 
+/// The saves of a function: a push of a callee-saved register the function has not written before it (in address
+/// order; VC6 schedules them into the first statement's code), by address. They are no call's arguments: a stdcall
+/// call through a register right after them (`call esi`, GetPrivateProfileStringA) pops its own pushes only.
+pub fn save_pushes(ins: &[Ins]) -> std::collections::HashSet<u32> {
+    let mut written = 0u32;
+    let mut v = std::collections::HashSet::new();
+    for i in ins {
+        if i.mn == "push" {
+            if let Some(o) = i.ops.first().filter(|o| o.typ == OpType::Reg && o.reg.size() == 4) {
+                if let Some(g) = dis::gpr(o.reg) {
+                    if matches!(g, 3 | 5 | 6 | 7) && written & (1 << g) == 0 {
+                        v.insert(i.addr);
+                    }
+                }
+            }
+        }
+        written |= (i.defs & 0xff) as u32;
+        if matches!(i.flow, Flow::Ret) {
+            break;
+        }
+    }
+    v
+}
+
 /// esp relative to the entry (the return address at 0) before each instruction reached from the entry, by address;
 /// None when the walk meets two depths at one address or an esp write it does not follow (an ebp frame's
 /// `mov esp, ebp`, `and esp`, `leave`).
 pub fn depths(ins: &[Ins], va: u32) -> Option<HashMap<u32, i32>> {
     let at: HashMap<u32, usize> = ins.iter().enumerate().map(|(k, i)| (i.addr, k)).collect();
     let mut out: HashMap<u32, i32> = HashMap::new();
-    // (address, depth, bytes pushed since the last `add esp`: a stdcall callee pops them)
-    let mut todo = vec![(va, 0i32, 0i32)];
-    while let Some((mut a, mut d, mut pending)) = todo.pop() {
+    // the saves: a push of a callee-saved register the function has not written before it (in address order; VC6
+    // schedules them into the first statement's code). They are no call's arguments: a stdcall call through a
+    // register right after them (`call esi`, GetPrivateProfileStringA) pops its own pushes only
+    let saves = save_pushes(ins);
+    // (.., ebp's depth once `mov ebp, esp` set it: an ebp frame's `mov esp, ebp` and `leave` restore esp from it)
+    let mut todo = vec![(va, 0i32, 0i32, None::<i32>)];
+    while let Some((mut a, mut d, mut pending, mut ebp)) = todo.pop() {
         loop {
             let Some(&k) = at.get(&a) else { break };
             match out.get(&a) {
@@ -41,7 +69,9 @@ pub fn depths(ins: &[Ins], va: u32) -> Option<HashMap<u32, i32>> {
             match i.mn {
                 "push" => {
                     d -= 4;
-                    pending += 4;
+                    if !saves.contains(&i.addr) {
+                        pending += 4;
+                    }
                 }
                 "pop" if esp0 => return None,
                 "pop" => d += 4,
@@ -54,7 +84,17 @@ pub fn depths(ins: &[Ins], va: u32) -> Option<HashMap<u32, i32>> {
                     d += imm1?;
                     pending = 0;
                 }
-                "leave" => return None,
+                "leave" => {
+                    d = ebp? + 4;
+                    pending = 0;
+                }
+                "mov" if op0.is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::EBP) && i.ops.get(1).is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::ESP) => {
+                    ebp = Some(d);
+                }
+                "mov" if esp0 && i.ops.get(1).is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::EBP) => {
+                    d = ebp?;
+                    pending = 0;
+                }
                 "call" => {
                     // through memory or a register with no `add esp` after it: stdcall, the callee pops its arguments
                     let next = ins.get(k + 1);
@@ -75,7 +115,7 @@ pub fn depths(ins: &[Ins], va: u32) -> Option<HashMap<u32, i32>> {
                 },
                 Flow::CondJump => {
                     if let Some(t) = i.target {
-                        todo.push((t, d, pending));
+                        todo.push((t, d, pending, ebp));
                     }
                     a = i.addr + i.size;
                 }
@@ -94,10 +134,20 @@ struct Access {
     base: bool,
 }
 
-fn accesses(i: &Ins, depth: i32) -> Vec<Access> {
-    i.ops.iter().filter(|o| o.typ == OpType::Mem && o.base == Reg::ESP)
-        .map(|o| Access { slot: depth + o.disp as i32, base: i.mn == "lea" || o.index != Reg::None })
+fn accesses(i: &Ins, depth: i32, ebp: Option<i32>) -> Vec<Access> {
+    i.ops.iter().filter(|o| o.typ == OpType::Mem && (o.base == Reg::ESP || o.base == Reg::EBP && ebp.is_some()))
+        .map(|o| {
+            let at = if o.base == Reg::ESP { depth } else { ebp.unwrap_or(0) };
+            Access { slot: at + o.disp as i32, base: i.mn == "lea" || o.index != Reg::None }
+        })
         .collect()
+}
+
+/// ebp's depth in an ebp frame (the depth at its `mov ebp, esp`), None without one.
+pub fn ebp_base(ins: &[Ins], d: &HashMap<u32, i32>) -> Option<i32> {
+    ins.iter().find(|i| i.mn == "mov" && i.ops.first().is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::EBP)
+                    && i.ops.get(1).is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::ESP))
+        .and_then(|i| d.get(&i.addr).copied())
 }
 
 /// A plain access whose offset into the paired arrays differs.
@@ -131,7 +181,7 @@ fn aligned_pairs(ia: &[Ins], ib: &[Ins], da: &HashMap<u32, i32>, db: &HashMap<u3
     let by = |ins: &[Ins]| -> HashMap<u32, usize> { ins.iter().enumerate().map(|(k, i)| (i.addr, k)).collect() };
     let (ka, kb) = (by(ia), by(ib));
     let key = |l: &Line, ins: &[Ins], k: &HashMap<u32, usize>, d: &HashMap<u32, i32>| -> String {
-        let acc = k.get(&l.addr).and_then(|&x| d.get(&ins[x].addr).map(|&dx| accesses(&ins[x], dx))).unwrap_or_default();
+        let acc = k.get(&l.addr).and_then(|&x| d.get(&ins[x].addr).map(|&dx| accesses(&ins[x], dx, ebp_base(ins, d)))).unwrap_or_default();
         match (acc.first(), l.text.find('['), l.text.find(']')) {
             (Some(a), Some(s), Some(e)) if s < e && l.text[s..e].contains("esp") => {
                 format!("{}[S{}{}]{}", &l.text[..s], a.slot, if a.base { "+" } else { "" }, &l.text[e + 1..])
@@ -139,6 +189,7 @@ fn aligned_pairs(ia: &[Ins], ib: &[Ins], da: &HashMap<u32, i32>, db: &HashMap<u3
             _ => l.text.clone(),
         }
     };
+    let (ea, eb) = (ebp_base(ia, da), ebp_base(ib, db));
     let ka_keys: Vec<String> = la.iter().map(|l| key(l, ia, &ka, da)).collect();
     let kb_keys: Vec<String> = lb.iter().map(|l| key(l, ib, &kb, db)).collect();
     let ta: Vec<&str> = ka_keys.iter().map(|s| s.as_str()).collect();
@@ -155,7 +206,7 @@ fn aligned_pairs(ia: &[Ins], ib: &[Ins], da: &HashMap<u32, i32>, db: &HashMap<u3
             }
             let (Some(&x), Some(&y)) = (ka.get(&la[i].addr), kb.get(&lb[j].addr)) else { continue };
             let (Some(&dx), Some(&dy)) = (da.get(&ia[x].addr), db.get(&ib[y].addr)) else { continue };
-            let (ax, ay) = (accesses(&ia[x], dx), accesses(&ib[y], dy));
+            let (ax, ay) = (accesses(&ia[x], dx, ea), accesses(&ib[y], dy, eb));
             if ax.len() == ay.len() {
                 pairs.extend(ax.into_iter().zip(ay).map(|(p, q)| (ia[x].addr, p, q, h)));
             }
@@ -168,9 +219,13 @@ fn aligned_pairs(ia: &[Ins], ib: &[Ins], da: &HashMap<u32, i32>, db: &HashMap<u3
 pub fn check(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> Vec<SlotDiff> {
     let (ia, ib) = (dis::decode(ours, va), dis::decode(theirs, va));
     let (Some(da), Some(db)) = (depths(&ia, va), depths(&ib, va)) else { return vec![] };
+    // esp frames only: an ebp frame's arrays are guessed no better, and the check was measured on esp frames
+    if ebp_base(&ia, &da).is_some() || ebp_base(&ib, &db).is_some() {
+        return vec![];
+    }
     // every array base of each side (the whole function, paired or not)
     let bases_of = |ins: &[Ins], d: &HashMap<u32, i32>| -> BTreeSet<i32> {
-        ins.iter().filter_map(|i| d.get(&i.addr).map(|&x| accesses(i, x))).flatten().filter(|a| a.base && a.slot < 0).map(|a| a.slot).collect()
+        ins.iter().filter_map(|i| d.get(&i.addr).map(|&x| accesses(i, x, ebp_base(ins, d)))).flatten().filter(|a| a.base && a.slot < 0).map(|a| a.slot).collect()
     };
     let (ba, bb) = (bases_of(&ia, &da), bases_of(&ib, &db));
     if ba.is_empty() || bb.is_empty() {
@@ -222,7 +277,7 @@ pub fn check(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
     // to another, so both elements' counts differ
     let touched = |ins: &[Ins], d: &HashMap<u32, i32>| -> HashMap<i32, usize> {
         let mut m = HashMap::new();
-        for a in ins.iter().filter_map(|i| d.get(&i.addr).map(|&x| accesses(i, x))).flatten() {
+        for a in ins.iter().filter_map(|i| d.get(&i.addr).map(|&x| accesses(i, x, ebp_base(ins, d)))).flatten() {
             *m.entry(a.slot).or_insert(0) += 1;
         }
         m
@@ -262,33 +317,41 @@ type Slots = std::collections::BTreeMap<i32, Slot>;
 /// The slots of one side by entry-relative offset, esp after the prologue (the saves pushed, `sub esp, N`, in either
 /// order; `[esp + X]` in the body at that depth is the slot depth + X), and the saved registers' slots.
 fn slots(ins: &[Ins], d: &HashMap<u32, i32>) -> (Slots, i32, BTreeSet<i32>) {
+    // the body's depth: the lowest the saves and the frame's `sub esp` (or `mov eax, N; call __chkstk`) take esp
+    // before the first branch or other call (VC6 schedules the saves into the first statement's code)
+    let save_at = save_pushes(ins);
     let mut body = 0;
     let mut saves = BTreeSet::new();
-    for i in ins {
+    for (k, i) in ins.iter().enumerate() {
         let esp0 = i.ops.first().is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::ESP);
-        let reg0 = i.ops.first().is_some_and(|o| o.typ == OpType::Reg);
-        match i.mn {
-            "push" if reg0 => {}
-            "sub" if esp0 => {}
-            // `mov eax, N; call __chkstk` (a frame beyond a page)
-            "mov" if reg0 && i.ops.get(1).is_some_and(|o| o.typ == OpType::Imm) => {}
-            "call" if body == 0 => {}
-            _ => break,
+        let chkstk = i.mn == "call" && k > 0 && ins[k - 1].mn == "mov"
+            && ins[k - 1].ops.first().is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::EAX)
+            && ins[k - 1].ops.get(1).is_some_and(|o| o.typ == OpType::Imm && o.imm >= 0x1000);
+        let frame = save_at.contains(&i.addr) || (i.mn == "sub" && esp0) || chkstk;
+        if !frame && (i.mn == "call" || i.flow != Flow::Next) {
+            break;
         }
-        if let Some(&x) = d.get(&(i.addr + i.size)) {
-            if i.mn == "push" {
-                saves.insert(x);
+        if frame {
+            if let Some(&x) = d.get(&(i.addr + i.size)) {
+                body = body.min(x);
             }
-            body = body.min(x);
+        }
+    }
+    // the saved registers' slots: where each save push wrote
+    for a in save_pushes(ins) {
+        if let Some(&x) = d.get(&a) {
+            saves.insert(x - 4);
         }
     }
     let mut out = Slots::new();
+    let ebp = ebp_base(ins, d);
     for i in ins {
         let Some(&dx) = d.get(&i.addr) else { continue };
         for (k, o) in i.ops.iter().enumerate() {
-            if o.typ != OpType::Mem || o.base != Reg::ESP {
+            if o.typ != OpType::Mem || !(o.base == Reg::ESP || o.base == Reg::EBP && ebp.is_some()) {
                 continue;
             }
+            let dx = if o.base == Reg::ESP { dx } else { ebp.unwrap_or(0) };
             if saves.contains(&(dx + o.disp as i32)) {
                 continue;
             }
@@ -311,7 +374,7 @@ fn slots(ins: &[Ins], d: &HashMap<u32, i32>) -> (Slots, i32, BTreeSet<i32>) {
 /// address taken or indexed), and the original's slots the alignment pairs it with; the slots of one side paired with
 /// several of the other (locals that share a slot on one side only), and the holes (bytes of the locals no access
 /// touches, an array up to the next slot).
-pub fn frame(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> Vec<String> {
+pub fn frame(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line], names: &[(i32, String)]) -> Vec<String> {
     let (ia, ib) = (dis::decode(ours, va), dis::decode(theirs, va));
     let (Some(da), Some(db)) = (depths(&ia, va), depths(&ib, va)) else {
         return vec!["the stack depth is not followed through one of the two functions (an ebp frame, or esp written another way): no frame view".into()];
@@ -324,12 +387,17 @@ pub fn frame(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
         *to.entry(p.slot).or_default().entry(q.slot).or_default() += 1;
         *from.entry(q.slot).or_default().entry(p.slot).or_default() += 1;
     }
-    // a slot as the body reads it: `[esp+0x10]`, the return address's place, an argument
+    // a slot as the body reads it: `[esp+0x10]` (an ebp frame's `[ebp-0x18]`), the return address's place, an
+    // argument
+    let (ebp_a, ebp_b) = (ebp_base(&ia, &da), ebp_base(&ib, &db));
     let at = |slot: i32, body: i32| -> String {
+        let ebp = if body == body_a { ebp_a } else { ebp_b };
         if slot >= 4 {
             format!("arg+{:#x}", slot - 4)
         } else if slot >= 0 {
             "ret".into()
+        } else if let Some(e) = ebp {
+            format!("[ebp-{:#x}]", e - slot)
         } else {
             format!("[esp+{:#x}]", slot - body)
         }
@@ -350,8 +418,27 @@ pub fn frame(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
     let (va_saves, vb_saves) = (saves_a.len() as i32 * 4, saves_b.len() as i32 * 4);
     let mut out = vec![format!("frame: ours {:#x} bytes of locals ({} saved registers), the original {:#x} ({}){}",
                                -body_a - va_saves, saves_a.len(), -body_b - vb_saves, saves_b.len(),
-                               if body_a == body_b { String::new() } else { format!("; the original's esp {:+#x} from ours", body_b - body_a) })];
-    out.push(format!("  {:<14} {:>5}  {:<14} the original's slots paired (times)", "ours", "size", "use"));
+                               if body_a == body_b { String::new() } else {
+                                   let x = body_b - body_a;
+                                   format!("; the original's body esp {}{:#x} from ours", if x < 0 { "-" } else { "+" }, x.unsigned_abs())
+                               })];
+    // our variables by slot (VC6's frame symbols, the entry-relative slot): an exact slot, or inside the nearest
+    // variable below it (an element or a field)
+    let mut by_slot: std::collections::BTreeMap<i32, Vec<&str>> = Default::default();
+    for (o, n) in names {
+        by_slot.entry(*o).or_default().push(n.as_str());
+    }
+    let name_of = |slot: i32| -> String {
+        match by_slot.range(..=slot).next_back() {
+            Some((o, ns)) if *o == slot => ns.join("/"),
+            Some((o, ns)) if slot < 0 && slot - o < 0x400 && by_slot.range(o + 1..).next().is_none_or(|(n, _)| *n > slot) && sa.get(o).is_some_and(|x| x.base) => {
+                format!("{}+{:#x}", ns.join("/"), slot - o)
+            }
+            _ => String::new(),
+        }
+    };
+    let width = sa.keys().map(|k| name_of(*k).chars().count()).max().unwrap_or(0).clamp(4, 28);
+    out.push(format!("  {:<14} {:<width$} {:>5}  {:<14} the original's slots paired (times)", "ours", if names.is_empty() { "" } else { "name" }, "size", "use"));
     for (slot, s) in &sa {
         let paired = to.get(slot).map(|m| m.iter().map(|(q, n)| format!("{} ({n})", at(*q, body_b))).collect::<Vec<_>>().join(", ")).unwrap_or_else(|| "-".into());
         let mark = match to.get(slot) {
@@ -359,7 +446,7 @@ pub fn frame(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
             Some(m) if m.keys().next().is_some_and(|q| at(*q, body_b) != at(*slot, body_a)) => "   <- moved",
             _ => "",
         };
-        out.push(format!("  {:<14} {:>5}  {:<14} {paired}{mark}", at(*slot, body_a), format!("{:#x}", s.size), fmt_slot(s)));
+        out.push(format!("  {:<14} {:<width$} {:>5}  {:<14} {paired}{mark}", at(*slot, body_a), name_of(*slot), format!("{:#x}", s.size), fmt_slot(s)));
     }
     let lone: Vec<String> = sb.iter().filter(|(q, _)| !from.contains_key(q)).map(|(q, s)| format!("{} {:#x} {}", at(*q, body_b), s.size, fmt_slot(s))).collect();
     if !lone.is_empty() {
@@ -368,7 +455,9 @@ pub fn frame(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line]) -> V
     // a slot of the original paired with several of ours: the original shares it between locals ours keeps apart
     for (q, m) in from.iter().filter(|(_, m)| m.len() > 1).collect::<std::collections::BTreeMap<_, _>>() {
         let ours: Vec<String> = m.iter().map(|(p, n)| format!("{} ({n})", at(*p, body_a))).collect();
-        out.push(format!("  shared in the original: {} pairs with ours {}: one slot for locals whose lifetimes do not overlap", at(*q, body_b), ours.join(", ")));
+        let named: Vec<String> = m.keys().map(|p| name_of(*p)).filter(|n| !n.is_empty()).collect();
+        let named = if named.is_empty() { String::new() } else { format!(" ({})", named.join(", ")) };
+        out.push(format!("  shared in the original: {} pairs with ours {}{named}: one slot for locals whose lifetimes do not overlap", at(*q, body_b), ours.join(", ")));
     }
     for (p, m) in to.iter().filter(|(_, m)| m.len() > 1).collect::<std::collections::BTreeMap<_, _>>() {
         let theirs: Vec<String> = m.iter().map(|(q, n)| format!("{} ({n})", at(*q, body_b))).collect();
@@ -415,10 +504,11 @@ mod tests {
     fn the_frame_view_pairs_slots() {
         // ours reads element 0x44 of the array, the original element 0: the load's slot pairs elsewhere
         let (a, b) = (f(0x44, true), f(0, true));
-        let v = frame(&a, &b, VA, &lines(&a), &lines(&b));
+        let v = frame(&a, &b, VA, &lines(&a), &lines(&b), &[(-0x50, "buf".to_string())]);
         let text = v.join("\n");
         assert!(v[0].starts_with("frame: ours 0x60 bytes of locals (0 saved registers), the original 0x60 (0)"), "{text}");
-        assert!(text.contains("[esp+0x10]") && text.contains("array"), "{text}");
+        assert!(text.contains("[esp+0x10]") && text.contains("array") && text.contains(" buf "), "{text}");
+        assert!(text.contains("buf+0x44"), "{text}");
         assert!(text.contains("[esp+0x54]") && text.contains("<- moved"), "{text}");
         assert!(text.contains("holes: ours"), "{text}");
     }

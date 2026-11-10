@@ -354,6 +354,8 @@ pub struct View {
     pub at: Option<String>,
     pub context: Option<usize>,
     pub side: Option<String>,
+    /// each of our lines with its source line, from VC6's listing of the unit (listing.rs)
+    pub lines: bool,
 }
 
 /// The lines of an aligned listing (every line: `all`) that `--changed` / `--at` keep: the differing lines (or the
@@ -504,6 +506,26 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
         out.push("  symbols: ours by our relocations, the original's by the ledger; '!' the same instruction naming another symbol \
                   (ours | the original's); '=' naming the same address or literal by another name (an alias: no error)".into());
     }
+    if view.lines {
+        // our lines (`-`, `~`, `!` and the equal ones carry our address; `+` the original's) with `; src:LINE`
+        let fname = row.get("name").and_then(|v| v.as_str()).unwrap_or(name).to_string();
+        match crate::listing::of_function(p, &fname)? {
+            Ok((file, part)) => {
+                let a = int(&row, "addr") as u32;
+                let map: std::collections::HashMap<u32, u32> = crate::listing::line_map(&part).into_iter().map(|(o, l)| (a + o, l)).collect();
+                let short = file.rsplit('/').next().unwrap_or(&file).to_string();
+                body = body.into_iter().map(|l| {
+                    let ours = !l.starts_with('+');
+                    let addr = l.get(3..13).filter(|x| x.starts_with("0x")).and_then(|x| u32::from_str_radix(&x[2..], 16).ok());
+                    match (ours, addr.and_then(|x| map.get(&x))) {
+                        (true, Some(n)) => format!("{l}   ; {short}:{n}"),
+                        _ => l,
+                    }
+                }).collect();
+            }
+            Err(e) => out.push(format!("  (no source lines: {e})")),
+        }
+    }
     out.extend(body);
     Ok((out, None, 0))
 }
@@ -522,7 +544,52 @@ pub fn frame_command(p: &crate::project::Project, name: &str) -> Result<Out> {
     let row = r.row.as_object().cloned().unwrap_or_default();
     let a = int(&row, "addr");
     let mut out = vec![record(&[("fn", Tok::I(a)), ("name", vt(row.get("name"))), ("code", vt(row.get("code")))])];
-    out.extend(crate::slotmap::frame(&r.code.0, &r.code.1, a as u32, &r.la, &r.lb));
+    // our variables from VC6's own listing of the unit: its frame symbols `_x$ = N`, each used as `_x$[esp+K]`; the
+    // slot is N + c, where c = K + esp's depth is the function's own constant (VC6 bases its symbols at the entry or
+    // 4 below it): measured on the listing's operands against our walk of the depths, the most common value
+    let fname = row.get("name").and_then(|v| v.as_str()).unwrap_or(name).to_string();
+    let names: Vec<(i32, String)> = match crate::listing::of_function(p, &fname)? {
+        Ok((_, part)) => {
+            let ins = crate::dis::decode(&r.code.0, a as u32);
+            let d = crate::slotmap::depths(&ins, a as u32).unwrap_or_default();
+            // address = esp + K + N = entry + depth + K + N: the slot is N + (K + depth); VC6 bases its locals and its
+            // parameters apart (a parameter's slot is N - 4), so the locals' constant is voted on their own uses
+            let syms = crate::listing::frame_symbols(&part);
+            let n_of: std::collections::HashMap<&str, i32> = syms.iter().map(|(n, v)| (v.as_str(), *n)).collect();
+            let mut votes: std::collections::BTreeMap<i32, usize> = Default::default();
+            for (off, sym, k) in crate::listing::symbol_depths(&part) {
+                if let (Some(dx), Some(&n)) = (d.get(&(a as u32 + off)), n_of.get(sym.as_str())) {
+                    if n < 0 {
+                        *votes.entry(k + dx).or_default() += 1;
+                    }
+                }
+            }
+            let total: usize = votes.values().sum();
+            let best = votes.iter().max_by_key(|x| *x.1).map(|(c, n)| (*c, *n));
+            if std::env::var_os("DCP_FRAME_DEBUG").is_some() {
+                eprintln!("frame: the locals' symbol base, votes {votes:?}");
+            }
+            // an ebp frame's symbols are ebp-relative (`_x$[ebp]`): the slot is N + ebp's depth
+            let local_c = match (crate::slotmap::ebp_base(&ins, &d), best) {
+                (Some(e), _) => Some(e),
+                (None, Some((c, n))) if 2 * n > total => Some(c),
+                (None, None) => Some(0),
+                _ => None,
+            };
+            match local_c {
+                Some(c) => syms.into_iter().map(|(sym, v)| (if sym < 0 { sym + c } else { sym - 4 }, v)).collect(),
+                None => {
+                    out.push("  (no variable names: the listing's frame symbols do not agree with the walk of the stack depths)".into());
+                    vec![]
+                }
+            }
+        }
+        Err(e) => {
+            out.push(format!("  (no variable names: {e})"));
+            vec![]
+        }
+    };
+    out.extend(crate::slotmap::frame(&r.code.0, &r.code.1, a as u32, &r.la, &r.lb, &names));
     Ok((out, None, 0))
 }
 
@@ -919,7 +986,7 @@ mod tests {
             let m = if k == 10 { "-" } else if k == 11 { "+" } else { " " };
             format!("{m}  {:#010x}  nop", 0x1000 + k)
         }).collect();
-        let v = |changed, at: Option<&str>, context| View { changed, at: at.map(|x| x.to_string()), context, side: None };
+        let v = |changed, at: Option<&str>, context| View { changed, at: at.map(|x| x.to_string()), context, side: None, lines: false };
         let w = window(body.clone(), &v(true, None, Some(1))).unwrap();
         assert_eq!(w, ["     ... 9 lines ...", "   0x00001009  nop", "-  0x0000100a  nop", "+  0x0000100b  nop", "   0x0000100c  nop",
                        "     ... 7 lines ..."]);
