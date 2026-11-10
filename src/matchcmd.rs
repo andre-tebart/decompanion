@@ -725,7 +725,7 @@ pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> 
     // the entries that carry an accepted fall, from this promote or earlier ones (bug-reports/wrap-accepted-count-
     // unexplained.md: `accepted=8` with no fall read as eight things to act on)
     if accepted > falls.len() {
-        out.push(format!("  debt={accepted}: baseline entries kept below an earlier grade on purpose ({} from earlier promotes or dcp debt add; dcp debt                           list names them); nothing to act on now", accepted - falls.len()));
+        out.push(format!("  debt={accepted}: baseline entries kept below an earlier grade on purpose ({} from earlier promotes or dcp debt add; dcp debt list names them); nothing to act on now", accepted - falls.len()));
     }
     Ok((out, None, 0))
 }
