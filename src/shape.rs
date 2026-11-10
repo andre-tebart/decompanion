@@ -420,7 +420,7 @@ fn multiset_eq(a: &[Shape], b: &[Shape]) -> bool {
 // ------------------------------------------------------------------------------------------------ masks
 
 /// The line with its registers masked (but esp): what a renaming cannot change.
-fn mask_regs(s: &Shape) -> Shape {
+pub(crate) fn mask_regs(s: &Shape) -> Shape {
     let m = |r: Reg| if dis::gpr(r).is_some_and(|g| g != ESP) { ANY } else { r };
     s.map_ops(|o| match *o {
         Opnd::Reg(r) => Opnd::Reg(m(r)),
@@ -430,7 +430,7 @@ fn mask_regs(s: &Shape) -> Shape {
 }
 
 /// The line with its stack slots' offsets masked: what a slot remap cannot change.
-fn mask_slots(s: &Shape) -> Shape {
+pub(crate) fn mask_slots(s: &Shape) -> Shape {
     s.map_ops(|o| match (*o, slot(o)) {
         (Opnd::Mem { seg, size, base, index, scale, .. }, Some(_)) => Opnd::Mem { seg, size, base, index, scale, disp: Num::Masked },
         (o, _) => o,

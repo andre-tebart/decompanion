@@ -18,6 +18,75 @@ fn shapes(l: &[Line]) -> Vec<Shape> {
     l.iter().map(|x| x.shape.clone()).collect()
 }
 
+/// The instructions of a hunk that move the stack (pushes and pops but a callee-saved register's save or restore,
+/// calls, `add` / `sub esp`), in order, their registers masked: their order decides what each call gets.
+fn stack_ops(s: &[Shape]) -> Vec<Shape> {
+    s.iter().filter(|x| is_stack_op(x)).map(|x| shape::mask_slots(&shape::mask_regs(x))).collect()
+}
+
+/// What the stack does around the calls of a listing, the lines of `skip` (a shared tail's hunk) left out: each
+/// call with the cleanup right after it (`add esp, K`, a pop, or none: a cleanup merged into a later one), as a
+/// multiset; and each basic block's pushes in order (cut before a branch target and after a jump, a branch or a
+/// return). A moved block, a block split by another layout, a push moved across a call (an FPU-argument call takes
+/// nothing from the stack) and another frame size keep both; a cleanup moved across a call (a nested call's partial
+/// pop: bug-reports/arg-count-casts-hide-nested-call.md) or two pushes swapped (ai_MessageBox's arguments) change
+/// them.
+fn stack_profile(l: &[Line], skip: &HashSet<usize>) -> (Vec<Option<Shape>>, Vec<Vec<Shape>>) {
+    let m = |x: &Shape| shape::mask_slots(&shape::mask_regs(x));
+    let targets: HashSet<i64> = l.iter().filter_map(|x| x.target).collect();
+    // each call with its cleanup: the next instruction of the stack after it in its block (other instructions
+    // skipped: VC6 schedules `and eax, 0xffff` between a call and its `add esp`), when that is an `add esp` or a pop
+    let mut calls = vec![];
+    for (k, x) in l.iter().enumerate() {
+        if skip.contains(&k) || x.shape.mn != "call" {
+            continue;
+        }
+        let mut cleanup = None;
+        for (j, n) in l.iter().enumerate().skip(k + 1) {
+            if targets.contains(&(n.addr as i64)) || n.shape.mn == "ret" || n.shape.mn.starts_with('j') {
+                break;
+            }
+            if !skip.contains(&j) && is_stack_op(&n.shape) {
+                if n.shape.mn != "push" && n.shape.mn != "call" {
+                    cleanup = Some(m(&n.shape));
+                }
+                break;
+            }
+        }
+        calls.push(cleanup);
+    }
+    let mut blocks: Vec<Vec<Shape>> = vec![];
+    let mut cur: Vec<Shape> = vec![];
+    for (k, x) in l.iter().enumerate() {
+        if targets.contains(&(x.addr as i64)) && !cur.is_empty() {
+            blocks.push(std::mem::take(&mut cur));
+        }
+        if !skip.contains(&k) && x.shape.mn == "push" && is_stack_op(&x.shape) {
+            cur.push(m(&x.shape));
+        }
+        if (x.target.is_some() && x.shape.mn != "call" || x.shape.mn == "ret" || x.shape.mn.starts_with('j')) && !cur.is_empty() {
+            blocks.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        blocks.push(cur);
+    }
+    (calls, blocks)
+}
+
+fn is_stack_op(x: &Shape) -> bool {
+    let esp0 = matches!(x.ops.first(), Some(shape::Opnd::Reg(r)) if *r == crate::dis::Reg::ESP);
+    match x.mn {
+        "push" => !x.save,
+        // a pop into a callee-saved register restores it (VC6 cleans arguments up with `pop ecx` or `add esp`),
+        // whether or not the epilogue's run of pops marks it
+        "pop" => !x.save && !matches!(x.ops.first(), Some(shape::Opnd::Reg(r)) if crate::dis::gpr(*r).is_some_and(|g| matches!(g, 3 | 5 | 6 | 7))),
+        "call" => true,
+        "add" | "sub" => esp0,
+        _ => false,
+    }
+}
+
 fn multiset_eq<T: Ord + Clone>(a: &[T], b: &[T]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -167,6 +236,12 @@ fn classify(la: &[Line], lb: &[Line], at: &[Shape], i1: usize, i2: usize, j1: us
         return ("fill".into(), "alignment fill".into());
     }
     if multiset_eq(&a, &b) {
+        // the stack's instructions in another order (pushes swapped, a push moved across a call or a cleanup): another
+        // call's arguments, not scheduling (bug-reports/arg-count-casts-hide-nested-call.md: ai_MessageBox's two
+        // arguments swapped, classed order)
+        if stack_ops(&a) != stack_ops(&b) {
+            return ("code".into(), "the stack's pushes, pops and calls in another order: a call's arguments differ".into());
+        }
         return ("order".into(), "same instructions, other order".into());
     }
     shape::explain(&a, &b, at).or_else(|| tail(la, lb, at, i1, i2, j1, j2))
@@ -729,7 +804,28 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
     // the code hunks are moved instructions: their lines the same on both sides, or with the lines of the explained
     // hunks taken as they are (a hunk-local renaming can pair a moved instruction with another one, and leave
     // its partner to a code hunk of its own: gildegold gm_RemoveOwned, two zeroings moved apart)
-    let moved = !code.is_empty() && (multiset_eq(&minus, &plus) || {
+    // a moved push, pop, call or stack cleanup is no move: it changes what a call gets as arguments (a nested
+    // call's partial cleanup against a merged one: bug-reports/arg-count-casts-hide-nested-call.md); the prover
+    // judges such code. The function's whole sequence of them is compared: an instruction moved past a pop of the
+    // epilogue changes nothing on the stack
+    // per basic block (a moved block keeps its own order: gildegold he_SecretRoomDomizil, ai_DragTownMap)
+    let tails = |side: usize| -> HashSet<usize> {
+        hs.iter().filter(|h| h.4 == "tail").flat_map(|h| if side == 0 { h.0..h.1 } else { h.2..h.3 }).collect()
+    };
+    let (sa, sb) = (stack_profile(la, &tails(0)), stack_profile(lb, &tails(1)));
+    let stack_moved = !code.is_empty() && (!multiset_eq(&sa.0, &sb.0) || !multiset_eq(&sa.1, &sb.1));
+    if stack_moved && std::env::var_os("DCP_STACK_DEBUG").is_some() {
+        let at = la.first().map(|l| l.addr).unwrap_or(0);
+        let mn = |v: &Option<Shape>| v.as_ref().map(|x| format!("{x:?}")).unwrap_or_else(|| "-".into());
+        let (mut ca, mut cb) = (sa.0.clone(), sb.0.clone());
+        ca.sort();
+        cb.sort();
+        eprintln!("stack {at:#x}: calls ours {:?}
+  the original {:?}", ca.iter().map(mn).collect::<Vec<_>>(), cb.iter().map(mn).collect::<Vec<_>>());
+        eprintln!("stack {at:#x}: push blocks ours {:?}
+  the original {:?}", sa.1.iter().map(|b| b.len()).collect::<Vec<_>>(), sb.1.iter().map(|b| b.len()).collect::<Vec<_>>());
+    }
+    let moved = !code.is_empty() && !stack_moved && (multiset_eq(&minus, &plus) || {
         let (mut m, mut p) = (minus.clone(), plus.clone());
         for (i1, i2, j1, j2, _, _) in hs.iter().filter(|h| h.4 != "code" && h.4 != "fill") {
             m.extend_from_slice(&a[*i1..*i2]);
@@ -1090,6 +1186,25 @@ mod tests {
 
     fn weight(v: &Verdict, k: &str) -> Option<i64> {
         v.hunks.iter().find(|x| x.0 == k).map(|x| x.1)
+    }
+
+    #[test]
+    fn the_stack_keeps_its_order() {
+        // two pushes swapped before a call: another argument order (ai_MessageBox), not scheduling
+        let a = lines(&["mov edx, 1", "push edx", "push 0x101", "call 0x500000", "ret"]);
+        let b = lines(&["mov edx, 1", "push 0x101", "push edx", "call 0x500000", "ret"]);
+        assert_eq!(classes(&a, &b), ["code"]);
+        assert!(!verdict(&a, &b, None).shape);
+        // a load moved past a push: scheduling
+        let a = lines(&["mov eax, 1", "push 2", "call 0x500000", "ret"]);
+        let b = lines(&["push 2", "mov eax, 1", "call 0x500000", "ret"]);
+        assert_eq!(classes(&a, &b), ["order"]);
+        // a nested call `outer(4, inner(2, 1))`: the original pops inner's 8 bytes and leaves outer's 4 pending; ours,
+        // through a cast, pops everything after the outer call: a cleanup moved across a call, no move
+        let a = lines(&["push 4", "push 1", "push 2", "call 0x500000", "push eax", "call 0x500100", "add esp, 0x10", "ret"]);
+        let b = lines(&["push 4", "push 1", "push 2", "call 0x500000", "add esp, 8", "push eax", "call 0x500100", "add esp, 8", "ret"]);
+        let v = verdict(&a, &b, None);
+        assert!(!v.moved && !v.shape, "{:?}", v.hunks);
     }
 
     #[test]

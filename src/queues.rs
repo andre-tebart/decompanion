@@ -1042,7 +1042,7 @@ mod level_tests {
         assert!(twice.contains("while it flies.\n   @deep x * y (z) prior: body reconstructed (354 ins)"), "{twice}");
         // the earlier reason given again: it moves to the front, once
         assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some(why), 1).unwrap(), "@deep reason replaced (the earlier reason kept as prior:)");
-        if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &crate::edit::read(&format!("{root}/src/u.c"))) {
+        if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &std::fs::read_to_string(format!("{root}/src/u.c")).unwrap()) {
             let flat = why.split_whitespace().collect::<Vec<_>>().join(" ");
             assert_eq!(part.functions[0].1 .0.as_deref(), Some(format!("{flat} prior: x * y (z)").as_str()));
         }

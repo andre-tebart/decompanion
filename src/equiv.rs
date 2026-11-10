@@ -1252,6 +1252,21 @@ impl Exec<'_> {
     }
 
     fn set_sp(&mut self, off: i32) {
+        // a pop into the middle of a call's argument cells: VC6's nested call `f(a, g(b))` pushes f's cells, then
+        // g's, calls g and pops g's own cells only; the cells left are f's arguments, pushed before g's result
+        // (bug-reports/arg-count-casts-hide-nested-call.md: a 6-argument cast of the inner call popped all of them,
+        // and the outer call lost its last four arguments in a function graded shape). A cleanup VC6 merges into a
+        // later `add esp` pops nothing in between and leaves the cells reserved.
+        if off > self.sp && self.reserved.iter().any(|&o| o < off) && self.reserved.iter().any(|&o| o >= off) {
+            let mut left: Vec<i32> = self.reserved.iter().copied().filter(|&o| o >= off).collect();
+            left.sort_unstable();
+            for o in left {
+                if !self.pushed.contains(&o) {
+                    self.pushed.push(o);
+                }
+            }
+            self.reserved.clear();
+        }
         self.sp = off;
         self.pushed.retain(|&o| o >= off);
         self.reserved.retain(|&o| o >= off);
@@ -1720,9 +1735,13 @@ impl Exec<'_> {
                 let t = self.launder(t)?;
                 // the arguments: the cells from esp up that were pushed (or written into space reserved by a
                 // `sub esp`), up to the first one that was not (a save, a local)
+                // A call with values on the FPU stack takes them as its argument (`_ftol`, VC6's `_CI*` intrinsics) and
+                // nothing from the stack: the cells pushed before it are an outer call's, still pending (he_RunTribute
+                // pushes the outer call's 1 before `call _ftol`, the original after it)
+                let fpu_call = !self.fpu.is_empty();
                 let mut offs: Vec<i32> = vec![];
                 let mut o = self.sp;
-                while self.pushed.contains(&o) {
+                while !fpu_call && self.pushed.contains(&o) {
                     offs.push(o);
                     o += 4;
                 }
@@ -1752,10 +1771,12 @@ impl Exec<'_> {
                     let v = self.ar.var(Var::Ret(self.pair, k, g));
                     self.regs[g as usize] = Some(v);
                 }
-                self.pushed.clear();
-                // the cells of arguments the caller cleans up later (VC6 merges the add esp of several calls): space
-                // the next call's arguments may be written into (fstp dword ptr [esp])
-                self.reserved = if popped { vec![] } else { offs };
+                if !fpu_call {
+                    self.pushed.clear();
+                    // the cells of arguments the caller cleans up later (VC6 merges the add esp of several calls):
+                    // space the next call's arguments may be written into (fstp dword ptr [esp])
+                    self.reserved = if popped { vec![] } else { offs };
+                }
                 self.flags = None;
             }
             (m, _) => {
@@ -2624,6 +2645,34 @@ mod tests {
         };
         assert!(matches!(prove(&ftol(0x600000), &ftol(0x600000), va), Outcome::Equal { .. }));
         assert!(!matches!(prove(&ftol(0x600000), &ftol(0x600008), va), Outcome::Equal { .. }));
+    }
+
+    #[test]
+    fn a_nested_call_keeps_the_outer_arguments() {
+        let va = 0x401000;
+        // push 4 (outer's); push 1; push 2 (inner's); call inner; add esp, POP1; push eax; call outer; add esp, POP2; ret
+        let code = |pop1: u8, pop2: u8| {
+            let mut c = vec![0x6a, 4, 0x6a, 1, 0x6a, 2, 0xe8];
+            c.extend(0x500000u32.wrapping_sub(va + 11).to_le_bytes());
+            c.extend([0x83, 0xc4, pop1, 0x50, 0xe8]);
+            c.extend(0x500100u32.wrapping_sub(va + 20).to_le_bytes());
+            c.extend([0x83, 0xc4, pop2, 0xc3]);
+            c
+        };
+        // the original: inner(2, 1) pops 8, outer(eax, 4); ours through a cast: inner pops all 12, outer(eax) alone
+        let (orig, ours) = (code(8, 8), code(12, 4));
+        assert!(matches!(prove(&orig, &orig, va), Outcome::Equal { .. }));
+        assert!(!matches!(prove(&ours, &orig, va), Outcome::Equal { .. }), "{:?}", prove(&ours, &orig, va));
+        // a cleanup merged into one `add esp` after the second call: the same calls as popping after each
+        let merged = |pop2: u8| {
+            let mut c = vec![0x6a, 1, 0xe8];
+            c.extend(0x500000u32.wrapping_sub(va + 7).to_le_bytes());
+            c.extend([0x6a, 2, 0xe8]);
+            c.extend(0x500100u32.wrapping_sub(va + 14).to_le_bytes());
+            c.extend([0x83, 0xc4, pop2, 0xc3]);
+            c
+        };
+        assert!(matches!(prove(&merged(8), &merged(8), va), Outcome::Equal { .. }));
     }
 
     #[test]
