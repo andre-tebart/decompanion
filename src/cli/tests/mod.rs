@@ -9,7 +9,6 @@ mod layout_tools;
 mod matching;
 mod multitarget;
 mod obligations;
-mod seams;
 mod source_checks;
 mod targets;
 

@@ -206,7 +206,7 @@ pub fn probe(p: &Project) -> Result<(Value, String), String> {
         results.get(&key).cloned().unwrap_or(Value::Null)
     };
     let anchors_out: Vec<Value> = jobs.iter().flat_map(|j| j.anchors.iter().map(move |(aid, name, _)| json!({"id": aid, "name": name, "unit": j.unit, "kind": j.kind}))).collect();
-    let tc_forms: Vec<Vec<u8>> = crate::toolchain::of(&p.toolchain_key()).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default();
+    let tc_forms: Vec<Vec<u8>> = crate::toolchain::Vc6.fill_forms().iter().map(|f| f.to_vec()).collect();
     let forms = crate::compare::fill_order(&tc_forms);
     let mut objs: HashMap<String, Option<crate::coff::Obj>> = HashMap::new();
     let mut out_combos = vec![];

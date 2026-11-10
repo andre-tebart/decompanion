@@ -10,7 +10,7 @@
 //!   W3  a code address pushed or stored as an immediate at a relocation site, and a code address stored in a
 //!       data section (a function pointer), is a function start.
 //!   W4  a function ends at a return, at an unconditional jump (direct or indirect), and at alignment fill
-//!       (Toolchain.fill_forms) reached by fall-through; a jump target is code whatever its first instruction.
+//!       (Vc6::fill_forms) reached by fall-through; a jump target is code whatever its first instruction.
 //!       A call followed directly by a known start ends the function too: the callee does not return (VC6
 //!       emits nothing after a call to a noreturn function such as _exit or _endthread).
 //!   W5  an unconditional direct jump followed only by alignment fill up to its target, the target at the
@@ -406,7 +406,7 @@ impl Walker<'_> {
 pub fn s_codewalk(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let err = |e: String| Error::runtime(e);
     let img = crate::image(&ctx.image)?;
-    let tc = crate::setup::toolchain_of(ctx)?;
+    let tc = crate::toolchain::Vc6;
     let code_secs: Vec<(u32, u32)> = img.sections.iter().filter(|s| s.holds_code()).map(|s| (s.va, s.end())).collect();
     if code_secs.is_empty() {
         return Ok(());

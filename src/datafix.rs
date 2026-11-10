@@ -763,9 +763,9 @@ impl<'a> Trial<'a> {
         for (a, (u, g)) in graded_functions(&db)? {
             graded.entry(u).or_default().insert(a, g);
         }
-        let tc = crate::toolchain::of(&p.toolchain_key());
-        let fill_forms = tc.as_ref().map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect::<Vec<_>>()).unwrap_or_default();
-        let align = tc.as_ref().map(|t| t.function_alignment() as i64).unwrap_or(16);
+        let tc = crate::toolchain::Vc6;
+        let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
+        let align = tc.function_alignment() as i64;
         let phi = crate::names::ledger_phi(&db)?;
         Ok(Trial { p, root, img, tools: crate::vc6::Tools::of(p), units, relocs, starts, sources, graded, forms: crate::compare::fill_order(&fill_forms),
                    fill_forms, phi, walk, align })

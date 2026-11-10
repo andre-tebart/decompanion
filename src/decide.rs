@@ -29,7 +29,7 @@ use crate::cliread::{record, Tok};
 use crate::project::{py_path, Project};
 use crate::store;
 use crate::tomledit::{self, TV};
-use crate::toolchain::{Install, Toolchain};
+use crate::toolchain::Install;
 use crate::with_db;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -40,7 +40,7 @@ const GATE: [&str; 2] = ["toolchain.", "libs."];
 const CANDIDATES_META: &str = "libs.candidates"; // the last `dcp libs candidates` summary (libcand.rs)
 const DETAIL: &str = "    "; // a step's detail lines start here
 const WRAP: usize = 100; // the width of a status line
-pub const TOOLCHAIN_DECL_KEYS: [&str; 5] = ["compiler", "linker", "root", "cflags", "plugin"];
+pub const TOOLCHAIN_DECL_KEYS: [&str; 4] = ["compiler", "linker", "root", "cflags"];
 const TARGET_COVERED: [&str; 4] = ["compiler", "linker", "cflags", "archives"];
 
 fn err(e: impl std::fmt::Display) -> Error {
@@ -134,7 +134,7 @@ struct Ctx<'a> {
     p: &'a Project,
     db: String,
     img: std::rc::Rc<crate::pe::Image>,
-    tc: Box<dyn Toolchain>,
+    tc: crate::toolchain::Vc6,
     decl: Value,
 }
 
@@ -143,7 +143,7 @@ impl<'a> Ctx<'a> {
         let db = p.store_path();
         crate::storedb::st_open(&db, &p.main_uri())?;
         let img = crate::image(&p.target(None).map_err(err)?.path)?;
-        let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| err(format!("no toolchain {}", p.toolchain_key())))?;
+        let tc = crate::toolchain::Vc6;
         let decl = p.toolchain_decl(None).map_err(err)?;
         Ok(Ctx { p, db, img, tc, decl })
     }
@@ -205,11 +205,11 @@ fn entry_i(e: &Value, k: &str) -> i64 {
     e.get(k).and_then(|v| v.as_i64()).unwrap_or(0)
 }
 
-fn declare_of(tc: &dyn Toolchain, e: &Value) -> String {
+fn declare_of(tc: &crate::toolchain::Vc6, e: &Value) -> String {
     tc.declare(entry_s(e, "tool"), entry_s(e, "family"), entry_i(e, "build") as u32)
 }
 
-fn candidate_text(tc: &dyn Toolchain, e: &Value) -> String {
+fn candidate_text(tc: &crate::toolchain::Vc6, e: &Value) -> String {
     let lib = match entry_i(e, "archive_objects") {
         0 => String::new(),
         n => format!(" lib={n}"),
@@ -222,7 +222,7 @@ fn candidate_text(tc: &dyn Toolchain, e: &Value) -> String {
 }
 
 /// One Rich candidate as `dcp toolchain` prints it.
-fn candidate_entry(tc: &dyn Toolchain, e: &Value) -> String {
+fn candidate_entry(tc: &crate::toolchain::Vc6, e: &Value) -> String {
     let extra = match entry_i(e, "archive_objects") {
         0 => String::new(),
         n => format!(", {n} archive objects"),
@@ -306,7 +306,7 @@ fn setup_obligations(c: &Ctx) -> Result<Vec<Obligation>> {
         let mut ev = vec![match &rich {
             Some(r) => {
                 let cands: Vec<String> = r.value.get(format!("{key}s")).and_then(|v| v.as_array()).into_iter().flatten()
-                    .map(|e| candidate_text(c.tc.as_ref(), e)).collect();
+                    .map(|e| candidate_text(&c.tc, e)).collect();
                 format!("Rich {key}s {}", if cands.is_empty() { "none".to_string() } else { cands.join(", ") })
             }
             None => "no Rich header".to_string(),
@@ -337,7 +337,7 @@ fn setup_obligations(c: &Ctx) -> Result<Vec<Obligation>> {
     }
     if let Some(st) = state("cflags") {
         let wiz = c.tc.wizard_cflags().join(" ");
-        let pre = if wiz.is_empty() { String::new() } else { format!("the {} project wizard's release flags {wiz}; ", c.tc.key()) };
+        let pre = if wiz.is_empty() { String::new() } else { format!("the VC6 project wizard's release flags {wiz}; ") };
         out.push(Obligation::new("toolchain.cflags", t, format!("the compiler flags ({st})"),
                                  format!("{pre}dcp toolchain probe proves flags once functions byte-match"),
                                  "dcp toolchain declare cflags=\"/F1 /F2 ...\" --why \"...\"", ""));
@@ -642,13 +642,13 @@ pub(crate) fn gate_records(p: &Project) -> Result<Vec<String>> {
 /// and time stamp, the CRT strings, the C.toolchain verdict, the archives and the members placed, the probe.
 pub fn decide_toolchain_view(p: &crate::project::Project) -> Result<Vec<String>> {
     let c = Ctx::new(p)?;
-    let tc = c.tc.as_ref();
+    let tc = &c.tc;
     let img = &c.img;
     let mut out = vec![];
     let probed = c.facts("toolchain", "M.flags.probe")?;
     let mut proven: Vec<String> = probed.iter().filter(|f| f.support == store::REPRODUCED).filter_map(|f| f.s("flag").map(|x| x.to_string())).collect();
     proven.sort();
-    out.push(record(&[("target", s(p.target_name.clone())), ("plugin", s(c.decl_str("plugin"))), ("available", Tok::B(p.toolchain_available()))]));
+    out.push(record(&[("target", s(p.target_name.clone())), ("available", Tok::B(p.toolchain_available()))]));
     for k in ["compiler", "linker", "root", "cflags"] {
         let v = c.decl_str(k);
         let mut level = if v.is_empty() {
@@ -667,7 +667,7 @@ pub fn decide_toolchain_view(p: &crate::project::Project) -> Result<Vec<String>>
                                           ("why", os(why))])));
     }
     let installs = tc.installs();
-    out.push(format!("  installs found={}  (the {} plugin's places)", installs.len(), tc.key()));
+    out.push(format!("  installs found={}  (VC6's usual places)", installs.len()));
     let rich = c.rich()?;
     for inst in &installs {
         out.push(format!("    {}", install_text(inst, &c, rich.as_deref())));
@@ -810,7 +810,7 @@ fn resolved(path: &str) -> String {
     abs.trim_start_matches(r"\\?\").replace('\\', "/")
 }
 
-/// `dcp toolchain declare`: compiler= linker= cflags= (the current target's table), root= plugin= ([toolchain]), each
+/// `dcp toolchain declare`: compiler= linker= cflags= (the current target's table), root= ([toolchain]), each
 /// with the reason; the declared lines. `root` is the declared root when one was (the verdict after the rerun names
 /// its versions).
 pub fn decide_toolchain_declare(p: &crate::project::Project, pairs: Vec<String>, why: Option<String>) -> Result<(Vec<String>, Option<String>, i32, Option<String>)> {
@@ -839,14 +839,11 @@ fn toolchain_declare(p: &Project, pairs: &[String], why: &Option<String>) -> Res
             }
             *v = r;
         }
-        if k == "plugin" && !crate::project::TOOLCHAINS.contains(&v.as_str()) {
-            return refused(format!("plugin={v}: unknown (known: {}); nothing written", crate::project::TOOLCHAINS.join(", "))).map(no);
-        }
     }
     let path = config_path(p);
     let value = |k: &str, v: &str| if k == "cflags" { TV::L(v.split_whitespace().map(|x| x.to_string()).collect()) } else { TV::S(v.to_string()) };
     let tgt: Vec<(String, TV)> = kv.iter().filter(|(k, _)| ["compiler", "linker", "cflags"].contains(&k.as_str())).map(|(k, v)| (k.clone(), value(k, v))).collect();
-    let proj: Vec<(String, TV)> = kv.iter().filter(|(k, _)| ["root", "plugin"].contains(&k.as_str())).map(|(k, v)| (k.clone(), value(k, v))).collect();
+    let proj: Vec<(String, TV)> = kv.iter().filter(|(k, _)| k == "root").map(|(k, v)| (k.clone(), value(k, v))).collect();
     let with_reasons = |vals: &[(String, TV)]| -> Vec<(String, TV)> {
         vals.iter().cloned().chain(vals.iter().map(|(k, _)| (format!("reason.{k}"), TV::S(why.clone())))).collect()
     };
@@ -854,7 +851,7 @@ fn toolchain_declare(p: &Project, pairs: &[String], why: &Option<String>) -> Res
         tomledit::set_keys(&path, "target", &with_reasons(&tgt), target_index(p)?, &TARGET_COVERED).map_err(err)?;
     }
     if !proj.is_empty() {
-        tomledit::set_keys(&path, "toolchain", &with_reasons(&proj), None, &["plugin", "root", "compiler", "linker", "cflags"]).map_err(err)?;
+        tomledit::set_keys(&path, "toolchain", &with_reasons(&proj), None, &["root", "compiler", "linker", "cflags"]).map_err(err)?;
     }
     let mut out = vec![];
     for (k, v) in tgt.iter().chain(&proj) {
@@ -900,7 +897,7 @@ pub fn decide_libs_declare(p: &crate::project::Project, archives: Vec<String>, w
     if no_why(&why) {
         return refused(NO_WHY);
     }
-    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| err("no toolchain"))?;
+    let tc = crate::toolchain::Vc6;
     let specs: Vec<String> = archives.iter().map(|a| tc.archive_spec(a)).collect();
     if specs.iter().any(|x| x.contains("{toolchain.root}")) && p.toolchain_root().is_none() {
         return refused("the archives are named under the toolchain root, which is not declared yet: dcp toolchain declare root=DIR --why \"...\" first; \

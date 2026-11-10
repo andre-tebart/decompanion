@@ -153,7 +153,7 @@ impl<'a> Reader<'a> {
         let path = p.target(None).map_err(Error::runtime)?.path.clone();
         let img = crate::image(&path)?;
         let names = Names::build(&db, &main, &path)?;
-        let fills = crate::toolchain::of(&p.toolchain_key()).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default();
+        let fills = crate::toolchain::Vc6.fill_forms().iter().map(|f| f.to_vec()).collect();
         Ok(Reader { p, db, img, names, fills })
     }
 

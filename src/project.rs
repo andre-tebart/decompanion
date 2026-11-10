@@ -5,7 +5,7 @@
 //! decompanion.toml
 //!   [[target]]     name, path, sha256, image, isa; compiler, linker, cflags, archives; reason.<key> (or the older
 //!                  reason = "..." for every key of the table). The first target is the default one.
-//!   [toolchain]    plugin, root, and compiler / linker / cflags as defaults a target without its own inherits.
+//!   [toolchain]    root, and compiler / linker / cflags as defaults a target without its own inherits.
 //!   [libs]         archives, reason: the default of every target without its own archives.
 //!   [[variant]], [[setup]], [[run]]  build variants and running a build (run.rs).
 //!   [paths]        name = "directory": the directories outside the project the configuration reads, each the
@@ -30,11 +30,10 @@ pub const LOCAL_CONFIG_NAME: &str = "decompanion.local.toml";
 const RESERVED_NAMES: [&str; 1] = ["root"];
 const TOOLCHAIN_KEYS: [&str; 3] = ["compiler", "linker", "cflags"];
 const TARGET_KEYS: [&str; 10] = ["name", "path", "sha256", "image", "isa", "archives", "compiler", "linker", "cflags", "reason"];
-const REASON_KEYS: [&str; 6] = ["compiler", "linker", "cflags", "archives", "root", "plugin"];
+const REASON_KEYS: [&str; 5] = ["compiler", "linker", "cflags", "archives", "root"];
 pub const IMAGE_FORMATS: [&str; 1] = ["pe32"];
 #[cfg(test)]
 pub const ISAS: [&str; 1] = ["x86"];
-pub const TOOLCHAINS: [&str; 1] = ["vc6"];
 
 pub(crate) fn cfg_err(msg: String) -> Error {
     Error::config(msg)
@@ -167,11 +166,6 @@ impl Project {
             None => p.targets[0].name.clone(),
             Some(n) => p.target(Some(n))?.name.clone(),
         };
-        let key = p.toolchain_key();
-        if !TOOLCHAINS.contains(&key.as_str()) {
-            return Err(format!("unknown toolchain plugin {} (known: {}); name one with [toolchain] plugin = ...", crate::decl::py_repr(&key),
-                               TOOLCHAINS.join(", ")));
-        }
         if ["variant", "setup", "run"].iter().any(|k| p.cfg.contains_key(*k)) {
             p.run_cfg()?; // a contradiction in the run tables is an error of every command, as one in the targets is
         }
@@ -204,11 +198,6 @@ impl Project {
                                read_max_bytes: int("easy_read_max_bytes", d.read_max_bytes) }
     }
 
-    /// [toolchain] plugin, else the only registered toolchain plugin.
-    pub fn toolchain_key(&self) -> String {
-        let k = self.tc_str("plugin");
-        if k.is_empty() { TOOLCHAINS[0].to_string() } else { k }
-    }
 
     /// A path of the configuration: `{toolchain.root}` replaced, relative to the project root.
     pub fn expand(&self, s: &str) -> String {
@@ -288,7 +277,7 @@ impl Project {
         })
     }
 
-    /// The toolchain declaration of a target: plugin and root from [toolchain]; compiler, linker and cflags from the
+    /// The toolchain declaration of a target: root from [toolchain]; compiler, linker and cflags from the
     /// target's own table, else the [toolchain] defaults; `from` where each came from, `reasons` their reasons.
     pub fn toolchain_decl(&self, name: Option<&str>) -> Result<Value, String> {
         let tc = self.table("toolchain");
@@ -298,7 +287,6 @@ impl Project {
         let root = tc.and_then(|t| t.get("root")).map(toml_json).unwrap_or(Value::String(String::new()));
         let has_root = tc.and_then(|t| t.get("root")).is_some_and(|v| v.as_str() != Some(""));
         let mut out = serde_json::Map::new();
-        out.insert("plugin".into(), Value::String(self.toolchain_key()));
         out.insert("root".into(), root);
         let mut src = serde_json::Map::new();
         let mut reasons = serde_json::Map::new();
@@ -470,11 +458,6 @@ impl Project {
                 .map_err(|e| e.to_string())?,
             "toolchain" => sha256_parts(&[canonical(&self.toolchain_decl(None)?)]),
             "targets" => sha256_parts(&[canonical(&self.targets_value())]),
-            "plugins" => {
-                let t = self.target(None)?;
-                let sel = format!("{}/{}/coff/{}", t.image.clone().unwrap_or_default(), self.toolchain_key(), t.isa.clone().unwrap_or_default());
-                sha256_parts(&[self.core_hash.as_str(), &sel])
-            }
             "baseline" => {
                 let p = py_path(&format!("{root}/ledger/grades.tsv"));
                 if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }

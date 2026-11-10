@@ -832,7 +832,7 @@ pub struct ToolchainProbeArgs {
 /// `ToolchainCmd::Declare`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct ToolchainDeclareArgs {
-    /// keys: compiler, linker, root, cflags, plugin
+    /// keys: compiler, linker, root, cflags
     #[arg(value_name = "KEY=VALUE", required = true, num_args = 1..)]
     pub pairs: Vec<String>,
     /// the reason (required): the evidence the declaration rests on

@@ -256,7 +256,6 @@ path = "{p1}"
 image = "pe32"
 {second}
 [toolchain]
-plugin = "vc6"
 root = "C:/nowhere/vc6"
 compiler = "cl 12.00.9044"
 linker = "link 6.00.8447"

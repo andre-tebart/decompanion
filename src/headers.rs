@@ -1057,7 +1057,7 @@ fn call_evidence(x: &Ctx, names: &crate::names::Names, func: Option<i64>, callee
     let syms = crate::with_db(&db, |c| store::claims_of(c, &db, "symbol", None, |f| f.lo == func && f.s("skind") == Some("func") && !f.rule.starts_with("M.")))?;
     let Some(sym) = syms.iter().next() else { return Ok(vec![]) };
     let img = crate::image(&x.p.target(None).map_err(err)?.path)?;
-    let fills = crate::toolchain::of(&x.p.toolchain_key()).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default();
+    let fills = crate::toolchain::Vc6.fill_forms().iter().map(|f| f.to_vec()).collect();
     let lines = crate::x86::x86_disasm(&img.read(sym.lo as u32, (sym.hi - sym.lo).max(0) as usize), sym.lo as u32, fills);
     let (mut out, mut pushes) = (vec![], 0);
     for (i, (addr, _, text, _)) in lines.iter().enumerate() {

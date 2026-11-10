@@ -12,7 +12,7 @@
 //! The name: the one the ledger registers for the address from a declaration, an export or the user entry, else the
 //! placeholder `<unit>_<addr>` (8 hex digits; L5 checks that it spells a start, Q1 that it gets replaced).
 //!
-//! Two dialects meet here: the analyzer's in (dialect.rs), the toolchain's language out (Toolchain keywords /
+//! Two dialects meet here: the analyzer's in (dialect.rs), the toolchain's language out (Vc6 keywords /
 //! default_convention / sized_conventions / import_header, the declaring header of a C library function).
 //!
 //! Names inside an analyzer's body:
@@ -45,7 +45,6 @@ use crate::edit as E;
 use crate::layoutview::View;
 use crate::names::Names;
 use crate::project::{py_path, Project};
-use crate::toolchain::Toolchain;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -92,7 +91,7 @@ struct Ctx<'a> {
     root: String,
     v: View,
     names: Names,
-    tc: Box<dyn Toolchain>,
+    tc: crate::toolchain::Vc6,
     entries: BTreeMap<i64, Entry>,
     labels: BTreeMap<String, i64>,
 }
@@ -203,7 +202,7 @@ fn lead_comments(text: &str) -> Vec<String> {
 
 /// name -> the declaring header (lower case) of every C library function of the toolchain's system headers, the
 /// standard headers first, then alphabetical; parsed once per set of directories (an installation does not change).
-fn declaring_header(p: &Project, tc: &dyn Toolchain, name: &str) -> Option<String> {
+fn declaring_header(p: &Project, tc: &crate::toolchain::Vc6, name: &str) -> Option<String> {
     static MEMO: LazyLock<Mutex<HashMap<Vec<String>, HashMap<String, String>>>> = LazyLock::new(Default::default);
     let dirs = crate::frontend::system_dirs(p);
     let mut memo = MEMO.lock().unwrap();
@@ -404,7 +403,7 @@ fn declare_uses(x: &Ctx, head: &str, rel: &str, unit: &str, uses: &BTreeMap<Stri
             continue;
         }
         if *func {
-            if let Some(h) = declaring_header(x.p, x.tc.as_ref(), n) {
+            if let Some(h) = declaring_header(x.p, &x.tc, n) {
                 include(format!("#include <{h}>"), d)?;
                 continue;
             }
@@ -442,7 +441,7 @@ fn open<'a>(p: &'a Project) -> Result<Ctx<'a>> {
     let image = p.target(None).map_err(err)?.path.clone();
     let v = View::load(&db, &main, &image)?;
     let names = Names::build(&db, &main, &image)?;
-    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| err(format!("no toolchain {}", p.toolchain_key())))?;
+    let tc = crate::toolchain::Vc6;
     let all = crate::with_db(&db, |c| crate::names::draft_values(c, &main))?;
     let entries: BTreeMap<i64, Entry> = all.iter().map(|v| (v["start"].as_i64().unwrap_or(0), entry_of(v))).collect();
     let labels: BTreeMap<String, i64> = entries.values().filter(|e| !e.name.is_empty()).map(|e| (e.name.clone(), e.start)).collect();

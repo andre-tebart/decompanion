@@ -248,7 +248,7 @@ impl Bench {
     pub(crate) fn of(p: &Project) -> Result<Bench> {
         let db = p.store_path();
         let img = crate::image(&p.target(None).map_err(err)?.path)?;
-        let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| err("no toolchain"))?;
+        let tc = crate::toolchain::Vc6;
         let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
         let relocs: Option<Vec<u32>> = if img.relocations().is_empty() {
             None

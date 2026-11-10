@@ -33,7 +33,6 @@ pub struct Ctx {
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 pub struct Inputs {
-    pub toolchain: String,
     pub root: Option<String>,   // the toolchain's root, expanded
     pub archives: Vec<String>,  // the target's library archives (none while `libs` waits)
     pub libs: Vec<String>,      // the target's library archives

@@ -1650,7 +1650,7 @@ static LEAK: std::sync::LazyLock<fancy_regex::Regex> =
 pub fn l_analyze(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     use crate::store::{DERIVED, REPRODUCED};
     let img = image(&ctx.image)?;
-    let tc = crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| Error::runtime("L.analyze: no toolchain"))?;
+    let tc = crate::toolchain::Vc6;
     let fs = |kind: &str| store::claims(db, &ctx.db, kind, &ctx.needed, |_| true).map_err(err);
     let secs: Vec<(i64, i64, String)> = fs("section")?.iter().map(|f| (f.lo, f.hi, f.s("name").unwrap_or("").to_string())).collect();
     let code = code_ranges(&img);

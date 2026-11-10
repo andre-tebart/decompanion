@@ -45,7 +45,7 @@ fn legacy_target_form() {
     let d = tmp("old").join("old");
     std::fs::create_dir_all(&d).unwrap();
     let pe = build_pe(&d.join("Server.dll"), 0, None);
-    write(&d, "decompanion.toml", &format!("[target]\npath = \"{}\"\n\n[toolchain]\nplugin = \"vc6\"\nreason = \"x\"\n\n[libs]\narchives = []\n", posix(&pe)));
+    write(&d, "decompanion.toml", &format!("[target]\npath = \"{}\"\n\n[toolchain]\nreason = \"x\"\n\n[libs]\narchives = []\n", posix(&pe)));
     let p = project(&d, None);
     assert!(p.target_name == "server" && p.targets[0].legacy);
     assert!(p.store_path().ends_with("server.sqlite"));

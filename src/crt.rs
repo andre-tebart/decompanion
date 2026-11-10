@@ -2,7 +2,7 @@
 //! the library members placed by their bytes (S.crt.code: place_members), the names their relocations resolve
 //! (S.crt.refs), their data sections (S.crt.data), data-only members (S.lib.data), import stubs (S.thunk).
 //!
-//! native_inputs: {"toolchain": key, "libs": [archive paths], "archives": [archive paths], "decl": the target's
+//! native_inputs: {"libs": [archive paths], "archives": [archive paths], "decl": the target's
 //! toolchain declaration, "target": its name}.
 
 use crate::error::{Error, Result};
@@ -21,10 +21,6 @@ fn err(e: rusqlite::Error) -> Error {
 
 fn inputs(ctx: &Ctx) -> Result<&crate::rules::Inputs> {
     Ok(&ctx.inputs)
-}
-
-fn toolchain(x: &crate::rules::Inputs) -> Result<Box<dyn crate::toolchain::Toolchain>> {
-    crate::toolchain::of(&x.toolchain).ok_or_else(|| Error::runtime("no such toolchain"))
 }
 
 fn facts(ctx: &Ctx, db: &Connection, kind: &str) -> Result<Vec<Rc<Claim>>> {
@@ -58,7 +54,7 @@ pub fn s_rich(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         return Ok(());
     }
     let x = inputs(ctx)?;
-    let tc = toolchain(x)?;
+    let tc = crate::toolchain::Vc6;
     let libs = archives(x, "archives")?;
     let stamps = coff::comp_ids(libs.iter().flat_map(|(_, os)| os.iter()));
     let tools = tc.archive_tools(&stamps);
@@ -666,7 +662,7 @@ pub fn s_lib_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 /// layout makes it a library contribution.
 pub fn s_thunk(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
-    let tc = toolchain(inputs(ctx)?)?;
+    let tc = crate::toolchain::Vc6;
     let size = tc.import_stub_size() as i64;
     let packed = size < tc.function_alignment() as i64;
     let syms = facts(ctx, db, "symbol")?;
@@ -740,7 +736,7 @@ fn truthy(v: &Value) -> bool {
 pub fn c_toolchain(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = inputs(ctx)?;
-    let tc = toolchain(x)?;
+    let tc = crate::toolchain::Vc6;
     let decl = &x.decl;
     let t = x.target.as_str();
     let by = format!("decl:decompanion.toml:{t}");

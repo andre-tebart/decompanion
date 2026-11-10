@@ -129,7 +129,7 @@ pub fn s7_entry_section(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()>
 pub fn s4_import_libs(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     let img = image(&ctx.image)?;
     let x = &ctx.inputs;
-    let tc = crate::toolchain::of(&x.toolchain).ok_or_else(|| Error::runtime("S4: no such toolchain"))?;
+    let tc = crate::toolchain::Vc6;
     let name = |p: &std::path::Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let mut have: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(root) = x.root.as_deref() {
@@ -173,11 +173,6 @@ pub(crate) fn py_str(v: Option<&serde_json::Value>) -> String {
         Some(serde_json::Value::Bool(b)) => if *b { "True".into() } else { "False".into() },
         Some(x) => x.to_string(),
     }
-}
-
-/// The toolchain native_inputs name ({"toolchain": key}).
-pub(crate) fn toolchain_of(ctx: &Ctx) -> Result<Box<dyn crate::toolchain::Toolchain>> {
-    crate::toolchain::of(&ctx.inputs.toolchain).ok_or_else(|| Error::runtime(format!("{}: no toolchain in its inputs", ctx.rule)))
 }
 
 /// C.overlap: two symbol or region facts that overlap contradict each other.
@@ -249,7 +244,7 @@ pub fn s5_crt_gaps(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 
 /// S.entry.user: the user entry the CRT start-up calls, as its C name.
 pub fn s_entry_user(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
-    let tc = toolchain_of(ctx)?;
+    let tc = crate::toolchain::Vc6;
     let user: std::collections::HashMap<&str, &str> = tc.user_entry_names().into_iter().collect();
     for f in facts(ctx, db, "name")? {
         if f.s("origin") == Some("lib") {

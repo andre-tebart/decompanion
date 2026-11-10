@@ -1,7 +1,7 @@
 //! The rule engine: every rule of the registry (registry.rs) runs in the order of its needs, keyed by the hash of
 //! its inputs, so a run whose inputs did not change is never repeated.
 //!
-//! - A rule's run key is sha256(code hash, version, image, plugins, the out_hash of every needed rule's current run,
+//! - A rule's run key is sha256(code hash, version, image, the core's hash, the out_hash of every needed rule's current run,
 //!   the hash of every named input it reads). A run with the same key (in this store, or in the main checkout's
 //!   store under a worktree overlay) is made current instead of running again.
 //! - A rule's code hash is the core's source hash with its id and version.
@@ -179,10 +179,10 @@ impl<'a> Engine<'a> {
         Ok(self.project.input_hash(name).map_err(Error::config)?.unwrap_or_default())
     }
 
-    /// The key of a rule's run: its code, version, the image, the plugins, the output of every rule it needs (`outs`:
+    /// The key of a rule's run: its code, version, the image, the core's hash, the output of every rule it needs (`outs`:
     /// the out_hash of each rule's current run) and its named inputs.
     fn run_key(&self, r: &RuleDef, code: &str, needed: &[&str], outs: &HashMap<String, String>) -> Result<String> {
-        let mut parts = vec![code.to_string(), r.version.to_string(), self.input_hash_of("image")?, self.input_hash_of("plugins")?];
+        let mut parts = vec![code.to_string(), r.version.to_string(), self.input_hash_of("image")?, self.project.core_hash.clone()];
         for n in needed {
             let Some(out) = outs.get(*n) else { return Err(rule_err(format!("{} needs {n}, which has no current run", r.id))) };
             parts.push(format!("{n}={out}"));
@@ -200,13 +200,12 @@ impl<'a> Engine<'a> {
         }
         let p = self.project;
         let cfg = |e: String| Error::config(e);
-        let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| rule_err(format!("no toolchain {}", p.toolchain_key())))?;
+        let tc = crate::toolchain::Vc6;
         let waits = !p.waiting("libs").map_err(cfg)?.is_empty();
         // the libraries: none while they wait, else the declared ones (an archive that does not exist is an error then)
         let libs = if waits { vec![] } else { p.lib_archives(None).map_err(cfg)? };
         let root = p.toolchain_root();
         let b = Rc::new(Inputs {
-            toolchain: p.toolchain_key(),
             root,
             archives: libs.clone(),
             libs,
@@ -231,7 +230,7 @@ impl<'a> Engine<'a> {
             return Ok(base);
         }
         let mut x = Inputs {
-            toolchain: base.toolchain.clone(), root: base.root.clone(), archives: base.archives.clone(), libs: base.libs.clone(),
+            root: base.root.clone(), archives: base.archives.clone(), libs: base.libs.clone(),
             decl: base.decl.clone(), target: base.target.clone(), targets: base.targets.clone(), images: base.images.clone(),
             function_alignment: base.function_alignment, code_rank: base.code_rank.clone(), ..Default::default()
         };
@@ -329,7 +328,7 @@ impl<'a> Engine<'a> {
             rule: r.id.into(), version: r.version.into(), code_hash: code, input_hash: ih, db: self.db.clone(), main: self.main.clone(),
             needed: needed.iter().map(|s| s.to_string()).collect(), root: self.project.root.to_string_lossy().into_owned(),
             image: self.project.target(None).map_err(Error::config)?.path.clone(),
-            fill_forms: crate::toolchain::of(&inputs.toolchain).map(|t| t.fill_forms().iter().map(|f| f.to_vec()).collect()).unwrap_or_default(),
+            fill_forms: crate::toolchain::Vc6.fill_forms().iter().map(|f| f.to_vec()).collect(),
             record: true,
             shortcuts: std::env::var_os("DCP_NO_SHORTCUTS").is_none_or(|v| v.is_empty()), inputs,
         };

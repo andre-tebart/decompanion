@@ -1,6 +1,5 @@
-//! The toolchain seam: the conventions of a compiler and linker the rules rest on, as data, and the evidence the
-//! guided decisions ask for (decide.rs; the plugin hands over evidence, it never declares anything). VC6 (cl 12.00,
-//! link 6.00) is the one implementation.
+//! VC6 (cl 12.00, link 6.00): the conventions of its compiler and linker the rules rest on, as data, and the evidence
+//! the guided decisions ask for (decide.rs; it hands over evidence, it never declares anything).
 
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -26,71 +25,6 @@ pub struct Install {
     pub ok: bool,
 }
 
-pub trait Toolchain {
-    fn key(&self) -> &'static str;
-    // the evidence of the guided decisions
-    /// Every installation found on this machine (the plugin knows its usual places).
-    fn installs(&self) -> Vec<Install>;
-    /// What one installation root holds: the versions its tools report and the builds they make.
-    fn install(&self, root: &str) -> Install;
-    /// The decompanion.toml spelling of an archive a human names (`dcp libs declare NAME`): a path stays a path,
-    /// a bare name is the toolchain's archive of that name under `{toolchain.root}`.
-    fn archive_spec(&self, name: &str) -> String;
-    /// The flags the toolchain's project wizard writes for a release build: evidence for toolchain.cflags.
-    fn wizard_cflags(&self) -> &'static [&'static str];
-    /// The alignment fill between functions.
-    fn fill_forms(&self) -> &'static [&'static [u8]];
-    fn function_alignment(&self) -> u32;
-    fn import_stub_size(&self) -> u32;
-    /// What a fill run says of its origin.
-    fn fill_origin(&self, run: &[u8]) -> &'static str;
-    /// (offset, slot) of every import stub in a byte range.
-    fn import_stubs(&self, data: &[u8]) -> Vec<(usize, u32)>;
-    fn rich_product(&self, prodid: u32) -> RichProduct;
-    fn build_name(&self, family: &str, build: u32) -> &'static str;
-    /// The declaration spelling of a Rich compiler or linker entry ('cl 12.00.9044').
-    fn declare(&self, tool: &str, family: &str, build: u32) -> String;
-    /// (prodid, build) -> objects, from the archives' tool stamps (raw stamp -> objects).
-    fn archive_tools(&self, stamps: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<(u32, u32), u32>;
-    #[cfg(test)]
-    /// The decorated user entry a CRT entry calls, "" when none.
-    fn crt_user_entry(&self, entry: &str) -> &'static str;
-    /// The decorated user entries -> their C names.
-    fn user_entry_names(&self) -> Vec<(&'static str, &'static str)>;
-    /// Every library archive of an installation at root.
-    fn library_archives(&self, root: &Path) -> Vec<PathBuf>;
-    fn import_library_name(&self, dll: &str) -> String;
-    /// (va, string) of every occurrence of the CRT's own strings in the sections' raw data.
-    fn crt_strings(&self, img: &crate::pe::Image) -> Vec<(u32, &'static str)>;
-    // the language the compiler reads beyond standard C (`dcp draft` spells declarations with them)
-    /// The compiler's own keywords (calling conventions, extended types).
-    fn keywords(&self) -> &'static [&'static str];
-    /// The calling convention a skeleton prototype spells ("": none).
-    fn default_convention(&self) -> &'static str;
-    /// The conventions whose decorated name carries the parameters' size: a declaration needs the full prototype.
-    fn sized_conventions(&self) -> &'static [&'static str];
-    /// The system header that declares the functions an imported DLL exports, None when unknown.
-    fn import_header(&self, dll: &str) -> Option<&'static str>;
-    /// The standard headers a declaring header is looked for in first (the C89 ones).
-    fn standard_headers(&self) -> &'static [&'static str];
-
-    /// The decoded Rich header (Toolchain.rich_candidates): every entry with its tool, family, language, build,
-    /// count and archive objects; the compiler and the linker candidates by count, build, prodid.
-    fn rich_candidates(&self, entries: &[(u32, u32, u32)], tools: &std::collections::BTreeMap<(u32, u32), u32>) -> Value {
-        let decoded: Vec<Value> = entries
-            .iter()
-            .map(|&(prodid, build, count)| {
-                let p = self.rich_product(prodid);
-                json!({"prodid": prodid, "tool": p.name, "family": p.family, "language": p.language, "build": build, "count": count,
-                       "archive_objects": tools.get(&(prodid, build)).copied().unwrap_or(0)})
-            })
-            .collect();
-        let mut order = decoded.clone();
-        order.sort_by_key(|e| (-(e["count"].as_i64().unwrap_or(0)), -(e["build"].as_i64().unwrap_or(0)), e["prodid"].as_i64().unwrap_or(0)));
-        let of = |fam: &str| order.iter().filter(|e| e["family"] == fam).cloned().collect::<Vec<_>>();
-        json!({"entries": decoded, "compilers": of("compiler"), "linkers": of("linker")})
-    }
-}
 
 // ------------------------------------------------------------------------------------------------ VC6
 
@@ -307,15 +241,29 @@ pub fn tool_version(name: &str) -> String {
 
 pub struct Vc6;
 
-impl Toolchain for Vc6 {
-    fn key(&self) -> &'static str {
-        "vc6"
+impl Vc6 {
+    /// The decoded Rich header (Vc6::rich_candidates): every entry with its tool, family, language, build,
+    /// count and archive objects; the compiler and the linker candidates by count, build, prodid.
+    pub fn rich_candidates(&self, entries: &[(u32, u32, u32)], tools: &std::collections::BTreeMap<(u32, u32), u32>) -> Value {
+        let decoded: Vec<Value> = entries
+            .iter()
+            .map(|&(prodid, build, count)| {
+                let p = self.rich_product(prodid);
+                json!({"prodid": prodid, "tool": p.name, "family": p.family, "language": p.language, "build": build, "count": count,
+                       "archive_objects": tools.get(&(prodid, build)).copied().unwrap_or(0)})
+            })
+            .collect();
+        let mut order = decoded.clone();
+        order.sort_by_key(|e| (-(e["count"].as_i64().unwrap_or(0)), -(e["build"].as_i64().unwrap_or(0)), e["prodid"].as_i64().unwrap_or(0)));
+        let of = |fam: &str| order.iter().filter(|e| e["family"] == fam).cloned().collect::<Vec<_>>();
+        json!({"entries": decoded, "compilers": of("compiler"), "linkers": of("linker")})
     }
-    fn installs(&self) -> Vec<Install> {
+
+    pub fn installs(&self) -> Vec<Install> {
         vc6_roots().iter().map(|r| self.install(r)).collect()
     }
     /// The versions of CL.EXE, C1.DLL, C2.DLL and LINK.EXE; the compiler build is C2's, the linker build LINK's.
-    fn install(&self, root: &str) -> Install {
+    pub fn install(&self, root: &str) -> Install {
         let versions: Vec<(&'static str, String)> = TOOL_FILES.iter()
             .filter_map(|(k, rel)| file_version(&Path::new(root).join(rel)).map(|v| (*k, v))).collect();
         let build = |k: &str| versions.iter().find(|(x, _)| *x == k).and_then(|(_, v)| v.rsplit_once('.')).and_then(|(_, b)| b.parse().ok());
@@ -323,7 +271,7 @@ impl Toolchain for Vc6 {
                   versions }
     }
     /// LIBCMT or LIBCMT.LIB -> {toolchain.root}/VC98/Lib/LIBCMT.LIB; a name with a slash is a path.
-    fn archive_spec(&self, name: &str) -> String {
+    pub fn archive_spec(&self, name: &str) -> String {
         if name.contains('/') || name.contains('\\') {
             return name.replace('\\', "/");
         }
@@ -331,40 +279,40 @@ impl Toolchain for Vc6 {
         let n = if n.ends_with(".LIB") { n } else { format!("{n}.LIB") };
         format!("{{toolchain.root}}/{}/{}/{n}", LIB_DIR[0], LIB_DIR[1])
     }
-    fn wizard_cflags(&self) -> &'static [&'static str] {
+    pub fn wizard_cflags(&self) -> &'static [&'static str] {
         WIZARD_CFLAGS
     }
-    fn keywords(&self) -> &'static [&'static str] {
+    pub fn keywords(&self) -> &'static [&'static str] {
         &["__cdecl", "__stdcall", "__fastcall", "__thiscall", "__int64", "__declspec", "__asm"]
     }
     /// CL's default (/Gd).
-    fn default_convention(&self) -> &'static str {
+    pub fn default_convention(&self) -> &'static str {
         "__cdecl"
     }
     /// `_f@12`, `@f@8`: the name needs the parameters.
-    fn sized_conventions(&self) -> &'static [&'static str] {
+    pub fn sized_conventions(&self) -> &'static [&'static str] {
         &["__stdcall", "__fastcall", "__thiscall"]
     }
     /// The Win32 API of every system DLL is declared through <windows.h> (it includes winsock.h and mmsystem.h unless
     /// WIN32_LEAN_AND_MEAN).
-    fn import_header(&self, _dll: &str) -> Option<&'static str> {
+    pub fn import_header(&self, _dll: &str) -> Option<&'static str> {
         Some("windows.h")
     }
-    fn standard_headers(&self) -> &'static [&'static str] {
+    pub fn standard_headers(&self) -> &'static [&'static str] {
         &["assert.h", "ctype.h", "errno.h", "float.h", "limits.h", "locale.h", "math.h", "setjmp.h", "signal.h", "stdarg.h", "stddef.h", "stdio.h",
           "stdlib.h", "string.h", "time.h"]
     }
-    fn fill_forms(&self) -> &'static [&'static [u8]] {
+    pub fn fill_forms(&self) -> &'static [&'static [u8]] {
         FILL_FORMS
     }
-    fn function_alignment(&self) -> u32 {
+    pub fn function_alignment(&self) -> u32 {
         16
     }
-    fn import_stub_size(&self) -> u32 {
+    pub fn import_stub_size(&self) -> u32 {
         STUB_SIZE
     }
     /// cc (int3 only: LINK's padding between contributions), nop (no int3: CL's alignment), mixed.
-    fn fill_origin(&self, run: &[u8]) -> &'static str {
+    pub fn fill_origin(&self, run: &[u8]) -> &'static str {
         if !run.is_empty() && run.iter().all(|&c| c == INT3) {
             "cc"
         } else if !run.contains(&INT3) {
@@ -373,22 +321,22 @@ impl Toolchain for Vc6 {
             "mixed"
         }
     }
-    fn import_stubs(&self, data: &[u8]) -> Vec<(usize, u32)> {
+    pub fn import_stubs(&self, data: &[u8]) -> Vec<(usize, u32)> {
         memchr::memmem::find_iter(data, STUB_OPCODE)
             .filter(|&p| p + STUB_SIZE as usize <= data.len())
             .map(|p| (p, u32::from_le_bytes([data[p + 2], data[p + 3], data[p + 4], data[p + 5]])))
             .collect()
     }
-    fn rich_product(&self, prodid: u32) -> RichProduct {
+    pub fn rich_product(&self, prodid: u32) -> RichProduct {
         match PRODUCTS.iter().find(|p| p.0 == prodid) {
             Some(&(p, n, f, l)) => RichProduct { prodid: p, name: n.to_string(), family: f, language: l },
             None => RichProduct { prodid, name: format!("prodid_{prodid:#x}"), family: "unknown", language: "" },
         }
     }
-    fn build_name(&self, _family: &str, build: u32) -> &'static str {
+    pub fn build_name(&self, _family: &str, build: u32) -> &'static str {
         COMPILER_BUILDS.iter().find(|b| b.0 == build).map(|b| b.1).unwrap_or("")
     }
-    fn declare(&self, tool: &str, family: &str, build: u32) -> String {
+    pub fn declare(&self, tool: &str, family: &str, build: u32) -> String {
         let t = match family {
             "compiler" => "cl",
             "linker" => "link",
@@ -398,7 +346,7 @@ impl Toolchain for Vc6 {
         if v.is_empty() { format!("{t} {build}") } else { format!("{t} {v}.{build}") }
     }
     /// `@comp.id` holds prodid << 16 | build.
-    fn archive_tools(&self, stamps: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<(u32, u32), u32> {
+    pub fn archive_tools(&self, stamps: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<(u32, u32), u32> {
         let mut out = std::collections::BTreeMap::new();
         for (&v, &n) in stamps {
             *out.entry((v >> 16, v & 0xffff)).or_insert(0) += n;
@@ -406,10 +354,10 @@ impl Toolchain for Vc6 {
         out
     }
     #[cfg(test)]
-    fn crt_user_entry(&self, entry: &str) -> &'static str {
+    pub fn crt_user_entry(&self, entry: &str) -> &'static str {
         ENTRIES.iter().find(|e| e.0 == entry).map(|e| e.2).unwrap_or("")
     }
-    fn user_entry_names(&self) -> Vec<(&'static str, &'static str)> {
+    pub fn user_entry_names(&self) -> Vec<(&'static str, &'static str)> {
         let mut out: Vec<(&str, &str)> = vec![];
         for e in ENTRIES {
             if !out.iter().any(|x| x.0 == e.2) {
@@ -418,7 +366,7 @@ impl Toolchain for Vc6 {
         }
         out
     }
-    fn library_archives(&self, root: &Path) -> Vec<PathBuf> {
+    pub fn library_archives(&self, root: &Path) -> Vec<PathBuf> {
         let dir = root.join(LIB_DIR[0]).join(LIB_DIR[1]);
         let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
             .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "LIB")).collect())
@@ -427,11 +375,11 @@ impl Toolchain for Vc6 {
         out
     }
     /// KERNEL32.dll -> kernel32.lib
-    fn import_library_name(&self, dll: &str) -> String {
+    pub fn import_library_name(&self, dll: &str) -> String {
         let l = dll.to_lowercase();
         format!("{}.lib", l.rsplit_once('.').map(|x| x.0).unwrap_or(&l))
     }
-    fn crt_strings(&self, img: &crate::pe::Image) -> Vec<(u32, &'static str)> {
+    pub fn crt_strings(&self, img: &crate::pe::Image) -> Vec<(u32, &'static str)> {
         let mut out = vec![];
         for s in &img.sections {
             let raw = img.section_data(s);
@@ -441,14 +389,6 @@ impl Toolchain for Vc6 {
         }
         out.sort();
         out
-    }
-}
-
-/// The toolchain of a key ("vc6").
-pub fn of(key: &str) -> Option<Box<dyn Toolchain>> {
-    match key {
-        "vc6" => Some(Box::new(Vc6)),
-        _ => None,
     }
 }
 

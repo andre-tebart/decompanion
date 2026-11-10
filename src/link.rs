@@ -270,7 +270,7 @@ impl Ctx<'_> {
                 seen(l.to_lowercase(), f.lo, &mut first);
             }
         }
-        let tc = crate::toolchain::of(&self.p.toolchain_key()).ok_or("no toolchain")?;
+        let tc = crate::toolchain::Vc6;
         for f in self.facts("name")? {
             let n = f.s("name").unwrap_or("");
             if f.s("origin") == Some("import") && n.starts_with("thunk:") {
@@ -455,7 +455,7 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let mut dlls: Vec<String> = imports.iter().map(|i| i.dll.clone()).collect::<BTreeSet<_>>().into_iter().collect();
     dlls.sort_by_key(|d| d.to_lowercase());
     dlls.dedup();
-    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or("no toolchain")?;
+    let tc = crate::toolchain::Vc6;
     for dll in dlls {
         let name = tc.import_library_name(&dll);
         let path = match x.find_library(&name) {

@@ -312,7 +312,7 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
     };
     let code = obj.function_code(k);
     let img = crate::timing::phase("r.img", || crate::image(&p.target(None).map_err(Error::runtime)?.path))?;
-    let tc = crate::toolchain::of(&p.toolchain_key()).ok_or_else(|| Error::runtime("no toolchain"))?;
+    let tc = crate::toolchain::Vc6;
     let fill_forms: Vec<Vec<u8>> = tc.fill_forms().iter().map(|f| f.to_vec()).collect();
     let fills: HashSet<Vec<u8>> = fill_forms.iter().cloned().collect();
     let forms = crate::compare::fill_order(&fill_forms);
