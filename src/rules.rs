@@ -909,6 +909,22 @@ pub(crate) fn bare_operand(img: &crate::pe::Image, site: i64, t: i64) -> bool {
     })
 }
 
+/// The start of the original's common block: link.exe allocates the common (tentative, communal) symbols after
+/// every .bss contribution, the libraries' included (they link last; a VC6 map lists them as `<common>` after
+/// LIBC's .bss), so past the end of the library data in uninitialised data (`lib_bss`: the ends of the
+/// crt.data symbols there) lies only common data. None when no library data lies in uninitialised data.
+pub(crate) fn common_block_start(lib_bss: &[i64]) -> Option<i64> {
+    lib_bss.iter().copied().max()
+}
+
+/// D5: a tentative definition is misplaced when the original's address lies in uninitialised data that the units'
+/// .bss contributions hold (below the common block, or anywhere when the block is unknown); in the common block
+/// it is the original's own form (the compiler did not know its placement, which its code can show: a short
+/// global loaded as a word where a defined, 4-aligned one is widened to a dword).
+pub(crate) fn tentative_misplaced(va: i64, uninitialised: bool, common_start: Option<i64>) -> bool {
+    uninitialised && common_start.map_or(true, |c| va < c)
+}
+
 /// D1 / D4 / D5 / D6 / D7 / D8 / D9 (D.data).
 fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let err = |e: rusqlite::Error| Error::runtime(format!("{}: {e}", ctx.db));
@@ -921,6 +937,14 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     starts.extend(objs.iter().map(|d| d.f.lo));
     starts.sort_unstable();
     starts.dedup();
+    // D5's bound: the original's common block, past the libraries' .bss contributions
+    let lib_bss: Vec<i64> = store::claims(db, &ctx.db, "symbol", &ctx.needed, |f| f.s("skind") == Some("crt.data"))
+        .map_err(err)?
+        .iter()
+        .filter(|f| img.section_of(f.lo as u32).is_some() && img.off(f.lo as u32).is_none())
+        .map(|f| f.hi)
+        .collect();
+    let common_start = common_block_start(&lib_bss);
     for d in &objs {
         let name = d.f.s("symbol").unwrap_or("");
         if let Some(size) = d.size() {
@@ -943,10 +967,12 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         if d.symbol().map(|s| s.common()).unwrap_or(false) {
             let va = d.f.lo as u32;
-            if img.section_of(va).is_some() && img.off(va).is_none() {
+            if tentative_misplaced(d.f.lo, img.section_of(va).is_some() && img.off(va).is_none(), common_start) {
                 out.finding("error", "D5", d.f.lo, d.f.lo + 1,
-                             format!("{name} at {:#x} lies in uninitialised data and is a tentative definition: write it `= 0` so \
-                                      it is placed with its unit", d.f.lo), &d.f.by);
+                             format!("{name} at {:#x} lies in the units' uninitialised data{} and is a tentative definition: write \
+                                      it `= 0` so it is placed with its unit", d.f.lo,
+                                     common_start.map(|c| format!(" (below the common block at {c:#x})")).unwrap_or_default()),
+                             &d.f.by);
             }
         }
     }
@@ -1241,6 +1267,26 @@ pub(crate) mod testkit {
     /// (lo, hi, kind, value) of the rows of one kind.
     pub fn of(rows: &[ClaimRow], kind: &str) -> Vec<(i64, i64, serde_json::Value)> {
         rows.iter().filter(|r| r.kind == kind).map(|r| (r.lo, r.hi, serde_json::from_str(&r.value).unwrap())).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests_d5 {
+    use super::{common_block_start, tentative_misplaced};
+
+    /// A tentative definition belongs in the common block past the libraries' .bss; below it (or with no
+    /// library data in uninitialised data to bound it) it needs `= 0`; initialised data is no D5 question.
+    #[test]
+    fn tentative_only_in_the_common_block() {
+        let c = common_block_start(&[0x6f2fa0, 0x6f3300, 0x6f3008]);
+        assert_eq!(c, Some(0x6f3300));
+        assert!(tentative_misplaced(0x6f0454, true, c));
+        assert!(tentative_misplaced(0x6f32fc, true, c));
+        assert!(!tentative_misplaced(0x6f3300, true, c));
+        assert!(!tentative_misplaced(0xfb9070, true, c));
+        assert!(!tentative_misplaced(0x5fed74, false, c));
+        assert_eq!(common_block_start(&[]), None);
+        assert!(tentative_misplaced(0xfb9070, true, None));
     }
 }
 
