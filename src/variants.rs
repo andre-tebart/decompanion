@@ -154,15 +154,20 @@ fn leading_comment(t: &str) -> Option<(usize, &str)> {
     Some((end, &t[start..end]))
 }
 
-/// A whole-function variant with the function's own address comment in place of the variant's first comment.
+/// A whole-function variant with the function's own address comment (its description and @deep note) in place of
+/// the variant's first comment, or before the variant when it has none: the comment is not what `dcp try` compiles,
+/// and a function without its address comment leaves the grades. The white space between the comment and the
+/// function stays as the source has it (a blank line, or none).
 pub fn keep_comment(func: &str, new: &str) -> String {
-    match (leading_comment(func), leading_comment(new)) {
-        (Some((_, own)), Some((end, _))) => {
-            let start = new.len() - new.trim_start().len();
-            format!("{}{own}{}", &new[..start], &new[end..])
-        }
-        _ => new.to_string(),
-    }
+    let Some((fend, own)) = leading_comment(func) else { return new.to_string() };
+    let lead = &func[..func.len() - func.trim_start().len()];
+    let gap = &func[fend..];
+    let sep = &gap[..gap.len() - gap.trim_start().len()];
+    let body = match leading_comment(new) {
+        Some((end, _)) => new[end..].trim_start(),
+        None => new.trim_start(),
+    };
+    format!("{lead}{own}{sep}{body}")
 }
 
 /// The variants that move the function's line `line` (a file line) before each line of `to` (file lines, `hi + 1`:
@@ -399,7 +404,16 @@ mod tests {
         // --apply of a whole function keeps the function's address comment (its description and @deep note)
         let own = "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 1; }";
         assert_eq!(keep_comment(own, "/* 0x1 */\nint f(void) { return 2; }"), "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 2; }");
-        assert_eq!(keep_comment(own, "int f(void) { return 2; }"), "int f(void) { return 2; }");
+        // a variant without a comment: the function's own comment stays before it
+        assert_eq!(keep_comment(own, "int f(void) { return 2; }"), "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 2; }");
+        assert_eq!(keep_comment(own, "\n\nint f(void) { return 2; }"), "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 2; }");
+        // the blank-line layout between the comment and the function is the source's, whatever the variant's
+        let spaced = "/* 0x1 @deep x */\n\nint f(void) { return 1; }";
+        assert_eq!(keep_comment(spaced, "int f(void) { return 2; }"), "/* 0x1 @deep x */\n\nint f(void) { return 2; }");
+        assert_eq!(keep_comment(spaced, "/* 0x1 */\nint f(void) { return 2; }"), "/* 0x1 @deep x */\n\nint f(void) { return 2; }");
+        assert_eq!(keep_comment(own, "/* 0x1 */\n\n\nint f(void) { return 2; }"), "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 2; }");
+        // a function without a comment takes the variant as it is
+        assert_eq!(keep_comment("int f(void) { return 1; }", "/* c */\nint f(void) { return 2; }"), "/* c */\nint f(void) { return 2; }");
     }
 
     #[test]

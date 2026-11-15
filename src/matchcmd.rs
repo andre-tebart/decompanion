@@ -181,7 +181,7 @@ pub fn tiebreak_line(t: Option<&Value>, code: &str, _name: &str) -> Option<Strin
 }
 
 /// `dcp next`: the next functions of a queue (base, deep, names), of a shard (`--shard k/N`, else .dcp/shard).
-pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>, shard: Option<String>, unit: Option<String>, n: usize) -> Result<Out> {
+pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>, shard: Option<String>, unit: Option<String>, n: usize, peek: bool) -> Result<Out> {
     let db = opened(p)?;
     let text = match shard.filter(|x| !x.is_empty()) {
         Some(x) => Some(x),
@@ -205,7 +205,7 @@ pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>
         crate::attempts::order(&mut keyed, &attempts, None);
         let names: HashMap<i64, String> = keyed.iter().map(|(a, x)| (*a, x.0.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string())).collect();
         // a queue narrowed to one unit chooses no item (a worker could pick its item so)
-        let first = if unit.is_some() { None } else { crate::attempts::hand_out(p, &keyed.iter().map(|x| x.0).collect::<Vec<_>>(), &names)? };
+        let first = if unit.is_some() { None } else { crate::attempts::hand_out(p, &keyed.iter().map(|x| x.0).collect::<Vec<_>>(), &names, peek)? };
         crate::attempts::order(&mut keyed, &attempts, first);
         items = keyed.into_iter().map(|x| x.1).collect();
     }

@@ -175,4 +175,5 @@ fixed.
 2. `dcp session wrap` (it must say `gate: ok`), commit `session: match-deep wrap (<units>)` (with
    `ledger/attempts.tsv` when the wrap wrote it).
 3. Final message: each item with its outcome (byte / fixed, and how), the levers that moved code and the ones
-   that never did, tooling problems met (for the orchestrator's reports), the next `dcp next --deep` item. Stop.
+   that never did, tooling problems met (for the orchestrator's reports), the next item as `dcp next --deep --peek`
+   shows it (`--peek` records nothing; never take or record an item after the wrap). Stop.

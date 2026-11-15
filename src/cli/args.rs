@@ -493,6 +493,9 @@ pub struct NextArgs {
     /// k/N (or off); default: the file .dcp/shard
     #[arg(long)]
     pub shard: Option<String>,
+    /// only show the queue: record no match-deep session item (after dcp session wrap nothing is recorded anyway)
+    #[arg(long)]
+    pub peek: bool,
 }
 
 /// `Cmd::Asmdiff`'s arguments (its own type: clap builds and reads them in a function of their own).

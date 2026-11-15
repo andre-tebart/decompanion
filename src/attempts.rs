@@ -11,6 +11,10 @@
 //! done, into ledger/attempts.tsv (committed with the session). Done: byte + readable as the grades read it (a proven
 //! byte counts), or a commit since the session's base whose subject names `<name> fix`.
 //!
+//! `dcp session wrap` closes the session (`"wrapped": true` in the record): a `dcp next --deep` after it records no
+//! item (it only shows the queue's head), and the next `dcp session start` counts nothing from a wrapped session.
+//! `dcp next --peek` never records.
+//!
 //! The ledger: target, address, name, attempts (a header line; sorted by target, address).
 
 use crate::error::{Error, Result};
@@ -82,6 +86,29 @@ fn match_deep(rec: &Value) -> bool {
     rec.get("kind").and_then(|k| k.as_str()) == Some("match-deep")
 }
 
+/// Whether `dcp session wrap` closed the session of the record.
+fn wrapped(rec: &Value) -> bool {
+    rec.get("wrapped").and_then(|w| w.as_bool()) == Some(true)
+}
+
+/// Whether `dcp next --deep` records its item in the session record: a match-deep session that is not wrapped.
+fn open_match_deep(rec: &Value) -> bool {
+    match_deep(rec) && !wrapped(rec)
+}
+
+/// Take the item out of a session record: the item to judge (a match-deep session's, not wrapped before), the item
+/// cleared; `wrap` closes the session.
+fn take_item(rec: &mut Value, wrap: bool) -> Option<(String, i64, String)> {
+    let item = item_of(rec).filter(|_| open_match_deep(rec));
+    if let Some(o) = rec.as_object_mut() {
+        o.remove("item");
+        if wrap {
+            o.insert("wrapped".into(), Value::Bool(true));
+        }
+    }
+    item
+}
+
 fn git(root: &str, args: &[&str]) -> String {
     match std::process::Command::new("git").args(args).current_dir(root).output() {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -106,24 +133,29 @@ fn done(root: &str, rows: &[Map<String, Value>], base: &str, addr: i64, name: &s
 }
 
 /// Close the item of the session record (at `dcp session wrap`, and at `dcp session start` for the record a dead
-/// session left): one unfinished attempt counted when it is not done, the item cleared. The lines say what was
-/// counted.
-pub fn close_item(p: &Project) -> Result<Vec<String>> {
+/// session left): one unfinished attempt counted when it is not done, the item cleared; `wrap` closes the session
+/// (a wrapped session's record counts nothing again). The lines say what was counted.
+pub fn close_item(p: &Project, wrap: bool) -> Result<Vec<String>> {
     let root = p.root.to_string_lossy().into_owned();
     let mut rec = crate::session::session_load(&root);
-    let Some((target, addr, name)) = item_of(&rec).filter(|_| match_deep(&rec)) else { return Ok(vec![]) };
-    let base = rec.get("base").and_then(|b| b.as_str()).unwrap_or("").to_string();
-    let rows = crate::queues::function_grades(&p.store_path())?;
-    let mut out = vec![];
-    if target == p.target_name && !done(&root, &rows, &base, addr, &name) {
-        let mut ledger = read(&root);
-        let n = bump(&mut ledger, &target, addr, &name, 1, 0);
-        write(&root, &ledger)?;
-        out.push(format!("attempts: {name} was this match-deep session's item and is not byte + readable: unfinished attempt {n} counted in \
-                          {LEDGER} (commit it; dcp next --deep hands it out again behind the items with fewer attempts)"));
+    if !rec.is_object() {
+        return Ok(vec![]);
     }
-    if let Some(o) = rec.as_object_mut() {
-        o.remove("item");
+    let changes = rec.get("item").is_some() || (wrap && !wrapped(&rec));
+    let item = take_item(&mut rec, wrap);
+    let mut out = vec![];
+    if let Some((target, addr, name)) = item {
+        let base = rec.get("base").and_then(|b| b.as_str()).unwrap_or("").to_string();
+        let rows = crate::queues::function_grades(&p.store_path())?;
+        if target == p.target_name && !done(&root, &rows, &base, addr, &name) {
+            let mut ledger = read(&root);
+            let n = bump(&mut ledger, &target, addr, &name, 1, 0);
+            write(&root, &ledger)?;
+            out.push(format!("attempts: {name} was this match-deep session's item and is not byte + readable: unfinished attempt {n} counted in \
+                              {LEDGER} (commit it; dcp next --deep hands it out again behind the items with fewer attempts)"));
+        }
+    }
+    if changes {
         crate::session::session_write(&root, &rec)?;
     }
     Ok(out)
@@ -131,10 +163,11 @@ pub fn close_item(p: &Project) -> Result<Vec<String>> {
 
 /// `dcp next --deep`'s item in a match-deep session: the recorded item while it is not done (it stays the item:
 /// no session skips it), else the first of `items` recorded as the new item. The address to put first, if any.
-pub fn hand_out(p: &Project, items: &[i64], names: &HashMap<i64, String>) -> Result<Option<i64>> {
+/// `peek` (`dcp next --peek`) records nothing; a wrapped session (`dcp session wrap`) neither.
+pub fn hand_out(p: &Project, items: &[i64], names: &HashMap<i64, String>, peek: bool) -> Result<Option<i64>> {
     let root = p.root.to_string_lossy().into_owned();
     let mut rec = crate::session::session_load(&root);
-    if !match_deep(&rec) {
+    if !open_match_deep(&rec) {
         return Ok(None);
     }
     let base = rec.get("base").and_then(|b| b.as_str()).unwrap_or("").to_string();
@@ -145,6 +178,9 @@ pub fn hand_out(p: &Project, items: &[i64], names: &HashMap<i64, String>) -> Res
         }
     }
     let Some(&first) = items.first() else { return Ok(None) };
+    if peek {
+        return Ok(None);
+    }
     if let Some(o) = rec.as_object_mut() {
         o.insert("item".into(), json!({"target": p.target_name, "addr": first, "name": names.get(&first).cloned().unwrap_or_default()}));
         crate::session::session_write(&root, &rec)?;
@@ -311,6 +347,31 @@ mod tests {
         // the session's own item stays first whatever its count
         order(&mut items, &counts, Some(2));
         assert_eq!(items.iter().map(|x| x.1).collect::<Vec<_>>(), ["b", "a", "d", "c"]);
+    }
+
+    #[test]
+    fn a_wrapped_session_records_and_counts_nothing() {
+        let item = json!({"target": "exe", "addr": 0x401000, "name": "f"});
+        // a match-deep session that died with its item: the next start judges it
+        let mut died = json!({"base": "b", "kind": "match-deep", "item": item});
+        assert!(open_match_deep(&died));
+        assert_eq!(take_item(&mut died, false), Some(("exe".into(), 0x401000, "f".into())));
+        assert!(died.get("item").is_none() && !wrapped(&died));
+        // the wrap judges its item and closes the session: nothing is recorded after it
+        let mut rec = json!({"base": "b", "kind": "match-deep", "item": item});
+        assert_eq!(take_item(&mut rec, true), Some(("exe".into(), 0x401000, "f".into())));
+        assert!(wrapped(&rec) && !open_match_deep(&rec));
+        // an item a wrapped record holds anyway (an older dcp recorded it after the wrap) counts nothing at the start
+        rec.as_object_mut().unwrap().insert("item".into(), item.clone());
+        assert_eq!(take_item(&mut rec, false), None);
+        assert!(rec.get("item").is_none());
+        // a wrap twice: still closed, still nothing
+        assert_eq!(take_item(&mut rec, true), None);
+        assert!(wrapped(&rec));
+        // not match-deep: no item to judge
+        let mut base = json!({"base": "b", "kind": "match-base", "item": item});
+        assert!(!open_match_deep(&base));
+        assert_eq!(take_item(&mut base, true), None);
     }
 
     #[test]

@@ -411,4 +411,4 @@ of a session; that is expected base work, not a reason to escalate it.
    what a function does goes into its address comment, types and names into the code.
 4. Commit: `git add -A && git commit -m "session: match-base wrap (<units>)"` (the baseline).
 5. Final message: the session's tier, the report's first lines (byte / readable before -> after), the
-   `hand-ups:` line, each function raised, escalated or handed up with its new grade, the renames, the next `dcp next` item. Stop.
+   `hand-ups:` line, each function raised, escalated or handed up with its new grade, the renames, the next item (`dcp next --peek`). Stop.

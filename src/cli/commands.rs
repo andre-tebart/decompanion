@@ -184,12 +184,12 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             let (l, e, c) = crate::matchcmd::grade_command(&p, what, &lint)?;
             Ok(io.report("grade", &l, e.as_deref(), c))
         }
-        Cmd::Next(NextArgs { base, tier, deep, names, n, unit, shard }) => {
+        Cmd::Next(NextArgs { base, tier, deep, names, n, unit, shard, peek }) => {
             let _ = base;
             let (p, _) = build_target(io, sel, true, false)?;
             current_lint(io, &p)?;
             let which = if deep { "deep" } else if names { "names" } else { "base" };
-            let (l, e, c) = crate::matchcmd::next_command(&p, which, tier.as_deref(), shard, unit, n)?;
+            let (l, e, c) = crate::matchcmd::next_command(&p, which, tier.as_deref(), shard, unit, n, peek)?;
             Ok(io.report("next", &l, e.as_deref(), c))
         }
         Cmd::Asmdiff(AsmdiffArgs { name, regs, all, symbols, plain, changed, at, context, side, lines }) => {
@@ -695,7 +695,7 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
             }
             status_tail(io, &p)?;
             // the item of a match-deep session that ended without its wrap (attempts.rs)
-            for l in crate::attempts::close_item(&p)? {
+            for l in crate::attempts::close_item(&p, false)? {
                 io.say(&l);
             }
             crate::session::session_save(&root, &head, &p.target_name, &state, kind.as_deref())?;
@@ -718,7 +718,7 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
             io.say(&rec(&[("session", s("wrap")), ("base", s(base.chars().take(8).collect::<String>())),
                           ("started", started.map(Tok::S).unwrap_or(Tok::No))]));
             let (mut ok, p, link_ok, undrafted, state) = gate(io, sel)?;
-            for l in crate::attempts::close_item(&p)? {
+            for l in crate::attempts::close_item(&p, true)? {
                 io.say(&l);
             }
             let (mut promoted, mut refused) = (None, false);
