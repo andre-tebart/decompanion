@@ -137,12 +137,10 @@ group is big: a large header include into a big unit is one group, however long.
 
 ## 5. Tie-breaks
 VC6 /O2 can change a function's bytes by the declaration set alone (an include, a typedef nothing uses). `dcp
-build` probes the unit of a fall (`dcp headers probe UNIT` by hand, recorded in `ledger/tiebreak.tsv`: commit it).
-A function whose own text did not change and whose bytes move under the probe is no fall: M1 prints `tie-break: N
-functions moved (HEADER)`, and promote takes it. Keep the include. Any other fall is yours to fix.
-
-`dcp headers sample NAME` measures one function more widely than the unit probe (random unused declarations
-and layout-preserving member changes inside the include chain); use it when a fall is not explained by the probe.
+build` sweeps every fallen function by itself (its text compiled under every declaration-set shift, recorded in
+`ledger/tiebreak.tsv`: commit it). A function whose own text did not change and whose text still reaches its old
+grade under one of those declaration sets is no fall: M1 prints `tie-break: N functions moved (HEADER)`, and promote
+takes it. Keep the include. A fall that remains after the build is real: yours to fix.
 
 ## 6. Wrap up
 1. Keep the group in progress only if it builds, lints and checks clean; else revert it.

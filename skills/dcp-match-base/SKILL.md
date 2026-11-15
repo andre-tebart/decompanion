@@ -291,12 +291,13 @@ call, made on this criterion: the fall is acceptable when the change brings the 
 the original (truer types, fewer views, casts and duplicated records, headers the units can include) **and**
 the match it costs is no evidence of the original's source. A VC6 declaration-set tie-break is not yours to
 accept: the match flips on declaration changes unrelated to the function (an empty include, an extra typedef,
-a prototype nothing calls). `dcp build` probes the unit of such a fall (`dcp headers probe UNIT` does it by
-hand: unused typedefs before the unit's text, recorded in `ledger/tiebreak.tsv`; commit it). A function
-whose bytes move under the probe and whose own text did not change is no fall: M1 prints one `tie-break: N
-functions moved (HEADER)` line, needs no debt, and promote takes it. Keep the truer type; do not dodge it
-with a worse spelling and do not revert it. Its best grade under the probes is its proven grade (the queues'),
-and `G.tiebreak` on the unit says its declaration set is not yet the original's. A fall from a
+a prototype nothing calls). `dcp build` settles such a fall by itself: it sweeps the fallen function's text over
+every declaration-set shift (unused typedefs at the unit's start and before the function, recorded in
+`ledger/tiebreak.tsv`; commit it). A function whose own text did not change and whose text still reaches its old
+grade under one of those declaration sets is no fall: M1 prints one `tie-break: N functions moved (HEADER)` line,
+needs no debt, and promote takes it. Keep the truer type; do not dodge it with a worse spelling and do not revert
+it. Its best grade over the declaration sets is its proven grade (the queues'), and `G.tiebreak` on the unit says
+its declaration set is not yet the original's. A fall that remains after the build's sweep is a real fall. A fall from a
 wrong change is not acceptable (a signature, a type or a spelling the original's bytes contradict): fix the
 change, or keep the original's spelling (2.3). When you are not sure which it is, find out (`dcp asmdiff`,
 `dcp diffclass`, try the change without its unrelated parts) before deciding.
@@ -350,15 +351,14 @@ escalate is not optional (the user requires every Q gate to be solved by base wo
 not read C for meaning).
 
 When only allocation or scheduling is left (`regs`, `slots`, `order` hunks the classes do not explain away, or
-the code is shape and only byte identity is missing), measure first whether the declaration set decides it:
-`dcp headers sample NAME` (32 compiles of the unit with unused declarations and layout-preserving member changes,
-a few seconds; `--n 128` for more). `dcp grade NAME` then shows a `tiebreak:` line:
-- **sensitive, best byte**: a declaration set gives the original's bytes from your text. The function is proven
-  byte and leaves the queues; commit `ledger/tiebreak.tsv` and move on.
-- **sensitive, best below byte**: its allocation follows the declaration set; respelling it is a lottery. Escalate
-  now (the reason gets `(tiebreak: sensitive)` by itself); it waits for its unit's declaration pass.
-- **insensitive**: what is left is in the function's text. Try the spellings you have; then escalate (the reason
-  gets `(tiebreak: insensitive)`) with what you tried.
+the code is shape and only byte identity is missing), you do not measure the declaration set yourself: `dcp
+build`, `dcp grade NAME` and `dcp try` sweep a close function's text over every declaration-set shift by
+themselves, and `dcp grade NAME` shows the answer on its `declaration set:` line, one of two:
+- **byte under a declaration set (named): done (proven byte)**: your text is right; the function leaves the queues.
+  Commit `ledger/tiebreak.tsv` with it and move on.
+- **no declaration set makes this text byte: the difference is in the text, go on**: what is left is in the
+  function's text, however much the declaration set moves its code. Try the spellings you have; then escalate
+  with what you tried.
 
 Then, or when a generated variant round would be needed:
 `dcp escalate NAME "why"`, build, commit `<unit>: <name> -> deep (match-base)`. The reason lists what was
@@ -378,7 +378,7 @@ proof), or a census line (`census:` in `dcp grade NAME`: an object or a literal 
 never does). The refusal lists them all. That is a meaning difference (a missing call or
 assignment, a wrong type converted, a wrong object, index or literal); fix it. Only when you have read that it is none (the call reached
 another way), say why: `--divergence-explained "why"` (kept in the reason). A function you raise to shape + readable that still carries a
-stale `@deep` / `@stuck` tag: `dcp escalate NAME --clear`, build again.
+stale `@deep` tag: `dcp escalate NAME --clear`, build again.
 
 ## 3a. Handing up to a stronger worker (`@hard`)
 In an easy-tier session (`tier=easy`), take an item you cannot raise to shape + readable as base work that is too
