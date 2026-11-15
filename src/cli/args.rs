@@ -73,8 +73,12 @@ pub enum Cmd {
     Listing(ListingArgs),
     /// write `@deep why` into a function's address comment (--clear removes the tag); with --hard, `@hard why`
     Escalate(EscalateArgs),
-    /// write `@stuck why` into a function's address comment (--clear removes the tag)
-    Stuck(StuckArgs),
+    /// the match-deep journal: write what this session found into a deep function's `@deep` note, replacing this
+    /// session's earlier text (the note as the session found it stays as `prior:`)
+    Note(NoteArgs),
+    /// one-time source migrations: `stuck` turns every `@stuck why` tag into `@deep why` (the reasons kept) and
+    /// counts one unfinished attempt for each (ledger/attempts.tsv); safe to run again
+    Migrate(MigrateArgs),
     /// raise the grade baseline ledger/grades.tsv to the current grades (a fall no dcp debt add covers is
     /// refused)
     Promote(PromoteArgs),
@@ -203,6 +207,11 @@ pub enum HeadersCmd {
     /// declarations at random file-scope places before it; sensitive or not, the best grade (its source-proven one),
     /// recorded in ledger/tiebreak.tsv
     Sample(HeadersSampleArgs),
+    /// whether any declaration set makes one function's text byte: its unit compiled with every symbol-count shift
+    /// (0..63 unused typedefs at the unit's start and before the function) and graded; the verdict (proven byte under
+    /// a named set, or the difference is in the text) recorded in ledger/tiebreak.tsv. dcp try, dcp build and dcp
+    /// grade run it by themselves when a function is close
+    Sweep(HeadersSweepArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -564,13 +573,20 @@ pub struct EscalateArgs {
     pub divergence_explained: Option<String>,
 }
 
-/// `Cmd::Stuck`'s arguments (its own type: clap builds and reads them in a function of their own).
+/// `Cmd::Note`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
-pub struct StuckArgs {
+pub struct NoteArgs {
     pub name: String,
-    pub why: Option<String>,
-    #[arg(long)]
-    pub clear: bool,
+    /// what the session found so far: the original at the hunks left, the mechanism, each round with its best row
+    pub text: String,
+}
+
+/// `Cmd::Migrate`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct MigrateArgs {
+    /// the migration: `stuck`
+    #[arg(value_parser = ["stuck"])]
+    pub what: String,
 }
 
 /// `Cmd::Promote`'s arguments (its own type: clap builds and reads them in a function of their own).
@@ -875,6 +891,22 @@ pub struct HeadersSampleArgs {
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
     /// sample and report, write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+/// `HeadersCmd::Sweep`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct HeadersSweepArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// one line per declaration set: its grade and code hash
+    #[arg(long)]
+    pub table: bool,
+    /// the shifts 0..K-1 (a measurement of the period; anything but 64 writes nothing)
+    #[arg(long, default_value_t = 64, hide = true)]
+    pub max: usize,
+    /// sweep and report, write nothing
     #[arg(long)]
     pub dry_run: bool,
 }

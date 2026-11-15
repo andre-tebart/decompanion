@@ -3,25 +3,37 @@
 //! typedef) moves functions that never use the changed type between byte, shape and draft. That is the headers'
 //! business, not the function's: the object experiment would be reporting on something else.
 //!
-//! The probe is the experiment that measures it once instead of per change: the unit compiled as the build compiles
-//! it (the control) and with a no-meaning perturbation before its text (PROBES: unused typedefs, one, two, three and
-//! one of another name), each function graded as G.grade grades it. A function whose bytes change under any probe
-//! is tie-break sensitive: a change is proof, an observation, not a guess. Its best grade over the control and the
-//! probes is its source-proven grade: a declaration set exists under which its text gives it.
+//! The mechanism (measured on a VC6 project): the allocator frees unreferenced constant candidates in a 64-bucket
+//! walk keyed by the front end's running symbol ordinal (`& 0x3f`) for every string literal and global a function
+//! uses, so every declaration before a function can move it, with period 64 in the count. The sweep is the
+//! experiment that settles it for one text: the unit compiled as the build compiles it (the control), then with
+//! k = 1..63 unused typedefs at the unit's start (every ordinal shifted) and before the function (its own symbols
+//! shifted against everything declared before it), each function graded as G.grade grades it. Measured: the code
+//! under k and k + 64 typedefs is the same at both places (the names do not matter, the count does). A compile that
+//! gives the original's bytes is proof that the text is right: a declaration set exists under which it gives them.
+//! A sweep that finds none says the difference is in the text. Not covered: two shifts at once (the unit's start
+//! and before the function in combination, 64 x 64 states) and shifts between two other declarations; a function
+//! the original reached only so stays below byte, and nothing is counted done that no compile showed.
 //!
-//! The records are kept in ledger/tiebreak.tsv (written by `dcp headers probe` and by `dcp build` when a function
-//! of the baseline fell and has no record; never by hand): target, address, name, unit, the hash of the function's
-//! text (comments and whitespace runs aside), sensitive, best, the witness (each compile's grade, `*` where its
-//! bytes differ from the control's). M.tiebreak turns each record whose function's text is still the same into a
-//! derived `tiebreak` claim; a changed text leaves the record stale, and the next fall probes again.
+//! Where it runs, so that no worker has to: `dcp try` on its closest variant when that is close (shape, or at most
+//! CLOSE_INS instructions) and below byte, `dcp grade NAME` and `dcp build` on a close function below byte that the
+//! tree changed, and `dcp build` on every function that fell below the baseline (to the grade it had); each stops
+//! at the first compile that reaches its goal. `dcp headers sweep NAME` runs it whole, `dcp headers probe UNIT` at
+//! the unit's start for every function of the unit at once.
 //!
-//! Who reads them: G.grade (the experiment's `tiebreak` and `proven`; no M2.stale for a sensitive function; the
-//! unit's G.tiebreak gap: its declaration set is not yet the original's while a sensitive function reaches a
-//! better grade under a probe than as built), M1 and the session wrap (a sensitive function that moved after a
-//! declaration change that left its own text the same is no fall: one `tie-break` line per changed header set),
-//! promote (no refusal for those), the queues (the proven grade is the code grade of the work: a proven byte
-//! leaves the base and the deep queue) and the build's auto-clear (no tag is cleared on a sensitive function: a
-//! byte reached through the declaration set proves nothing about its source).
+//! The records are kept in ledger/tiebreak.tsv (never written by hand): target, address, name, unit, the hash of
+//! the function's text (comments and whitespace runs aside), sensitive (more than one codegen), best, the witness
+//! (the sweep's control, best, the declaration set that gave it, the codegens), the unit's compile inputs it was
+//! measured under. Sweeps of other texts (try's variants) are cached under build/. M.tiebreak turns each record
+//! whose function's text is still the same into a derived `tiebreak` claim; a changed text leaves the record stale.
+//!
+//! Who reads them: G.grade (the experiment's `tiebreak` and `proven`: a best grade above the built one is the
+//! source-proven grade; no M2.stale for a sensitive function; the unit's G.tiebreak gap: its declaration set is not
+//! yet the original's while a function reaches a better grade under a swept set than as built), M1, the session
+//! wrap and promote (a function whose own text is the same since the baseline and whose record under the unit's
+//! current inputs still reaches the grade it had is no fall: declaration_move), the queues (the proven grade is the
+//! code grade of the work: a proven byte leaves the base and the deep queue) and the build's auto-clear (no tag is
+//! cleared on a sensitive function).
 
 use crate::coff::{FunctionCode, Obj};
 use crate::error::{Error, Result};
@@ -35,20 +47,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 pub const LEDGER: &str = "ledger/tiebreak.tsv";
-pub const HEADER: &str = "target\taddress\tname\tunit\ttext\tsensitive\tbest\twitness";
-
-/// The probes: the lines put before the unit's text (a `#line 1` after them keeps every line number and
-/// `__FILE__` as the build has them). The count of declarations drives some tie-breaks, a name's hash others
-/// (seen: one typedef raised one function's grade and left another's), so the family varies both.
-pub const PROBES: [&str; 4] = [
-    "typedef int __dcp_probe_1;",
-    "typedef int __dcp_probe_1; typedef int __dcp_probe_2;",
-    "typedef int __dcp_probe_1; typedef int __dcp_probe_2; typedef int __dcp_probe_3;",
-    "typedef int __dcp_probe_q;",
-];
-
-/// The units a build probes at most, when functions of the baseline fell without a record.
-const BUILD_MAX_UNITS: usize = 4;
+pub const HEADER: &str = "target\taddress\tname\tunit\ttext\tsensitive\tbest\twitness\tinputs";
 
 fn err(e: impl std::fmt::Display) -> Error {
     Error::runtime(e.to_string())
@@ -61,7 +60,7 @@ fn rank(c: &str) -> Option<usize> {
 // ------------------------------------------------------------------------------------------------ the records
 
 /// One function's probe record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Record {
     pub target: String,
     pub addr: i64,
@@ -71,6 +70,8 @@ pub struct Record {
     pub sensitive: bool,
     pub best: String,
     pub witness: String,
+    /// the unit's compile inputs (`inputs_of`) the record was measured under; empty in a record of an older dcp
+    pub inputs: String,
 }
 
 pub fn parse(text: &str) -> Vec<Record> {
@@ -80,7 +81,7 @@ pub fn parse(text: &str) -> Vec<Record> {
             return None;
         }
         Some(Record { target: f[0].into(), addr: crate::layout::int16(f[1])?, name: f[2].into(), unit: f[3].into(), text: f[4].into(),
-                      sensitive: f[5] == "yes", best: f[6].into(), witness: f[7].into() })
+                      sensitive: f[5] == "yes", best: f[6].into(), witness: f[7].into(), inputs: f.get(8).map(|x| x.to_string()).unwrap_or_default() })
     }).collect()
 }
 
@@ -88,7 +89,7 @@ pub fn render(recs: &[Record]) -> String {
     let mut out = format!("{HEADER}\n");
     for r in recs {
         out.push_str(&[r.target.as_str(), &format!("{:#010x}", r.addr), &r.name, &r.unit, &r.text, if r.sensitive { "yes" } else { "no" }, &r.best,
-                       &r.witness].join("\t"));
+                       &r.witness, &r.inputs].join("\t"));
         out.push('\n');
     }
     out
@@ -100,14 +101,6 @@ fn ledger_path(root: &str) -> String {
 
 pub fn read(root: &str) -> Vec<Record> {
     parse(&crate::fsmemo::read_text(&ledger_path(root)).unwrap_or_default())
-}
-
-/// The ledger with the records of the probed units of `target` replaced by `fresh` (sorted by target, address).
-fn merged(old: Vec<Record>, target: &str, units: &HashSet<String>, fresh: Vec<Record>) -> Vec<Record> {
-    let mut by: BTreeMap<(String, i64), Record> = old.into_iter().filter(|r| !(r.target == target && units.contains(&r.unit)))
-        .map(|r| ((r.target.clone(), r.addr), r)).collect();
-    by.extend(fresh.into_iter().map(|r| ((r.target.clone(), r.addr), r)));
-    by.into_values().collect()
 }
 
 // ------------------------------------------------------------------------------------------------ the text
@@ -194,19 +187,23 @@ pub fn m_tiebreak(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             continue;
         }
         out.claim(s.lo, s.lo + 1, "tiebreak", json!({"name": s.value["symbol"], "unit": s.value["unit"], "file": file, "comment": comment, "end": end,
-                                                     "sensitive": r.sensitive, "best": r.best, "witness": r.witness}), DERIVED);
+                                                     "sensitive": r.sensitive, "best": r.best, "witness": r.witness, "inputs": r.inputs}), DERIVED);
     }
     Ok(())
 }
 
 // ------------------------------------------------------------------------------------------------ attribution
 
-/// The changed declarations a tie-break sensitive function moved by (M1, the wrap, promote): its `tiebreak` value
-/// sensitive, its own text the same as at the changes' base, and its unit's compile inputs changed (a header of
-/// its include closure, or its unit's file outside the function). The label names them: the changed headers
-/// (`, uncommitted` on each the working tree changed), else the unit's file.
-pub fn declaration_move(root: &str, ch: &crate::cause::Changes, tb: &Value, unit_file: &str) -> Option<String> {
-    if tb.get("sensitive").and_then(|v| v.as_bool()) != Some(true) {
+/// The changed declarations a function fell by without falling (M1, the wrap, promote): its `tiebreak` record
+/// measured under its unit's current compile inputs (`inputs_now`) gives at least the grade it had (`was`): its
+/// text, with the declarations as they are, still reaches that grade under some declaration set; its own text is the
+/// same as at the changes' base; and its unit's compile inputs changed (a header of its include closure, or its
+/// unit's file outside the function). The label names them: the changed headers (`, uncommitted` on each the
+/// working tree changed), else the unit's file. A record of other inputs proves nothing: a header that changed a
+/// meaning could have moved the function (the build sweeps a fallen function again: build_sweeps).
+pub fn declaration_move(root: &str, ch: &crate::cause::Changes, tb: &Value, unit_file: &str, was: &str, inputs_now: &str) -> Option<String> {
+    let inputs = tb.get("inputs").and_then(|v| v.as_str()).unwrap_or("");
+    if inputs.is_empty() || inputs != inputs_now || rank(tb.get("best").and_then(|v| v.as_str()).unwrap_or("")) < rank(was) || rank(was).is_none() {
         return None;
     }
     let (file, comment, end) = (tb["file"].as_str()?, tb["comment"].as_i64()?, tb["end"].as_i64()?);
@@ -360,198 +357,629 @@ pub(crate) fn compile(p: &Project, jobs: &[Job]) -> Result<Vec<std::result::Resu
     Ok(res)
 }
 
-// ------------------------------------------------------------------------------------------------ the probe
+// ------------------------------------------------------------------------------------------------ the measurements
 
-/// The same code: the bytes outside the relocated fields, and the symbols of the relocations (a name the compiler
-/// numbers, `$SG1234` / `$L567`, by its kind only: the probe's declarations shift the numbering, not the code).
-fn same_code(o1: &Obj, c1: &FunctionCode, o2: &Obj, c2: &FunctionCode) -> bool {
-    let syms = |o: &Obj, c: &FunctionCode| -> Vec<(u32, String)> {
-        c.relocs.iter().map(|(off, r)| {
-            let n = o.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default();
-            (*off, if n.starts_with('$') { n.trim_end_matches(|ch: char| ch.is_ascii_digit()).to_string() } else { n })
-        }).collect()
-    };
-    let masked = |c: &FunctionCode| -> Vec<u8> { c.data.iter().zip(&c.mask).map(|(b, m)| if *m != 0 { 0 } else { *b }).collect() };
-    masked(c1) == masked(c2) && syms(o1, c1) == syms(o2, c2)
+/// The functions a build sweeps at most (each costs up to 2 x 63 compiles of its unit); the rest the next build.
+const BUILD_MAX: usize = 8;
+
+/// A function close enough to its original that the declaration set may be all that is left: shape, or at most
+/// CLOSE_INS differing instructions.
+pub const CLOSE_INS: i64 = 24;
+
+pub fn close(code: &str, ins: Option<i64>) -> bool {
+    code == "shape" || ins.is_some_and(|d| d <= CLOSE_INS)
 }
 
-/// One probed unit: its records, each with the function's built grade.
-pub struct Probed {
-    pub unit: String,
-    pub recs: Vec<(Record, String)>, // with the built grade
+/// The sweeps of texts that are not (or not yet) the tree's: `dcp try`'s variants, the texts a build swept before
+/// the function changed again. Not committed: the ledger holds the records of the tree's texts.
+const CACHE: &str = "build/tiebreak-cache.tsv";
+const CACHE_MAX: usize = 4000;
+
+fn cache_read(root: &str) -> Vec<Record> {
+    parse(&std::fs::read_to_string(native_path(&format!("{root}/{CACHE}"))).unwrap_or_default())
 }
 
-/// Probe the units (their names): each the control and PROBES compiled, each function graded. Per unit its
-/// records, or why there are none (the toolchain, a compile error, a control that is not the build).
-pub fn probe_units(p: &Project, units: &[String]) -> Result<Vec<(String, std::result::Result<Probed, String>)>> {
-    let root = p.root.to_string_lossy().into_owned();
-    let db = p.store_path();
-    let plan = crate::plan::plan(p).map_err(err)?;
-    let mut out = vec![];
-    let mut tus = vec![];
-    for u in units {
-        match plan.iter().find(|t| &t.unit == u) {
-            Some(t) => tus.push(t),
-            None => out.push((u.clone(), Err(format!("no unit {u} in target {}", p.target_name)))),
-        }
+fn cache_put(root: &str, fresh: &[Record]) {
+    if fresh.is_empty() {
+        return;
     }
-    let mut jobs = vec![];
-    for t in &tus {
-        let text = crate::fsmemo::read_text(&native_path(&format!("{root}/{}", t.file))).map_err(err)?;
-        for (k, pre) in std::iter::once("").chain(PROBES).enumerate() {
-            jobs.push(Job { unit: t, tag: if k == 0 { "control".into() } else { format!("probe{k}") }, prefix: pre.into(), text: text.clone() });
-        }
+    let key = |r: &Record| (r.target.clone(), r.addr, r.text.clone(), r.inputs.clone());
+    let new: HashSet<_> = fresh.iter().map(key).collect();
+    let mut recs: Vec<Record> = cache_read(root).into_iter().filter(|r| !new.contains(&key(r))).collect();
+    recs.extend(fresh.iter().cloned());
+    if recs.len() > CACHE_MAX {
+        recs.drain(..recs.len() - CACHE_MAX);
     }
-    let objs = compile(p, &jobs)?;
-    let bench = if tus.is_empty() { None } else { Some(Bench::of(p)?) };
-    let rows = crate::queues::function_grades(&db)?;
-    let srcs: HashMap<i64, (String, i64, i64)> = crate::with_db(&db, |c| store::claims_of(c, &db, "source", None, |f| &*f.rule == "L.src" && f.s("what") == Some("func")))?
-        .iter().map(|f| (f.lo, (f.s("file").unwrap_or("").to_string(), f.value["comment"].as_i64().unwrap_or(0), f.value["end"].as_i64().unwrap_or(0)))).collect();
-    let per = PROBES.len() + 1;
-    for (i, t) in tus.iter().enumerate() {
-        let objs = &objs[i * per..(i + 1) * per];
-        if let Some(e) = objs.iter().find_map(|o| o.as_ref().err()) {
-            out.push((t.unit.clone(), Err(format!("does not compile: {e}"))));
-            continue;
-        }
-        let objs: Vec<&Obj> = objs.iter().filter_map(|o| o.as_ref().ok()).collect();
-        let index: Vec<HashMap<String, usize>> = objs.iter().map(|o| o.function_index()).collect();
-        let bench = bench.as_ref().unwrap();
-        let (mut recs, mut differ) = (vec![], vec![]);
-        for r in rows.iter().filter(|r| r["unit"].as_str() == Some(t.unit.as_str())) {
-            let (a, name, now) = (r["addr"].as_i64().unwrap_or(0), r["name"].as_str().unwrap_or(""), r["code"].as_str().unwrap_or(""));
-            if now == crate::grade::NOT_RUN {
-                continue;
-            }
-            let Some(&k0) = index[0].get(name) else { continue };
-            let Some((file, comment, end)) = srcs.get(&a) else { continue };
-            let Some(text) = fn_text(&root, file, *comment, *end) else { continue };
-            let c0 = objs[0].function_code(k0);
-            let control = bench.grade(objs[0], &c0, a);
-            if control != now {
-                differ.push(format!("{name} built {now}, control {control}"));
-                continue;
-            }
-            let (mut witness, mut best, mut sensitive) = (vec![format!("control={control}")], control, false);
-            for k in 1..per {
-                let g = match index[k].get(name) {
-                    None => {
-                        sensitive = true;
-                        witness.push(format!("p{k}=none*"));
-                        continue;
-                    }
-                    Some(&j) => {
-                        let c = objs[k].function_code(j);
-                        let moved = !same_code(objs[0], &c0, objs[k], &c);
-                        sensitive |= moved;
-                        let g = if moved { bench.grade(objs[k], &c, a) } else { control };
-                        witness.push(format!("p{k}={g}{}", if moved { "*" } else { "" }));
-                        g
-                    }
-                };
-                if rank(g) > rank(best) {
-                    best = g;
-                }
-            }
-            recs.push((Record { target: p.target_name.clone(), addr: a, name: name.into(), unit: t.unit.clone(), text: text_hash(&text), sensitive,
-                                best: best.into(), witness: witness.join(" ") }, now.to_string()));
-        }
-        if !differ.is_empty() {
-            out.push((t.unit.clone(), Err(format!("the control compile does not reproduce the build at {} function(s) ({}{}): dcp build, then probe again",
-                                                  differ.len(), differ[0], if differ.len() > 1 { ", .." } else { "" }))));
-            continue;
-        }
-        out.push((t.unit.clone(), Ok(Probed { unit: t.unit.clone(), recs })));
-    }
-    Ok(out)
-}
-
-/// Write the records of the probed units into the ledger (the other records kept).
-fn write(p: &Project, probed: &[&Probed]) -> Result<()> {
-    let root = p.root.to_string_lossy().into_owned();
-    let units: HashSet<String> = probed.iter().map(|x| x.unit.clone()).collect();
-    let fresh: Vec<Record> = probed.iter().flat_map(|x| x.recs.iter().map(|r| r.0.clone())).collect();
-    let text = render(&merged(read(&root), &p.target_name, &units, fresh));
-    let path = ledger_path(&root);
+    let path = native_path(&format!("{root}/{CACHE}"));
     if let Some(d) = Path::new(&path).parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    crate::edit::write(&path, &text).map_err(Error::value)?;
-    p.forget_input("tiebreak");
-    Ok(())
+    let _ = std::fs::write(&path, render(&recs));
 }
 
-/// The report lines of the probed units: per unit its counts, per sensitive function its grades.
-fn report(res: &[(String, std::result::Result<Probed, String>)]) -> Vec<String> {
-    use crate::cliread::{fmt_addr, record, Tok};
-    let s = |x: &str| Tok::S(x.to_string());
-    let mut out = vec![];
-    for (unit, r) in res {
-        match r {
-            Err(e) => out.push(record(&[("unit", s(unit)), ("error", s(e))])),
-            Ok(pr) => {
-                let sens: Vec<&(Record, String)> = pr.recs.iter().filter(|r| r.0.sensitive).collect();
-                let raised = sens.iter().filter(|r| rank(&r.0.best) > rank(&r.1)).count();
-                out.push(record(&[("unit", s(unit)), ("functions", Tok::I(pr.recs.len() as i64)), ("sensitive", Tok::I(sens.len() as i64)),
-                                  ("raised", Tok::I(raised as i64))]));
-                for (r, now) in sens {
-                    out.push(format!("  {}", record(&[("fn", s(&fmt_addr(r.addr))), ("name", s(&r.name)), ("built", s(now)), ("best", s(&r.best)),
-                                                       ("witness", s(&r.witness))])));
+/// Whether a sweep record covered every declaration set (a sweep stopped at its goal, or one of the unit's start
+/// only, did not).
+pub fn complete(r: &Record) -> bool {
+    r.witness.starts_with("sweep ") && !r.witness.contains("(stopped at the goal)") && !r.witness.contains("(the unit's start only)")
+}
+
+/// The record of a function's text under its unit's inputs that answers for `goal`: one that reached the goal, or
+/// a complete sweep. The ledger first, then the cache.
+fn known(root: &str, ledger: &[Record], target: &str, addr: i64, text: &str, inputs: &str, goal: &str) -> Option<(Record, bool)> {
+    let ok = |r: &Record| r.target == target && r.addr == addr && r.text == text && !inputs.is_empty() && r.inputs == inputs
+        && (rank(&r.best) >= rank(goal) || complete(r));
+    if let Some(r) = ledger.iter().find(|r| ok(r)) {
+        return Some((r.clone(), true));
+    }
+    cache_read(root).into_iter().rev().find(|r| ok(r)).map(|r| (r, false))
+}
+
+/// One function to measure and the grade at which its sweep may stop.
+pub(crate) struct Want {
+    pub name: String,
+    pub goal: &'static str,
+}
+
+/// One measured function: its record and whether it was swept now (else known from the ledger or the cache).
+pub(crate) struct Measured {
+    pub rec: Record,
+    pub built: String,
+    pub swept: bool,
+    /// its record was not in the ledger (written now)
+    pub new: bool,
+}
+
+/// Measure functions of the tree as it is: each function's record for its current text under its unit's current
+/// compile inputs, known (the ledger, the cache) or swept now (one sweep per unit for its wanted functions,
+/// stopping when each reached its goal). Every record goes into the ledger (a cached one too: it is the tree's now)
+/// and the swept ones into the cache. A function that cannot be measured (no span, defined in an included file,
+/// its unit not built) is left out.
+pub(crate) fn measure(p: &Project, wants: &[Want], max_swept: usize) -> Result<(Vec<Measured>, usize)> {
+    let root = p.root.to_string_lossy().into_owned();
+    let db = p.store_path();
+    let plan = crate::plan::plan(p).map_err(err)?;
+    let ledger = read(&root);
+    let keys = crate::compile::tu_keys(&db)?;
+    let mut out: Vec<Measured> = vec![];
+    // unit -> (its text, its inputs, the targets with their text hashes and built grades)
+    let mut todo: BTreeMap<String, (String, String, Vec<(Target, String, String)>)> = BTreeMap::new();
+    let (mut queued, mut left) = (0, 0);
+    let loc = Locator::of(p)?;
+    for w in wants {
+        let Some(l) = loc.get(&w.name).ok() else { continue };
+        let Some(t) = plan.iter().find(|t| t.unit == l.unit) else { continue };
+        let Some(k) = keys.get(&l.unit) else { continue };
+        if l.file != t.file || l.built == crate::grade::NOT_RUN {
+            continue;
+        }
+        let Some(ftext) = fn_text(&root, &l.file, l.comment, l.end) else { continue };
+        let path = native_path(&format!("{root}/{}", t.file));
+        let inputs = inputs_of(&crate::fsmemo::sha256(&path).map_err(err)?, &k.flags_hash, &k.include_hash);
+        let th = text_hash(&ftext);
+        if let Some((rec, _)) = known(&root, &ledger, &p.target_name, l.addr, &th, &inputs, w.goal) {
+            out.push(Measured { rec, built: l.built.clone(), swept: false, new: false });
+            continue;
+        }
+        if queued >= max_swept {
+            left += 1;
+            continue;
+        }
+        queued += 1;
+        let e = match todo.entry(l.unit.clone()) {
+            std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::btree_map::Entry::Vacant(v) => {
+                let text = crate::fsmemo::read_text(&path).map_err(err)?.replace("\r\n", "\n");
+                v.insert((text, inputs.clone(), vec![]))
+            }
+        };
+        e.2.push((Target { name: w.name.clone(), addr: l.addr, comment: l.comment, goal: w.goal }, th, l.built.clone()));
+    }
+    if !todo.is_empty() {
+        let bench = Bench::of(p)?;
+        for (unit, (text, inputs, ts)) in &todo {
+            let t = plan.iter().find(|t| &t.unit == unit).unwrap();
+            let targets: Vec<Target> = ts.iter().map(|x| x.0.clone()).collect();
+            let (res, _) = sweep(p, t, text, &targets, false, PERIOD, true, &bench)?;
+            for (s, (_, th, built)) in res.iter().zip(ts) {
+                if s.compiled == 0 {
+                    continue;
+                }
+                out.push(Measured { rec: sweep_record(p, unit, th, inputs, s), built: built.clone(), swept: true, new: false });
+            }
+        }
+    }
+    let swept: Vec<Record> = out.iter().filter(|m| m.swept).map(|m| m.rec.clone()).collect();
+    cache_put(&root, &swept);
+    let mut fresh: Vec<Record> = vec![];
+    for m in out.iter_mut() {
+        if !ledger.iter().any(|r| r == &m.rec) {
+            m.new = true;
+            fresh.push(m.rec.clone());
+        }
+    }
+    put_records(p, fresh)?;
+    Ok((out, left))
+}
+
+/// One measured function in a line: `name: <verdict>`.
+pub(crate) fn measured_line(m: &Measured) -> String {
+    let set = m.rec.witness.split(" by ").nth(1).and_then(|x| x.split(';').next()).unwrap_or("").to_string();
+    format!("{}: {}", m.rec.name, verdict(&m.rec.best, &m.built, &set, complete(&m.rec)))
+}
+
+/// The build's measurements (after its grades): every function that fell below the baseline (ledger/grades.tsv),
+/// to the grade it had (so that M1 tells a declaration-set move from a fall), then every function the working tree
+/// changed against HEAD in a unit this build compiled that is close to its original and below byte, to byte (so
+/// that a text the declaration set alone keeps from byte counts as done). At most BUILD_MAX functions swept; the
+/// lines say what was measured.
+pub fn build_sweeps(p: &Project, compiled: &[String]) -> Result<Vec<String>> {
+    let root = p.root.to_string_lossy().into_owned();
+    if !crate::vc6::Tools::of(p).available() {
+        return Ok(vec![]);
+    }
+    let db = p.store_path();
+    let rows = crate::queues::function_grades(&db)?;
+    let base = crate::fsmemo::read_text(&native_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default();
+    let base: HashMap<i64, String> = crate::queues::parse_baseline(&base).into_iter().filter(|x| x.0 .0 == p.target_name).map(|x| (x.0 .1, x.1.code)).collect();
+    let mut wants: Vec<Want> = vec![];
+    for r in rows.iter() {
+        let (a, code) = (r["addr"].as_i64().unwrap_or(0), r["code"].as_str().unwrap_or(""));
+        if let Some(b) = base.get(&a) {
+            if let (Some(bi), Some(n)) = (rank(b), rank(code)) {
+                if n < bi {
+                    wants.push(Want { name: r["name"].as_str().unwrap_or("").into(), goal: crate::grade::CODE[bi] });
                 }
             }
         }
+    }
+    // the close functions below byte of the units this build compiled; git is read only when there is one
+    let cands: Vec<&str> = rows.iter().filter(|r| {
+        let (unit, code, name) = (r["unit"].as_str().unwrap_or(""), r["code"].as_str().unwrap_or(""), r["name"].as_str().unwrap_or(""));
+        let ins = r.get("dist").and_then(|d| d.get("ins")).and_then(|v| v.as_i64());
+        compiled.iter().any(|u| u == unit) && code != "byte" && code != crate::grade::NOT_RUN && close(code, ins) && !wants.iter().any(|w| w.name == name)
+    }).map(|r| r["name"].as_str().unwrap_or("")).collect();
+    if !cands.is_empty() {
+        if let Some(ch) = crate::cause::Changes::since(&root, "HEAD") {
+            let mut head: HashMap<String, Option<String>> = HashMap::new();
+            let loc = Locator::of(p)?;
+            for name in cands {
+                let Some(l) = loc.get(name).ok() else { continue };
+                let then = head.entry(l.file.clone()).or_insert_with(|| ch.text_at(&root, &l.file).map(|t| normalize(&t)));
+                let Some(now) = fn_text(&root, &l.file, l.comment, l.end) else { continue };
+                if then.as_ref().is_some_and(|t| t.contains(&now)) {
+                    continue;
+                }
+                wants.push(Want { name: name.into(), goal: "byte" });
+            }
+        }
+    }
+    if wants.is_empty() {
+        return Ok(vec![]);
+    }
+    let t0 = std::time::Instant::now();
+    let (ms, left) = measure(p, &wants, BUILD_MAX)?;
+    let swept = ms.iter().filter(|m| m.swept).count();
+    if !ms.iter().any(|m| m.new) {
+        return Ok(vec![]);
+    }
+    let mut out = vec![format!("declaration-set sweep of {swept} function(s), {} ms{}:", t0.elapsed().as_millis(),
+                               if left > 0 { format!(" ({left} more: the next build)") } else { String::new() })];
+    out.extend(ms.iter().filter(|m| m.new).map(|m| format!("  {}", measured_line(m))));
+    Ok(out)
+}
+
+/// `dcp grade NAME`'s measurement: a function close to its original and below byte whose text has no record under
+/// its unit's inputs is swept (to byte). The line, when one was swept.
+pub fn grade_sweep(p: &Project, name: &str) -> Result<Option<String>> {
+    if !crate::vc6::Tools::of(p).available() {
+        return Ok(None);
+    }
+    let rows = crate::queues::function_grades(&p.store_path())?;
+    let Some(r) = rows.iter().find(|r| r["name"].as_str() == Some(name)) else { return Ok(None) };
+    let code = r["code"].as_str().unwrap_or("");
+    let ins = r.get("dist").and_then(|d| d.get("ins")).and_then(|v| v.as_i64());
+    if code == "byte" || code == crate::grade::NOT_RUN || !close(code, ins) {
+        return Ok(None);
+    }
+    let (ms, _) = measure(p, &[Want { name: name.into(), goal: "byte" }], 1)?;
+    Ok(ms.iter().find(|m| m.new).map(measured_line))
+}
+
+/// `dcp headers probe [UNIT..] [--dry-run]`: every function of the units (every unit when none is named) swept at
+/// the unit's start (0..63 unused typedefs: one sweep measures the whole unit), recorded: (the lines, the exit
+/// status: 1 when a unit could not be swept).
+pub fn probe_command(p: &Project, units: Vec<String>, dry: bool) -> Result<(Vec<String>, i32)> {
+    use crate::cliread::{fmt_addr, record, Tok};
+    let s = |x: &str| Tok::S(x.to_string());
+    let root = p.root.to_string_lossy().into_owned();
+    let db = p.store_path();
+    let plan = crate::plan::plan(p).map_err(err)?;
+    let units = if units.is_empty() { plan.iter().map(|t| t.unit.clone()).collect() } else { units };
+    let rows = crate::queues::function_grades(&db)?;
+    let keys = crate::compile::tu_keys(&db)?;
+    let bench = Bench::of(p)?;
+    let loc = Locator::of(p)?;
+    let (mut out, mut recs, mut bad, mut n) = (vec![], vec![], 0, 0);
+    for u in &units {
+        let Some(t) = plan.iter().find(|t| &t.unit == u) else {
+            out.push(record(&[("unit", s(u)), ("error", s(&format!("no unit {u} in target {}", p.target_name)))]));
+            bad += 1;
+            continue;
+        };
+        let Some(k) = keys.get(u) else {
+            out.push(record(&[("unit", s(u)), ("error", s("not built (dcp build)"))]));
+            bad += 1;
+            continue;
+        };
+        let path = native_path(&format!("{root}/{}", t.file));
+        let inputs = inputs_of(&crate::fsmemo::sha256(&path).map_err(err)?, &k.flags_hash, &k.include_hash);
+        let text = crate::fsmemo::read_text(&path).map_err(err)?.replace("\r\n", "\n");
+        let mut targets = vec![];
+        let mut th = vec![];
+        for r in rows.iter().filter(|r| r["unit"].as_str() == Some(u.as_str()) && r["code"].as_str() != Some(crate::grade::NOT_RUN)) {
+            let name = r["name"].as_str().unwrap_or("");
+            let Some(l) = loc.get(name).ok().filter(|l| l.file == t.file) else { continue };
+            let Some(ft) = fn_text(&root, &l.file, l.comment, l.end) else { continue };
+            targets.push(Target { name: name.into(), addr: l.addr, comment: l.comment, goal: "byte" });
+            th.push((text_hash(&ft), l.built));
+        }
+        let (res, _) = sweep(p, t, &text, &targets, true, PERIOD, false, &bench)?;
+        if res.iter().all(|r| r.compiled == 0) {
+            out.push(record(&[("unit", s(u)), ("error", s("does not compile"))]));
+            bad += 1;
+            continue;
+        }
+        let raised: Vec<(&Swept, &String)> = res.iter().zip(&th).filter(|(r, (_, b))| rank(&r.best) > rank(b)).map(|(r, (_, b))| (r, b)).collect();
+        out.push(record(&[("unit", s(u)), ("functions", Tok::I(res.len() as i64)), ("moved", Tok::I(res.iter().filter(|r| r.codegens > 1).count() as i64)),
+                          ("raised", Tok::I(raised.len() as i64))]));
+        for (r, b) in raised {
+            out.push(format!("  {}", record(&[("fn", s(&fmt_addr(r.addr))), ("name", s(&r.name)), ("built", s(b)), ("best", s(&r.best)),
+                                              ("by", s(&r.set.words()))])));
+        }
+        for (r, (h, _)) in res.iter().zip(&th) {
+            if r.compiled > 0 {
+                let mut rec = sweep_record(p, u, h, &inputs, r);
+                rec.witness = format!("{} (the unit's start only)", rec.witness);
+                recs.push(rec);
+            }
+        }
+        n += 1;
+    }
+    let tail = if dry { " (--dry-run: nothing written)".to_string() } else { format!("; written to {LEDGER}") };
+    out.push(format!("swept {n} unit(s), {} function(s){tail}", recs.len()));
+    if !dry {
+        put_records(p, recs)?;
+    }
+    Ok((out, if bad > 0 { 1 } else { 0 }))
+}
+
+/// `dcp try`'s measurement of its closest variant (or the control) that is close and below byte: its text swept
+/// (to byte) unless the cache knows it under the unit's inputs with the variant applied. `unit_text`: the unit's text
+/// with the variant (\n lines), `file_bytes`: the file as --apply would write it (its hash is the unit's inputs).
+pub(crate) fn try_sweep(p: &Project, t: &crate::plan::Tu, unit_text: &str, file_bytes: &str, name: &str, addr: i64, comment: i64, ftext: &str)
+                        -> Result<Option<Record>> {
+    let root = p.root.to_string_lossy().into_owned();
+    let Some(k) = crate::compile::tu_keys(&p.store_path())?.remove(&t.unit) else { return Ok(None) };
+    let src_hash = crate::fsmemo::hex(&<sha2::Sha256 as sha2::Digest>::digest(file_bytes.as_bytes()));
+    let inputs = inputs_of(&src_hash, &k.flags_hash, &k.include_hash);
+    let th = text_hash(&normalize(ftext));
+    if let Some((r, _)) = known(&root, &read(&root), &p.target_name, addr, &th, &inputs, "byte") {
+        return Ok(Some(r));
+    }
+    let bench = Bench::of(p)?;
+    let (res, _) = sweep(p, t, unit_text, &[Target { name: name.into(), addr, comment, goal: "byte" }], false, PERIOD, true, &bench)?;
+    let Some(s) = res.first().filter(|s| s.compiled > 0) else { return Ok(None) };
+    let rec = sweep_record(p, &t.unit, &th, &inputs, s);
+    cache_put(&root, std::slice::from_ref(&rec));
+    Ok(Some(rec))
+}
+
+// ------------------------------------------------------------------------------------------------ the sweep
+
+/// The period of the tie-breaks in the symbol ordinal: VC6's front end numbers every symbol it enters, and the
+/// register allocator frees its unreferenced constant candidates in a 64-bucket walk keyed by `ordinal & 0x3f` for
+/// every string literal and global a function uses. N unused typedefs shift every later ordinal by N, so the shifts
+/// 0..63 at a place are every state that place's count can give.
+pub const PERIOD: usize = 64;
+
+/// One declaration set of a sweep: `k` unused typedefs at the unit's start (every ordinal of the unit shifted) or
+/// before one function's address comment (that function's own symbols and every later one shifted against the
+/// declarations before it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shift {
+    Start(usize),
+    Before(usize, String),
+}
+
+impl Shift {
+    /// The set in words: `17 unused typedefs at the unit's start`, `5 unused typedefs before f`.
+    pub fn words(&self) -> String {
+        let n = |k: usize| format!("{k} unused typedef{}", if k == 1 { "" } else { "s" });
+        match self {
+            Shift::Start(0) => "the build's declarations".into(),
+            Shift::Start(k) => format!("{} at the unit's start", n(*k)),
+            Shift::Before(k, f) => format!("{} before {f}", n(*k)),
+        }
+    }
+}
+
+/// `k` unused typedefs on one line, each under a name of its own.
+fn typedefs(k: usize, tag: &str) -> String {
+    (0..k).map(|j| format!("typedef int __dcp_{tag}_{j};")).collect::<Vec<_>>().join(" ")
+}
+
+/// One function a sweep measures: its name, address, address comment line (1-based, in the swept text) and the
+/// grade at which the sweep may stop for it.
+#[derive(Clone, Debug)]
+pub(crate) struct Target {
+    pub name: String,
+    pub addr: i64,
+    pub comment: i64,
+    pub goal: &'static str,
+}
+
+/// What a sweep found for one function.
+#[derive(Clone, Debug)]
+pub(crate) struct Swept {
+    pub name: String,
+    pub addr: i64,
+    /// the text's grade as the build's declarations give it (None: the control did not compile it)
+    pub control: Option<String>,
+    pub best: String,
+    /// the declaration set that gives `best` (Start(0): the control)
+    pub set: Shift,
+    pub codegens: usize,
+    pub compiled: usize,
+    /// every shift at both places was compiled (a stop at the goal leaves the rest untried)
+    pub complete: bool,
+}
+
+/// The unit text (lines joined by \n) of one shift.
+fn shifted_text(lines: &[&str], file: &str, comment: i64, k: usize, tag: &str) -> String {
+    let lo = (comment.max(1) - 1) as usize;
+    let mut out = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum::<usize>() + 64 * k);
+    for l in &lines[..lo.min(lines.len())] {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str(&typedefs(k, tag));
+    out.push('\n');
+    out.push_str(&format!("#line {comment} \"{}\"\n", file.replace('/', "\\").replace('\\', "\\\\")));
+    for l in &lines[lo.min(lines.len())..] {
+        out.push_str(l);
+        out.push('\n');
     }
     out
 }
 
-/// `dcp headers probe [UNIT..] [--dry-run]`: probe the units (every unit of the target when none is named) and
-/// record them: (the lines, the exit status: 1 when a unit could not be probed).
-pub fn probe_command(p: &Project, units: Vec<String>, dry: bool) -> Result<(Vec<String>, i32)> {
-    let units = if units.is_empty() { crate::plan::plan(p).map_err(err)?.iter().map(|t| t.unit.clone()).collect() } else { units };
-    let res = probe_units(p, &units)?;
-    let ok: Vec<&Probed> = res.iter().filter_map(|r| r.1.as_ref().ok()).collect();
-    let mut out = report(&res);
-    let (n, sens) = (ok.iter().map(|x| x.recs.len()).sum::<usize>(), ok.iter().map(|x| x.recs.iter().filter(|r| r.0.sensitive).count()).sum::<usize>());
-    let tail = if dry { " (--dry-run: nothing written)".to_string() } else { format!("; written to {LEDGER}") };
-    out.push(format!("probed {} unit(s), {n} function(s), {sens} tie-break sensitive{tail}", ok.len()));
-    if !dry && !ok.is_empty() {
-        write(p, &ok)?;
-    }
-    Ok((out, if ok.len() < res.len() { 1 } else { 0 }))
-}
-
-/// The build's probe: the units of the functions that fell below the baseline (ledger/grades.tsv) and have no
-/// fresh record (the `tiebreak` of their grade row), at most BUILD_MAX_UNITS, probed and recorded. The lines say
-/// what was probed; nothing when nothing fell, or the toolchain is missing.
-pub fn probe_falls(p: &Project) -> Result<Vec<String>> {
-    let root = p.root.to_string_lossy().into_owned();
-    let base = crate::fsmemo::read_text(&native_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default();
-    if base.is_empty() || !crate::vc6::Tools::of(p).available() {
-        return Ok(vec![]);
-    }
-    let base: HashMap<i64, String> = crate::queues::parse_baseline(&base).into_iter().filter(|x| x.0 .0 == p.target_name).map(|x| (x.0 .1, x.1.code)).collect();
-    let mut units: Vec<String> = vec![];
-    for r in crate::queues::function_grades(&p.store_path())?.iter() {
-        let (a, code, unit) = (r["addr"].as_i64().unwrap_or(0), r["code"].as_str().unwrap_or(""), r["unit"].as_str().unwrap_or(""));
-        let fell = matches!((base.get(&a).and_then(|b| rank(b)), rank(code)), (Some(b), Some(n)) if n < b);
-        if fell && r.get("tiebreak").is_none_or(|v| v.is_null()) && !units.iter().any(|u| u == unit) {
-            units.push(unit.to_string());
+/// Sweep the declaration set of the targets of unit `t` over `text` (the unit's text, or a variant of it): the
+/// text compiled as the build compiles it (the control), then with k = 1..63 unused typedefs at the unit's start and
+/// before each target, each target graded in every compile. The compiles run in waves of the machine's parallelism;
+/// unless `full`, the sweep stops after the wave in which every target reached its goal. `max` (PERIOD unless
+/// measuring the period) bounds k.
+pub(crate) fn sweep(p: &Project, t: &crate::plan::Tu, text: &str, targets: &[Target], full: bool, max: usize, before: bool, bench: &Bench)
+                    -> Result<(Vec<Swept>, Vec<(Shift, Vec<Option<(String, String)>>)>)> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut shifts: Vec<Shift> = vec![Shift::Start(0)];
+    for k in 1..max {
+        shifts.push(Shift::Start(k));
+        if before {
+            shifts.extend(targets.iter().map(|g| Shift::Before(k, g.name.clone())));
         }
     }
-    if units.is_empty() {
-        return Ok(vec![]);
+    let job_text = |s: &Shift, tag: &str| -> (String, String) {
+        match s {
+            Shift::Start(k) => (typedefs(*k, tag), text.to_string()),
+            Shift::Before(k, f) => {
+                let c = targets.iter().find(|g| &g.name == f).map(|g| g.comment).unwrap_or(1);
+                (String::new(), shifted_text(&lines, &t.file, c, *k, tag))
+            }
+        }
+    };
+    let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).max(1);
+    let mut res: Vec<Swept> = targets.iter().map(|g| Swept { name: g.name.clone(), addr: g.addr, control: None, best: String::new(), set: Shift::Start(0),
+                                                             codegens: 0, compiled: 0, complete: false }).collect();
+    let mut keys: Vec<HashSet<(Vec<u8>, Vec<(u32, String)>)>> = targets.iter().map(|_| HashSet::new()).collect();
+    let mut table: Vec<(Shift, Vec<Option<(String, String)>>)> = vec![];
+    let mut done = 0;
+    while done < shifts.len() {
+        let wave = &shifts[done..(done + n).min(shifts.len())];
+        let jobs: Vec<Job> = wave.iter().enumerate().map(|(j, s)| {
+            let tag = format!("w{}", done + j);
+            let (prefix, text) = job_text(s, &tag);
+            Job { unit: t, tag, prefix, text }
+        }).collect();
+        let objs = compile(p, &jobs)?;
+        for (s, o) in wave.iter().zip(&objs) {
+            let mut row = vec![];
+            for (i, g) in targets.iter().enumerate() {
+                let Ok(o) = o else {
+                    row.push(None);
+                    continue;
+                };
+                let Some(&k) = o.function_index().get(&g.name) else {
+                    row.push(None);
+                    continue;
+                };
+                let c = o.function_code(k);
+                let key = code_key(o, &c);
+                let grade = bench.grade(o, &c, g.addr).to_string();
+                row.push(Some((grade.clone(), crate::variants::short_hash(&key))));
+                keys[i].insert(key);
+                let r = &mut res[i];
+                r.compiled += 1;
+                if *s == Shift::Start(0) {
+                    r.control = Some(grade.clone());
+                }
+                if r.best.is_empty() || rank(&grade) > rank(&r.best) {
+                    r.best = grade;
+                    r.set = s.clone();
+                }
+            }
+            table.push((s.clone(), row));
+        }
+        done += wave.len();
+        if !full && res.iter().zip(targets).all(|(r, g)| rank(&r.best) >= rank(g.goal)) {
+            break;
+        }
     }
-    let left = units.len().saturating_sub(BUILD_MAX_UNITS);
-    units.truncate(BUILD_MAX_UNITS);
-    let res = probe_units(p, &units)?;
-    let ok: Vec<&Probed> = res.iter().filter_map(|r| r.1.as_ref().ok()).collect();
-    if !ok.is_empty() {
-        write(p, &ok)?;
+    for (r, k) in res.iter_mut().zip(&keys) {
+        r.codegens = k.len();
+        r.complete = done == shifts.len();
     }
-    let mut out = vec![format!("tie-break probe of {} unit(s) with falls{}:", units.len(),
-                               if left > 0 { format!(" ({left} more: dcp headers probe)") } else { String::new() })];
-    out.extend(report(&res).into_iter().map(|l| format!("  {l}")));
-    Ok(out)
+    Ok((res, table))
+}
+
+/// The compile inputs of a unit as the build keys them (its text, its flags, its include set): a record measured
+/// under other inputs proves nothing about the build's.
+pub fn inputs_of(src_hash: &str, flags_hash: &str, include_hash: &str) -> String {
+    crate::project::sha256_parts(&[src_hash.to_string(), flags_hash.to_string(), include_hash.to_string()]).chars().take(16).collect()
+}
+
+
+/// The compile inputs of unit `unit` with its text's hash `src_hash` (the file as it is now, or a variant of it) and
+/// the last build's flags and include set; empty when the unit was not built.
+pub(crate) fn inputs_with(db: &str, unit: &str, src_hash: &str) -> Result<String> {
+    Ok(crate::compile::tu_keys(db)?.get(unit).map(|k| inputs_of(src_hash, &k.flags_hash, &k.include_hash)).unwrap_or_default())
+}
+
+/// A function as a sweep needs it: its grade row's address, unit and built grade, its unit, its source span.
+pub(crate) struct Loc {
+    pub addr: i64,
+    pub unit: String,
+    pub built: String,
+    pub file: String,
+    pub comment: i64,
+    pub end: i64,
+}
+
+pub(crate) fn locate(p: &Project, name: &str) -> Result<std::result::Result<Loc, String>> {
+    Ok(Locator::of(p)?.get(name))
+}
+
+/// The grade rows and source spans of a target, read once for many functions.
+pub(crate) struct Locator {
+    rows: std::rc::Rc<Vec<serde_json::Map<String, Value>>>,
+    by_name: HashMap<String, usize>,
+    spans: HashMap<i64, (String, i64, i64)>,
+}
+
+impl Locator {
+    pub(crate) fn of(p: &Project) -> Result<Locator> {
+        let db = p.store_path();
+        let rows = crate::queues::function_grades(&db)?;
+        let by_name = rows.iter().enumerate().map(|(k, r)| (r["name"].as_str().unwrap_or("").to_string(), k)).collect();
+        let spans = crate::with_db(&db, |c| store::claims_of(c, &db, "source", None, |f| &*f.rule == "L.src" && f.s("what") == Some("func")))?
+            .iter().map(|f| (f.lo, (f.s("file").unwrap_or("").to_string(), f.value["comment"].as_i64().unwrap_or(0), f.value["end"].as_i64().unwrap_or(0))))
+            .collect();
+        Ok(Locator { rows, by_name, spans })
+    }
+
+    pub(crate) fn get(&self, name: &str) -> std::result::Result<Loc, String> {
+        let Some(row) = self.by_name.get(name).map(|&k| &self.rows[k]) else { return Err(format!("no graded function {name} (dcp build first)")) };
+        let (addr, unit, built) = (row["addr"].as_i64().unwrap_or(0), row["unit"].as_str().unwrap_or("").to_string(), row["code"].as_str().unwrap_or("").to_string());
+        let Some((file, comment, end)) = self.spans.get(&addr).cloned() else { return Err(format!("{name} has no source span")) };
+        Ok(Loc { addr, unit, built, file, comment, end })
+    }
+}
+
+/// The record of one function's sweep (`text`: its function text's hash, `inputs`: the unit's compile inputs).
+pub(crate) fn sweep_record(p: &Project, unit: &str, text: &str, inputs: &str, s: &Swept) -> Record {
+    let witness = format!("sweep control={} best={} by {}; codegens={} compiled={}{}", s.control.as_deref().unwrap_or("none"), s.best, s.set.words(), s.codegens,
+                          s.compiled, if s.complete { "" } else { " (stopped at the goal)" });
+    Record { target: p.target_name.clone(), addr: s.addr, name: s.name.clone(), unit: unit.into(), text: text.into(), sensitive: s.codegens > 1,
+             best: s.best.clone(), witness, inputs: inputs.into() }
+}
+
+/// Put records into the ledger (each replaces its function's record; an older record of the same text and inputs
+/// with a better grade keeps its grade: proof is proof).
+pub(crate) fn put_records(p: &Project, fresh: Vec<Record>) -> Result<()> {
+    if fresh.is_empty() {
+        return Ok(());
+    }
+    let root = p.root.to_string_lossy().into_owned();
+    let old = read(&root);
+    let mut by: BTreeMap<(String, i64), Record> = old.into_iter().map(|r| ((r.target.clone(), r.addr), r)).collect();
+    for mut r in fresh {
+        if let Some(o) = by.get(&(r.target.clone(), r.addr)) {
+            if o.text == r.text && o.inputs == r.inputs && rank(&o.best) > rank(&r.best) {
+                r.best = o.best.clone();
+                r.witness = o.witness.clone();
+                r.sensitive |= o.sensitive;
+            }
+        }
+        by.insert((r.target.clone(), r.addr), r);
+    }
+    let path = ledger_path(&root);
+    if let Some(d) = Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    crate::edit::write(&path, &render(&by.into_values().collect::<Vec<_>>())).map_err(Error::value)?;
+    p.forget_input("tiebreak");
+    Ok(())
+}
+
+/// The verdict of a sweep in plain words: proven at a grade under a named declaration set, or no declaration set
+/// makes the text byte.
+pub fn verdict(best: &str, built: &str, set: &str, complete: bool) -> String {
+    if best == "byte" {
+        if built == "byte" {
+            "byte as built".into()
+        } else {
+            format!("this text is byte under a declaration set ({set}): done (proven byte; the unit's declaration set is the open part, G.tiebreak)")
+        }
+    } else if complete {
+        format!("no declaration set makes this text byte (every symbol-count shift 0..{} at the unit's start and before the function: best {best}): \
+                 the difference is in the text, go on", PERIOD - 1)
+    } else {
+        format!("not byte under the declaration sets tried (best {best}): the difference is in the text, go on")
+    }
+}
+
+/// `dcp headers sweep NAME [--table] [--max K] [--dry-run]`: the function's declaration-set sweep, its verdict and
+/// record (ledger/tiebreak.tsv).
+pub fn sweep_command(p: &Project, name: &str, max: usize, table: bool, dry: bool) -> Result<(Vec<String>, i32)> {
+    use crate::cliread::{fmt_addr, record, Tok};
+    let s = |x: &str| Tok::S(x.to_string());
+    let fail = |e: String| -> Result<(Vec<String>, i32)> { Ok((vec![record(&[("name", s(name)), ("error", s(&e))])], 1)) };
+    let l = match locate(p, name)? {
+        Ok(l) => l,
+        Err(e) => return fail(e),
+    };
+    let root = p.root.to_string_lossy().into_owned();
+    let plan = crate::plan::plan(p).map_err(err)?;
+    let Some(t) = plan.iter().find(|t| t.unit == l.unit) else { return fail(format!("no unit {} in target {}", l.unit, p.target_name)) };
+    if l.file != t.file {
+        return fail(format!("{name} is defined in {}, not in its unit's file {} (an included file: not supported)", l.file, t.file));
+    }
+    let Some(ftext) = fn_text(&root, &l.file, l.comment, l.end) else { return fail(format!("{name}: its text is not readable")) };
+    let text = crate::fsmemo::read_text(&native_path(&format!("{root}/{}", t.file))).map_err(err)?.replace("\r\n", "\n");
+    let bench = Bench::of(p)?;
+    let t0 = std::time::Instant::now();
+    let (res, tab) = sweep(p, t, &text, &[Target { name: name.into(), addr: l.addr, comment: l.comment, goal: "byte" }], true, max.max(1), true, &bench)?;
+    let r = &res[0];
+    let mut out = vec![record(&[("fn", s(&fmt_addr(l.addr))), ("name", s(name)), ("unit", s(&l.unit)), ("built", s(&l.built)),
+                                ("control", s(r.control.as_deref().unwrap_or("none"))), ("compiled", Tok::I(r.compiled as i64)),
+                                ("codegens", Tok::I(r.codegens as i64)), ("best", s(&r.best)), ("ms", Tok::I(t0.elapsed().as_millis() as i64))])];
+    if table {
+        for (sh, row) in &tab {
+            let cell = row[0].as_ref().map(|(g, h)| format!("{g} {h}")).unwrap_or_else(|| "-".into());
+            out.push(format!("  {:<48} {cell}", sh.words()));
+        }
+    }
+    if r.control.as_deref().is_some_and(|c| c != l.built) {
+        out.push(format!("note: the trial compile gives {}, the build says {} (a stale build: dcp build)", r.control.as_deref().unwrap_or(""), l.built));
+    }
+    out.push(verdict(&r.best, &l.built, &r.set.words(), r.complete));
+    if dry || max != PERIOD {
+        out.push("(nothing written)".into());
+    } else {
+        let src_hash = crate::fsmemo::sha256(&native_path(&format!("{root}/{}", t.file))).map_err(err)?;
+        let inputs = inputs_with(&p.store_path(), &l.unit, &src_hash)?;
+        put_records(p, vec![sweep_record(p, &l.unit, &text_hash(&ftext), &inputs, r)])?;
+        out.push(format!("written to {LEDGER}"));
+    }
+    Ok((out, 0))
 }
 
 // ------------------------------------------------------------------------------------------------ the sampler
@@ -873,7 +1301,8 @@ pub fn sample_function(p: &Project, name: &str, n: usize, seed: u64) -> Result<s
     let best = seen.iter().map(|x| x.1.as_str()).max_by_key(|g| rank(g)).unwrap_or(g0).to_string();
     let codegens: Vec<(String, usize, String)> = seen.into_iter().map(|x| (x.1, x.2, x.3)).collect();
     let witness = format!("sample n={n} seed={seed} compiled={compiled} codegens={} best={best}", codegens.len());
-    let rec = Record { target: p.target_name.clone(), addr: a, name: name.into(), unit, text: text_hash(&text), sensitive, best, witness };
+    let rec = Record { target: p.target_name.clone(), addr: a, name: name.into(), unit, text: text_hash(&text), sensitive, best, witness,
+                       inputs: inputs_with(&db, &t.unit, &crate::fsmemo::sha256(&native_path(&format!("{root}/{}", t.file))).map_err(err)?)? };
     Ok(Ok(Sampled { rec, built, compiled, failed, codegens }))
 }
 
@@ -895,14 +1324,8 @@ pub fn sample_command(p: &Project, name: &str, n: usize, seed: u64, dry: bool) -
             rec.best = o.best.clone();
         }
     }
-    let verdict = if !r.rec.sensitive {
-        format!("insensitive: {} samples, one codegen: the declaration set does not move this function; what is left is in its text", r.compiled)
-    } else if rank(&rec.best) > rank(&r.built) {
-        format!("tie-break sensitive, and a declaration set gives {}: its source-proven grade (the deep queue counts it so)", rec.best)
-    } else {
-        format!("tie-break sensitive ({} codegens in {} samples), none better than built: the declaration set decides its allocation; park it for \
-                 the unit's declaration pass rather than respell it", r.codegens.len(), r.compiled)
-    };
+    let first = r.codegens.iter().find(|c| c.0 == rec.best).map(|c| c.2.clone()).unwrap_or_default();
+    let verdict = verdict(&rec.best, &r.built, &first, false);
     let mut out = vec![record(&[("fn", s(&fmt_addr(r.rec.addr))), ("name", s(name)), ("unit", s(&r.rec.unit)), ("built", s(&r.built)),
                                 ("samples", Tok::I(n as i64)), ("compiled", Tok::I(r.compiled as i64)), ("failed", Tok::I(r.failed as i64)),
                                 ("sensitive", s(if r.rec.sensitive { "yes" } else { "no" })), ("codegens", Tok::I(r.codegens.len() as i64)),
@@ -972,12 +1395,43 @@ mod tests {
     #[test]
     fn records_round_trip_and_merge() {
         let r = |t: &str, a: i64, u: &str, s: bool| Record { target: t.into(), addr: a, name: format!("f{a:x}"), unit: u.into(), text: "ab".into(),
-                                                            sensitive: s, best: "byte".into(), witness: "control=shape p1=byte*".into() };
+                                                            sensitive: s, best: "byte".into(), witness: "control=shape p1=byte*".into(), inputs: "i".into() };
         let recs = vec![r("exe", 0x401000, "a", true), r("exe", 0x402000, "b", false)];
         assert_eq!(parse(&render(&recs)), recs);
-        // a probed unit's records replace its old ones; the others stay
-        let m = merged(recs.clone(), "exe", &HashSet::from(["a".to_string()]), vec![r("exe", 0x401100, "a", false)]);
-        assert_eq!(m.iter().map(|x| x.addr).collect::<Vec<_>>(), [0x401100, 0x402000]);
+        // a record of an older dcp (8 columns) has no inputs: it answers for no build's inputs
+        let old = parse("target\taddress\tname\tunit\ttext\tsensitive\tbest\twitness\nexe\t0x00401000\tf\ta\tab\tyes\tbyte\tcontrol=shape p1=byte*\n");
+        assert_eq!(old[0].inputs, "");
+        let tb = json!({"best": "byte", "inputs": "", "file": "x.c", "comment": 1, "end": 2});
+        let ch = crate::cause::Changes::of("abc", &[]);
+        assert_eq!(declaration_move(".", &ch, &tb, "x.c", "byte", "abc"), None);
+        // a record under other inputs, or below the grade the function had, excuses no fall
+        let tb = json!({"best": "byte", "inputs": "i1", "file": "x.c", "comment": 1, "end": 2});
+        assert_eq!(declaration_move(".", &ch, &tb, "x.c", "byte", "i2"), None);
+        let tb = json!({"best": "shape", "inputs": "i1", "file": "x.c", "comment": 1, "end": 2});
+        assert_eq!(declaration_move(".", &ch, &tb, "x.c", "byte", "i1"), None);
+    }
+
+    #[test]
+    fn sweep_texts_and_verdicts() {
+        // a shift before the function: the typedefs on a line of their own, then the function's own line number back
+        let lines = ["int a;", "/* 0x401000 */", "int f(void) { return a; }"];
+        let t = shifted_text(&lines, "src/u.c", 2, 3, "w1");
+        assert_eq!(t, "int a;\ntypedef int __dcp_w1_0; typedef int __dcp_w1_1; typedef int __dcp_w1_2;\n#line 2 \"src\\\\u.c\"\n/* 0x401000 */\nint f(void) { return a; }\n");
+        assert_eq!(shifted_text(&lines, "src/u.c", 1, 0, "w").lines().next(), Some(""));
+        assert_eq!(Shift::Before(5, "f".into()).words(), "5 unused typedefs before f");
+        assert_eq!(Shift::Start(1).words(), "1 unused typedef at the unit's start");
+        // the two answers a worker gets: done by proof, or the text
+        let v = verdict("byte", "shape", "5 unused typedefs before f", true);
+        assert!(v.contains("byte under a declaration set (5 unused typedefs before f): done"), "{v}");
+        let v = verdict("shape", "shape", "", true);
+        assert!(v.starts_with("no declaration set makes this text byte") && v.ends_with("the difference is in the text, go on"), "{v}");
+        assert!(!verdict("shape", "draft", "", false).contains("sensitive"));
+        // complete: a full sweep; one stopped at its goal or of the unit's start only is not
+        let rec = |w: &str| Record { witness: w.into(), ..Record::default() };
+        assert!(complete(&rec("sweep control=shape best=shape by the build's declarations; codegens=2 compiled=127")));
+        assert!(!complete(&rec("sweep control=shape best=byte by 3 unused typedefs before f; codegens=2 compiled=12 (stopped at the goal)")));
+        assert!(!complete(&rec("control=shape p1=byte*")));
+        assert!(close("shape", None) && close("draft", Some(24)) && !close("draft", Some(25)) && !close("draft", None));
     }
 
     #[test]

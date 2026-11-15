@@ -892,9 +892,14 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     // the code falls of tie-break sensitive functions whose own text is the same: the declaration set moved them
     // (tiebreak.rs), one line per changed header set and no fall
     let mut moved: std::collections::BTreeMap<String, (i64, Vec<String>)> = std::collections::BTreeMap::new();
+    let inputs_now = |unit: &str| -> String {
+        db.query_row("SELECT src_hash, flags_hash, include_hash FROM tu WHERE unit=?", [unit],
+                     |r| Ok(crate::tiebreak::inputs_of(&r.get::<_, String>(0)?, &r.get::<_, String>(1)?, &r.get::<_, String>(2)?))).unwrap_or_default()
+    };
     for (at, a, name, unit, what, tb) in &fell {
+        let was = base.get(a).map(|r| r[4].as_str()).unwrap_or("");
         if let (Some(ch), Some(tb), Some(file)) = (changes.as_ref(), tb, unit_file(unit)) {
-            if let Some(label) = crate::tiebreak::declaration_move(&ctx.root, ch, tb, &file) {
+            if let Some(label) = crate::tiebreak::declaration_move(&ctx.root, ch, tb, &file, was, &inputs_now(unit)) {
                 let e = moved.entry(label).or_insert((*at, vec![]));
                 e.1.push(format!("{name} ({})", what.trim_start_matches("code ")));
                 continue;
@@ -908,8 +913,8 @@ pub fn m1_baseline(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     }
     for (label, (at, names)) in &moved {
         let since = changes.as_ref().map(|c| c.since.as_str()).unwrap_or("-");
-        out.finding("warn", "M1.tiebreak", *at, at + 1, format!("{} (tie-break sensitive by the probe, their own text the same since {since}: \
-                                                                 no fall, no debt; ledger/tiebreak.tsv)", crate::tiebreak::moved_line(label, names)), "");
+        out.finding("warn", "M1.tiebreak", *at, at + 1, format!("{} (their own text the same since {since} and still giving the grade they had \
+                                                                 under a declaration set of the sweep: no fall, no debt; ledger/tiebreak.tsv)", crate::tiebreak::moved_line(label, names)), "");
     }
     for (unit, (a, n)) in &not_run {
         let at = if img.base as i64 <= *a && *a < img.end() as i64 { *a } else { img.base as i64 };

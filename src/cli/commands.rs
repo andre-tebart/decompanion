@@ -165,8 +165,21 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             }
             Ok(io.report("headers sample", &lines, None, status))
         }
+        Cmd::Headers(HeadersArgs { sub: HeadersCmd::Sweep(HeadersSweepArgs { name, table, max, dry_run }) }) => {
+            let (p, _) = build_target(io, sel, true, false)?;
+            let (lines, status) = crate::tiebreak::sweep_command(&p, &name, max, table, dry_run)?;
+            refresh(io, &p, false, false)?;
+            Ok(io.report("headers sweep", &lines, None, status))
+        }
         Cmd::Grade(GradeArgs { what }) => {
             let (p, _) = build_target(io, sel, true, false)?;
+            // a close function below byte without a sweep of its text: swept now (tiebreak.rs), its verdict on the
+            // grade's tiebreak line
+            if let Some(name) = what.as_deref() {
+                if crate::tiebreak::grade_sweep(&p, name)?.is_some() {
+                    refresh(io, &p, false, false)?;
+                }
+            }
             let lint = current_lint(io, &p)?;
             let (l, e, c) = crate::matchcmd::grade_command(&p, what, &lint)?;
             Ok(io.report("grade", &l, e.as_deref(), c))
@@ -202,7 +215,16 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         }
         Cmd::Escalate(EscalateArgs { name, why, clear, hard, size_explained, divergence_explained }) =>
             level(io, sel, if hard { "hard" } else { "deep" }, &name, why, clear, size_explained, divergence_explained),
-        Cmd::Stuck(StuckArgs { name, why, clear }) => level(io, sel, "stuck", &name, why, clear, None, None),
+        Cmd::Note(NoteArgs { name, text }) => {
+            let p = refreshed(io, sel)?;
+            let (lines, error, status) = crate::attempts::note_command(&p, &name, &text)?;
+            Ok(io.report("note", &lines, error.as_deref(), status))
+        }
+        Cmd::Migrate(MigrateArgs { what: _ }) => {
+            let p = refreshed(io, sel)?;
+            let lines = crate::attempts::migrate_stuck(&p)?;
+            Ok(io.report("migrate", &lines, None, 0))
+        }
         Cmd::Promote(PromoteArgs { accept_falls }) => promote(io, sel, accept_falls),
         Cmd::Debt(DebtArgs { sub: DebtCmd::Add(DebtAddArgs { name, to, readability, why, waits_for }) }) => {
             let blank = why.split_whitespace().next().is_none();
@@ -472,9 +494,10 @@ fn build(io: &mut Io, sel: &Sel, force: bool, units: bool, variant: Option<Strin
         let (lines, bad) = crate::clicmd::build_summary(&p, (rep.units, rep.compiled, rep.removed, rep.ms), units)?;
         io.report("build", &lines, None, 0);
         failed = failed || bad;
-        // the units of functions that fell without a probe record: probed for tie-breaks (tiebreak.rs), so that M1
-        // tells a declaration-set move from a fall
-        let probed = crate::tiebreak::probe_falls(&p)?;
+        // the declaration-set sweeps (tiebreak.rs): the functions that fell, so that M1 tells a declaration-set move
+        // from a fall, and the close functions this tree changed, so that a text only the declaration set keeps from
+        // byte counts as done
+        let probed = crate::tiebreak::build_sweeps(&p, &rep.names)?;
         io.report("build", &probed.iter().map(|l| format!("  {l}")).collect::<Vec<_>>(), None, 0);
         if !probed.is_empty() {
             refresh(io, &p, false, false)?;
@@ -627,7 +650,8 @@ pub(crate) fn guidance(kind: Option<&str>) -> String {
     match kind {
         Some("layout") => format!("gate: ok. The {clock}."),
         Some("match-base") => format!("gate: ok. This is {functions}."),
-        Some("match-deep") => "gate: ok. A match-deep session is counted in items (the skill's count, each within its time budget), not minutes: `dcp next --deep` for the first item".to_string(),
+        Some("match-deep") => "gate: ok. A match-deep session is counted in items (the skill's count), not minutes; an item ends byte + readable or fixed: \
+                               `dcp next --deep` for the first item".to_string(),
         _ => format!("gate: ok. A layout session: {clock}. A match-base session: counted in functions, not minutes (`dcp next`)."),
     }
 }
@@ -670,7 +694,11 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
                 io.say(&l);
             }
             status_tail(io, &p)?;
-            crate::session::session_save(&root, &head, &p.target_name, &state)?;
+            // the item of a match-deep session that ended without its wrap (attempts.rs)
+            for l in crate::attempts::close_item(&p)? {
+                io.say(&l);
+            }
+            crate::session::session_save(&root, &head, &p.target_name, &state, kind.as_deref())?;
             io.say(&guidance(kind.as_deref()));
             Ok(0)
         }
@@ -690,6 +718,9 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
             io.say(&rec(&[("session", s("wrap")), ("base", s(base.chars().take(8).collect::<String>())),
                           ("started", started.map(Tok::S).unwrap_or(Tok::No))]));
             let (mut ok, p, link_ok, undrafted, state) = gate(io, sel)?;
+            for l in crate::attempts::close_item(&p)? {
+                io.say(&l);
+            }
             let (mut promoted, mut refused) = (None, false);
             if ok {
                 // the gate passed M1, so promote finds no fall; it still checks

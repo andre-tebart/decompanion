@@ -108,13 +108,23 @@ pub fn session_state(p: &crate::project::Project) -> Result<Value> {
 }
 
 /// Record .dcp/session.json: the base commit, the start time, the states of the targets.
-pub fn session_save(root: &str, base: &str, target: &str, state: &Value) -> Result<()> {
+pub fn session_save(root: &str, base: &str, target: &str, state: &Value, kind: Option<&str>) -> Result<()> {
     let mut states = Map::new();
     states.insert(target.to_string(), state.clone());
-    let rec = json!({"base": base, "started": iso(now()), "states": states});
+    let rec = json!({"base": base, "started": iso(now()), "states": states, "kind": kind});
+    session_write(root, &rec)
+}
+
+/// The session record as it is (Null without one).
+pub fn session_load(root: &str) -> Value {
+    load(root).unwrap_or(Value::Null)
+}
+
+/// Write the session record.
+pub fn session_write(root: &str, rec: &Value) -> Result<()> {
     let mut buf = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, serde_json::ser::PrettyFormatter::with_indent(b" "));
-    serde::Serialize::serialize(&rec, &mut ser).map_err(err)?;
+    serde::Serialize::serialize(rec, &mut ser).map_err(err)?;
     crate::edit::write(&record_path(root), &(String::from_utf8_lossy(&buf).into_owned() + "\n")).map_err(err)
 }
 
@@ -316,7 +326,7 @@ fn grade_changes(root: &str, base: &str, target: &str, rows: &[Map<String, Value
 }
 
 /// The wrap's hand-up line of a target's grade changes (the tier bounds are tuned against it)
-/// : the functions raised to shape + readable, and those that gained a @hard / @deep / @stuck tag.
+/// : the functions raised to shape + readable, and those that gained a @hard / @deep tag.
 fn handups(ch: &[(i64, String, String, Option<String>, Option<String>)]) -> String {
     // a grade text: "code+readability[ level]"
     let parse = |g: &Option<String>| -> (String, String, String) {
@@ -338,7 +348,7 @@ fn handups(ch: &[(i64, String, String, Option<String>, Option<String>)]) -> Stri
         }
     }
     let n = |k: &str| gained.get(k).copied().unwrap_or(0);
-    format!("hand-ups: raised to shape + readable {raised}, @hard {}, @deep {}, @stuck {}", n("hard"), n("deep"), n("stuck"))
+    format!("hand-ups: raised to shape + readable {raised}, @hard {}, @deep {}", n("hard"), n("deep"))
 }
 
 /// `dcp session wrap`'s report (written to build/session/report.md too): `targets` are (name, project, link ok or
@@ -420,7 +430,9 @@ pub fn session_report(root: &str, base: &str, p: &crate::project::Project, link:
         for (a, unit, fname, b, aft) in ch {
             if let (Some(bg), Some(ag), Some(k), Some(tb)) = (&b, &aft, files.get(&unit), by_addr.get(&a).and_then(|r| r.get("tiebreak"))) {
                 let ch = changes.get_or_insert_with(open_changes);
-                if let Some(label) = ch.as_ref().and_then(|ch| crate::tiebreak::declaration_move(root, ch, tb, &k.amalg)) {
+                let was = bg.split('+').next().unwrap_or("");
+                let now = crate::tiebreak::inputs_of(&k.src_hash, &k.flags_hash, &k.include_hash);
+                if let Some(label) = ch.as_ref().and_then(|ch| crate::tiebreak::declaration_move(root, ch, tb, &k.amalg, was, &now)) {
                     moved.entry(label).or_default().push(format!("{fname} ({bg} -> {ag})"));
                     continue;
                 }
@@ -528,7 +540,7 @@ mod tests {
                   (2, String::new(), "g".to_string(), some("draft+draft"), some("draft+draft hard")),
                   (3, String::new(), "h".to_string(), some("draft+draft hard"), some("shape+readable")),
                   (4, String::new(), "k".to_string(), some("shape+draft"), some("shape+draft deep"))];
-        assert_eq!(handups(&ch), "hand-ups: raised to shape + readable 2, @hard 1, @deep 1, @stuck 0");
+        assert_eq!(handups(&ch), "hand-ups: raised to shape + readable 2, @hard 1, @deep 1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

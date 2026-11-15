@@ -82,7 +82,7 @@ impl Changes {
     }
 
     #[cfg(test)]
-    fn of(since: &str, files: &[(&str, bool)]) -> Changes {
+    pub(crate) fn of(since: &str, files: &[(&str, bool)]) -> Changes {
         Changes { since: since.into(), rev: since.into(), files: files.iter().map(|(f, u)| (norm(f), *u)).collect() }
     }
 

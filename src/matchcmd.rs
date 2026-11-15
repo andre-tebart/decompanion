@@ -8,6 +8,7 @@ use crate::project::{native_path, Project};
 use crate::queues::{self, Entry};
 use crate::shape::Shape;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// (lines, error for stderr as `dcp CMD: error`, exit code).
@@ -157,23 +158,25 @@ pub fn grade_command(p: &crate::project::Project, what: Option<String>, lint: &s
     Ok((out, None, 0))
 }
 
-/// The declaration set's part of a function's grade (tiebreak.rs), one line: sensitive (its code moves with the
-/// declaration set: respelling it is a lottery), insensitive under the sampler (what is left is in its text),
-/// insensitive under the four probes only (weak: sample it), or not measured. None for a byte function without a
-/// record.
-pub fn tiebreak_line(t: Option<&Value>, code: &str, name: &str) -> Option<String> {
+/// The declaration set's part of a function's grade (tiebreak.rs), one line in plain words: its text is byte under
+/// a named declaration set (done, proven), or no declaration set makes it byte (the difference is in the text).
+/// None for a byte function.
+pub fn tiebreak_line(t: Option<&Value>, code: &str, _name: &str) -> Option<String> {
+    if code == "byte" {
+        return None;
+    }
     match t.filter(|t| t.is_object()) {
         Some(t) => {
-            let (sens, best, witness) = (t["sensitive"].as_bool().unwrap_or(false), t["best"].as_str().unwrap_or(""), t["witness"].as_str().unwrap_or(""));
-            let sampled = witness.starts_with("sample");
-            Some(match (sens, sampled) {
-                (true, _) => format!("tiebreak: sensitive: the declaration set moves this function's code; best {best} ({witness})"),
-                (false, true) => format!("tiebreak: insensitive: what is left is in the function's text; best {best} ({witness})"),
-                (false, false) => format!("tiebreak: insensitive under the four probes only, best {best}: dcp headers sample {name} for a measurement"),
-            })
+            let (best, witness) = (t["best"].as_str().unwrap_or(""), t["witness"].as_str().unwrap_or(""));
+            let set = match witness.split(" by ").nth(1).and_then(|x| x.split(';').next()) {
+                Some(s) => s.to_string(),
+                None => format!("a measured one: {witness}"),
+            };
+            let rec = crate::tiebreak::Record { witness: witness.into(), ..crate::tiebreak::Record::default() };
+            Some(format!("declaration set: {}", crate::tiebreak::verdict(best, code, &set, crate::tiebreak::complete(&rec))))
         }
-        None if code != "byte" => Some(format!("tiebreak: not measured (dcp headers sample {name})")),
-        None => None,
+        None if crate::tiebreak::close(code, None) => Some("declaration set: not swept yet (dcp build or dcp grade NAME sweeps it)".into()),
+        None => Some("declaration set: not swept (a draft beyond a few instructions): the difference is in the text, go on".into()),
     }
 }
 
@@ -192,7 +195,20 @@ pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>
     let t = p.tiers();
     let tiered: Vec<(&Row, &str)> = all.iter().map(|r| (r, if which == "base" { queues::tier(r, &t) } else { "hard" })).collect();
     let easy = tiered.iter().filter(|x| x.1 == "easy").count() as i64;
-    let items: Vec<(&Row, &str)> = tiered.into_iter().filter(|x| tier.is_none_or(|w| w == x.1)).collect();
+    let mut items: Vec<(&Row, &str)> = tiered.into_iter().filter(|x| tier.is_none_or(|w| w == x.1)).collect();
+    // the deep queue: the fewest unfinished match-deep attempts first, a match-deep session's own item before all
+    // (attempts.rs)
+    let root = p.root.to_string_lossy().into_owned();
+    let attempts = if which == "deep" { crate::attempts::counts(&root, &p.target_name) } else { HashMap::new() };
+    if which == "deep" {
+        let mut keyed: Vec<(i64, (&Row, &str))> = items.iter().map(|x| (int(x.0, "addr"), *x)).collect();
+        crate::attempts::order(&mut keyed, &attempts, None);
+        let names: HashMap<i64, String> = keyed.iter().map(|(a, x)| (*a, x.0.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string())).collect();
+        // a queue narrowed to one unit chooses no item (a worker could pick its item so)
+        let first = if unit.is_some() { None } else { crate::attempts::hand_out(p, &keyed.iter().map(|x| x.0).collect::<Vec<_>>(), &names)? };
+        crate::attempts::order(&mut keyed, &attempts, first);
+        items = keyed.into_iter().map(|x| x.1).collect();
+    }
     let sh = shard.map(|(k, n)| format!("{k}/{n}"));
     let mut out = vec![record(&[("target", s(p.target_name.clone())), ("queue", s(which)), ("tier", os(tier.map(str::to_string))),
                                 ("items", Tok::I(items.len() as i64)), ("easy", Tok::I(easy)), ("hard", Tok::I(all.len() as i64 - easy)),
@@ -206,7 +222,9 @@ pub fn next_command(p: &crate::project::Project, which: &str, tier: Option<&str>
             None => "untagged".to_string(),
         });
         out.push(record(&[("next", Tok::I(int(r, "addr"))), ("name", vt(r.get("name"))), ("unit", vt(r.get("queue_unit"))), ("section", vt(r.get("section"))),
-                          ("tier", s(*tr)), ("why", os(why)), ("experiment", vt(r.get("code"))), ("readability", vt(r.get("readability"))),
+                          ("tier", s(*tr)), ("why", os(why)),
+                          ("attempts", if which == "deep" { Tok::I(attempts.get(&int(r, "addr")).copied().unwrap_or(0)) } else { Tok::No }),
+                          ("experiment", vt(r.get("code"))), ("readability", vt(r.get("readability"))),
                           ("gates", os(Some(g).filter(|g| !g.is_empty()))), ("risk", os(r.get("risk").and_then(|v| v.as_str()).map(str::to_string))),
                           ("dist", s(dist_text(r.get("dist")))), ("file", vt(r.get("file")))]));
     }

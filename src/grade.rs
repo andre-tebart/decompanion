@@ -511,7 +511,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             }
         }
         let has = |k: &str| v.get(k).is_some_and(|x| !x.is_null());
-        let tag = if has("stuck") { "stuck" } else if has("deep") { "deep" } else if has("hard") { "hard" } else { "" };
+        // a stray @stuck (no longer a tag: dcp migrate stuck) is read as the @deep it becomes, and is an M2 error below
+        let tag = if has("deep") || has("stuck") { "deep" } else if has("hard") { "hard" } else { "" };
         // the experiment: its outcome, what failed (B1..B3), the distance; the calls the consistency convention
         // (M7) finds without a declaration belong to it, not to readability
         let mut e = json!({"of": "function", "name": v["symbol"], "unit": v["unit"], "file": v["file"], "comment": comment,
@@ -536,8 +537,11 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 raised.entry(unit.clone()).or_default().push((s.lo, name.to_string(), r.code.clone(), best.to_string()));
             }
         }
-        let levels: Vec<&str> = ["deep", "stuck", "hard"].into_iter().filter(|k| has(k)).collect();
-        if levels.len() > 1 {
+        let levels: Vec<&str> = ["deep", "hard"].into_iter().filter(|k| has(k)).collect();
+        if has("stuck") {
+            out.finding("error", "M2", s.lo, s.lo + 1, format!("{name}: carries a @stuck tag, which is no longer a level (a deep item is worked until it \
+                                                                 is byte): `dcp migrate stuck` turns it into @deep, its reason kept"), &s.by);
+        } else if levels.len() > 1 {
             out.finding("error", "M2", s.lo, s.lo + 1, format!("{name}: carries more than one level tag (@{})", levels.join(", @")), &s.by);
         } else if sensitive {
             // a byte reached through the declaration set proves nothing about the source: the tag stays
@@ -572,8 +576,8 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
             // the remaining gap is the unit's: its declaration set gives these functions less than their text can
             let names: Vec<String> = fs.iter().take(6).map(|f| format!("{} {} -> {}", f.1, f.2, f.3)).collect();
             let more = if fs.len() > 6 { format!(" (+{})", fs.len() - 6) } else { String::new() };
-            out.finding("warn", "G.tiebreak", u.lo, u.hi, format!("unit {tu}: declaration set not yet the original's: {} tie-break function(s) reach a \
-                better grade under a no-meaning probe than as built: {}{more} (the headers' declarations, their order or count; the re-match pass \
+            out.finding("warn", "G.tiebreak", u.lo, u.hi, format!("unit {tu}: declaration set not yet the original's: {} function(s) reach a \
+                better grade under a swept no-meaning declaration set than as built: {}{more} (the headers' declarations, their order or count; the re-match pass \
                 runs them last; dcp headers probe {tu})", fs.len(), names.join(", ")), &u.by);
         }
         out.claim(u.lo, u.hi, "readability", json!({"of": "unit", "unit": tu, "grade": if readable { "readable" } else { "draft" }}),

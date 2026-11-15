@@ -90,8 +90,9 @@ pub fn refreshed(io: &mut Io, sel: &Sel) -> Result<Project> {
 }
 
 /// What a compile did: (units, compiled, removed, ms).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct Compiled {
+    pub names: Vec<String>, // the units compiled
     pub units: i64,
     pub compiled: i64,
     pub removed: i64,
@@ -110,7 +111,7 @@ pub fn ensure(io: &mut Io, p: &Project, log: bool, force: bool) -> Result<Compil
             io.say(l);
         }
     }
-    Ok(Compiled { units: units as i64, compiled: compiled.len() as i64, removed: removed.len() as i64, ms })
+    Ok(Compiled { names: compiled.clone(), units: units as i64, compiled: compiled.len() as i64, removed: removed.len() as i64, ms })
 }
 
 /// A project that lints (a `dcp lint` ran before, libclang is there): lint the units that changed since, before the

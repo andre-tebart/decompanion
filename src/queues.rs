@@ -3,7 +3,7 @@
 //!
 //! Queues (units are the separated game units of L.unit.extent, a unit's functions the grade facts of its
 //! functions):
-//!   base   every function below shape + readable without a @deep / @stuck tag (a @hard one is base work). Every
+//!   base   every function below shape + readable without a @deep tag (a @hard one is base work). Every
 //!          code draft comes before any readability-only work: first the draft functions, units with the fewest
 //!          drafts first, then the functions at shape / byte that are not readable, units with the fewest such
 //!          functions first; address order inside a unit.
@@ -11,12 +11,13 @@
 //! readability-only item of an original at most `[queue] easy_read_max_bytes`, or a code draft of an original at
 //! most `easy_max_bytes` whose instruction distance is at most `easy_max_dist`. Everything else is hard, and so
 //! is every function a worker handed up with @hard (`dcp escalate --hard`), and every deep item.
-//!   deep   every function with @deep or @stuck, plus every function below byte + readable of a unit whose base
-//!          work is done. Units by the total distance (differing instructions) of their items, smallest first;
-//!          inside a unit the closest function first; @stuck functions after everything else. An escalated function
+//!   deep   every function with @deep, plus every function below byte + readable of a unit whose base work is done.
+//!          Units by the total distance (differing instructions) of their items, smallest first; inside a unit the
+//!          closest function first; then by risk (`risk`). `dcp next --deep` puts the functions with the fewest
+//!          unfinished match-deep attempts first (attempts.rs), the order above kept among equal counts. An escalated function
 //!          that is byte already and only fails readability (a Q-only item) waits behind its unit's byte work and
 //!          is the names queue's.
-//!   names  the Q-only deep functions (level deep or stuck, code byte, not readable), the deep queue's unit order.
+//!   names  the Q-only deep functions (level deep, code byte, not readable), the deep queue's unit order.
 //! Shards: a unit belongs to the shard k of N with the largest sha1("<unit start>:<k>") (rendezvous hashing).
 //!
 //! The baseline ledger/grades.tsv: target, address, name, unit, code, readability, level, accepted (a header
@@ -48,7 +49,7 @@ pub fn function_grades(db: &str) -> Result<Rc<Vec<Row>>> {
     store::derived(db, "grades.function", || function_rows(db))
 }
 
-/// One grade row of an object: its experiment (`code`: the outcome, `level`: its @deep / @stuck tag, `failing`)
+/// One grade row of an object: its experiment (`code`: the outcome, `level`: its @deep / @hard tag, `failing`)
 /// joined with its readability (`readability`, its failing rules appended to `failing`), the experiment's claim at
 /// (lo, hi) by producer.
 fn grade_rows(db: &str, of: &str) -> Result<Vec<(i64, i64, String, Row)>> {
@@ -115,10 +116,10 @@ fn below_byte(r: &Row) -> bool {
 }
 
 fn q_only(r: &Row) -> bool {
-    matches!(s(r, "level"), "deep" | "stuck") && s(r, "code") == "byte" && s(r, "readability") != "readable"
+    s(r, "level") == "deep" && s(r, "code") == "byte" && s(r, "readability") != "readable"
 }
 
-/// A @deep or @stuck tag: the function left the base queue (a @hard one did not).
+/// A @deep tag: the function left the base queue (a @hard one did not).
 fn has_level(r: &Row) -> bool {
     r.get("level").is_some_and(|v| !matches!(v, Value::Null) && v.as_str() != Some("") && v.as_str() != Some("hard") && v.as_bool() != Some(false))
 }
@@ -229,7 +230,7 @@ fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&st
         let base_left = rs.iter().any(|r| below_shape(r) && !has_level(r));
         // a proven byte + readable function is done whatever its tag says (the tag stays: tiebreak.rs)
         let proven_done = |r: &Row| r.contains_key("built") && !below_byte(r);
-        let all: Vec<&Row> = rs.iter().copied().filter(|r| (matches!(s(r, "level"), "deep" | "stuck") && !proven_done(r)) || (!base_left && below_byte(r)))
+        let all: Vec<&Row> = rs.iter().copied().filter(|r| (s(r, "level") == "deep" && !proven_done(r)) || (!base_left && below_byte(r)))
             .collect();
         let byte_items: Vec<&Row> = all.iter().copied().filter(|r| !q_only(r)).collect();
         let mut items: Vec<&Row> = if which == "names" {
@@ -241,13 +242,12 @@ fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&st
         };
         items.sort_by_key(|r| (dist(r), r["addr"].as_i64()));
         if !items.is_empty() {
-            let tagged_items = items.iter().map(|r| tagged(r, tu, if s(r, "level") == "stuck" { "stuck" } else { "deep" })).collect();
+            let tagged_items = items.iter().map(|r| tagged(r, tu, "deep")).collect();
             per.push((if byte_items.is_empty() { 1 } else { 0 }, byte_items.iter().map(|r| dist(r)).sum(), *lo, tagged_items));
         }
     }
     per.sort_by_key(|x| (x.0, x.1, x.2));
-    let flat: Vec<Row> = per.into_iter().flat_map(|x| x.3).collect();
-    let (stuck, mut rest): (Vec<Row>, Vec<Row>) = flat.into_iter().partition(|r| s(r, "section") == "stuck");
+    let mut rest: Vec<Row> = per.into_iter().flat_map(|x| x.3).collect();
     // the deep queue by risk, the order above kept within a class: the meaning differences first, then what no
     // proof covers, then the shapes (a proved one is behaviour-equal and only waits for its bytes)
     if which == "deep" {
@@ -257,7 +257,7 @@ fn queue_rows(db: &str, which: &str, shard: Option<(i64, i64)>, unit: Option<&st
         }
         rest.sort_by_key(|r| RISKS.iter().position(|x| *x == s(r, "risk")).unwrap_or(RISKS.len()));
     }
-    Ok(rest.into_iter().chain(stuck).collect())
+    Ok(rest)
 }
 
 /// The deep queue's risk classes, the riskiest first.
@@ -497,7 +497,8 @@ pub fn not_run(db: &str) -> Result<Vec<(String, usize)>> {
 }
 
 /// The falls of a target's function grades against a baseline text. A code fall the declaration set made (a
-/// tie-break sensitive function whose own text is the same since the baseline's commit: tiebreak.rs) is none when
+/// function whose own text is the same since the baseline's commit and still reaches its grade under a swept
+/// declaration set: tiebreak::declaration_move) is none when
 /// `root` is given (the baseline is the checkout's ledger/grades.tsv).
 pub fn regressions(root: Option<&str>, target: &str, db: &str, text: &str) -> Result<Vec<String>> {
     let mut base: Vec<(i64, Entry)> = parse_baseline(text).into_iter().filter(|x| x.0 .0 == target).map(|x| (x.0 .1, x.1)).collect();
@@ -510,13 +511,14 @@ pub fn regressions(root: Option<&str>, target: &str, db: &str, text: &str) -> Re
         let row = now.get(&a);
         let n = row.map(|x| (s(x, "code"), s(x, "readability")));
         for what in falls(&r, n) {
-            let tb = row.and_then(|x| x.get("tiebreak")).filter(|t| t.get("sensitive").and_then(|v| v.as_bool()) == Some(true));
+            let tb = row.and_then(|x| x.get("tiebreak")).filter(|t| t.is_object());
             if let (Some(tb), true, Some(root)) = (tb, what.starts_with("code "), root) {
                 let ch = changes.get_or_insert_with(|| crate::cause::Changes::since_baseline(root));
                 let fs = files.get_or_insert_with(|| crate::compile::tu_keys(db).unwrap_or_default());
                 let unit = row.map(|x| s(x, "unit")).unwrap_or("");
                 if let (Some(ch), Some(k)) = (ch.as_ref(), fs.get(unit)) {
-                    if crate::tiebreak::declaration_move(root, ch, tb, &k.amalg).is_some() {
+                    let now = crate::tiebreak::inputs_of(&k.src_hash, &k.flags_hash, &k.include_hash);
+                    if crate::tiebreak::declaration_move(root, ch, tb, &k.amalg, &r.code, &now).is_some() {
                         continue;
                     }
                 }
@@ -582,7 +584,7 @@ mod tests {
                      (0x1300, "a4", "a", "draft", "draft", "hard", 5),
                      (0x2000, "b1", "b", "draft", "draft", "", 50), (0x2100, "b2", "b", "byte", "readable", "", 0),
                      (0x3000, "c1", "c", "shape", "readable", "", 7), (0x3100, "c2", "c", "byte", "draft", "deep", 0),
-                     (0x3200, "c3", "c", "draft", "draft", "stuck", 4), (0x4000, "o1", "open", "draft", "draft", "", 1)];
+                     (0x3200, "c3", "c", "draft", "draft", "deep", 4), (0x4000, "o1", "open", "draft", "draft", "", 1)];
         let gf: Vec<(i64, i64, &str, Value, crate::store::Support)> = funcs.iter().flat_map(|&(a, n, u, code, q, lvl, d)| [
             (a, a + 1, "experiment", json!({"of": "function", "name": n, "unit": u, "file": format!("src/{u}.c"), "outcome": code, "tag": lvl,
                                             "failing": [], "dist": {"ins": d, "bytes": d, "size": 1, "orig": 1}}), crate::store::DECLARED),
@@ -598,8 +600,9 @@ mod tests {
         // every code draft first (unit b has 1 draft, a has 3: a @hard one stays base work), then the readability
         // work; the open unit is left out
         assert_eq!(names("base", None), pairs(&[("b1", "draft"), ("a1", "draft"), ("a2", "draft"), ("a4", "draft"), ("a3", "read")]));
-        // c has no base item left: its byte work (c1) first, the Q-only c2 waits, the stuck c3 last
-        assert_eq!(names("deep", None), pairs(&[("c1", "deep"), ("c3", "stuck")]));
+        // c has no base item left: its byte work in the risk order (the draft c3, a deep item like any other, before the
+        // shape c1); the Q-only c2 waits
+        assert_eq!(names("deep", None), pairs(&[("c3", "deep"), ("c1", "deep")]));
         assert_eq!(names("names", None).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["c2"]);
         let mut got: Vec<String> = (0..2).flat_map(|i| names("base", Some((i, 2)))).map(|x| x.0).collect();
         got.sort();
@@ -723,12 +726,20 @@ t	0x10001010	g	u	shape	readable
 // ------------------------------------------------------------------------------------------------ the level ladder
 
 /// Write `@<level> reason` into the address comment of a function (the comment that starts on `line` of `rel`),
-/// replacing a @deep, @stuck or @hard tag already there; no level removes it. What was done.
+/// replacing a @deep or @hard tag already there; no level removes it. What was done.
 pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str>, line: i64) -> Result<String, String> {
+    set_level_kept(root, rel, level, reason, line, None)
+}
+
+/// set_level with the earlier reason that is kept as `prior:` given (`keep_prior`: the note as a session found it, so
+/// that the session's own updates replace each other: dcp note) instead of the tag's reason now. A unit that numbers
+/// by line (`#line`, `__LINE__`: labels made of the line number collide when the comment grows, C2412) keeps the
+/// comment's line count: the tag's lines are joined onto the comment's last line, or the comment padded.
+pub fn set_level_kept(root: &str, rel: &str, level: Option<&str>, reason: Option<&str>, line: i64, keep_prior: Option<&str>) -> Result<String, String> {
     use std::sync::LazyLock;
     // the tag and its reason run to the end of the comment (written last, below): a reason may hold `*`, `/`, `(...)`
     // and line breaks
-    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:\A|\s)\s*@(deep|stuck|hard)\b").unwrap());
+    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:\A|\s)\s*@(deep|hard)\b").unwrap());
     let path = crate::project::native_path(&format!("{root}/{rel}"));
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?.replace("\r\n", "\n");
     let src = crate::readability::Source::new(&text);
@@ -745,13 +756,16 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
     let stripped = body[..cut].trim_end_matches(crate::srcscan::is_space).to_string();
     let (new_body, action) = match level {
         None => match old {
-            None => return Ok("no @deep, @stuck or @hard tag".into()),
+            None => return Ok("no @deep or @hard tag".into()),
             Some(o) => (stripped, format!("{o} removed")),
         },
         Some(l) => {
             let mut reason = crate::srcscan::trim_space(&reason.unwrap_or("").replace("*/", "* /")).to_string();
             // the earlier reason stays as `prior:` (else what earlier workers tried is lost on every escalation), the newest first, a reason given again once
-            let old_reason = tag.as_ref().and_then(|c| c.get(0)).map(|m| body[m.end()..].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default();
+            let old_reason = match keep_prior {
+                Some(k) => k.split_whitespace().collect::<Vec<_>>().join(" "),
+                None => tag.as_ref().and_then(|c| c.get(0)).map(|m| body[m.end()..].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default(),
+            };
             let prior = prior_reasons(&reason, &old_reason);
             if !prior.is_empty() {
                 reason = format!("{reason} prior: {prior}");
@@ -768,9 +782,25 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
         }
     };
     let new_raw = if raw.starts_with("/*") { format!("/*{new_body} */") } else { format!("//{new_body}") };
+    let new_raw = if text.contains("__LINE__") || text.contains("#line") { same_lines(&new_raw, raw.matches('\n').count()) } else { new_raw };
     let out: String = tx[..*cs].iter().collect::<String>() + &new_raw + &tx[*ce..].iter().collect::<String>();
     crate::edit::write(&path, &out)?;
     Ok(action)
+}
+
+/// A `/* */` comment with exactly `breaks` line breaks: the lines past the last one allowed joined onto it, or empty
+/// lines put before the closing `*/`.
+fn same_lines(c: &str, breaks: usize) -> String {
+    let lines: Vec<&str> = c.split('\n').collect();
+    if lines.len() > breaks + 1 {
+        let mut head: Vec<String> = lines[..breaks].iter().map(|l| l.to_string()).collect();
+        head.push(lines[breaks..].iter().map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" "));
+        return head.join("\n");
+    }
+    match c.strip_suffix("*/") {
+        Some(body) if lines.len() < breaks + 1 => format!("{}{}*/", body.trim_end(), "\n".repeat(breaks + 1 - lines.len()) + "   "),
+        _ => c.to_string(),
+    }
 }
 
 /// How many characters of earlier reasons a level tag keeps (the oldest are cut).
@@ -889,7 +919,7 @@ pub fn concrete(rd: &crate::asmcmd::Reading) -> Vec<String> {
     out
 }
 
-/// `dcp escalate|stuck NAME --why` (`--clear`): (the lines, the error for stderr, the exit status). A deep
+/// `dcp escalate NAME --why` (`--clear`): (the lines, the error for stderr, the exit status). A deep
 /// escalation of a function below byte is refused while its instruction count differs from the original's beyond
 /// size_unexplained's allowance (missing or wrong statements: base work), unless `size_explained` says why
 /// allocation explains it (recorded in the reason), or the prover shows its behaviour the same as the
@@ -925,7 +955,7 @@ pub fn level_command(p: &crate::project::Project, level: &str, name: &str, clear
         }
         let mut why = why;
         // the declaration set's part, as measured (tiebreak.rs): whether respelling the function can still help
-        if matches!(level, "deep" | "stuck") && s("code") != "byte" {
+        if level == "deep" && s("code") != "byte" {
             if let Some(l) = crate::matchcmd::tiebreak_line(r.get("tiebreak"), &s("code"), name) {
                 let short = l.split(';').next().unwrap_or(&l).split(':').take(2).collect::<Vec<_>>().join(":");
                 why = format!("{why} ({short})");
@@ -1001,18 +1031,18 @@ mod level_tests {
         assert!(set_level(&root, "src/u.c", Some("deep"), Some("the data comment"), 1).is_err());
         assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("slot order after vargen"), 3).unwrap(), "@deep added");
         assert!(crate::edit::read(&format!("{root}/src/u.c")).contains("\n/* 0x10001000, does it @deep slot order after vargen */\n"));
-        assert_eq!(set_level(&root, "src/u.c", Some("stuck"), Some("every lead tried"), 3).unwrap(), "@deep -> @stuck (the earlier reason kept as prior:)");
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("every lead tried"), 3).unwrap(), "@deep reason replaced (the earlier reason kept as prior:)");
         let text = crate::edit::read(&format!("{root}/src/u.c"));
         if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &text) {
             let f = &part.functions[0];
-            assert_eq!((f.1 .1.as_deref(), f.1 .0.as_deref(), f.0 .6.as_str(), f.1 .3), (Some("every lead tried prior: slot order after vargen"), None, "does it", 3));
+            assert_eq!((f.1 .0.as_deref(), f.1 .1.as_deref(), f.0 .6.as_str(), f.1 .3), (Some("every lead tried prior: slot order after vargen"), None, "does it", 3));
         }
         // @hard: handed to a stronger worker, read back as the function's hard reason
-        assert_eq!(set_level(&root, "src/u.c", Some("hard"), Some("the switch is still a chain of ifs"), 3).unwrap(), "@stuck -> @hard (the earlier reason kept as prior:)");
+        assert_eq!(set_level(&root, "src/u.c", Some("hard"), Some("the switch is still a chain of ifs"), 3).unwrap(), "@deep -> @hard (the earlier reason kept as prior:)");
         let text = crate::edit::read(&format!("{root}/src/u.c"));
         if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &text) {
             let f = &part.functions[0];
-            assert_eq!((f.1 .7.as_deref(), f.1 .1.as_deref(), f.0 .6.as_str()), (Some("the switch is still a chain of ifs prior: every lead tried prior: slot order after vargen"), None, "does it"));
+            assert_eq!((f.1 .7.as_deref(), f.1 .0.as_deref(), f.0 .6.as_str()), (Some("the switch is still a chain of ifs prior: every lead tried prior: slot order after vargen"), None, "does it"));
         }
         assert_eq!(set_level(&root, "src/u.c", None, None, 3).unwrap(), "@hard removed");
         assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), "int x;  /* 0x10002000 */\n\n/* 0x10001000, does it */\nvoid f(void)\n{\n}\n");

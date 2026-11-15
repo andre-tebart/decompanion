@@ -112,12 +112,12 @@ pub static CHECKS: &[(&str, Category)] = &[
     ("M.compile.stale", Category::Stale),
     ("M.lint.stale", Category::Stale),
     ("S.extent.overrun", Category::Stale),       // a declared overrun (an exception) whose instruction proves no extent
-    ("M2.stale", Category::Stale),               // a byte + readable function's @deep / @stuck tag, a shape + readable one's @hard (the build clears it)
+    ("M2.stale", Category::Stale),               // a byte + readable function's @deep tag, a shape + readable one's @hard (the build clears it)
     // regressions
     ("M1", Category::Debt),
     ("M1.debt", Category::Debt),
     ("M1.tiebreak", Category::Debt),             // functions the declaration set moved (tie-break sensitive, their own text the same): no fall
-    ("G.tiebreak", Category::Gap),               // a unit whose tie-break functions reach a better grade under a probe: its declaration set is not yet the original's
+    ("G.tiebreak", Category::Gap),               // a unit whose functions reach a better grade under a swept declaration set: its declaration set is not yet the original's
 ];
 
 /// The category of a finding's check id.
@@ -259,17 +259,17 @@ pub static RULES: &[RuleDef] = &[
 function's experiment). Reported at the address\nof the function whose span holds the diagnostic's line (the image base when none does). A lint run whose units'\ntexts differ from today's units is stale: a warning, M.lint.stale (`dcp lint`; `dcp check` lints first). Native:\nnative/dcp_core/src/rules.rs m_lint.",
     },
     RuleDef {
-        id: "G.grade", version: "20", max_support: REPRODUCED, phase: "G", loader: false,
+        id: "G.grade", version: "21", max_support: REPRODUCED, phase: "G", loader: false,
         needs: &["L.src", "M.match", "L.unit.extent", "L.src.extent", "S.sections", "S.relocs", "S.codewalk", "S.crt.code", "S.thunk", "S.exports", "S.entry",
                  "L.decl", "S.imports", "S.lib.data", "S.crt.refs", "S.crt.data", "S.entry.user", "M.tiebreak"], outputs: &["experiment", "readability"], inputs: &["objects", "src", "lint"],
-        doc: "The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8\nand the unit grades of grade.rs), as `grade` facts: a function's at its address\n{of: function, name, unit, file, code, readability, level (deep / stuck from the address comment's tag, ''\nfor base), failing (the failing rules with evidence), dist (differing instructions, differing bytes, our\nsize, the original's code size without its switch tables, the extent and the slot the diff read: a report,\nnot a gate; `dcp asmdiff` / `dcp diffclass` read the same extent and slot), hunks, open}; a unit's over its extent {of: unit, code,\nreadability, functions, named_by}. A function's grade fact is proven when its code is byte, else declared (its\naddress comment is the premise).\nThe object experiment tests the bytes and the targets of the references: the\nreference check (refcheck.rs) takes each relocation of ours whose instruction lines up with the original's (a\nbyte match, M.match: every one at its offset; else the listings' alignment: the equal lines, the same-mnemonic\nlines of a hunk of equal length) and compares the address the original's field refers to with φ(our symbol)\n(the name claims of names::NAME_RULES, all needed; a placeholder name's spelled address when φ has none), a\nstring literal or a floating constant by its bytes (at an address φ gives one of our data objects, no\nplaceholder: open, the datum or the literal, two declarations contradict; it binds only in read-only data). Equal: the reference is reproduced; different: a\nconcrete difference naming both targets (M8 another object, M9 a string, M10 a constant; a pair by position\nagrees when the original's side of the hunk refers to the target: reordered code); φ undefined: open, listed\n(open), not failing. Byte: the bytes match (M.match) and no reference differs. Shape: the shape classes, a\nproof or a byte match explain the code and no literal differs; a named reference that differs only with a\nproof (the prover, equiv.rs, binds every reference through φ, learning only literals and open symbols from the\naligned sites: the fields cross, the effects are the same). Else draft: B1 / B2 name each difference first (at\nmost 8), B3 the meaning difference or the unexplained hunks. A byte match with a difference left is an M8 / M9 /\nM10 error at the site (the findings view: equal bytes at this layout only). Containment: a reference of ours
+        doc: "The grades of every sourced function of the current target and of every unit (the rules B1..B3, Q1..Q8\nand the unit grades of grade.rs), as `grade` facts: a function's at its address\n{of: function, name, unit, file, code, readability, level (deep / hard from the address comment's tag, ''\nfor base), failing (the failing rules with evidence), dist (differing instructions, differing bytes, our\nsize, the original's code size without its switch tables, the extent and the slot the diff read: a report,\nnot a gate; `dcp asmdiff` / `dcp diffclass` read the same extent and slot), hunks, open}; a unit's over its extent {of: unit, code,\nreadability, functions, named_by}. A function's grade fact is proven when its code is byte, else declared (its\naddress comment is the premise).\nThe object experiment tests the bytes and the targets of the references: the\nreference check (refcheck.rs) takes each relocation of ours whose instruction lines up with the original's (a\nbyte match, M.match: every one at its offset; else the listings' alignment: the equal lines, the same-mnemonic\nlines of a hunk of equal length) and compares the address the original's field refers to with φ(our symbol)\n(the name claims of names::NAME_RULES, all needed; a placeholder name's spelled address when φ has none), a\nstring literal or a floating constant by its bytes (at an address φ gives one of our data objects, no\nplaceholder: open, the datum or the literal, two declarations contradict; it binds only in read-only data). Equal: the reference is reproduced; different: a\nconcrete difference naming both targets (M8 another object, M9 a string, M10 a constant; a pair by position\nagrees when the original's side of the hunk refers to the target: reordered code); φ undefined: open, listed\n(open), not failing. Byte: the bytes match (M.match) and no reference differs. Shape: the shape classes, a\nproof or a byte match explain the code and no literal differs; a named reference that differs only with a\nproof (the prover, equiv.rs, binds every reference through φ, learning only literals and open symbols from the\naligned sites: the fields cross, the effects are the same). Else draft: B1 / B2 name each difference first (at\nmost 8), B3 the meaning difference or the unexplained hunks. A byte match with a difference left is an M8 / M9 /\nM10 error at the site (the findings view: equal bytes at this layout only). Containment: a reference of ours
 at sym + N outside sym's declared size (sizeof, the front end's, on φ's name claim; one past the end is inside),
 in an absolute memory operand without a register or an immediate more than one object size past either\nend (the compiler's loop pointers reach one element past), is an M.contain error at the site whatever
 the bytes compare: no address of sym (a constant spelled `&sym + N`), it moves with sym when relinked. dcp asmdiff / dcp diffclass / dcp\nescalate read the same check, and diffclass's verdict is this grade.
-The declaration-set probe (M.tiebreak, tiebreak.rs): a function's fresh probe record is its experiment's `tiebreak`;
-a sensitive one whose best grade under the probes is above its built grade has `proven` (the source-proven grade:
-the queues' code grade), never an M2.stale (its tag stays: a byte through the declaration set proves nothing of its
-source), and its unit a G.tiebreak gap, a warning: the unit's declaration set is not yet the original's. Q7 is evaluated only for the units whose\ntext the last `dcp lint` parsed (the store meta `lint`). Native: src/grade.rs (refcheck.rs, diffclass.rs,\nequiv.rs, readability.rs, x86.rs).
+The declaration-set sweep (M.tiebreak, tiebreak.rs): a function's fresh sweep record is its experiment's `tiebreak`;
+a sensitive one whose best grade under a swept declaration set is above its built grade has `proven` (the source-proven
+grade: the queues' code grade), never an M2.stale (its tag stays), and its unit a G.tiebreak gap, a warning: the
+unit's declaration set is not yet the original's. A @stuck tag (no longer a level) is an M2 error naming `dcp migrate stuck`. Q7 is evaluated only for the units whose\ntext the last `dcp lint` parsed (the store meta `lint`). Native: src/grade.rs (refcheck.rs, diffclass.rs,\nequiv.rs, readability.rs, x86.rs).
 The reference census, no byte match only: over the prover's binding, a named object one side
 refers to and the other never refers into (its declared extent; a call: its start), a `census:` line and a warning M.census;
 an M8 line of a function without one says `(crossed: both sides refer to both)`. An address used as a number:
@@ -279,26 +279,27 @@ address is taken or that is indexed, up to the next one) at another offset than 
 paired with, a `slotmap:` line and a warning M.slotmap.",
     },
     RuleDef {
-        id: "M.tiebreak", version: "1", max_support: DERIVED, phase: "M", loader: false,
+        id: "M.tiebreak", version: "2", max_support: DERIVED, phase: "M", loader: false,
         needs: &["L.src"], outputs: &["tiebreak"], inputs: &["tiebreak", "src", "target"],
-        doc: "The declaration-set probes of ledger/tiebreak.tsv (written by `dcp headers probe` and by `dcp build` for the
-units of functions that fell below the baseline without a record; never by hand): the unit compiled as the
-build compiles it and with unused typedefs before its text, each function graded (tiebreak.rs). A record of the
-current target whose function (L.src) still has the text it was probed with (comments and whitespace runs aside)
-is a derived `tiebreak` claim at the function {name, unit, file, comment, end, sensitive (its bytes change under
-a probe: VC6 breaks its allocation's ties by the declaration set), best (the best grade under the control and
-the probes: the source-proven grade), witness (each compile's grade, `*` where the bytes differ)}; a record
-whose text changed is stale and gives none (the next fall probes again). Native: tiebreak.rs.",
+        doc: "The declaration-set sweeps of ledger/tiebreak.tsv (written by `dcp build`, `dcp grade`, `dcp try`'s
+cache and `dcp headers sweep` / `probe`; never by hand): the unit compiled as the build compiles it and with
+0..63 unused typedefs at its start and before the function (the tie-breaks follow the symbol count with period
+64), each function graded (tiebreak.rs). A record of the current target whose function (L.src) still has the text
+it was swept with (comments and whitespace runs aside) is a derived `tiebreak` claim at the function {name, unit,
+file, comment, end, sensitive (more than one codegen), best (the best grade over the declaration sets: the
+source-proven grade), witness (the control, the best and the declaration set that gave it), inputs (the unit's
+compile inputs it was measured under)}; a record whose text changed is stale and gives none. Native: tiebreak.rs.",
     },
     RuleDef {
-        id: "M1.baseline", version: "5", max_support: REPRODUCED, phase: "M1", loader: false,
-        needs: &["G.grade"], outputs: &[], inputs: &["baseline", "config", "src", "tiebreak"],
+        id: "M1.baseline", version: "6", max_support: REPRODUCED, phase: "M1", loader: false,
+        needs: &["G.grade"], outputs: &[], inputs: &["baseline", "config", "src", "tiebreak", "objects"],
         doc: "M1: every function of the current target in the grade baseline (ledger/grades.tsv, written only by `dcp\npromote`, lowered for one function only by `dcp debt add`) keeps its grades: experiment byte -> shape / draft\nand shape -> draft are falls, readable -> draft is a fall, and a function the baseline grades that has no\ngrade now fell too. Each fall is an error (an unexplained regression) and names its cause candidates (cause.rs): what its unit
 compiles from that changed since the commit that last wrote the baseline (the unit's own text, each changed header
 of its include closure with the include chain), or that nothing did (a rule or prover change, another object's
-φ). A tie-break sensitive function (its experiment's `tiebreak`, M.tiebreak) whose code fell while its own text is
-the same as at the baseline's commit and its unit's compile inputs changed is no fall: the declaration set moved it
-(M1.tiebreak, a warning, one per changed header set: `tie-break: N functions moved (HEADERS)`). A function the baseline does not list\ncannot fall. A declared regression is debt: the entry holds the grade it fell to,\nits accepted column names the grade before, the last witness commit, why and what it waits for; M1.debt lists\neach (a warning) and is an error when the target holds more than [gate] max_debt of them (no bound unless set). Native:\nlayout.rs.",
+φ). A function whose code fell while its own text is the same as at the baseline's commit, its unit's compile inputs
+changed, and whose sweep record (its experiment's `tiebreak`, M.tiebreak) under the unit's current inputs still
+reaches the grade it had is no fall: the declaration set moved it (M1.tiebreak, a warning, one per changed header
+set: `tie-break: N functions moved (HEADERS)`); `dcp build` sweeps every fallen function without such a record. A function the baseline does not list\ncannot fall. A declared regression is debt: the entry holds the grade it fell to,\nits accepted column names the grade before, the last witness commit, why and what it waits for; M1.debt lists\neach (a warning) and is an error when the target holds more than [gate] max_debt of them (no bound unless set). Native:\nlayout.rs.",
     },
     RuleDef {
         id: "L.decl", version: "6", max_support: DECLARED, phase: "L", loader: true,
@@ -313,7 +314,7 @@ the same as at the baseline's commit and its unit's compile inputs changed is no
     RuleDef {
         id: "L.src", version: "6", max_support: DECLARED, phase: "L", loader: true,
         needs: &[], outputs: &["source", "name", "start"], inputs: &["scan", "target"],
-        doc: "The address comments of the sources, for the current target: every function\nwith an address gives a `source` fact {file, line, comment (the address comment's line), end (the\ndefinition's last line), unit, symbol, what: func, deep / stuck / rough tags}, a `name` fact (origin source)\nand a `start` fact (how source); every data definition with an address a `source` fact (what: data) and a\n`name`; every extern with an address a `name`. Producer src:<file>:<line>, reason = the comment's\ndescription. Errors: a parse error of the scan (L.src: a function without its address comment directly\nabove its definition, a function outside a unit file, a stray file, a unit file with code
+        doc: "The address comments of the sources, for the current target: every function\nwith an address gives a `source` fact {file, line, comment (the address comment's line), end (the\ndefinition's last line), unit, symbol, what: func, deep / hard / rough tags (a stray @stuck too: G.grade's M2)}, a `name` fact (origin source)\nand a `start` fact (how source); every data definition with an address a `source` fact (what: data) and a\n`name`; every extern with an address a `name`. Producer src:<file>:<line>, reason = the comment's\ndescription. Errors: a parse error of the scan (L.src: a function without its address comment directly\nabove its definition, a function outside a unit file, a stray file, a unit file with code
 but no addressed function: no unit, still compiled so its build shows why), L16 (a function compiled into a target\nits comment does not list, or listed for one whose compile does not hold it), an unknown target prefix, an\naddress outside the image, a function address outside a code section, two definitions at one address\n(L.src), one name at two addresses (N2; a `static` name is compared within its unit only, two units may each\nkeep their own), L15 (a view's address is not its container's plus its offset, or its container has no data\ndeclaration with an address; a view gives a `name` fact {view: container}). Errors of the text itself (the\nscan's, an unknown target prefix) are reported in the default target's store; errors about an address in the\nstore of its target.\nA function or datum whose comment lists another target's address only is no fact of this target. Native:\nnative/dcp_core/src/layout.rs.",
     },
     RuleDef {

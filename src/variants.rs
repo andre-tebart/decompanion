@@ -143,6 +143,28 @@ pub fn apply(func: &str, edit: &Edit) -> std::result::Result<String, String> {
     }
 }
 
+/// The leading `/* */` comment of a text: (its end, the comment), after leading white space.
+fn leading_comment(t: &str) -> Option<(usize, &str)> {
+    let start = t.len() - t.trim_start().len();
+    let rest = &t[start..];
+    if !rest.starts_with("/*") {
+        return None;
+    }
+    let end = start + rest.find("*/")? + 2;
+    Some((end, &t[start..end]))
+}
+
+/// A whole-function variant with the function's own address comment in place of the variant's first comment.
+pub fn keep_comment(func: &str, new: &str) -> String {
+    match (leading_comment(func), leading_comment(new)) {
+        (Some((_, own)), Some((end, _))) => {
+            let start = new.len() - new.trim_start().len();
+            format!("{}{own}{}", &new[..start], &new[end..])
+        }
+        _ => new.to_string(),
+    }
+}
+
 /// The variants that move the function's line `line` (a file line) before each line of `to` (file lines, `hi + 1`:
 /// after the line hi), its own place left out. `first`: the function's first file line, `n`: its line count.
 pub fn moves(line: i64, to: (i64, i64), first: i64, n: usize) -> std::result::Result<Vec<Variant>, String> {
@@ -160,7 +182,7 @@ pub fn moves(line: i64, to: (i64, i64), first: i64, n: usize) -> std::result::Re
 }
 
 /// A short hash of a compiled function's code key (tiebreak::code_key): FNV-1a, 8 hex digits.
-fn short_hash(key: &(Vec<u8>, Vec<(u32, String)>)) -> String {
+pub(crate) fn short_hash(key: &(Vec<u8>, Vec<(u32, String)>)) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |b: u8| {
         h ^= b as u64;
@@ -243,13 +265,18 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
     if let Some(lb) = apply_label {
         let Some(v) = variants.iter().find(|v| v.label == lb) else { return fail(format!("no variant `{lb}`")) };
         let new = apply(&func, &v.edit).map_err(err)?;
+        // a whole-function variant's first comment only marks its text as the whole function: the function keeps its
+        // own address comment (its description and its @deep note)
+        let new = if matches!(v.edit, Edit::Whole(_)) { keep_comment(&func, &new) } else { new };
         let out = unit_text(&new);
         crate::edit::write(&path, &if crlf { out.replace('\n', "\r\n") } else { out }).map_err(Error::value)?;
         return Ok((vec![record(&[("fn", s(&fmt_addr(a))), ("name", s(name)), ("applied", s(lb)), ("file", s(&sfile))]),
                         format!("{sfile}: {name} replaced by variant `{lb}`; dcp build to grade it")], 0));
     }
     // the control (the unit as it is) and the variants that apply, compiled together
-    let texts: Vec<std::result::Result<String, String>> = variants.iter().map(|v| apply(&func, &v.edit)).collect();
+    // a whole function compiled as --apply writes it: with the function's own address comment
+    let texts: Vec<std::result::Result<String, String>> = variants.iter()
+        .map(|v| apply(&func, &v.edit).map(|t| if matches!(v.edit, Edit::Whole(_)) { keep_comment(&func, &t) } else { t })).collect();
     let mut jobs = vec![crate::tiebreak::Job { unit: t, tag: "tctl".into(), prefix: String::new(), text: text.clone() }];
     let mut job_of: HashMap<usize, usize> = HashMap::new();
     for (k, x) in texts.iter().enumerate() {
@@ -326,6 +353,28 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
     if same > 0 {
         out.push(format!("{same} variant(s) compile to the control's code: those source changes are no lever for VC6 here"));
     }
+    // the declaration set (tiebreak.rs): the closest row, when it is close and below byte, swept over every
+    // symbol-count shift (cached by its text and the unit's inputs), so that a text only the declaration set keeps
+    // from byte is known as done
+    let closest = table.iter().filter_map(|r| r.outcome.as_ref().ok().map(|o| (r, o)))
+        .min_by_key(|(r, o)| (std::cmp::Reverse(rank(&o.0)), o.1, o.2, r.label != "control"));
+    if let Some((r, o)) = closest.filter(|(_, o)| o.0 != "byte" && crate::tiebreak::close(&o.0, Some(o.1 as i64))) {
+        let k = variants.iter().position(|v| v.label == r.label);
+        let f = match k {
+            Some(k) => texts[k].clone().ok(),
+            None => Some(func.clone()),
+        };
+        if let Some(f) = f {
+            let ut = unit_text(&f);
+            let bytes = if crlf { ut.replace('\n', "\r\n") } else { ut.clone() };
+            if let Some(rec) = crate::tiebreak::try_sweep(p, t, &ut, &bytes, name, a, comment, &f)? {
+                let set = rec.witness.split(" by ").nth(1).and_then(|x| x.split(';').next()).unwrap_or("").to_string();
+                let v = crate::tiebreak::verdict(&rec.best, &o.0, &set, crate::tiebreak::complete(&rec));
+                let apply = if rec.best == "byte" && r.label != "control" { format!(" (dcp try {name} ... --apply {}, dcp build)", r.label) } else { String::new() };
+                out.push(format!("declaration set of `{}`: {v}{apply}", r.label));
+            }
+        }
+    }
     Ok((out, 0))
 }
 
@@ -347,6 +396,10 @@ mod tests {
         assert!(parse("junk\n### a\nx\n").is_err());
         assert!(parse("### a\n\n### b\nx\n").is_err());
         assert!(parse("### a\n<<<\nx\n>>>\n").is_err());
+        // --apply of a whole function keeps the function's address comment (its description and @deep note)
+        let own = "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 1; }";
+        assert_eq!(keep_comment(own, "/* 0x1 */\nint f(void) { return 2; }"), "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 2; }");
+        assert_eq!(keep_comment(own, "int f(void) { return 2; }"), "int f(void) { return 2; }");
     }
 
     #[test]
