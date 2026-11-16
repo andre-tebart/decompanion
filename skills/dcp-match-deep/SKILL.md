@@ -150,6 +150,18 @@ it to what the next reader needs, not a diary. Commit the note with the work it 
   A round that leaves the code unchanged tells you which levers VC6 ignores here; write that into the note and
   take the next lever.
 
+### 2.7 Layout: a unit boundary
+Layout comes first. When a hunk matches only with a callee VC6 does not know (an external copy of it in a
+scratch unit), first probe what the callee's body tells VC6 (what each parameter escapes to); only when callers
+on both sides of an address need different knowledge is it a unit boundary. Try it:
+`dcp unit split UNIT 0xADDR NEW --dry-run` lists what would move (the functions at or above 0xADDR with their
+lines, the data, the declarations, the boundary lines); `dcp unit split UNIT 0xADDR NEW --why "..."` does it
+(src/NEW.c, include/NEW.h, the boundary lines; L7 stays clean), builds before and after and prints every grade
+that changed (exit 1 when one fell or errors were added). Keep the split only when no grade fell; trim NEW's
+copied head and commit `layout: <UNIT>: split <NEW> at 0xADDR` as an item. Otherwise undo it with git
+(`git checkout -- . && git clean -fd src include`; not `dcp unit join`, which merges for good and does not give the
+text back) and write what the trial showed into the item's note.
+
 ## 3. A meaning difference is a bug: fix it first
 Deep items were escalated as allocation-only, but the reading may have been wrong. When `dcp grade NAME` or
 `dcp diffclass NAME` names a concrete difference (`census:`, `witness:`, an M8 / M10 that is not `(crossed: ...)`,

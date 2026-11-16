@@ -594,6 +594,16 @@ fn unit(io: &mut Io, sel: &Sel, sub: UnitCmd) -> Result<i32> {
             let (l, e, c) = crate::units::unit_join(&p, &a, &b, &why, &mut build)?;
             Ok(draft_report(cell.into_inner(), "unit join", l, e, c))
         }
+        UnitCmd::Split(UnitSplitArgs { unit, at, new, dry_run, by, why }) => {
+            let p = refreshed(io, sel)?;
+            let cell = std::cell::RefCell::new(&mut *io);
+            let mut build = || -> Result<()> {
+                build_target(&mut cell.borrow_mut(), sel, true, false)?;
+                Ok(())
+            };
+            let (l, e, c) = crate::units::unit_split(&p, &unit, &at, &new, by, why, dry_run, &mut build)?;
+            Ok(draft_report(cell.into_inner(), "unit split", l, e, c))
+        }
         UnitCmd::Rename(UnitRenameArgs { old, new, why, by }) => {
             let p = refreshed(io, sel)?;
             let cell = std::cell::RefCell::new(&mut *io);

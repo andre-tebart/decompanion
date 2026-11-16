@@ -202,6 +202,73 @@ fn unit_join() {
     assert!(out.contains("units=1") && out.contains("unit=a  range=0x10001000..0x10001060"), "{out}");
 }
 
+/// A unit file with a head (a data definition), two functions, the declarations and data between them, two
+/// functions to move (a macro and a data definition between them) and a tail that uses a moved function.
+const SPLIT_A: &str = "/* a: the whole test code\n   unit 0x10001000.., named by guess; boundaries in decl/text.dcl */\n#include \"a.h\"\nint counter = 1;\n\n\
+/* 0x10001000, first */\nvoid a_10001000(void)\n{\n    counter = 0;\n}\n\n\
+/* 0x10001020, second */\nint Second(void)\n{\n    return counter;\n}\n\n\
+#define TWICE(x) ((x) * 2)\n#define UNUSED_HERE 7\nint table[2] = { 1, 2 };\nstatic int hidden;\n\n\
+/* 0x10001030, third: TWICE */\nvoid Third(void)\n{\n    table[0] = TWICE(Second());\n}\n\n\
+#define HALF(x) ((x) / 2)\nint mid_data[2] = { 3, HALF(8) };\n\n\
+/* 0x10001050, fourth */\nvoid a_10001050(void)\n{\n    mid_data[0] = HALF(table[1]);\n}\n\n\
+void (*hook)(void) = Third;\n";
+
+#[test]
+fn unit_split() {
+    let t = tiny();
+    assert_eq!(dcp(&t, &["unit", "new", "a", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code"]).0, 0);
+    write(&t, "src/a.c", SPLIT_A);
+    let n_err = errors(&t).len();
+    // refusals: nothing written
+    assert_eq!(dcp(&t, &["unit", "split", "nosuch", "0x10001030", "b"]).0, 1);
+    assert_eq!(dcp(&t, &["unit", "split", "a", "0x10001000", "b"]).0, 1); // at the unit's start: nothing would stay
+    assert_eq!(dcp(&t, &["unit", "split", "a", "0x10001030", "a"]).0, 1); // the unit exists
+    // the dry run: what moves, nothing written
+    let (code, out) = dcp(&t, &["unit", "split", "a", "0x10001030", "b", "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("split=a  at=0x10001030  new=b  moved=2  kept=2  data_kept=1"), "{out}");
+    assert!(out.contains("fn=0x10001030  name=Third") && out.contains("fn=0x10001050  name=a_10001050") && out.contains("data=mid_data"), "{out}");
+    // a ran to the end of the game code without an end line: b starts at 0x10001030, a ends there
+    assert!(out.contains("rename a_10001050 -> b_10001050") && !out.contains("boundary end")
+            && out.contains("decl  + 0x10001030 boundary start by=guess tu=b") && out.contains("dry run: nothing written"), "{out}");
+    assert!(read(&t, "src/a.c") == SPLIT_A && !t.join("src/b.c").exists() && !read(&t, "decl/text.dcl").contains("tu=b"));
+    // the split
+    let (code, out) = dcp(&t, &["unit", "split", "a", "0x10001030", "b", "--why", "the second half"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("errors_before=") && out.contains("undo: git checkout -- ."), "{out}");
+    let (a, b) = (read(&t, "src/a.c"), read(&t, "src/b.c"));
+    // the moved functions byte for byte, the placeholder renamed; the data between them stays, b declares it extern
+    assert!(b.contains("/* 0x10001030, third: TWICE */\nvoid Third(void)\n{\n    table[0] = TWICE(Second());\n}\n\n#define HALF(x) ((x) / 2)\nextern int mid_data[2];\n\n\
+                        /* 0x10001050, fourth */\nvoid b_10001050(void)\n{"), "{b}");
+    assert!(b.starts_with("/* b: the second half\n") && !b.contains("/* a: the whole") && b.contains("#include \"a.h\"\n#include \"b.h\"\n"), "{b}");
+    // the head's data extern, the macros it uses (not the others), the old file's definitions it uses declared
+    assert!(b.contains("extern int counter;") && !b.contains("int counter = 1") && b.contains("#define TWICE(x)") && !b.contains("UNUSED_HERE"), "{b}");
+    assert!(b.contains("int Second(void);") && b.contains("extern int table[2];") && !b.contains("hidden;") && !b.contains("a_10001000"), "{b}");
+    assert!(t.join("include/b.h").exists() && read(&t, "include/b.h").contains("B_H"));
+    // the old file: the rest as it was, a prototype of the moved function its tail uses, its data and macro kept
+    assert!(!a.contains("Third(void)\n{") && !a.contains("0x10001050") && a.contains("void Third(void);") && a.contains("int mid_data[2] = { 3, HALF(8) };"), "{a}");
+    assert!(a.contains("#define HALF(x)") && a.contains("void (*hook)(void) = Third;") && a.contains("int counter = 1;"), "{a}");
+    assert!(a.contains("/* 0x10001020, second */\nint Second(void)\n{\n    return counter;\n}\n"), "{a}");
+    let decl: Vec<String> = read(&t, "decl/text.dcl").lines().filter(|l| l.contains("boundary")).map(|l| l.to_string()).collect();
+    assert!(decl.len() == 2 && decl[1].starts_with("0x10001030 boundary start by=guess tu=b -- the second half"), "{decl:?}");
+    assert!(read(&t, "names.log").contains("0x10001050 func a_10001050 -> b_10001050"));
+    // the units as the split made them, no new error (L7 among them)
+    let (_, out) = dcp(&t, &["layout", "units"]);
+    assert!(out.contains("unit=a  range=0x10001000..0x10001030") && out.contains("unit=b  range=0x10001030..0x10001060"), "{out}");
+    assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
+    assert!(!findings(&t).iter().any(|c| ["L7", "L.src"].contains(&c.1.as_str())), "{:?}", findings(&t));
+    // a join merges them again (not back to the text): the functions in address order
+    let (code, out) = dcp(&t, &["unit", "join", "a", "b", "--why", "undo the split"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!t.join("src/b.c").exists() && !t.join("include/b.h").exists());
+    let a = read(&t, "src/a.c");
+    let at: Vec<usize> = ["0x10001000", "0x10001020", "0x10001030", "0x10001050"].iter().map(|x| a.find(&format!("/* {x}")).unwrap()).collect();
+    assert!(at.windows(2).all(|w| w[0] < w[1]) && a.contains("a_10001050"), "{a}");
+    let (_, out) = dcp(&t, &["layout", "units"]);
+    assert!(out.contains("units=1") && out.contains("unit=a  range=0x10001000..0x10001060"), "{out}");
+    assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
+}
+
 #[test]
 fn l9_and_analyzer_report() {
     let t = tiny();

@@ -150,7 +150,8 @@ Commands: `dcp unit new NAME --range 0xSTART..0xEND --by ... --why "..."` (runs 
 proposal first and refuses errors, writes the boundary lines and the files `src/NAME.c` (its head),
 `include/NAME.h`); `dcp layout units -v` (every unit: range, status, boundary
 levels, open bytes, undrafted functions, dead bytes, unlinked helpers, L10); `dcp layout unit propose`
-(the check without the files); `dcp decl add "LINE"` (one declaration, inserted in order).
+(the check without the files); `dcp unit split UNIT 0xADDR NEW [--dry-run]` (section 4); `dcp decl add "LINE"`
+(one declaration, inserted in order).
 
 Unexplained bytes: code no function explains inside a unit keeps it open (`open_bytes=`). Either it is a
 function (declare its start: `0xADDR start -- reached only through a table at 0x...`) or it is dead
@@ -168,6 +169,22 @@ A helper the original inlined everywhere (so no address) stands in its unit's fi
   grade or the error count changed - that is evidence to keep them apart: revert
   (`git checkout -- . && git clean -fd src include notes`). Commit
   `<A>: join <B> (layout)`.
+- **Split** when evidence proves one unit is two (callers on both sides of an address need different knowledge of
+  a callee, literal or data blocks that start a new object, a trial split that raises grades):
+  `dcp unit split UNIT 0xADDR NEW [--by guess|tag|leaked] [--why "..."]`. Every function of UNIT at or above
+  0xADDR moves into `src/NEW.c` (comments and text byte for byte, in the file's order, with what lies between
+  them); NEW gets UNIT's head (its leading comment left out, its data definitions extern, `#include "NEW.h"`),
+  the macros, types, externs and prototypes of UNIT before the moved functions it uses, and declarations of
+  UNIT's definitions it calls; UNIT gets prototypes of the moved functions its rest uses. Data definitions stay
+  in UNIT (dcp tracks no data per unit; NEW declares them extern). The boundary lines follow (NEW starts at
+  0xADDR, UNIT's declared end becomes NEW's; link order follows the addresses), placeholders `UNIT_<addr>` of
+  the moved functions become `NEW_<addr>`, `include/NEW.h` is written. It refuses when a kept function lies
+  among the moved ones in the file (put the file in address order first). `--dry-run` lists what would move
+  (functions with their lines, data, declarations, boundary lines) and writes nothing. It builds before and after
+  and exits 1 when a grade fell or errors were added - evidence against the boundary. Undo a trial with git
+  (`git checkout -- . && git clean -fd src include`), not with `dcp unit join`: a join puts NEW's head lines
+  into UNIT's head and NEW's functions after UNIT's tail, which is not the text before the split. Trim the copied head of NEW to what it uses, then
+  commit `<UNIT>: split <NEW> at 0xADDR (layout)`.
 - **Unit rename** when a stronger name source turns up (`leaked` > `tag` > `guess`):
   `dcp unit rename OLD NEW --by leaked|tag --why "..."` (its file and notes, header and guard, includes,
   boundary lines, placeholders `OLD_<addr>`, names.log). Commit `<old> -> <new> (layout, <by>)`.

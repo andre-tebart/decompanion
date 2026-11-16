@@ -262,6 +262,8 @@ pub enum UnitCmd {
     New(UnitNewArgs),
     /// join unit B (directly after A) into unit A
     Join(UnitJoinArgs),
+    /// split unit UNIT at AT: its functions at or above AT into a new unit NEW (src/NEW.c, include/NEW.h, its boundaries)
+    Split(UnitSplitArgs),
     /// rename a unit (directory, header, includes, boundaries, placeholders)
     Rename(UnitRenameArgs),
 }
@@ -1019,6 +1021,26 @@ pub struct UnitJoinArgs {
     pub b: String,
     #[arg(long, required = true)]
     pub why: String,
+}
+
+/// `UnitCmd::Split`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct UnitSplitArgs {
+    /// the unit to split
+    pub unit: String,
+    /// the address the new unit starts at: every function of UNIT at or above it moves
+    pub at: String,
+    /// the new unit's name (src/NEW.c, include/NEW.h)
+    pub new: String,
+    /// print what would move (functions, data, lines, boundary lines) without writing
+    #[arg(long)]
+    pub dry_run: bool,
+    /// how the new unit got its name (the start boundary's by=; default guess)
+    #[arg(long, value_parser = ["leaked", "tag", "guess"])]
+    pub by: Option<String>,
+    /// the reason on the boundary lines (default: split from UNIT at AT)
+    #[arg(long)]
+    pub why: Option<String>,
 }
 
 /// `UnitCmd::Rename`'s arguments (its own type: clap builds and reads them in a function of their own).
