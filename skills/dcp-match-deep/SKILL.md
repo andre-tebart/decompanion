@@ -1,7 +1,7 @@
 ---
 name: dcp-match-deep
 description: Run one match-deep session of a decompanion project - take functions from the deep queue (dcp next --deep) one at a time and bring each to byte by trying source variants (dcp try) and reading the frames (dcp frame), keeping what each round taught in the function's @deep note (dcp note). An item ends byte + readable or with its meaning bug fixed, never otherwise; it has no time limit. A session is 4 items. Use when the user says "match-deep", "/match-deep", "dcp-match-deep", "deep pass" or "work the deep queue".
-argument-hint: "[items=4]"
+argument-hint: "[items=4] [order=nearest]"
 ---
 
 # Match-deep session: 4 items, the main checkout
@@ -12,7 +12,9 @@ close to it; what is left is mostly register allocation, stack slots, instructio
 needs to choose the original's code. A deep item that turns out to differ in **meaning** is a bug in our C:
 fixing it matters more than the bytes (section 3).
 
-Items: `$ARGUMENTS` (`items=N`; nothing given is 4).
+Arguments: `$ARGUMENTS` (`items=N`; nothing given is 4. `order=nearest`: the deep queue nearest first - every
+`dcp next --deep` of this session is `dcp next --deep --nearest`, and the wrap-up's peek is `dcp next --deep --peek
+--nearest`; nothing given is the queue's default order).
 
 Hard rules
 - The hard rules of the dcp-match-base skill apply unchanged (tools, files, the sources as the state, no grade
@@ -34,7 +36,10 @@ Hard rules
 1. `dcp session start --kind match-deep` (the gate, as for match-base). When it says it counted an unfinished
    attempt (an earlier session ended inside its item), commit `ledger/attempts.tsv` (`session: unfinished
    attempt of <name>`).
-2. `dcp next --deep`. It hands out this session's item and keeps handing out the same one until it is done. The
+2. `dcp next --deep` (with `order=nearest`: `dcp next --deep --nearest`, which orders the queue by unfinished
+   attempts, then by the distance `dist` prints, fewest instructions then bytes, and hands out and records its first
+   item the same way; never `--unit` to pick an item, a unit-narrowed queue records none). It hands out this
+   session's item and keeps handing out the same one until it is done. The
    line says `attempts=N` (how many earlier sessions took it and ended without finishing it), `why=@deep` (the
    note in its address comment: what earlier sessions found and tried, older text as `prior:`) or `why=untagged`
    (below byte in a unit whose base work is done: nobody has tried it, there are no notes).
@@ -69,7 +74,9 @@ There is nothing else to measure and no other reading of it: the declaration set
 item.
 
 ### 2.3 Variants (`dcp try`)
-Write the variants you want to compare into a scratch file (not in the tree), each starting with `### label`:
+Write the variants you want to compare into a scratch file (not in the tree), each starting with `### label`.
+dcp reads the file byte for byte: write it with your file-writing tool, not a shell echo or heredoc, which can
+halve the backslashes of a C string (`dcp try` names that when an old text or a string literal lost one):
 
 ```text
 ### index-loop
@@ -176,4 +183,5 @@ fixed.
    `ledger/attempts.tsv` when the wrap wrote it).
 3. Final message: each item with its outcome (byte / fixed, and how), the levers that moved code and the ones
    that never did, tooling problems met (for the orchestrator's reports), the next item as `dcp next --deep --peek`
-   shows it (`--peek` records nothing; never take or record an item after the wrap). Stop.
+   (with `order=nearest`: `dcp next --deep --peek --nearest`) shows it (`--peek` records nothing; never take or
+   record an item after the wrap). Stop.

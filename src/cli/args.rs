@@ -496,6 +496,10 @@ pub struct NextArgs {
     /// only show the queue: record no match-deep session item (after dcp session wrap nothing is recorded anyway)
     #[arg(long)]
     pub peek: bool,
+    /// the deep queue nearest first: (unfinished attempts, distance ins, distance bytes, the queue's order); hands
+    /// out and records its first item as --deep does
+    #[arg(long, requires = "deep")]
+    pub nearest: bool,
 }
 
 /// `Cmd::Asmdiff`'s arguments (its own type: clap builds and reads them in a function of their own).

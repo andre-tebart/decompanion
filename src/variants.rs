@@ -124,7 +124,11 @@ pub fn apply(func: &str, edit: &Edit) -> std::result::Result<String, String> {
                 let n = t.matches(old.as_str()).count();
                 if n != 1 {
                     let first = old.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-                    return Err(format!("the old text `{first}`.. occurs {n} times in the function (once needed)"));
+                    // the old text with each backslash doubled is there: the file lost every other backslash on its
+                    // way (dcp reads it byte for byte)
+                    let halved = n == 0 && old.contains('\\') && t.matches(old.replace('\\', "\\\\").as_str()).count() == 1;
+                    let why = if halved { format!(" ({HALVED})") } else { String::new() };
+                    return Err(format!("the old text `{first}`.. occurs {n} times in the function (once needed){why}"));
                 }
                 t = t.replacen(old.as_str(), new, 1);
             }
@@ -141,6 +145,26 @@ pub fn apply(func: &str, edit: &Edit) -> std::result::Result<String, String> {
             Ok(lines.join("\n"))
         }
     }
+}
+
+/// Why a variant's text has one backslash where the function has two: dcp takes the variants file byte for byte, so
+/// the file was written through something that halves backslashes (a shell's echo or heredoc, a tool's escaping).
+const HALVED: &str = "the function has `\\\\` where the variants file has `\\`: the file lost a backslash on its way (dcp reads it byte \
+                      for byte); write the variants file with a file-writing tool, not through a shell";
+
+/// The function's C string literals with an escaped backslash that a whole-function variant has with every
+/// backslash halved (and not as the function has them): the variant's file lost its backslashes on its way.
+pub fn halved_literals(func: &str, new: &str) -> Vec<String> {
+    use std::sync::LazyLock;
+    static LIT: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#""(?:[^"\\\n]|\\.)*""#).unwrap());
+    let mut out: Vec<String> = vec![];
+    for m in LIT.find_iter(func) {
+        let l = m.as_str();
+        if l.contains("\\\\") && !new.contains(l) && new.contains(&l.replace("\\\\", "\\")) && !out.iter().any(|x| x == l) {
+            out.push(l.to_string());
+        }
+    }
+    out
 }
 
 /// The leading `/* */` comment of a text: (its end, the comment), after leading white space.
@@ -275,8 +299,12 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
         let new = if matches!(v.edit, Edit::Whole(_)) { keep_comment(&func, &new) } else { new };
         let out = unit_text(&new);
         crate::edit::write(&path, &if crlf { out.replace('\n', "\r\n") } else { out }).map_err(Error::value)?;
-        return Ok((vec![record(&[("fn", s(&fmt_addr(a))), ("name", s(name)), ("applied", s(lb)), ("file", s(&sfile))]),
-                        format!("{sfile}: {name} replaced by variant `{lb}`; dcp build to grade it")], 0));
+        let mut lines = vec![record(&[("fn", s(&fmt_addr(a))), ("name", s(name)), ("applied", s(lb)), ("file", s(&sfile))]),
+                             format!("{sfile}: {name} replaced by variant `{lb}`; dcp build to grade it")];
+        if matches!(v.edit, Edit::Whole(_)) {
+            lines.extend(halved_literals(&func, &new).iter().map(|l| format!("warning: variant `{lb}` has the string {l} with one backslash ({HALVED})")));
+        }
+        return Ok((lines, 0));
     }
     // the control (the unit as it is) and the variants that apply, compiled together
     // a whole function compiled as --apply writes it: with the function's own address comment
@@ -354,6 +382,11 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
             "best: none closer than the control".to_string()
         });
     }
+    for (k, v) in variants.iter().enumerate() {
+        if let (Edit::Whole(_), Ok(t)) = (&v.edit, &texts[k]) {
+            out.extend(halved_literals(&func, t).iter().map(|l| format!("warning: variant `{}` has the string {l} with one backslash ({HALVED})", v.label)));
+        }
+    }
     let same = table.iter().filter(|r| r.same_as.as_deref() == Some("control")).count();
     if same > 0 {
         out.push(format!("{same} variant(s) compile to the control's code: those source changes are no lever for VC6 here"));
@@ -414,6 +447,26 @@ mod tests {
         assert_eq!(keep_comment(own, "/* 0x1 */\n\n\nint f(void) { return 2; }"), "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 2; }");
         // a function without a comment takes the variant as it is
         assert_eq!(keep_comment("int f(void) { return 1; }", "/* c */\nint f(void) { return 2; }"), "/* c */\nint f(void) { return 2; }");
+    }
+
+    #[test]
+    fn backslashes_are_taken_byte_for_byte() {
+        // a C string with an escaped backslash: the variants file's text is the function's text, no escape processing
+        let func = "/* 0x1 \"misc\\quickchat\" */\nvoid f(void)\n{\n    g(\"misc\\\\quickchat\");\n}";
+        let file = "### blk\n<<<\n    g(\"misc\\\\quickchat\");\n===\n    g(\"misc\\\\quickchat\", 1);\n>>>\n\n### whole\nvoid f(void)\n{\n    g(\"misc\\\\quickchat\");\n}\n";
+        let v = parse(file).unwrap();
+        assert_eq!(v[0].edit, Edit::Pairs(vec![("    g(\"misc\\\\quickchat\");".into(), "    g(\"misc\\\\quickchat\", 1);".into())]));
+        assert_eq!(apply(func, &v[0].edit).unwrap(), "/* 0x1 \"misc\\quickchat\" */\nvoid f(void)\n{\n    g(\"misc\\\\quickchat\", 1);\n}");
+        let whole = keep_comment(func, &apply(func, &v[1].edit).unwrap());
+        assert_eq!(whole, func);
+        assert!(halved_literals(func, &whole).is_empty());
+        // a file that lost a backslash on its way: the block says why it does not apply, the whole variant is warned
+        let lost = parse("### blk\n<<<\n    g(\"misc\\quickchat\");\n===\n    h();\n>>>\n").unwrap();
+        let e = apply(func, &lost[0].edit).unwrap_err();
+        assert!(e.contains("occurs 0 times") && e.contains("lost a backslash"), "{e}");
+        assert_eq!(halved_literals(func, "void f(void)\n{\n    g(\"misc\\quickchat\");\n}"), ["\"misc\\\\quickchat\""]);
+        // an old text simply absent: no such hint
+        assert!(!apply(func, &Edit::Pairs(vec![("zz\\q".into(), "y".into())])).unwrap_err().contains("backslash"));
     }
 
     #[test]

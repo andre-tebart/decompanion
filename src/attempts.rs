@@ -13,7 +13,8 @@
 //!
 //! `dcp session wrap` closes the session (`"wrapped": true` in the record): a `dcp next --deep` after it records no
 //! item (it only shows the queue's head), and the next `dcp session start` counts nothing from a wrapped session.
-//! `dcp next --peek` never records.
+//! `dcp next --peek` never records. `dcp next --deep --nearest` orders the queue (attempts, distance ins, distance
+//! bytes, the queue's order) and hands out and records its first item as plain `--deep` does.
 //!
 //! The ledger: target, address, name, attempts (a header line; sorted by target, address).
 
@@ -191,7 +192,18 @@ pub fn hand_out(p: &Project, items: &[i64], names: &HashMap<i64, String>, peek: 
 /// The deep queue in `dcp next --deep`'s order: the fewest unfinished attempts first, the queue's order kept among
 /// equal counts; the session's item (hand_out) before everything.
 pub fn order<T>(items: &mut Vec<(i64, T)>, counts: &HashMap<i64, i64>, first: Option<i64>) {
-    items.sort_by_key(|(a, _)| (Some(*a) != first, counts.get(a).copied().unwrap_or(0)));
+    order_by(items, counts, None, first);
+}
+
+/// `order`, and with `near` (`dcp next --deep --nearest`: each address's distance, differing instructions and
+/// bytes as `dcp grade` prints them) the nearest first among equal counts: (attempts, ins, bytes), the queue's order
+/// kept among equals. A function without a distance comes after every measured one.
+pub fn order_by<T>(items: &mut Vec<(i64, T)>, counts: &HashMap<i64, i64>, near: Option<&HashMap<i64, (i64, i64)>>, first: Option<i64>) {
+    let far = (i64::MAX, i64::MAX);
+    items.sort_by_key(|(a, _)| {
+        let d = near.map(|m| m.get(a).copied().unwrap_or(far)).unwrap_or((0, 0));
+        (Some(*a) != first, counts.get(a).copied().unwrap_or(0), d.0, d.1)
+    });
 }
 
 // ------------------------------------------------------------------------------------------------ the journal
@@ -347,6 +359,25 @@ mod tests {
         // the session's own item stays first whatever its count
         order(&mut items, &counts, Some(2));
         assert_eq!(items.iter().map(|x| x.1).collect::<Vec<_>>(), ["b", "a", "d", "c"]);
+    }
+
+    #[test]
+    fn nearest_first_among_equal_attempts() {
+        // the queue's order a..f; c failed once; distances (ins, bytes): e has none
+        let counts: HashMap<i64, i64> = [(3, 1)].into_iter().collect();
+        let near: HashMap<i64, (i64, i64)> = [(1, (300, 900)), (2, (2, 9)), (3, (0, 1)), (4, (2, 4)), (6, (2, 4))].into_iter().collect();
+        let mut items: Vec<(i64, &str)> = vec![(1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e"), (6, "f")];
+        order_by(&mut items, &counts, Some(&near), None);
+        // the fewest attempts first (c, though nearest, after the 0-attempt ones), then ins, then bytes, then the
+        // queue's order (d before f); e without a distance last among its count
+        assert_eq!(items.iter().map(|x| x.1).collect::<Vec<_>>(), ["d", "f", "b", "a", "e", "c"]);
+        // the session's item stays first
+        order_by(&mut items, &counts, Some(&near), Some(1));
+        assert_eq!(items.iter().map(|x| x.1).collect::<Vec<_>>(), ["a", "d", "f", "b", "e", "c"]);
+        // without --nearest the default order is unchanged
+        let mut plain: Vec<(i64, &str)> = vec![(1, "a"), (2, "b"), (3, "c"), (4, "d"), (5, "e"), (6, "f")];
+        order(&mut plain, &counts, None);
+        assert_eq!(plain.iter().map(|x| x.1).collect::<Vec<_>>(), ["a", "b", "d", "e", "f", "c"]);
     }
 
     #[test]
