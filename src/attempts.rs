@@ -190,7 +190,8 @@ pub fn hand_out(p: &Project, items: &[i64], names: &HashMap<i64, String>, peek: 
 }
 
 /// The deep queue in `dcp next --deep`'s order: the fewest unfinished attempts first, the queue's order kept among
-/// equal counts; the session's item (hand_out) before everything.
+/// equal counts; the session's item (hand_out) before everything. (`order_by` without distances: next_command calls that.)
+#[cfg(test)]
 pub fn order<T>(items: &mut Vec<(i64, T)>, counts: &HashMap<i64, i64>, first: Option<i64>) {
     order_by(items, counts, None, first);
 }
