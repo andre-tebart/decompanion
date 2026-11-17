@@ -982,7 +982,7 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         }
         if let Some(pad) = d.common_pad() {
             out.finding("warn", "D1", d.f.lo, d.f.lo + d.size().unwrap_or(1).max(1) as i64,
-                         format!("{name} at {:#x}: a toolchain effect, no overrun: cl wrote the common's size as {:#x}, its declared type is {:#x}                                   bytes ({pad} bytes of pad; cl's padded common size depends on where the name falls in the object's symbol                                   table); the extent is the declared size", d.f.lo, d.size().unwrap_or(0) + pad, d.size().unwrap_or(0)),
+                         format!("{name} at {:#x}: a toolchain effect, no overrun: cl wrote the common's size as {:#x}, its declared type is {:#x} bytes ({pad} bytes of pad; cl's padded common size depends on where the name falls in the object's symbol table); the extent is the declared size", d.f.lo, d.size().unwrap_or(0) + pad, d.size().unwrap_or(0)),
                          &d.f.by);
         }
         if d.symbol().map(|s| s.common()).unwrap_or(false) {
