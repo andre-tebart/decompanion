@@ -25,6 +25,9 @@ pub struct Group {
     pub expr: String,
     /// (object, our offset into it), in first-seen order, each object once
     pub objects: Vec<(String, i64)>,
+    /// the objects that are commons (tentative definitions) in the function's object: LINK places them, in an
+    /// order of its own
+    pub commons: BTreeSet<String>,
 }
 
 fn expr(base: Reg, index: Reg, scale: u8) -> String {
@@ -42,6 +45,7 @@ fn expr(base: Reg, index: Reg, scale: u8) -> String {
 /// The groups of one object's functions.
 pub fn groups(obj: &Obj) -> Vec<Group> {
     let mut out = vec![];
+    let commons: BTreeSet<String> = obj.symbols.iter().filter(|s| s.common()).map(|s| crate::coff::undecorate(&s.name)).collect();
     for (name, k) in obj.function_index() {
         let code = obj.function_code(k);
         let (cd, _) = code.code();
@@ -57,7 +61,8 @@ pub fn groups(obj: &Obj) -> Vec<Group> {
             for k in gone {
                 let objs = open.remove(&k).unwrap_or_default();
                 if objs.len() >= 2 {
-                    out.push(Group { function: name.clone(), expr: expr(k.0, k.1, k.2), objects: objs });
+                    let cs = objs.iter().filter(|o| commons.contains(&o.0)).map(|o| o.0.clone()).collect();
+                    out.push(Group { function: name.clone(), expr: expr(k.0, k.1, k.2), objects: objs, commons: cs });
                 }
             }
         };
@@ -117,7 +122,11 @@ impl Violation {
 /// table).
 const RECORD_SPAN: i64 = 0x100;
 
-/// The violations of every group: our link map's addresses (`map`: name -> address) against φ's.
+/// The violations of every group: our link map's addresses (`map`: name -> address) against φ's. A pair of two
+/// commons is not judged: LINK 6.00 allocates an object's commons after every .bss contribution in an order of
+/// its own (a hash of the names, not the definition order), so with reconstructed names our order cannot follow
+/// the original's; the fields of a record are no commons (one definition), and the original's distance between
+/// two commons is LINK's, not the source's.
 pub fn check(groups: &[Group], map: &HashMap<String, u32>, phi: &Phi) -> Vec<Violation> {
     let phi_one = |n: &str| -> Option<i64> {
         let m = phi.of(n)?;
@@ -130,6 +139,9 @@ pub fn check(groups: &[Group], map: &HashMap<String, u32>, phi: &Phi) -> Vec<Vio
         let (Some(pa), Some(&oa)) = (phi_one(a), map.get(a)) else { continue };
         for (b, _) in &g.objects[1..] {
             let (Some(pb), Some(&ob)) = (phi_one(b), map.get(b)) else { continue };
+            if g.commons.contains(a) && g.commons.contains(b) {
+                continue;
+            }
             let (theirs, ours) = (pb - pa, ob as i64 - oa as i64);
             let single = |n: &str| phi.size_of(n).is_some_and(|z| z <= 4);
             let record = theirs.abs() <= RECORD_SPAN || single(a) || single(b);
@@ -209,5 +221,31 @@ mod tests {
         let p = phi(&[(0x500000, "g_a", 0x400), (0x600000, "g_b", 0x400)]);
         let map: HashMap<String, u32> = [("g_a".to_string(), 0x7000), ("g_b".to_string(), 0x9000)].into_iter().collect();
         assert!(check(&gs, &map, &p).is_empty());
+    }
+
+    /// Two commons indexed by one register expression (d3s_EdgeX / d3s_EdgeY): LINK orders them by its own hash
+    /// of the names, so our link's order is no evidence; a common next to a defined datum is still judged.
+    #[test]
+    fn commons_are_placed_by_link() {
+        let mut gs = groups(&obj());
+        assert!(gs[0].commons.is_empty());
+        let p = phi(&[(0x92c500, "g_a", 0x40), (0x92c540, "g_b", 0x40)]);
+        let map: HashMap<String, u32> = [("g_a".to_string(), 0x7040), ("g_b".to_string(), 0x7000)].into_iter().collect();
+        assert_eq!(check(&gs, &map, &p).len(), 1);
+        gs[0].commons = ["g_a".to_string(), "g_b".to_string()].into_iter().collect();
+        assert!(check(&gs, &map, &p).is_empty());
+        gs[0].commons = ["g_b".to_string()].into_iter().collect();
+        assert_eq!(check(&gs, &map, &p).len(), 1);
+    }
+
+    /// groups() reads the commons off the object's symbols (external, no section, the value its size).
+    #[test]
+    fn groups_mark_commons() {
+        let code = [0x89u8, 0x88, 0, 0, 0, 0, 0x89, 0x90, 0, 0, 0, 0, 0xc3];
+        let relocs = [(2u32, 2u32, 6u16), (8, 3, 6)];
+        let syms = [(".text", 0, 1, 3), ("_f", 0, 1, 2), ("_g_a", 0x40, 0, 2), ("_g_b", 0, 0, 2)];
+        let gs = groups(&Obj::parse(&crate::coff::testlib::code_obj(&code, &relocs, &syms)).unwrap());
+        assert_eq!(gs.len(), 1, "{gs:?}");
+        assert_eq!(gs[0].commons.iter().map(|s| s.as_str()).collect::<Vec<_>>(), ["g_a"]);
     }
 }

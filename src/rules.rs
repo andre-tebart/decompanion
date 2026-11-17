@@ -494,8 +494,19 @@ impl DataObj {
     fn kind(&self) -> Option<&'static str> {
         self.sym.map(|s| s.1)
     }
+    /// The object's size: a section symbol's to the next symbol; a common's its COFF value, cut to the declared
+    /// type's size where cl padded it (`common_pad`).
     fn size(&self) -> Option<u32> {
-        self.sym.map(|s| s.2)
+        let s = self.sym?.2;
+        Some(s - self.common_pad().unwrap_or(0))
+    }
+    /// A common whose COFF size (the value cl wrote) exceeds its declared C type's: cl 12.00 pads some commons'
+    /// sizes depending on where the name falls in the object's symbol table (0x14030 for a 0x14020-byte
+    /// `int[20488]`; renaming changes it). The pad is a toolchain effect, no part of the object: Some(pad).
+    fn common_pad(&self) -> Option<u32> {
+        let (_, kind, size) = self.sym?;
+        let decl = declared_size(self)?;
+        (kind == "common" && decl < size as i64).then(|| (size as i64 - decl) as u32)
     }
 }
 
@@ -554,6 +565,10 @@ pub fn padding_masked(data: &[u8], mask: &[u8], least: usize) -> Vec<u8> {
 
 /// The least size of a data definition (None without a size).
 fn least_size(d: &DataObj) -> Option<u32> {
+    if d.kind() == Some("common") {
+        // a common's value is its size, no offset: no padding in front of a next symbol
+        return d.size();
+    }
     Some(least(d.symbol().map(|s| s.value), d.size()?))
 }
 
@@ -965,6 +980,11 @@ fn d_data(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 }
             }
         }
+        if let Some(pad) = d.common_pad() {
+            out.finding("warn", "D1", d.f.lo, d.f.lo + d.size().unwrap_or(1).max(1) as i64,
+                         format!("{name} at {:#x}: a toolchain effect, no overrun: cl wrote the common's size as {:#x}, its declared type is {:#x}                                   bytes ({pad} bytes of pad; cl's padded common size depends on where the name falls in the object's symbol                                   table); the extent is the declared size", d.f.lo, d.size().unwrap_or(0) + pad, d.size().unwrap_or(0)),
+                         &d.f.by);
+        }
         if d.symbol().map(|s| s.common()).unwrap_or(false) {
             let va = d.f.lo as u32;
             if tentative_misplaced(d.f.lo, img.section_of(va).is_some() && img.off(va).is_none(), common_start) {
@@ -1355,6 +1375,27 @@ mod tests_extent {
         };
         assert_eq!(data_extent(&d(serde_json::json!({"size": 4})), 0x5ed1c0), (0x5ed1b0, 0x5ed1b4));
         assert_eq!(data_extent(&d(serde_json::json!({})), 0x5ed1bd), (0x5ed1b0, 0x5ed1bd));
+    }
+
+    /// A common cl padded (gm_QueryStack: 0x14030 written for a 0x14020-byte `int[20488]`): its extent is the
+    /// declared size, the pad a toolchain effect; an unpadded common keeps its COFF size, a section symbol its
+    /// distance to the next symbol.
+    #[test]
+    fn padded_common_extent_is_the_declared_size() {
+        let d = |v: serde_json::Value, sym: (usize, &'static str, u32)| DataObj {
+            f: Rc::new(crate::store::Claim { id: 1, rule: Rc::from("L.src"), lo: 0x700000, hi: 0x700001, text: String::new(), value: v,
+                                             support: crate::store::DECLARED, by: "src:a.c:1".into(), reason: None }),
+            obj: None,
+            sym: Some(sym),
+        };
+        let padded = d(serde_json::json!({"size": 0x14020}), (0, "common", 0x14030));
+        assert_eq!((padded.size(), padded.common_pad()), (Some(0x14020), Some(0x10)));
+        assert_eq!(data_extent(&padded, 0x800000), (0x700000, 0x714020));
+        let exact = d(serde_json::json!({"size": 0x40}), (0, "common", 0x40));
+        assert_eq!((exact.size(), exact.common_pad()), (Some(0x40), None));
+        assert_eq!(data_extent(&exact, 0x800000), (0x700000, 0x700040));
+        let section = d(serde_json::json!({"size": 4}), (0, "bss", 8));
+        assert_eq!((section.size(), section.common_pad()), (Some(8), None));
     }
 }
 

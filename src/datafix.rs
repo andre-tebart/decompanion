@@ -975,7 +975,8 @@ pub fn data_map(p: &crate::project::Project, unit: Option<String>, externs: bool
     for d in ds {
         let room = d.next_start.map(|n| n - d.addr);
         let over = match (d.size, room) { (Some(sz), Some(r)) if sz != 0 && sz > r => Some(sz - r), _ => None };
-        let oi = |x: Option<i64>| x.map(Tok::I).unwrap_or(Tok::No);
+        // sizes are counts: decimal at any size (Tok::I prints 1 MB and more as an address)
+        let oi = |x: Option<i64>| x.map(|n| Tok::S(n.to_string())).unwrap_or(Tok::No);
         out.push(format!("  {}", record(&[("at", Tok::I(d.addr)), ("name", s(d.name.clone())), ("kind", if d.kind != "def" { s(d.kind.clone()) } else { Tok::No }),
                                           ("section", s(d.section.clone())), ("size", oi(d.size)), ("room", oi(room)), ("over", oi(over)),
                                           ("level", s(d.level.clone())), ("by", s(d.extent.clone())), ("static", if d.statik { Tok::B(true) } else { Tok::No }),
