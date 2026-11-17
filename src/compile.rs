@@ -664,6 +664,12 @@ pub fn rename_after(p: &Project, before: Vec<Before>, mapping: &std::collections
             return Ok(None);
         }
         let Ok(old) = std::fs::read(obj_path(&root, &b.obj_hash)) else { return Ok(None) };
+        // an object with commons compiles again: cl's COFF size of a common depends on where its name falls in
+        // the symbol table (0x14030 for a 0x14020-byte array under one name, 0x14020 under another), so a patched
+        // object would keep a size the new names may not give
+        if crate::coff::Obj::parse(&old).map_or(true, |o| o.symbols.iter().any(|s| s.common())) {
+            return Ok(None);
+        }
         let Some(obj) = crate::coff::rename_symbols(&old, mapping) else { return Ok(None) };
         let obj_hash = fsmemo::hex(&Sha256::digest(&obj));
         let dest = obj_path(&root, &obj_hash);
