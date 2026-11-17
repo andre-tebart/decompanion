@@ -497,9 +497,14 @@ fn build(io: &mut Io, sel: &Sel, force: bool, units: bool, variant: Option<Strin
         // the declaration-set sweeps (tiebreak.rs): the functions that fell, so that M1 tells a declaration-set move
         // from a fall, and the close functions this tree changed, so that a text only the declaration set keeps from
         // byte counts as done
-        let probed = crate::tiebreak::build_sweeps(&p, &rep.names)?;
+        // a failed build writes no record: its objects are not the tree's (a unit that did not compile, a truncated file)
+        let probed = if bad {
+            vec!["declaration-set sweep: none (a unit failed to compile: no tie-break record is written)".to_string()]
+        } else {
+            crate::tiebreak::build_sweeps(&p, &rep.names)?
+        };
         io.report("build", &probed.iter().map(|l| format!("  {l}")).collect::<Vec<_>>(), None, 0);
-        if !probed.is_empty() {
+        if !probed.is_empty() && !bad {
             refresh(io, &p, false, false)?;
         }
         let cleared = crate::queues::grades_auto_clear(&p)?;

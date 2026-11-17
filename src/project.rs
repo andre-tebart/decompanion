@@ -341,8 +341,13 @@ impl Project {
                 if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }
             }
             "tiebreak" => {
-                let p = native_path(&format!("{root}/{}", crate::tiebreak::LEDGER));
-                if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }
+                // the ledger and the uncommitted records of its texts under other inputs (tiebreak::NOW)
+                let mut hs = vec![];
+                for rel in [crate::tiebreak::LEDGER, crate::tiebreak::NOW] {
+                    let p = native_path(&format!("{root}/{rel}"));
+                    hs.push(if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() });
+                }
+                sha256_parts(&hs)
             }
             "objects" | "probe" | "lint" | "drafts" => {
                 let path = self.store_path();

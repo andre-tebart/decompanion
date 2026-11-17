@@ -179,6 +179,7 @@ pub fn m_tiebreak(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     if recs.is_empty() {
         return Ok(());
     }
+    let now: HashMap<i64, Record> = now_read(&ctx.root).into_iter().filter(|r| r.target == ctx.inputs.target).map(|r| (r.addr, r)).collect();
     let srcs = store::claims(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("func")).map_err(err)?;
     for s in srcs {
         let Some(r) = recs.get(&s.lo) else { continue };
@@ -186,8 +187,18 @@ pub fn m_tiebreak(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         if fn_text(&ctx.root, file, comment, end).is_none_or(|t| text_hash(&t) != r.text) {
             continue;
         }
-        out.claim(s.lo, s.lo + 1, "tiebreak", json!({"name": s.value["symbol"], "unit": s.value["unit"], "file": file, "comment": comment, "end": end,
-                                                     "sensitive": r.sensitive, "best": r.best, "witness": r.witness, "inputs": r.inputs}), DERIVED);
+        let v = match now.get(&s.lo).filter(|n| n.text == r.text) {
+            // the latest measurement of the same text under other inputs (NOW): its inputs and its best for
+            // declaration_move; the better of the two proves the text's grade (proof is proof)
+            Some(n) => {
+                let b = if rank(&n.best) > rank(&r.best) { n } else { r };
+                json!({"name": s.value["symbol"], "unit": s.value["unit"], "file": file, "comment": comment, "end": end,
+                       "sensitive": r.sensitive || n.sensitive, "best": b.best, "witness": b.witness, "inputs": n.inputs, "inputs_best": n.best})
+            }
+            None => json!({"name": s.value["symbol"], "unit": s.value["unit"], "file": file, "comment": comment, "end": end,
+                           "sensitive": r.sensitive, "best": r.best, "witness": r.witness, "inputs": r.inputs}),
+        };
+        out.claim(s.lo, s.lo + 1, "tiebreak", v, DERIVED);
     }
     Ok(())
 }
@@ -203,7 +214,9 @@ pub fn m_tiebreak(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
 /// meaning could have moved the function (the build sweeps a fallen function again: build_sweeps).
 pub fn declaration_move(root: &str, ch: &crate::cause::Changes, tb: &Value, unit_file: &str, was: &str, inputs_now: &str) -> Option<String> {
     let inputs = tb.get("inputs").and_then(|v| v.as_str()).unwrap_or("");
-    if inputs.is_empty() || inputs != inputs_now || rank(tb.get("best").and_then(|v| v.as_str()).unwrap_or("")) < rank(was) || rank(was).is_none() {
+    // the best under these inputs (a claim that merges a ledger record of other inputs carries it apart)
+    let best = tb.get("inputs_best").or_else(|| tb.get("best")).and_then(|v| v.as_str()).unwrap_or("");
+    if inputs.is_empty() || inputs != inputs_now || rank(best) < rank(was) || rank(was).is_none() {
         return None;
     }
     let (file, comment, end) = (tb["file"].as_str()?, tb["comment"].as_i64()?, tb["end"].as_i64()?);
@@ -375,6 +388,42 @@ pub fn close(code: &str, ins: Option<i64>) -> bool {
 const CACHE: &str = "build/tiebreak-cache.tsv";
 const CACHE_MAX: usize = 4000;
 
+/// The records a build or `dcp grade` measured for a function whose ledger record holds the same text under other
+/// compile inputs (another function of its unit changed, a header): one per function, not committed. The ledger
+/// row stays as it is (it changes only with the function's text); M.tiebreak reads both.
+pub const NOW: &str = "build/tiebreak-now.tsv";
+
+pub fn now_read(root: &str) -> Vec<Record> {
+    parse(&std::fs::read_to_string(native_path(&format!("{root}/{NOW}"))).unwrap_or_default())
+}
+
+/// Put records into NOW (each replaces its function's), drop those of `gone` (target, address: a ledger row written).
+fn now_put(root: &str, fresh: &[Record], gone: &[(String, i64)]) {
+    let old = now_read(root);
+    if fresh.is_empty() && !old.iter().any(|r| gone.contains(&(r.target.clone(), r.addr))) {
+        return;
+    }
+    let mut by: BTreeMap<(String, i64), Record> = old.into_iter().map(|r| ((r.target.clone(), r.addr), r)).collect();
+    for g in gone {
+        by.remove(g);
+    }
+    for r in fresh {
+        by.insert((r.target.clone(), r.addr), r.clone());
+    }
+    let path = native_path(&format!("{root}/{NOW}"));
+    if let Some(d) = Path::new(&path).parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(&path, render(&by.into_values().collect::<Vec<_>>()));
+}
+
+/// Where a measured record goes: the ledger when the function has no record there, one of another text (its text
+/// changed) or one of the same inputs (a refinement), else NOW (the same text under other inputs: the ledger row
+/// does not churn with every edit of its unit).
+fn to_ledger(ledger: &[Record], rec: &Record) -> bool {
+    ledger.iter().find(|r| r.target == rec.target && r.addr == rec.addr).is_none_or(|r| r.text != rec.text || r.inputs == rec.inputs)
+}
+
 fn cache_read(root: &str) -> Vec<Record> {
     parse(&std::fs::read_to_string(native_path(&format!("{root}/{CACHE}"))).unwrap_or_default())
 }
@@ -491,11 +540,23 @@ pub(crate) fn measure(p: &Project, wants: &[Want], max_swept: usize) -> Result<(
     let swept: Vec<Record> = out.iter().filter(|m| m.swept).map(|m| m.rec.clone()).collect();
     cache_put(&root, &swept);
     let mut fresh: Vec<Record> = vec![];
+    let mut now: Vec<Record> = vec![];
+    let have_now = now_read(&root);
     for m in out.iter_mut() {
-        if !ledger.iter().any(|r| r == &m.rec) {
-            m.new = true;
-            fresh.push(m.rec.clone());
+        if ledger.iter().any(|r| r == &m.rec) || have_now.iter().any(|r| r == &m.rec) {
+            continue;
         }
+        m.new = true;
+        if to_ledger(&ledger, &m.rec) {
+            fresh.push(m.rec.clone());
+        } else {
+            now.push(m.rec.clone());
+        }
+    }
+    let gone: Vec<(String, i64)> = fresh.iter().map(|r| (r.target.clone(), r.addr)).collect();
+    now_put(&root, &now, &gone);
+    if !now.is_empty() {
+        p.forget_input("tiebreak");
     }
     put_records(p, fresh)?;
     Ok((out, left))
@@ -522,8 +583,13 @@ pub fn build_sweeps(p: &Project, compiled: &[String]) -> Result<Vec<String>> {
     let base = crate::fsmemo::read_text(&native_path(&format!("{root}/ledger/grades.tsv"))).unwrap_or_default();
     let base: HashMap<i64, String> = crate::queues::parse_baseline(&base).into_iter().filter(|x| x.0 .0 == p.target_name).map(|x| (x.0 .1, x.1.code)).collect();
     let mut wants: Vec<Want> = vec![];
+    let mut out = restore_reverted(p, compiled)?;
     for r in rows.iter() {
         let (a, code) = (r["addr"].as_i64().unwrap_or(0), r["code"].as_str().unwrap_or(""));
+        // only the units this build compiled: a unit it did not compile has the objects (and records) it had
+        if !compiled.iter().any(|u| Some(u.as_str()) == r["unit"].as_str()) {
+            continue;
+        }
         if let Some(b) = base.get(&a) {
             if let (Some(bi), Some(n)) = (rank(b), rank(code)) {
                 if n < bi {
@@ -554,18 +620,55 @@ pub fn build_sweeps(p: &Project, compiled: &[String]) -> Result<Vec<String>> {
         }
     }
     if wants.is_empty() {
-        return Ok(vec![]);
+        return Ok(out);
     }
     let t0 = std::time::Instant::now();
     let (ms, left) = measure(p, &wants, BUILD_MAX)?;
     let swept = ms.iter().filter(|m| m.swept).count();
     if !ms.iter().any(|m| m.new) {
-        return Ok(vec![]);
+        return Ok(out);
     }
-    let mut out = vec![format!("declaration-set sweep of {swept} function(s), {} ms{}:", t0.elapsed().as_millis(),
-                               if left > 0 { format!(" ({left} more: the next build)") } else { String::new() })];
+    out.push(format!("declaration-set sweep of {swept} function(s), {} ms{}:", t0.elapsed().as_millis(),
+                               if left > 0 { format!(" ({left} more: the next build)") } else { String::new() }));
     out.extend(ms.iter().filter(|m| m.new).map(|m| format!("  {}", measured_line(m))));
     Ok(out)
+}
+
+/// The ledger rows of the functions of the units this build compiled whose text is no longer the function's while the
+/// committed ledger (HEAD) has the row of the function's current text: an experiment's text (a `dcp try --apply`
+/// reverted) wrote them; the committed rows come back. The lines say which.
+fn restore_reverted(p: &Project, compiled: &[String]) -> Result<Vec<String>> {
+    let root = p.root.to_string_lossy().into_owned();
+    let ledger = read(&root);
+    let loc = Locator::of(p)?;
+    let mut stale: Vec<(&Record, String)> = vec![];
+    for r in ledger.iter().filter(|r| r.target == p.target_name && compiled.contains(&r.unit)) {
+        let Some(l) = loc.get(&r.name).ok().filter(|l| l.addr == r.addr) else { continue };
+        let Some(now) = fn_text(&root, &l.file, l.comment, l.end) else { continue };
+        let th = text_hash(&now);
+        if th != r.text {
+            stale.push((r, th));
+        }
+    }
+    if stale.is_empty() {
+        return Ok(vec![]);
+    }
+    let Some(head) = crate::cause::Changes::since(&root, "HEAD").and_then(|ch| ch.text_at(&root, LEDGER)) else { return Ok(vec![]) };
+    let head = parse(&head);
+    let back: Vec<Record> = stale.iter()
+        .filter_map(|(r, th)| head.iter().find(|h| h.target == r.target && h.addr == r.addr && &h.text == th).cloned())
+        .collect();
+    if back.is_empty() {
+        return Ok(vec![]);
+    }
+    let names: Vec<String> = back.iter().map(|r| r.name.clone()).collect();
+    let mut by: BTreeMap<(String, i64), Record> = ledger.into_iter().map(|r| ((r.target.clone(), r.addr), r)).collect();
+    for r in back {
+        by.insert((r.target.clone(), r.addr), r);
+    }
+    crate::edit::write(&ledger_path(&root), &render(&by.into_values().collect::<Vec<_>>())).map_err(Error::value)?;
+    p.forget_input("tiebreak");
+    Ok(vec![format!("tie-break: the committed record back for {} function(s) whose text is the committed one again: {}", names.len(), names.join(", "))])
 }
 
 /// `dcp grade NAME`'s measurement: a function close to its original and below byte whose text has no record under
@@ -1432,6 +1535,22 @@ mod tests {
         assert!(!complete(&rec("sweep control=shape best=byte by 3 unused typedefs before f; codegens=2 compiled=12 (stopped at the goal)")));
         assert!(!complete(&rec("control=shape p1=byte*")));
         assert!(close("shape", None) && close("draft", Some(24)) && !close("draft", Some(25)) && !close("draft", None));
+    }
+
+    /// A record of a function's same text under other inputs (another function of its unit changed) goes to NOW,
+    /// not the ledger; a changed text, a new function or the same inputs (a refinement) to the ledger.
+    #[test]
+    fn ledger_rows_change_with_the_text() {
+        let r = |text: &str, inputs: &str, best: &str| Record { target: "t".into(), addr: 0x401000, name: "f".into(), unit: "u".into(), text: text.into(),
+                                                              sensitive: true, best: best.into(), witness: "w".into(), inputs: inputs.into() };
+        let ledger = vec![r("ab", "i1", "byte")];
+        assert!(!to_ledger(&ledger, &r("ab", "i2", "shape")));
+        assert!(to_ledger(&ledger, &r("cd", "i2", "shape")));
+        assert!(to_ledger(&ledger, &r("ab", "i1", "byte")));
+        assert!(to_ledger(&[], &r("ab", "i2", "shape")));
+        let mut other = r("ab", "i1", "byte");
+        other.addr = 0x402000;
+        assert!(to_ledger(&[other], &r("ab", "i2", "shape")));
     }
 
     #[test]
