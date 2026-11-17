@@ -34,6 +34,15 @@ fn name_of(p: &str) -> String {
     Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// A C symbol's source name: `_f`, `_f@8` (stdcall) and `@f@8` (fastcall) are `f`.
+fn undecorated(s: &str) -> &str {
+    let s = s.strip_prefix('_').or_else(|| s.strip_prefix('@')).unwrap_or(s);
+    match s.rfind('@') {
+        Some(k) if k > 0 && s[k + 1..].chars().all(|c| c.is_ascii_digit()) && k + 1 < s.len() => &s[..k],
+        _ => s,
+    }
+}
+
 fn file_digest(p: &str) -> String {
     match std::fs::read(p) {
         Ok(d) => fsmemo::hex(&<sha2::Sha256 as sha2::Digest>::digest(&d)),
@@ -395,12 +404,17 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
             }
         }
     }
-    rep.includes = includes.len();
     let kind = img.kind();
     let names = x.facts("name")?;
     let entry_at: BTreeSet<i64> = names.iter().filter(|f| f.s("origin") == Some("entry")).map(|f| f.lo).collect();
     let src_names: HashMap<i64, String> = x.facts("source")?.iter().filter(|f| f.s("what") == Some("func") && &*f.rule == "L.src")
         .map(|f| (f.lo, f.s("symbol").unwrap_or("").to_string())).collect();
+    // /INCLUDE keeps a function /OPT:REF would drop: only the functions the original has (a source with an address).
+    // A function of ours without one (zlib's API the game never calls, `/* unlinked */`) goes through /OPT:REF as in
+    // the original's link: kept when something references it, dropped otherwise.
+    let in_original: HashSet<&str> = src_names.values().map(|s| s.as_str()).collect();
+    includes.retain(|s| in_original.contains(undecorated(s)));
+    rep.includes = includes.len();
     let user = entry_at.iter().find_map(|a| src_names.get(a)).cloned();
     let mut extra: Vec<String> = vec![];
     if let Some(e) = x.tools.entry_object(kind, &out_dir, user.as_deref())? {
@@ -550,6 +564,15 @@ pub fn link_classify(p: &crate::project::Project, names: Vec<String>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undecorated_names() {
+        assert_eq!(undecorated("_deflateParams"), "deflateParams");
+        assert_eq!(undecorated("_WinMain@16"), "WinMain");
+        assert_eq!(undecorated("@f@8"), "f");
+        assert_eq!(undecorated("__tr_init"), "_tr_init");
+        assert_eq!(undecorated("_a@b"), "a@b");
+    }
 
     #[test]
     fn library_order_from_the_image() {
