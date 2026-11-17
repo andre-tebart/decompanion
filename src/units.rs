@@ -11,7 +11,7 @@ use crate::cliread::{record, Tok};
 use crate::decl::{Decl, KeyVal};
 use crate::edit as E;
 use crate::project::native_path;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -393,21 +393,30 @@ struct Chunk {
     stat: bool,
 }
 
-/// A data definition outside every function: its statement's lines [lo, hi), its start (line, column; 1-based).
+/// A data definition outside every function: its statement's lines [lo, hi) (with the comment lines above it that
+/// lead into it and the lines of a comment its last line opens), its start (line, column; 1-based).
 struct DataDef {
     name: String,
+    /// every declarator's name (`int a, b;`: a and b)
+    names: Vec<String>,
     stat: bool,
+    /// an initializer: no tentative definition (a non-static one without is a common, LINK places it)
+    init: bool,
     lo: usize,
     hi: usize,
     start: (i64, i64),
 }
+
+/// Where a data definition goes in a split (`Split::data_moved`): its name, its lines in the old file, why.
+type MovedData = (String, usize, usize, String);
 
 /// What a split writes and what the dry run prints.
 #[derive(Default)]
 struct Split {
     moved: Vec<(i64, String, usize, usize)>, // addr, name, lines [lo, hi) of the old file (0-based)
     kept: usize,
-    data: Vec<(String, usize, usize)>, // the data definitions among the moved functions: they stay, the new file declares them extern
+    data: Vec<(String, usize, usize)>, // the data definitions among the moved functions that stay: the new file declares them extern
+    data_moved: Vec<MovedData>,        // the data definitions that move with the functions (their uses, the original's data layout)
     copied: usize,                     // declaration lines among the moved functions the old file keeps a copy of
     carried: usize,                    // declaration lines of the old file before the moved functions the new file copies
     protos_old: Vec<String>,           // prototypes of moved functions the rest of the old file uses
@@ -537,16 +546,27 @@ fn trim_blank(v: &mut Vec<String>) {
 }
 
 /// The texts of a split of unit `unit` at `at` into `new` (nothing written). `lead`: the new file's leading comment.
+/// `section(addr)`: the original's section kind of a data address (data / rdata / bss), None outside the image.
 ///
 /// The old file loses the moved functions' lines (each function's address comment to its closing line, and what lies
 /// between them); the new file is `lead`, the old head region (its leading comment left out, its data definitions
 /// extern, `#include "<new>.h"` after the old unit's include), the declarations between the head and the moved
 /// functions (every one but the macros they do not use), the declarations of the old file's definitions the moved
-/// functions use, then the moved lines as they were. Data definitions between the moved functions stay in the
-/// old file (dcp tracks no data per unit), the new file declares them extern in their place; the declarations
-/// between them (macros, types, externs) move and the old file keeps a copy; the moved functions the rest of the old
-/// file uses get a prototype there.
-fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &str) -> Result<Split, String> {
+/// functions use, the data definitions that move, then the moved lines as they were.
+///
+/// A data definition moves with the functions (`data_moved`) when the new object's data block holds it: per section
+/// kind of the original, the unit's addressed definitions in address order, the new unit's block the run from the
+/// lowest one only the moved functions use above every one only the rest of the old file uses (the new unit links
+/// after the old one, its data after the old unit's); a definition without an address, or a tentative one (a
+/// common: LINK places it apart from its unit), moves when only the moved functions use it. A moved definition the
+/// rest of the old file uses leaves an extern declaration in its place; a static one stays. The other data
+/// definitions between the moved functions stay in the old file, the new file declares them extern in their place;
+/// the declarations between them (macros, types, externs) move and the old file keeps a copy (before the prototypes
+/// of the moved functions the rest of the old file uses). A data definition takes along the comment lines that lead
+/// into it and the lines of a comment its statement's last line opens; a declaration line, the lines of a comment it
+/// opens.
+fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &str, section: &dyn Fn(i64) -> Option<String>)
+              -> Result<Split, String> {
     let rel = format!("src/{unit}.c");
     let path = p_of(root, &rel);
     if !Path::new(&path).exists() {
@@ -586,12 +606,36 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     }
     let in_fn = |i: usize| fns.iter().any(|c| c.lo <= i && i < c.hi);
     let in_moved = |i: usize| moved.iter().any(|c| c.lo <= i && i < c.hi);
+    // whole-line comments (a comment alone on its lines), and the continuation lines of a comment a line of code
+    // opens (glue: line -> the line that opens it)
+    let mut comment_only: HashSet<usize> = HashSet::new();
+    let mut glue: HashMap<usize, usize> = HashMap::new();
+    let mut spans: Vec<(usize, usize)> = vec![];
+    for &(l1, c1, l2, c2) in &model.comments {
+        let (a, b) = ((l1 - 1).max(0) as usize, (l2 - 1).max(0) as usize);
+        let (Some(first), Some(last)) = (lines.get(a), lines.get(b)) else { continue };
+        let before: String = first.chars().take((c1 - 1).max(0) as usize).collect();
+        let after: String = last.chars().skip((c2 - 1).max(0) as usize).collect();
+        spans.push((a, b));
+        if before.trim().is_empty() && after.trim().is_empty() {
+            comment_only.extend(a..=b);
+        } else {
+            for k in a + 1..=b {
+                glue.entry(k).or_insert(a);
+            }
+        }
+    }
     // the data definitions outside the functions (one statement each; several declarators share a start)
     let mut datas: Vec<DataDef> = vec![];
     for d in &model.decls {
-        if let crate::clang::Decl::V(name, stat, ws, _, e, kind, _, _) = d {
+        if let crate::clang::Decl::V(name, stat, ws, _, e, kind, init, _) = d {
             let lo = (ws.0 - 1).max(0) as usize;
-            if kind != "def" || lo >= lines.len() || in_fn(lo) || datas.iter().any(|x| x.start == *ws) {
+            if kind != "def" || lo >= lines.len() || in_fn(lo) {
+                continue;
+            }
+            if let Some(x) = datas.iter_mut().find(|x| x.start == *ws) {
+                x.names.push(name.clone());
+                x.init |= *init;
                 continue;
             }
             // the statement runs to its `;` (the extent ends with the declarator)
@@ -599,19 +643,88 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
             while hi + 1 < lines.len() && !CODE_TOKEN.replace_all(&slice(&lines, *ws, (hi as i64 + 1, i64::MAX / 4)), " ").contains(';') {
                 hi += 1;
             }
-            datas.push(DataDef { name: name.clone(), stat: *stat, lo, hi: hi + 1, start: *ws });
+            datas.push(DataDef { name: name.clone(), names: vec![name.clone()], stat: *stat, init: *init, lo, hi: hi + 1, start: *ws });
+        }
+    }
+    for d in datas.iter_mut() {
+        // a comment the statement's lines open runs on: its lines are the definition's
+        loop {
+            let end = spans.iter().filter(|&&(a, b)| d.lo <= a && a < d.hi && b >= d.hi).map(|x| x.1 + 1).max();
+            match end {
+                Some(e) if e > d.hi => d.hi = e.min(lines.len()),
+                _ => break,
+            }
+        }
+        // the comment lines right above it (no blank line between; never the file's leading comment) lead into it
+        while d.lo > 0 && comment_only.contains(&(d.lo - 1)) && !in_fn(d.lo - 1) {
+            let top = spans.iter().filter(|&&(a, b)| a <= d.lo - 1 && d.lo - 1 <= b).map(|x| x.0).min().unwrap_or(d.lo - 1);
+            if top == 0 {
+                break;
+            }
+            d.lo = top;
         }
     }
     let stmt_of = |d: &DataDef| slice(&lines, d.start, (d.hi as i64, i64::MAX / 4));
-    // whole-line comments (a comment alone on its lines)
-    let mut comment_only: HashSet<usize> = HashSet::new();
-    for &(l1, c1, l2, c2) in &model.comments {
-        let (a, b) = ((l1 - 1).max(0) as usize, (l2 - 1).max(0) as usize);
-        let (Some(first), Some(last)) = (lines.get(a), lines.get(b)) else { continue };
-        let before: String = first.chars().take((c1 - 1).max(0) as usize).collect();
-        let after: String = last.chars().skip((c2 - 1).max(0) as usize).collect();
-        if before.trim().is_empty() && after.trim().is_empty() {
-            comment_only.extend(a..=b);
+    // which data moves: by its uses (the moved functions' text against the rest of the file) and the original's
+    // data layout
+    let moved_text: String = moved.iter().map(|c| lines[c.lo..c.hi].join("\n")).collect::<Vec<_>>().join("\n");
+    let moved_fn_words = code_words(&moved_text);
+    let rest_text: String = lines.iter().enumerate().map(|(i, l)| if in_moved(i) { "" } else { *l }).collect::<Vec<_>>().join("\n");
+    let rest_counts = word_counts(&rest_text);
+    let use_of = |d: &DataDef| -> (bool, bool) {
+        let own = word_counts(&lines[d.lo..d.hi].join("\n"));
+        let m = d.names.iter().any(|n| moved_fn_words.contains(n));
+        let k = d.names.iter().any(|n| rest_counts.get(n).copied().unwrap_or(0) > own.get(n).copied().unwrap_or(0));
+        (m, k)
+    };
+    let addr_of: HashMap<String, i64> = sc.parts.iter().filter(|p| p.rel == rel)
+        .flat_map(|p| p.data.iter())
+        .filter_map(|r| r.5.iter().find(|(t, _)| t.as_deref().is_none_or(|t| t == target)).map(|x| (r.3.clone(), x.1 as i64)))
+        .collect();
+    let uses: Vec<(bool, bool)> = datas.iter().map(use_of).collect();
+    let addrs: Vec<Option<i64>> = datas.iter().map(|d| d.names.iter().filter_map(|n| addr_of.get(n).copied()).min()).collect();
+    let mut moves: Vec<Option<String>> = vec![None; datas.len()];
+    let mut by_sec: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (j, d) in datas.iter().enumerate() {
+        let tentative = !d.stat && !d.init;
+        match addrs[j].and_then(|a| section(a)) {
+            Some(k) if !tentative => by_sec.entry(k).or_default().push(j),
+            _ => {
+                if uses[j] == (true, false) {
+                    moves[j] = Some(format!("only the moved functions use it{}", if tentative { " (a common)" } else { "" }));
+                }
+            }
+        }
+    }
+    for (kind, mut js) in by_sec {
+        js.sort_by_key(|&j| addrs[j]);
+        let last_kept = js.iter().rposition(|&j| uses[j] == (false, true));
+        let first = js.iter().enumerate().position(|(x, &j)| uses[j] == (true, false) && last_kept.is_none_or(|k| x > k));
+        if let Some(f) = first {
+            for &j in &js[f..] {
+                moves[j] = Some(format!("in the new object's {kind} block (from {:#x}, the first {kind} only the moved functions use)", addrs[js[f]].unwrap()));
+            }
+        }
+        for &j in &js[..first.unwrap_or(js.len())] {
+            if uses[j] == (true, false) {
+                s.notes.push(format!("{rel}:{}: {} ({:#x}) only the moved functions use, but it lies below {kind} the rest of {unit} uses: it \
+                                      stays, {new} declares it extern", datas[j].lo + 1, datas[j].name, addrs[j].unwrap()));
+            }
+        }
+    }
+    for (j, d) in datas.iter().enumerate() {
+        if moves[j].is_some() && d.stat && uses[j].1 {
+            s.warnings.push(format!("{rel}:{}: static data {} lies in the new object's data but the rest of {unit} uses it: it stays", d.lo + 1, d.name));
+            moves[j] = None;
+        }
+    }
+    let moving = |d: &DataDef| datas.iter().position(|x| x.start == d.start).is_some_and(|j| moves[j].is_some());
+    // the old file's text of a moving definition: its extern declaration where the rest of the file uses it
+    let mut old_repl: HashMap<usize, (usize, Option<String>)> = HashMap::new();
+    for (j, d) in datas.iter().enumerate() {
+        if let Some(why) = &moves[j] {
+            s.data_moved.push((d.name.clone(), d.lo, d.hi, why.clone()));
+            old_repl.insert(d.lo, (d.hi, uses[j].1.then(|| extern_of(&stmt_of(d)))));
         }
     }
     // the region: the moved functions and what lies between them
@@ -621,6 +734,14 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     let mut i = r0;
     while i < r1 {
         if let Some(d) = datas.iter().find(|d| d.lo == i && !in_moved(i)) {
+            if moving(d) {
+                new_body.extend(lines[d.lo..d.hi].iter().map(|l| l.to_string()));
+                if let Some((_, Some(x))) = old_repl.get(&d.lo) {
+                    stay.push(x.clone());
+                }
+                i = d.hi;
+                continue;
+            }
             if d.stat {
                 s.warnings.push(format!("{rel}:{}: static data {} lies among the moved functions: it stays in {unit}; the moved functions that use it \
                                          do not compile until it is shared", i + 1, d.name));
@@ -654,7 +775,9 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     let mut k = hs;
     while k < he {
         if let Some(d) = datas.iter().find(|d| d.lo == k && d.hi <= he) {
-            if d.stat {
+            if moving(d) {
+                // its definition moves: the new file defines it below
+            } else if d.stat {
                 s.warnings.push(format!("{rel}:{}: static data {} of the head is copied: each unit has its own", k + 1, d.name));
                 head.extend(lines[d.lo..d.hi].iter().map(|l| l.to_string()));
             } else {
@@ -683,7 +806,7 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     };
     // the declarations between the moved functions the rest of the old file needs (it keeps a copy)
     let mut rest_words = code_words(&(lines[r1..].join("\n") + "\n" + &stay.join("\n")));
-    let copies = needed_lines(&lines, &copies, &rest_words);
+    let copies = needed_lines(&lines, &copies, &rest_words, &glue);
     rest_words.extend(code_words(&copies.join("\n")));
     s.copied = copies.len();
     // the moved functions the rest of the old file uses
@@ -702,8 +825,12 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     // the declarations between the head and the moved functions (macros, types, externs, prototypes) they need
     let is_data = |i: usize| datas.iter().any(|d| d.lo <= i && i < d.hi);
     let pre: Vec<usize> = (he..r0).filter(|&i| !in_fn(i) && !is_data(i) && !lines[i].trim().is_empty() && !comment_only.contains(&i)).collect();
-    let carried = needed_lines(&lines, &pre, &moved_words);
+    let carried = needed_lines(&lines, &pre, &moved_words, &glue);
     moved_words.extend(code_words(&carried.join("\n")));
+    // the data definitions outside the region that move (file order)
+    let moved_defs: Vec<String> = datas.iter().filter(|d| moving(d) && !(r0 <= d.lo && d.lo < r1))
+        .flat_map(|d| lines[d.lo..d.hi].iter().map(|l| l.to_string())).collect();
+    moved_words.extend(code_words(&moved_defs.join("\n")));
     for c in kept.iter().filter(|c| c.hi <= r0) {
         if !moved_words.contains(&c.name) || E::declared_in(&known, &c.name) {
             continue;
@@ -714,8 +841,8 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
             s.decls_new.push(p);
         }
     }
-    for d in datas.iter().filter(|d| he <= d.lo && d.hi <= r0) {
-        if !moved_words.contains(&d.name) || E::declared_in(&known, &d.name) {
+    for d in datas.iter().filter(|d| he <= d.lo && d.hi <= r0 && !moving(d)) {
+        if !d.names.iter().any(|n| moved_words.contains(n)) || d.names.iter().all(|n| E::declared_in(&known, n)) {
             continue;
         }
         if d.stat {
@@ -724,21 +851,36 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
             s.decls_new.push(extern_of(&stmt_of(d)));
         }
     }
-    // the old file: the region out, the prototypes and the kept lines in its place
-    let mut before: Vec<String> = lines[..r0].iter().map(|l| l.to_string()).collect();
+    // the old file: the region out, the copies, the prototypes and the kept lines in its place; a moving
+    // definition out (its extern where the rest uses it)
+    let old_lines = |from: usize, to: usize| -> Vec<String> {
+        let mut v = vec![];
+        let mut i = from;
+        while i < to {
+            if let Some((hi, x)) = old_repl.get(&i) {
+                v.extend(x.iter().cloned());
+                i = *hi;
+                continue;
+            }
+            v.push(lines[i].to_string());
+            i += 1;
+        }
+        v
+    };
+    let mut before = old_lines(0, r0);
     while before.last().is_some_and(|l| l.trim().is_empty()) {
         before.pop();
     }
-    let mut after: Vec<String> = lines[r1..].iter().map(|l| l.to_string()).collect();
+    let mut after = old_lines(r1, lines.len());
     trim_blank(&mut after);
     let mut mid: Vec<String> = vec![];
-    if !s.protos_old.is_empty() {
-        mid.push(format!("/* dcp unit split: the functions of {new} the rest of {unit} uses */"));
-        mid.extend(s.protos_old.iter().cloned());
-    }
     if !copies.is_empty() {
         mid.push(format!("/* dcp unit split: the declarations that moved to {new} (copies: drop what {unit} does not use) */"));
         mid.extend(copies);
+    }
+    if !s.protos_old.is_empty() {
+        mid.push(format!("/* dcp unit split: the functions of {new} the rest of {unit} uses */"));
+        mid.extend(s.protos_old.iter().cloned());
     }
     mid.extend(stay);
     let parts: Vec<Vec<String>> = [before, mid, after].into_iter().filter(|p| !p.is_empty()).collect();
@@ -753,6 +895,9 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     if !s.decls_new.is_empty() {
         parts.push(format!("/* dcp unit split: the definitions of {unit} the functions of {new} use */\n{}", s.decls_new.join("\n")));
     }
+    if !moved_defs.is_empty() {
+        parts.push(moved_defs.join("\n"));
+    }
     parts.push(new_body.join("\n"));
     s.new_text = parts.join("\n\n") + "\n";
     // placeholders of the moved functions: <unit>_<addr> -> <new>_<addr>
@@ -765,11 +910,22 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     Ok(s)
 }
 
+/// The identifiers of a C text outside its comments and literals, with their counts.
+fn word_counts(text: &str) -> HashMap<String, usize> {
+    let code = CODE_TOKEN.replace_all(text, " ");
+    let mut m: HashMap<String, usize> = HashMap::new();
+    for w in WORD.find_iter(&code) {
+        *m.entry(w.as_str().to_string()).or_default() += 1;
+    }
+    m
+}
+
 static DEFINE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^\s*#\s*define\s+([A-Za-z_]\w*)").unwrap());
 
 /// The declaration lines (indices into `lines`, in order) a text with the identifiers `words` needs: every
-/// declaration but a macro definition, which it needs when it or a needed macro uses the macro's name.
-fn needed_lines(lines: &[&str], idx: &[usize], words: &HashSet<String>) -> Vec<String> {
+/// declaration but a macro definition, which it needs when it or a needed macro uses the macro's name. A line
+/// `glue` ties to an earlier one (the continuation of a comment that line opens) goes with it.
+fn needed_lines(lines: &[&str], idx: &[usize], words: &HashSet<String>, glue: &HashMap<usize, usize>) -> Vec<String> {
     // the items: a preprocessor line with its continuation lines, else one line
     let mut items: Vec<(Option<String>, Vec<usize>)> = vec![];
     let mut k = 0;
@@ -780,6 +936,10 @@ fn needed_lines(lines: &[&str], idx: &[usize], words: &HashSet<String>) -> Vec<S
                 k += 1;
                 it.push(idx[k]);
             }
+        }
+        while k + 1 < idx.len() && glue.get(&idx[k + 1]).is_some_and(|o| it.contains(o) || it.iter().any(|&x| glue.get(&x) == Some(o))) {
+            k += 1;
+            it.push(idx[k]);
         }
         items.push((DEFINE.captures(lines[it[0]]).map(|c| c[1].to_string()), it));
         k += 1;
@@ -843,20 +1003,31 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
     }
     let by = by.unwrap_or_else(|| "guess".into());
     let why = why.unwrap_or_else(|| format!("split from {unit} at {at:#x}")).split_whitespace().collect::<Vec<_>>().join(" ");
-    let lead = format!("/* {new}: {why}\n   unit {at:#010x}..{hi:#010x}, named by {by}; split from {unit} (dcp unit split); boundaries in decl/text.dcl */");
-    let sp = match plan_split(&root, unit, at, new, &p.target_name, &lead) {
+    // the --why text is the boundary's reason (decl/text.dcl) and the names log's: the source comments say what the
+    // unit is, not why it was cut (a reason's `*/` would end the comment, too)
+    let lead = format!("/* {new}: the functions {at:#010x}..{hi:#010x} of the original, split from {unit}\n   unit {at:#010x}..{hi:#010x}, \
+                        named by {by}; boundaries in decl/text.dcl */");
+    let img = crate::image(&p.target.path)?;
+    let section = |a: i64| -> Option<String> {
+        let sec = img.section_of(u32::try_from(a).ok()?)?;
+        Some(if img.off(a as u32).is_none() { "bss".into() } else if sec.name.starts_with(".rdata") { "rdata".into() } else { "data".into() })
+    };
+    let sp = match plan_split(&root, unit, at, new, &p.target_name, &lead, &section) {
         Ok(s) => s,
         Err(e) => return fail(e),
     };
     let n_lines = |t: &str| t.matches('\n').count() as i64;
     let mut out = vec![record(&[("split", s(unit)), ("at", Tok::I(at)), ("new", s(new)), ("moved", Tok::I(sp.moved.len() as i64)),
-                                ("kept", Tok::I(sp.kept as i64)), ("data_kept", Tok::I(sp.data.len() as i64)),
+                                ("kept", Tok::I(sp.kept as i64)), ("data_moved", Tok::I(sp.data_moved.len() as i64)), ("data_kept", Tok::I(sp.data.len() as i64)),
                                 ("old_lines", Tok::I(n_lines(&sp.old_text))), ("new_lines", Tok::I(n_lines(&sp.new_text)))])];
     for (a, n, l, h) in &sp.moved {
         out.push(format!("  {}", record(&[("fn", Tok::I(*a)), ("name", s(n.clone())), ("lines", s(format!("{}..{}", l + 1, h)))])));
     }
+    for (n, l, h, why) in &sp.data_moved {
+        out.push(format!("  {}  (moves to {new}: {why})", record(&[("data", s(n.clone())), ("lines", s(format!("{}..{}", l + 1, h)))])));
+    }
     for (n, l, h) in &sp.data {
-        out.push(format!("  {}  (stays in {unit}: dcp tracks no data per unit; {new} declares it extern)",
+        out.push(format!("  {}  (stays in {unit}: neither its uses nor the data layout give it to {new}; {new} declares it extern)",
                          record(&[("data", s(n.clone())), ("lines", s(format!("{}..{}", l + 1, h)))])));
     }
     if sp.carried > 0 {
@@ -883,7 +1054,9 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
         if with_by {
             keys.insert(0, ("by".into(), KeyVal::Str(by.clone())));
         }
-        Decl { lo: at, hi: at + 1, kind: "boundary".into(), words: vec![side.to_string()], keys, reason: why.clone(), file: String::new(), line: 0 }
+        // the reason once, on NEW's start; UNIT's end points there
+        let reason = if with_by { why.clone() } else { format!("{new} starts here (dcp unit split)") };
+        Decl { lo: at, hi: at + 1, kind: "boundary".into(), words: vec![side.to_string()], keys, reason, file: String::new(), line: 0 }
     };
     let mut adds = vec![mk(new, "start", true)];
     if let Some(e) = unit_end {
@@ -900,7 +1073,7 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
     let write_all = || -> Result<(), String> {
         E::write(&p_of(&root, &format!("src/{unit}.c")), &sp.old_text)?;
         E::write(&p_of(&root, &format!("src/{new}.c")), &sp.new_text)?;
-        E::write(&p_of(&root, &format!("include/{new}.h")), &E::header_text(new, &why))?;
+        E::write(&p_of(&root, &format!("include/{new}.h")), &E::header_text(new, &format!("split from {unit}")))?;
         rewrite_boundaries(&root, &mut |d: &Decl| {
             if tu_of(d) == Some(unit) && d.words.first().map(|w| w.as_str()) == Some("end") && Some(d.lo) == unit_end {
                 Some(replace_keys(d, &[("tu", new)]))
@@ -939,6 +1112,12 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
     }
     // dcp unit join is no exact inverse (NEW's head lines go into UNIT's head, its functions after UNIT's tail): git is
     let undo = format!("undo: git checkout -- . && git clean -fd src include  (dcp unit join {unit} {new} merges for good, not back to this text)");
+    if (fell > 0 || err_after > err_before) && !sp.warnings.is_empty() {
+        // what the split could not share (the warnings) breaks the build: no evidence about the boundary
+        out.push(format!("the split lowered grades or added errors, but it left unshared what the warnings above name: share or move that \
+                          by hand and rebuild before reading the grades as evidence about a boundary at {at:#x}; {undo}"));
+        return Ok((out, None, 1));
+    }
     if fell > 0 || err_after > err_before {
         out.push(format!("the split lowered grades or added errors: evidence against a boundary at {at:#x}; {undo}"));
         return Ok((out, None, 1));
@@ -961,6 +1140,6 @@ mod tests {
         assert_eq!(prototype_of("int f(a, b)\nint a;\nchar *b;\n", "f"), "int f();");
         let lines = ["#define A(x) B(x)", "#define B(x) \\", "  (x)", "#define C 1", "typedef int T;"];
         let words: HashSet<String> = ["A".to_string()].into_iter().collect();
-        assert_eq!(needed_lines(&lines, &[0, 1, 2, 3, 4], &words), vec!["#define A(x) B(x)", "#define B(x) \\", "  (x)", "typedef int T;"]);
+        assert_eq!(needed_lines(&lines, &[0, 1, 2, 3, 4], &words, &HashMap::new()), vec!["#define A(x) B(x)", "#define B(x) \\", "  (x)", "typedef int T;"]);
     }
 }

@@ -226,8 +226,9 @@ fn unit_split() {
     // the dry run: what moves, nothing written
     let (code, out) = dcp(&t, &["unit", "split", "a", "0x10001030", "b", "--dry-run"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("split=a  at=0x10001030  new=b  moved=2  kept=2  data_kept=1"), "{out}");
+    assert!(out.contains("split=a  at=0x10001030  new=b  moved=2  kept=2  data_moved=2  data_kept=0"), "{out}");
     assert!(out.contains("fn=0x10001030  name=Third") && out.contains("fn=0x10001050  name=a_10001050") && out.contains("data=mid_data"), "{out}");
+    assert!(out.contains("data=table  lines=20..20  (moves to b: only the moved functions use it)"), "{out}");
     // a ran to the end of the game code without an end line: b starts at 0x10001030, a ends there
     assert!(out.contains("rename a_10001050 -> b_10001050") && !out.contains("boundary end")
             && out.contains("decl  + 0x10001030 boundary start by=guess tu=b") && out.contains("dry run: nothing written"), "{out}");
@@ -237,17 +238,20 @@ fn unit_split() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("errors_before=") && out.contains("undo: git checkout -- ."), "{out}");
     let (a, b) = (read(&t, "src/a.c"), read(&t, "src/b.c"));
-    // the moved functions byte for byte, the placeholder renamed; the data between them stays, b declares it extern
-    assert!(b.contains("/* 0x10001030, third: TWICE */\nvoid Third(void)\n{\n    table[0] = TWICE(Second());\n}\n\n#define HALF(x) ((x) / 2)\nextern int mid_data[2];\n\n\
-                        /* 0x10001050, fourth */\nvoid b_10001050(void)\n{"), "{b}");
-    assert!(b.starts_with("/* b: the second half\n") && !b.contains("/* a: the whole") && b.contains("#include \"a.h\"\n#include \"b.h\"\n"), "{b}");
+    // the moved functions byte for byte, the placeholder renamed; the data only they use moves along (the
+    // definitions between them in place, the others before them)
+    assert!(b.contains("int table[2] = { 1, 2 };\n\n/* 0x10001030, third: TWICE */\nvoid Third(void)\n{\n    table[0] = TWICE(Second());\n}\n\n\
+                        #define HALF(x) ((x) / 2)\nint mid_data[2] = { 3, HALF(8) };\n\n/* 0x10001050, fourth */\nvoid b_10001050(void)\n{"), "{b}");
+    // the --why text is the boundary's reason, no comment of the sources
+    assert!(b.starts_with("/* b: the functions 0x10001030..0x10001060 of the original, split from a\n") && !b.contains("second half") && !b.contains("/* a: the whole") && b.contains("#include \"a.h\"\n#include \"b.h\"\n"), "{b}");
     // the head's data extern, the macros it uses (not the others), the old file's definitions it uses declared
     assert!(b.contains("extern int counter;") && !b.contains("int counter = 1") && b.contains("#define TWICE(x)") && !b.contains("UNUSED_HERE"), "{b}");
-    assert!(b.contains("int Second(void);") && b.contains("extern int table[2];") && !b.contains("hidden;") && !b.contains("a_10001000"), "{b}");
+    assert!(b.contains("int Second(void);") && !b.contains("extern int table") && !b.contains("hidden;") && !b.contains("a_10001000"), "{b}");
     assert!(t.join("include/b.h").exists() && read(&t, "include/b.h").contains("B_H"));
     // the old file: the rest as it was, a prototype of the moved function its tail uses, its data and macro kept
-    assert!(!a.contains("Third(void)\n{") && !a.contains("0x10001050") && a.contains("void Third(void);") && a.contains("int mid_data[2] = { 3, HALF(8) };"), "{a}");
-    assert!(a.contains("#define HALF(x)") && a.contains("void (*hook)(void) = Third;") && a.contains("int counter = 1;"), "{a}");
+    assert!(!a.contains("Third(void)\n{") && !a.contains("0x10001050") && a.contains("void Third(void);") && !a.contains("mid_data") && !a.contains("table"), "{a}");
+    assert!(!read(&t, "include/b.h").contains("second half"));
+    assert!(a.contains("void (*hook)(void) = Third;") && a.contains("int counter = 1;"), "{a}");
     assert!(a.contains("/* 0x10001020, second */\nint Second(void)\n{\n    return counter;\n}\n"), "{a}");
     let decl: Vec<String> = read(&t, "decl/text.dcl").lines().filter(|l| l.contains("boundary")).map(|l| l.to_string()).collect();
     assert!(decl.len() == 2 && decl[1].starts_with("0x10001030 boundary start by=guess tu=b -- the second half"), "{decl:?}");
@@ -267,6 +271,56 @@ fn unit_split() {
     let (_, out) = dcp(&t, &["layout", "units"]);
     assert!(out.contains("units=1") && out.contains("unit=a  range=0x10001000..0x10001060"), "{out}");
     assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
+}
+
+/// A unit file whose head defines addressed data (the original's .data: one datum the kept function uses, then the
+/// moved functions' data and one both use), comments that run over several lines after code (a data definition's,
+/// macros'), a comment leading into a data definition, and a data definition between the kept and the moved functions
+/// nobody uses.
+const SPLIT_C: &str = "/* c: the whole test code */\n#include \"c.h\"\n\
+int kept_a = 1;  /* 0x10002000 */\n\
+/* the moved block's first datum:\n   two lines of comment */\n\
+int low_m = 4;  /* 0x10002004 */\n\
+int moved_x = 2;  /* 0x10002008, a comment\n   that runs on */\n\
+int both_y = 3;  /* 0x1000200c */\n\n\
+/* 0x10001000, first */\nint c_10001000(void)\n{\n    return kept_a + both_y;\n}\n\n\
+/* 0x10001020, second */\nint Second(void)\n{\n    return 0;\n}\n\n\
+#define LIMIT 3  /* a macro whose comment\n   runs on */\n\
+#define UNUSED 4  /* another one,\n   unused */\n\
+int nobody = 5;  /* nobody uses it,\n   its comment runs on */\n\n\
+/* 0x10001030, third */\nint Third(void)\n{\n    return low_m + moved_x + both_y + LIMIT;\n}\n\n\
+/* 0x10001050, fourth */\nvoid c_10001050(void)\n{\n}\n";
+
+/// dcp unit split: comment lines go with what opens them, the data the moved functions own move along (by their uses
+/// and the original's data layout), a moved datum the rest uses leaves an extern.
+#[test]
+fn unit_split_comments_and_data() {
+    let t = tiny();
+    assert_eq!(dcp(&t, &["unit", "new", "c", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code"]).0, 0);
+    write(&t, "src/c.c", SPLIT_C);
+    let (code, out) = dcp(&t, &["unit", "split", "c", "0x10001030", "d", "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("moved=2  kept=2  data_moved=3  data_kept=0"), "{out}");
+    assert!(out.contains("data=low_m  lines=4..6  (moves to d: in the new object's data block (from 0x10002004"), "{out}");
+    assert!(out.contains("data=moved_x") && out.contains("data=both_y") && !out.contains("data=kept_a") && !out.contains("data=nobody"), "{out}");
+    let (code, out) = dcp(&t, &["unit", "split", "c", "0x10001030", "d", "--why", "a */ reason"]);
+    assert!(out.contains("errors_before="), "{code} {out}");
+    let (c, d) = (read(&t, "src/c.c"), read(&t, "src/d.c"));
+    // no comment line without the line that opens it
+    for text in [&c, &d] {
+        assert_eq!(text.matches("/*").count(), text.matches("*/").count(), "{text}");
+    }
+    assert!(d.contains("#define LIMIT 3  /* a macro whose comment\n   runs on */") && !d.contains("UNUSED") && !d.contains("unused */"), "{d}");
+    assert!(!d.contains("nobody") && !d.contains("its comment runs on"), "{d}");
+    // the data moved with their comments, in their order; the rest's datum stays, extern in the new file
+    assert!(d.contains("/* the moved block's first datum:\n   two lines of comment */\nint low_m = 4;  /* 0x10002004 */\n\
+                        int moved_x = 2;  /* 0x10002008, a comment\n   that runs on */\nint both_y = 3;  /* 0x1000200c */"), "{d}");
+    assert!(d.contains("extern int kept_a;") && !d.contains("int kept_a = 1"), "{d}");
+    assert!(c.contains("int kept_a = 1;  /* 0x10002000 */\nextern int both_y;\n") && !c.contains("low_m") && !c.contains("moved_x"), "{c}");
+    assert!(c.contains("int nobody = 5;  /* nobody uses it,\n   its comment runs on */"), "{c}");
+    // the reason only on the boundary line
+    assert!(!d.contains("reason") && !read(&t, "include/d.h").contains("reason"), "{d}");
+    assert!(read(&t, "decl/text.dcl").contains("tu=d -- a */ reason"));
 }
 
 #[test]
