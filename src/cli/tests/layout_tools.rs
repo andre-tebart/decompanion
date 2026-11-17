@@ -78,6 +78,9 @@ fn disasm_dump_refs() {
     for w in ["address=0x10001020", "named=GetCounter  origin=decl", "ref_to=call  site=0x10001003", "fn=0x10001000", "decl/text.dcl:"] {
         assert!(out.contains(w), "{w}: {out}");
     }
+    // a pushed data address: the reloc ref once, no second row read from the code for the same instruction
+    let (code, out) = dcp(&t, &["refs", "0x10002010"]);
+    assert!(code == 0 && out.contains("ref_to=reloc  site=0x10001031") && !out.contains("read from the code"), "{out}");
 }
 
 #[test]

@@ -506,6 +506,28 @@ fn source_files(root: &str) -> Vec<String> {
     out
 }
 
+/// The instructions of the walked functions of the original with a 4-byte immediate operand in [lo, hi) that hold no
+/// site of `known` (a reloc ref's site is the field inside the instruction): (site, the immediate, `push` / `immediate`, the function), in address order.
+fn immediates_into(r: &Reader, lo: i64, hi: i64, known: &BTreeSet<i64>) -> Result<Vec<(i64, i64, &'static str, i64)>> {
+    let fns = r.facts("symbol")?;
+    let mut out = vec![];
+    for f in fns.iter().filter(|f| matches!(f.s("skind"), Some("func")) && !f.rule.starts_with("M.") && f.support > store::OPEN && f.hi > f.lo) {
+        let code = r.img.read(f.lo as u32, (f.hi - f.lo) as usize);
+        for ins in crate::dis::decode(&code, f.lo as u32) {
+            let at = ins.addr as i64;
+            if ins.imm.size != 4 || ins.target.is_some() || known.range(at..at + ins.size as i64).next().is_some() {
+                continue;
+            }
+            if let Some(op) = ins.ops.iter().find(|o| o.typ == crate::dis::OpType::Imm && lo <= (o.imm as u32) as i64 && ((o.imm as u32) as i64) < hi) {
+                out.push((ins.addr as i64, (op.imm as u32) as i64, if ins.mn == "push" { "push" } else { "immediate" }, f.lo));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 fn refs(r: &Reader, what: &str) -> Result<Out> {
     let mut out = vec![];
     let target = r.p.target_name.clone();
@@ -560,12 +582,20 @@ fn refs(r: &Reader, what: &str) -> Result<Out> {
             let to_of = |f: &Claim| f.value.get("to").and_then(|v| v.as_i64()).unwrap_or(-1);
             let mut refs_to: Vec<&Rc<Claim>> = all_refs.iter().filter(|f| to_of(f) == a || (lo <= to_of(f) && to_of(f) < hi && !(lo <= f.lo && f.lo < hi))).collect();
             let mut refs_from: Vec<Rc<Claim>> = if hi > lo + 1 { r.facts_in("ref", lo, hi)? } else { vec![] };
-            out.push(format!("  refs_to={}  refs_from={}", refs_to.len(), refs_from.len()));
+            // the original's code immediates into the object no fact records (an image without base relocations has
+            // no reloc refs, and the walk keeps code immediates only: `push offset main_CitiesDir`)
+            let known: BTreeSet<i64> = refs_to.iter().map(|f| f.lo).collect();
+            let imms = immediates_into(r, lo, hi.max(a + 1), &known)?;
+            out.push(format!("  refs_to={}  refs_from={}", refs_to.len() + imms.len(), refs_from.len()));
             refs_to.sort_by_key(|f| f.lo);
             for f in refs_to {
                 let func = r.walk_func(f.lo)?;
                 out.push(format!("  {}", record(&[("ref_to", os(f.s("rkind"))), ("site", Tok::I(f.lo)), ("to", Tok::I(to_of(f))), ("fn", oi(func.as_ref().map(|x| x.lo))),
                                                   ("fn_name", os(func.as_ref().and_then(|x| r.name(x.lo))))])));
+            }
+            for (site, to, how, f) in imms {
+                out.push(format!("  {}  (read from the code)", record(&[("ref_to", s(how)), ("site", Tok::I(site)), ("to", Tok::I(to)), ("fn", Tok::I(f)),
+                                                                        ("fn_name", os(r.name(f)))])));
             }
             refs_from.sort_by(|x, y| (x.lo, x.s("rkind")).cmp(&(y.lo, y.s("rkind"))));
             for f in refs_from {
