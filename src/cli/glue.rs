@@ -75,6 +75,10 @@ pub fn refresh(io: &mut Io, p: &Project, verbose: bool, force: bool) -> Result<V
             }
         }
     }
+    // a unit dcp rewrote, compiled now: a function of it that fell is said loudly (written.rs)
+    for l in crate::written::falls(&p.root, &p.target_name, &p.store_path()) {
+        io.warn(&l);
+    }
     let ran = res.iter().filter(|r| r.ran).count();
     if verbose || ran > 0 {
         io.warn(&format!("rules: {ran} ran of {}, {} ms (target {})", res.len(), t0.elapsed().as_millis(), p.target_name));

@@ -296,7 +296,8 @@ pub struct LoadError {
 }
 
 fn read_lines(p: &std::path::Path) -> Vec<String> {
-    let t = std::fs::read(p).map(|b| String::from_utf8_lossy(&b).replace("\r\n", "\n").replace('\r', "\n")).unwrap_or_default();
+    // every byte kept (edit::read): an insert writes the other lines back as they were
+    let t = crate::edit::read(&p.to_string_lossy());
     let mut v: Vec<String> = t.split('\n').map(|s| s.to_string()).collect();
     if v.last().is_some_and(|l| l.is_empty()) {
         v.pop();
@@ -403,7 +404,7 @@ pub fn insert(path: &std::path::Path, d: &Decl) -> std::io::Result<i64> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, lines.join("\n") + "\n")?;
+    std::fs::write(path, crate::edit::encode(&(lines.join("\n") + "\n")))?;
     Ok(at as i64 + 1)
 }
 

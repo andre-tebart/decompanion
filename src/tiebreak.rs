@@ -366,7 +366,8 @@ pub(crate) fn compile(p: &Project, jobs: &[Job]) -> Result<Vec<std::result::Resu
         let pre = if j.prefix.is_empty() { String::new() } else { format!("{}\n", j.prefix) };
         let text = format!("{pre}#line 1 \"{}\"\n{}", file.replace('\\', "\\\\"), j.text);
         let _ = std::fs::remove_file(full(&obj));
-        std::fs::write(full(&src), text).map_err(|e| e.to_string())?;
+        // the unit's bytes as the file has them (edit::read_src kept a Latin-1 byte as its private-use character)
+        std::fs::write(full(&src), crate::edit::encode(&text)).map_err(|e| e.to_string())?;
         let r = tools.compile(&src, &obj, &flags[j.unit.unit.as_str()], &dirs, &root);
         let data = std::fs::read(full(&obj));
         for f in [&src, &obj] {
@@ -546,7 +547,7 @@ pub(crate) fn measure(p: &Project, wants: &[Want], max_swept: usize) -> Result<(
         let e = match todo.entry(l.unit.clone()) {
             std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
             std::collections::btree_map::Entry::Vacant(v) => {
-                let text = crate::fsmemo::read_text(&path).map_err(err)?.replace("\r\n", "\n");
+                let text = crate::edit::read_src(&path).map_err(err)?;
                 v.insert((text, inputs.clone(), vec![]))
             }
         };
@@ -744,7 +745,7 @@ pub fn probe_command(p: &Project, units: Vec<String>, dry: bool) -> Result<(Vec<
         };
         let path = native_path(&format!("{root}/{}", t.file));
         let inputs = inputs_of(&crate::fsmemo::sha256(&path).map_err(err)?, &k.flags_hash, &k.include_hash);
-        let text = crate::fsmemo::read_text(&path).map_err(err)?.replace("\r\n", "\n");
+        let text = crate::edit::read_src(&path).map_err(err)?;
         let mut targets = vec![];
         let mut th = vec![];
         for r in rows.iter().filter(|r| r["unit"].as_str() == Some(u.as_str()) && r["code"].as_str() != Some(crate::grade::NOT_RUN)) {
@@ -791,7 +792,8 @@ pub(crate) fn try_sweep(p: &Project, t: &crate::plan::Tu, unit_text: &str, file_
                         -> Result<Option<Record>> {
     let root = p.root.to_string_lossy().into_owned();
     let Some(k) = crate::compile::tu_keys(&p.store_path())?.remove(&t.unit) else { return Ok(None) };
-    let src_hash = crate::fsmemo::hex(&<sha2::Sha256 as sha2::Digest>::digest(file_bytes.as_bytes()));
+    // the file's bytes: a Latin-1 byte edit::read_src kept as its private-use character is that byte again
+    let src_hash = crate::fsmemo::hex(&<sha2::Sha256 as sha2::Digest>::digest(crate::edit::encode(file_bytes)));
     let inputs = inputs_of(&src_hash, &k.flags_hash, &k.include_hash);
     let th = text_hash(&normalize(ftext));
     if let Some((r, _)) = known(&root, &read(&root), &p.target_name, addr, &th, &inputs, "byte") {
@@ -1084,7 +1086,7 @@ pub fn sweep_command(p: &Project, name: &str, max: usize, table: bool, dry: bool
         return fail(format!("{name} is defined in {}, not in its unit's file {} (an included file: not supported)", l.file, t.file));
     }
     let Some(ftext) = fn_text(&root, &l.file, l.comment, l.end) else { return fail(format!("{name}: its text is not readable")) };
-    let text = crate::fsmemo::read_text(&native_path(&format!("{root}/{}", t.file))).map_err(err)?.replace("\r\n", "\n");
+    let text = crate::edit::read_src(&native_path(&format!("{root}/{}", t.file))).map_err(err)?;
     let bench = Bench::of(p)?;
     let t0 = std::time::Instant::now();
     let (res, tab) = sweep(p, t, &text, &[Target { name: name.into(), addr: l.addr, comment: l.comment, goal: "byte" }], true, max.max(1), true, &bench)?;

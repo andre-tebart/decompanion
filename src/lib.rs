@@ -84,6 +84,7 @@ mod toolchain;
 mod units;
 mod vc6;
 mod walk;
+mod written;
 mod shape;
 mod slotmap;
 mod x86;

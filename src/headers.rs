@@ -106,8 +106,9 @@ fn ci(s: &str, byte: usize) -> usize {
     s[..byte].chars().count()
 }
 
+/// A file's text, every byte kept (edit::read: a Latin-1 byte of a string stays that byte when --write writes the unit).
 fn read(root: &str, rel: &str) -> String {
-    crate::fsmemo::read_text(&native_path(&format!("{root}/{rel}"))).unwrap_or_default()
+    crate::edit::read(&native_path(&format!("{root}/{rel}")))
 }
 
 /// The words of x joined by one space.
@@ -217,7 +218,7 @@ impl Texts {
     /// The scan's model of a file when text is the file as it is on disk, else None.
     fn model_of(&self, rel: &str, text: &str) -> Option<Arc<FileModel>> {
         let scan = self.scan.as_ref()?;
-        let disk = crate::fsmemo::read_text(&native_path(&format!("{}/{rel}", self.root))).ok()?;
+        let disk = crate::edit::read_src(&native_path(&format!("{}/{rel}", self.root))).ok()?;
         (disk == text).then(|| scan.models.get(rel).cloned().unwrap_or_default())
     }
 
@@ -644,8 +645,8 @@ fn trial(x: &Ctx, unit: &str, headers: &[String], drop: &BTreeMap<i64, HashSet<S
     let dir = format!("build/lint/{}/trial", p.target_name);
     std::fs::create_dir_all(native_path(&format!("{}/{dir}", x.root))).map_err(|e| e.to_string())?;
     let (rb, rn) = (format!("{dir}/{unit}.base.c"), format!("{dir}/{unit}.trial.c"));
-    std::fs::write(native_path(&format!("{}/{rb}", x.root)), &old).map_err(|e| e.to_string())?;
-    std::fs::write(native_path(&format!("{}/{rn}", x.root)), &new).map_err(|e| e.to_string())?;
+    std::fs::write(native_path(&format!("{}/{rb}", x.root)), crate::edit::encode(&old)).map_err(|e| e.to_string())?;
+    std::fs::write(native_path(&format!("{}/{rn}", x.root)), crate::edit::encode(&new)).map_err(|e| e.to_string())?;
     let args = x.front.args(&[]);
     let tools = crate::vc6::Tools::of(p);
     let root = x.root.as_str();
@@ -1325,7 +1326,7 @@ pub fn headers_conflicts(p: &crate::project::Project, unit: &str, headers: Vec<S
         }
         return Ok((out, 1));
     }
-    std::fs::write(native_path(&format!("{root}/{}", t.unit.file)), t.new.replace(TRIAL_MARK, "")).map_err(err)?;
+    crate::edit::write(&native_path(&format!("{root}/{}", t.unit.file)), &t.new.replace(TRIAL_MARK, "")).map_err(err)?;
     let included: Vec<String> = hdrs.iter().filter(|h| !t.already.contains(h)).cloned().collect();
     out.push(record(&[("write", s(t.unit.file.clone())), ("included", s(included.join(","))), ("at", Tok::I(t.pos as i64 + 1)),
                       ("dropped", Tok::I(drop.values().map(|v| v.len() as i64).sum())), ("lines", Tok::I(drop.len() as i64))])

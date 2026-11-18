@@ -205,7 +205,8 @@ impl Files {
                                  0x0153, 0xFFFD, 0x017E, 0x0178];
         text.iter().map(|&c| {
             let u = c as u32;
-            if u < 0x80 || (0xA0..0x100).contains(&u) {
+            // below 0x100: the byte itself (0x81, 0x8d, 0x8f, 0x90, 0x9d, which cp1252 leaves undefined, read as U+0081..)
+            if u < 0x100 {
                 u as u8
             } else {
                 HIGH.iter().position(|&h| h == u && h != 0xFFFD).map(|i| 0x80 + i as u8).unwrap_or(b'?')
@@ -777,7 +778,14 @@ impl<'a> Trial<'a> {
         let mut texts = vec![];
         for (unit, new) in jobs {
             let a = &self.units[*unit];
-            let text = match new.get(&a.file) { Some(t) => chars(t), None => chars(files.text(&a.file)) };
+            // the bytes the file would have (its own encoding: a cp1252 file's literals compile as on disk)
+            let text = match new.get(&a.file) {
+                Some(t) => files.encode(&a.file, t),
+                None => {
+                    let t = files.text(&a.file).to_vec();
+                    files.encode(&a.file, &t)
+                }
+            };
             let k = TRIAL.fetch_add(1, Ordering::Relaxed);
             let flags = crate::plan::compile_flags(self.p, unit).map_err(err)?;
             texts.push((format!("build/trial/{unit}-{k}.c"), format!("build/obj/trial/{unit}-{k}.obj"), text, flags));
@@ -790,7 +798,7 @@ impl<'a> Trial<'a> {
                     let _ = std::fs::create_dir_all(d);
                 }
             }
-            let error = match std::fs::write(full(src), text.as_bytes()).map_err(|e| e.to_string())
+            let error = match std::fs::write(full(src), text).map_err(|e| e.to_string())
                 .and_then(|_| tools.compile(src, obj, flags, &["include".to_string()], root)) {
                 Err(e) => Some(e),
                 Ok(r) if !r.ok => Some(r.diags.iter().find(|d| d.severity == "error")
@@ -1122,6 +1130,19 @@ mod tests {
 
     fn sub(f: &mut Files, rel: &str, a: usize, b: usize) -> String {
         chars(&f.text(rel)[a..b])
+    }
+
+    /// A cp1252 file's bytes come back from its text as they were, the five bytes cp1252 leaves undefined (0x81, 0x8d,
+    /// 0x8f, 0x90, 0x9d) included (they were U+FFFD, written back as `?`).
+    #[test]
+    fn encode_keeps_every_byte() {
+        let (r, mut f) = tree("bytes", &[]);
+        let all: Vec<u8> = (1..=255u8).filter(|&c| c != b'\r').collect();
+        std::fs::create_dir_all(format!("{r}/src")).unwrap();
+        std::fs::write(format!("{r}/src/u.c"), &all).unwrap();
+        let text = f.text("src/u.c").to_vec();
+        assert!(!text.contains(&'\u{FFFD}'));
+        assert_eq!(f.encode("src/u.c", &text), all);
     }
 
     #[test]

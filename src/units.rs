@@ -34,9 +34,10 @@ fn exists(root: &str, rel: &str) -> bool {
     Path::new(&p_of(root, rel)).exists()
 }
 
-/// A file's text as Path.read_text() reads it (UTF-8, universal newlines).
+/// A file's text, every byte kept (edit::read: a Latin-1 byte stays that byte when the unit is written back; a
+/// file that is not UTF-8 read as empty lost the whole unit), universal newlines.
 fn read(path: &str) -> String {
-    std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n").replace('\r', "\n")
+    E::read(path)
 }
 
 fn head_text(unit: &str, lo: i64, hi: Option<i64>, by: Option<&str>, why: &str) -> String {
@@ -181,7 +182,7 @@ fn join(root: &str, a: &str, b: &str) -> Result<Join, String> {
     // includes of b's header now name a's
     let (inc_b, inc_a) = (format!("#include \"{b}.h\""), format!("#include \"{a}.h\""));
     for (_, p) in E::sources(root) {
-        let t = String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default()).replace("\r\n", "\n");
+        let t = E::read(&p);
         if t.contains(&inc_b) {
             let mut seen = false;
             let mut out: Vec<String> = vec![];
@@ -260,7 +261,7 @@ fn rename(root: &str, old: &str, new: &str, by: Option<&str>) -> Result<Rename, 
     }
     let (io, inew) = (format!("#include \"{old}.h\""), format!("#include \"{new}.h\""));
     for (_, p) in E::sources(root) {
-        let t = String::from_utf8_lossy(&std::fs::read(&p).unwrap_or_default()).replace("\r\n", "\n");
+        let t = E::read(&p);
         if t.contains(&io) {
             E::write(&p, &t.replace(&io, &inew))?;
             r.includes += 1;

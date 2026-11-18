@@ -194,13 +194,17 @@ pub fn resolved(cwd: &str, raw: &str) -> String {
     }
 }
 
-/// Bytes decoded as cp1252 (an undefined byte as U+FFFD), line ends normalised.
+/// Bytes decoded as cp1252 (an undefined byte as its C1 control, U+0081..), line ends normalised.
 pub fn cp1252(b: &[u8]) -> String {
     const HIGH: [u16; 32] = [0x20AC, 0xFFFD, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0xFFFD,
                              0x017D, 0xFFFD, 0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A,
                              0x0153, 0xFFFD, 0x017E, 0x0178];
     let s: String = b.iter().map(|&c| match c {
-        0x80..=0x9F => char::from_u32(HIGH[(c - 0x80) as usize] as u32).unwrap_or('\u{FFFD}'),
+        // the five bytes cp1252 leaves undefined read as U+0081.. (as Windows reads them): written back as they were
+        0x80..=0x9F => match HIGH[(c - 0x80) as usize] {
+            0xFFFD => c as char,
+            h => char::from_u32(h as u32).unwrap_or('\u{FFFD}'),
+        },
         c => c as char,
     }).collect();
     s.replace("\r\n", "\n").replace('\r', "\n")

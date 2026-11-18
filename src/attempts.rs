@@ -313,7 +313,7 @@ pub fn migrate_stuck(p: &Project) -> Result<Vec<String>> {
     let (mut out, mut n) = (vec![], 0);
     for f in &files {
         let path = native_path(&format!("{root}/{f}"));
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = crate::edit::read_src(&path) else { continue };
         let (new, moved) = migrate_text(&text);
         if moved.is_empty() {
             continue;

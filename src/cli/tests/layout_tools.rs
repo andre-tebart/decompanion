@@ -276,6 +276,35 @@ fn unit_split() {
     assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
 }
 
+/// dcp unit split, dcp rename, dcp unit join over a unit with a Latin-1 byte (0xfc) in a string of a function that
+/// stays and one that moves: every write keeps the byte (a lossy read made it U+FFFD, or read the file as empty).
+#[test]
+fn unit_edits_keep_latin1_bytes() {
+    let t = tiny();
+    assert_eq!(dcp(&t, &["unit", "new", "a", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code"]).0, 0);
+    let src = SPLIT_A.replace("    return counter;\n", "    puts(\"Pr\u{fc}fung\");\n    return counter;\n")
+        .replace("    table[0] = TWICE(Second());\n", "    puts(\"gr\u{fc}n\");\n    table[0] = TWICE(Second());\n");
+    let latin1: Vec<u8> = src.chars().map(|c| c as u32 as u8).collect();
+    std::fs::write(t.join("src/a.c"), &latin1).unwrap();
+    let bytes = |rel: &str| std::fs::read(t.join(rel)).unwrap();
+    let has = |b: &[u8], w: &[u8]| b.windows(w.len()).any(|x| x == w);
+    let clean = |b: &[u8]| !has(b, b"\xef\xbf\xbd") && !has(b, "\u{fc}".as_bytes());
+    let (code, out) = dcp(&t, &["unit", "split", "a", "0x10001030", "b", "--why", "the second half"]);
+    assert_eq!(code, 0, "{out}");
+    let (a, b) = (bytes("src/a.c"), bytes("src/b.c"));
+    assert!(has(&a, b"puts(\"Pr\xfcfung\");") && clean(&a), "{}", String::from_utf8_lossy(&a));
+    assert!(has(&b, b"puts(\"gr\xfcn\");") && clean(&b) && has(&b, b"void Third(void)"), "{}", String::from_utf8_lossy(&b));
+    let (code, out) = dcp(&t, &["rename", "Second", "SecondOne", "--why", "a name"]);
+    assert_eq!(code, 0, "{out}");
+    let (a, b) = (bytes("src/a.c"), bytes("src/b.c"));
+    assert!(has(&a, b"int SecondOne(void)") && has(&a, b"puts(\"Pr\xfcfung\");") && clean(&a), "{}", String::from_utf8_lossy(&a));
+    assert!(has(&b, b"TWICE(SecondOne())") && has(&b, b"puts(\"gr\xfcn\");") && clean(&b), "{}", String::from_utf8_lossy(&b));
+    let (code, out) = dcp(&t, &["unit", "join", "a", "b", "--why", "undo the split"]);
+    assert_eq!(code, 0, "{out}");
+    let a = bytes("src/a.c");
+    assert!(has(&a, b"puts(\"Pr\xfcfung\");") && has(&a, b"puts(\"gr\xfcn\");") && clean(&a), "{}", String::from_utf8_lossy(&a));
+}
+
 /// A unit file whose head defines addressed data (the original's .data: one datum the kept function uses, then the
 /// moved functions' data and one both use), comments that run over several lines after code (a data definition's,
 /// macros'), a comment leading into a data definition, and a data definition between the kept and the moved functions

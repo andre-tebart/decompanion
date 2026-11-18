@@ -371,7 +371,7 @@ fn write_renames(root: &str, plans: &mut [&mut Plan]) -> Result<(), String> {
         p.decl_lines = 0;
         let pat = decl_name(&p.old);
         for path in p.decls.clone() {
-            let t = std::fs::read_to_string(&path).map_err(|e| e.to_string())?.replace("\r\n", "\n");
+            let t = E::read_src(&path).map_err(|e| e.to_string())?;
             let k = pat.find_iter(&t).count();
             if k > 0 {
                 let new = pat.replace_all(&t, fancy_regex::NoExpand(&p.new)).into_owned();

@@ -226,6 +226,26 @@ pub(crate) fn short_hash(key: &(Vec<u8>, Vec<(u32, String)>)) -> String {
     format!("{:08x}", (h ^ (h >> 32)) as u32)
 }
 
+/// `--apply`: the variant written into the unit's file in place of the function's lines comment..end (from 1), every
+/// other byte of the file as it was (edit::read_src / edit::write: a Latin-1 byte of another function's string once
+/// came back as U+FFFD, and that function fell). A whole-function variant's first comment only marks its text as the
+/// whole function: the function keeps its own address comment (its description and its @deep note). (the function's
+/// text, its new text)
+pub(crate) fn apply_to_file(path: &str, comment: i64, end: i64, edit: &Edit) -> std::result::Result<(String, String), String> {
+    let text = crate::edit::read_src(path).map_err(|e| format!("{path}: {e}"))?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let (lo, hi) = ((comment.max(1) - 1) as usize, (end.max(comment) as usize).min(lines.len()));
+    if lo >= hi {
+        return Err(format!("the span {comment}..{end} is not in {path}"));
+    }
+    let func = lines[lo..hi].join("\n");
+    let new = apply(&func, edit)?;
+    let new = if matches!(edit, Edit::Whole(_)) { keep_comment(&func, &new) } else { new };
+    let out: Vec<&str> = lines[..lo].iter().copied().chain(new.split('\n')).chain(lines[hi..].iter().copied()).collect();
+    crate::edit::write(path, &out.join("\n"))?;
+    Ok((func, new))
+}
+
 /// One row of the table.
 struct Row {
     label: String,
@@ -252,9 +272,9 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
         return fail(format!("{name} is defined in {sfile}, not in its unit's file {} (an included file: not supported)", t.file));
     }
     let path = native_path(&format!("{root}/{sfile}"));
-    let raw = crate::fsmemo::read_text(&path).map_err(err)?;
-    let crlf = raw.contains("\r\n");
-    let text = raw.replace("\r\n", "\n");
+    // every byte kept (a Latin-1 byte of another function's string stays that byte when --apply writes the unit)
+    let text = crate::edit::read_src(&path).map_err(err)?;
+    let crlf = crate::edit::crlf_file(&path);
     let lines: Vec<&str> = text.split('\n').collect();
     let (lo, hi) = ((comment.max(1) - 1) as usize, (end.max(comment) as usize).min(lines.len()));
     if lo >= hi {
@@ -269,8 +289,8 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
     };
     // the variants: the file's, then the generated moves
     let mut variants = match file {
-        Some(f) => match std::fs::read_to_string(f) {
-            Ok(x) => match parse(&x) {
+        Some(f) => match std::fs::read(f) {
+            Ok(x) => match parse(&crate::edit::decode(&x)) {
                 Ok(v) => v,
                 Err(e) => return fail(format!("{f}: {e}")),
             },
@@ -293,12 +313,7 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
     }
     if let Some(lb) = apply_label {
         let Some(v) = variants.iter().find(|v| v.label == lb) else { return fail(format!("no variant `{lb}`")) };
-        let new = apply(&func, &v.edit).map_err(err)?;
-        // a whole-function variant's first comment only marks its text as the whole function: the function keeps its
-        // own address comment (its description and its @deep note)
-        let new = if matches!(v.edit, Edit::Whole(_)) { keep_comment(&func, &new) } else { new };
-        let out = unit_text(&new);
-        crate::edit::write(&path, &if crlf { out.replace('\n', "\r\n") } else { out }).map_err(Error::value)?;
+        let (func, new) = apply_to_file(&path, comment, end, &v.edit).map_err(err)?;
         let mut lines = vec![record(&[("fn", s(&fmt_addr(a))), ("name", s(name)), ("applied", s(lb)), ("file", s(&sfile))]),
                              format!("{sfile}: {name} replaced by variant `{lb}`; dcp build to grade it")];
         if matches!(v.edit, Edit::Whole(_)) {
@@ -479,5 +494,39 @@ mod tests {
         assert_eq!(apply(func, &v[1].edit).unwrap(), "a\nb\nd\nc\ne\nf");
         assert_eq!(apply(func, &v[3].edit).unwrap(), "a\nb\nd\ne\nf\nc");
         assert!(moves(30, (11, 12), 10, 6).is_err());
+    }
+
+    /// --apply writes the variant over the function's lines and keeps every other byte: a Latin-1 byte (0xfc) in
+    /// another function's string is no U+FFFD after it (gildegold main.c, main_UpdateFigure fell shape -> draft), nor
+    /// one in the variant's own text; a CRLF file stays CRLF.
+    #[test]
+    fn apply_keeps_latin1_bytes() {
+        let dir = crate::testkit::scratch("try-latin1");
+        let p = dir.join("u.c").to_string_lossy().into_owned();
+        let src = b"/* 0x1000, f */\nvoid f(void)\n{\n    g(1);\n}\n\n/* 0x1010, says it */\nvoid h(void)\n{\n    puts(\"MeisterPr\xfc\" \"fung\");\n}\n";
+        std::fs::write(&p, src).unwrap();
+        let v = parse(&crate::edit::decode(b"### two\n<<<\n    g(1);\n===\n    g(2); /* \xfc */\n>>>\n")).unwrap();
+        let (func, new) = apply_to_file(&p, 1, 5, &v[0].edit).unwrap();
+        assert_eq!((func.as_str(), new.as_str()), ("/* 0x1000, f */\nvoid f(void)\n{\n    g(1);\n}", "/* 0x1000, f */\nvoid f(void)\n{\n    g(2); /* \u{10fffc} */\n}"));
+        let want = b"/* 0x1000, f */\nvoid f(void)\n{\n    g(2); /* \xfc */\n}\n\n/* 0x1010, says it */\nvoid h(void)\n{\n    puts(\"MeisterPr\xfc\" \"fung\");\n}\n";
+        assert_eq!(std::fs::read(&p).unwrap(), want.to_vec());
+        let mut src_crlf = vec![];
+        for &c in src.iter() {
+            if c == b'\n' {
+                src_crlf.push(b'\r');
+            }
+            src_crlf.push(c);
+        }
+        std::fs::write(&p, &src_crlf).unwrap();
+        apply_to_file(&p, 1, 5, &v[0].edit).unwrap();
+        let mut want_crlf = vec![];
+        for &c in want.iter() {
+            if c == b'\n' {
+                want_crlf.push(b'\r');
+            }
+            want_crlf.push(c);
+        }
+        assert_eq!(std::fs::read(&p).unwrap(), want_crlf);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

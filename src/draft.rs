@@ -319,7 +319,7 @@ fn ensure_types_header(root: &str, head: &str, rel: &str, unit: &str, shipped: (
         d.declared.push(format!("{} include/{name} (the analyzer's type names)", if have { "updated" } else { "wrote" }));
         E::write(&dh, want)?;
     }
-    let text = std::fs::read_to_string(head).map_err(|e| e.to_string())?.replace("\r\n", "\n");
+    let text = E::read_src(head).map_err(|e| e.to_string())?;
     if !text.contains(&line) {
         let own = format!("#include \"{unit}.h\"");
         let mut lines: Vec<String> = E::splitlines(&text).into_iter().map(|l| l.to_string()).collect();

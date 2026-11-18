@@ -31,7 +31,7 @@ pub fn unit_listing(p: &Project, tu: &crate::plan::Tu, text: &str) -> Result<std
         dirs.push(d.replace('/', "\\"));
     }
     dirs.push("include".to_string());
-    std::fs::write(full(&src), format!("#line 1 \"{}\"\n{text}", file.replace('\\', "\\\\"))).map_err(err)?;
+    std::fs::write(full(&src), crate::edit::encode(&format!("#line 1 \"{}\"\n{text}", file.replace('\\', "\\\\")))).map_err(err)?;
     let r = tools.compile(&src, &obj, &flags, &dirs, &root);
     let out = std::fs::read(full(&asm)).map(|b| String::from_utf8_lossy(&b).replace("\r\n", "\n"));
     // DCP_KEEP_LISTING keeps the files (build/trial/<unit>-lst.*) for reading
@@ -110,7 +110,8 @@ pub fn of_function(p: &Project, name: &str) -> Result<std::result::Result<(Strin
     let plan = crate::plan::plan(p).map_err(err)?;
     let Some(tu) = plan.iter().find(|t| t.unit == unit) else { return Ok(Err(format!("no unit {unit} in target {}", p.target_name))) };
     let root = p.root.to_string_lossy().into_owned();
-    let text = crate::fsmemo::read_text(&native_path(&format!("{root}/{}", tu.file))).map_err(err)?;
+    // the unit's bytes as they are (edit::read_src; unit_listing writes them back): a Latin-1 literal compiles as in the build
+    let text = crate::edit::read_src(&native_path(&format!("{root}/{}", tu.file))).map_err(err)?;
     let asm = match unit_listing(p, tu, &text)? {
         Ok(a) => a,
         Err(e) => return Ok(Err(e)),

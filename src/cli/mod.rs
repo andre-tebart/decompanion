@@ -49,6 +49,7 @@ impl Io<'_> {
 pub fn run(argv: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     crate::timing::reset();
     crate::fsmemo::new_epoch();
+    crate::written::set_command(&argv.iter().skip(1).cloned().collect::<Vec<_>>().join(" "));
     let mut io = Io { out, err };
     let code = match args::Cli::try_parse_from(argv) {
         Err(e) => {

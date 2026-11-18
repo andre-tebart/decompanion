@@ -192,6 +192,42 @@ fn references_and_views_stay_inside_their_object() {
     assert!(out.contains("M.contain: outside its object)") && out.contains("  contain: M.contain at +0x1"), "{out}");
 }
 
+/// A function that falls in a unit whose only change since its last compile was a dcp write (edit::write: try
+/// --apply, note, escalate, unit split ...) is said loudly by the next build (written.rs), once; a fall after a
+/// change of anyone else is no such warning.
+#[test]
+#[ignore = "e2e: VC6"]
+fn a_fall_after_a_dcp_write_is_loud() {
+    if !has_vc6() {
+        return;
+    }
+    let t = tiny();
+    with_vc6(&t);
+    net_decl(&t);
+    let head = "int counter = 0x1234;  /* 0x10002000 */\n";
+    let f = |body: &str| format!("/* 0x10001020, reads the counter */\nint get(void)\n{{\n    {body}\n}}\n");
+    let path = unit(&t, "net", &[head, &f("return counter;")]);
+    assert!(dcp(&t, &["build"]).1.contains("grades: byte+readable=1"));
+    // a dcp writer changes the unit: the build that grades it says the fall
+    crate::written::set_command("try get v.txt --apply worse");
+    let text = crate::edit::read(&path.to_string_lossy());
+    crate::edit::write(&path.to_string_lossy(), &text.replace("return counter;", "return counter + 1;")).unwrap();
+    crate::written::set_command("");
+    let (code, _, err) = dcp3(&t, &["build"]);
+    assert!(code == 0 && err.contains("WARNING: 0x10001020 get fell byte+readable -> ") && err.contains("src/net.c")
+            && err.contains("(dcp try get v.txt --apply worse)"), "{err}");
+    assert!(!dcp3(&t, &["build"]).2.contains("WARNING"), "said once");
+    assert!(!t.join("build/dcp-writes.json").exists());
+    // back to byte by hand, then an edit of anyone else before a dcp write: no warning
+    unit(&t, "net", &[head, &f("return counter;")]);
+    assert!(dcp(&t, &["build"]).1.contains("grades: byte+readable=1"));
+    unit(&t, "net", &[head, &f("return counter + 2;")]);
+    let text = crate::edit::read(&path.to_string_lossy());
+    crate::edit::write(&path.to_string_lossy(), &text.replace("/* 0x10001020, reads the counter */", "/* 0x10001020, reads the counter @deep x */")).unwrap();
+    let (_, out, err) = dcp3(&t, &["build"]);
+    assert!(!err.contains("WARNING") && !out.contains("byte+readable=1"), "{out} {err}");
+}
+
 #[test]
 #[ignore = "e2e: VC6"]
 fn rename_counts_the_errors_of_the_tree_as_from_before() {

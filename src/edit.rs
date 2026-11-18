@@ -1,7 +1,9 @@
 //! Edits of the typed state the layout commands make (dcp unit new / join / rename, dcp draft, dcp rename): the
 //! whole-word rename over src/ and include/, the append-only names.log, include lines and declaration blocks in a
 //! unit's head region (the lines before its first function: head_end) and the unit headers, a function inserted into
-//! its unit's file, `git mv`. Every edit writes UTF-8 with LF.
+//! its unit's file, `git mv`. An edit keeps every byte it does not change: a file is read with `read`/`read_src` (a byte
+//! that is not UTF-8 kept as a private-use character) and written with `write`, which gives those bytes back and keeps a
+//! CRLF file's line ends.
 //!
 //! names.log (plan section 4): one line per rename event, appended, never rewritten (merge=union):
 //!
@@ -72,13 +74,76 @@ pub fn sources(root: &str) -> Vec<(String, String)> {
     out
 }
 
-pub fn read(path: &str) -> String {
-    crate::fsmemo::read_text(path).unwrap_or_default()
+/// The first of the 256 private-use characters (U+10FF00..U+10FFFF) a byte that is no part of UTF-8 is read as
+/// (`decode`) and written back as (`encode`): a source with a Latin-1 byte in a string or a comment (the `ü` of
+/// `"Prüfung"` as the one byte 0xfc) goes through an edit unchanged (a lossy read made it U+FFFD: `dcp try --apply` broke a string of
+/// another function of the unit).
+const RAW: u32 = 0x10FF00;
+
+/// The bytes as a text that `encode` turns back into the same bytes: the UTF-8 runs as they are, every other byte as
+/// its private-use character (RAW). Line ends are left as they are.
+pub fn decode(b: &[u8]) -> String {
+    let mut out = String::with_capacity(b.len());
+    for c in b.utf8_chunks() {
+        out.push_str(c.valid());
+        out.extend(c.invalid().iter().map(|&x| char::from_u32(RAW + x as u32).unwrap()));
+    }
+    out
 }
 
-/// Write a text (UTF-8, LF), the directories made; the file memo forgets its stamps.
+/// The bytes of a text `decode` read: a private-use character of RAW's range is its byte again.
+pub fn encode(t: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(t.len());
+    for c in t.chars() {
+        match c as u32 {
+            u if u >= RAW => out.push((u - RAW) as u8),
+            _ => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+        }
+    }
+    out
+}
+
+/// A file's text for an edit that writes it back (`write`): `decode`d (every byte kept), line ends as LF. Read from
+/// the disk, not the file memo: an edit never starts from a text older than the file.
+pub fn read_src(path: &str) -> std::io::Result<String> {
+    let t = decode(&std::fs::read(path)?);
+    Ok(if t.contains('\r') { t.replace("\r\n", "\n").replace('\r', "\n") } else { t })
+}
+
+/// `read_src`, a missing or unreadable file empty.
+pub fn read(path: &str) -> String {
+    read_src(path).unwrap_or_default()
+}
+
+/// Whether the file's lines all end CRLF (a file without any line end: no).
+pub fn crlf_file(path: &str) -> bool {
+    std::fs::read(path).is_ok_and(|b| crlf(&b))
+}
+
+fn crlf(b: &[u8]) -> bool {
+    let n = b.iter().filter(|&&c| c == b'\n').count();
+    n > 0 && b.windows(2).filter(|w| w == b"\r\n").count() == n
+}
+
+/// Write a text (`encode`d: the bytes `read`/`read_src` kept come back as they were), the directories made, LF line
+/// ends unless the file there has CRLF throughout (it keeps them); the file memo forgets its stamps. A unit file's
+/// write is remembered (written.rs: a build that sees one of its functions fall says so).
 pub fn write(path: &str, text: &str) -> Result<(), String> {
-    write_bytes(path, text.as_bytes())
+    let pre = std::fs::read(path).ok();
+    let mut b = encode(text);
+    if pre.as_deref().is_some_and(crlf) && !text.contains('\r') {
+        let mut out = Vec::with_capacity(b.len() + b.len() / 16);
+        for &c in &b {
+            if c == b'\n' {
+                out.push(b'\r');
+            }
+            out.push(c);
+        }
+        b = out;
+    }
+    write_bytes(path, &b)?;
+    crate::written::note(path, pre.as_deref(), &b);
+    Ok(())
 }
 
 /// Windows refuses to truncate a file while another process holds a section of it mapped (ERROR_USER_MAPPED_FILE,
@@ -373,7 +438,7 @@ pub fn head_end(root: &str, rel: &str) -> Result<usize, String> {
 }
 
 fn text_or_empty(path: &str) -> String {
-    if Path::new(path).exists() { std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n") } else { String::new() }
+    if Path::new(path).exists() { read(path) } else { String::new() }
 }
 
 /// Insert a function's text (its address comment first) into a unit's file before the line `before` (1-based: the
@@ -579,6 +644,38 @@ void f(void)
         write(&p, "grown past the old length\n").unwrap();
         append(&p, "more\n").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "grown past the old length\nmore\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Latin-1 byte (0xfc, `ü`) in a source goes through read and write unchanged: every byte, alone or in a run,
+    /// beside UTF-8 text, and a CRLF file keeps its line ends.
+    #[test]
+    fn edits_keep_latin1_bytes() {
+        let all: Vec<u8> = (0..=255u8).collect();
+        assert_eq!(encode(&decode(&all)), all);
+        let mixed = b"\"MeisterPr\xfc\" \"fung\" /* \xe4\xf6\xfc \xc3\xbc \xe2\x82\xac \xc3 */\n".to_vec();
+        assert_eq!(encode(&decode(&mixed)), mixed);
+        assert!(!decode(&mixed).contains('\u{FFFD}'));
+        let dir = crate::testkit::scratch("latin1");
+        let p = dir.join("u.c").to_string_lossy().into_owned();
+        let src = b"/* 0x1000, f */\nvoid f(void)\n{\n    puts(\"Pr\xfcfung\");\n}\n\n/* 0x1010, g */\nvoid g(void)\n{\n}\n";
+        std::fs::write(&p, src).unwrap();
+        // an edit of g (read, change, write): f's byte stays 0xfc
+        let t = read(&p);
+        write(&p, &t.replace("void g(void)\n{\n}", "void g(void)\n{\n    f();\n}")).unwrap();
+        let want = b"/* 0x1000, f */\nvoid f(void)\n{\n    puts(\"Pr\xfcfung\");\n}\n\n/* 0x1010, g */\nvoid g(void)\n{\n    f();\n}\n";
+        assert_eq!(std::fs::read(&p).unwrap(), want.to_vec());
+        // insert_function (dcp draft) and an #include (ensure_include) the same
+        insert_function(&p, "/* 0x1008, h */\nvoid h(void)\n{\n}", Some(7)).unwrap();
+        ensure_include(&p, "#include \"u.h\"", None).unwrap();
+        let b = std::fs::read(&p).unwrap();
+        assert!(b.windows(8).any(|w| w == b"Pr\xfcfung\"") && !b.windows(3).any(|w| w == b"\xef\xbf\xbd"), "{}", String::from_utf8_lossy(&b));
+        // a CRLF file stays CRLF
+        std::fs::write(&p, b"int a; /* \xfc */\r\nint b;\r\n").unwrap();
+        let t = read(&p);
+        assert_eq!(t, format!("int a; /* {} */\nint b;\n", decode(b"\xfc")));
+        write(&p, &t.replace("int b;", "int c;")).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"int a; /* \xfc */\r\nint c;\r\n".to_vec());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

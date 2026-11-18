@@ -741,7 +741,8 @@ pub fn set_level_kept(root: &str, rel: &str, level: Option<&str>, reason: Option
     // and line breaks
     static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:\A|\s)\s*@(deep|hard)\b").unwrap());
     let path = crate::project::native_path(&format!("{root}/{rel}"));
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?.replace("\r\n", "\n");
+    // every byte kept: a Latin-1 byte of a string elsewhere in the unit stays that byte (edit::read_src)
+    let text = crate::edit::read_src(&path).map_err(|e| format!("{path}: {e}"))?;
     let src = crate::readability::Source::new(&text);
     let tx = &src.text;
     let own = |cs: usize| tx[..cs].iter().rposition(|&c| c == '\n').map(|i| i + 1).unwrap_or(0);
@@ -1095,6 +1096,24 @@ mod level_tests {
         assert_eq!(untag("quoted ai_X's @deep reason, @hard and @deeper"), "quoted ai_X's deep reason, hard and @deeper");
         assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed");
         assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), orig);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A level tag's write (dcp escalate, dcp note, the build clearing it) keeps every other byte of the unit: a Latin-1
+    /// byte (0xfc) of another function's string stays that byte.
+    #[test]
+    fn set_level_keeps_latin1_bytes() {
+        let dir = crate::testkit::scratch("level-latin1");
+        let root = dir.to_string_lossy().into_owned();
+        let p = format!("{root}/src/u.c");
+        let head = b"/* 0x10001000, does it */\nvoid f(void)\n{\n}\n\n/* 0x10001010, says it */\nvoid g(void)\n{\n    puts(\"MeisterPr\xfc\" \"fung\");\n}\n";
+        std::fs::create_dir_all(format!("{root}/src")).unwrap();
+        std::fs::write(&p, head).unwrap();
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("slot order"), 1).unwrap(), "@deep added");
+        let b = std::fs::read(&p).unwrap();
+        assert!(b.starts_with(b"/* 0x10001000, does it @deep slot order */\n") && b.ends_with(&head[25..]), "{}", String::from_utf8_lossy(&b));
+        assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed");
+        assert_eq!(std::fs::read(&p).unwrap(), head.to_vec());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
