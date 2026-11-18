@@ -395,7 +395,12 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
                 w.push(format!("B3 draft: {} reference(s) differ from the original's ({rules}): a meaning difference; the hunks: {}",
                                lines.len(), v.summary()));
             } else if g == "draft" {
-                w.push(format!("{}{}", if v.code.is_empty() { "B3 draft: " } else { "B3 draft: unexplained code hunks: " }, v.summary()));
+                let lead = match (v.code.is_empty(), v.fpu) {
+                    (true, 0) => "B3 draft: ".to_string(),
+                    (true, _) => "B3 draft: the FPU code differs and no proof shows its values the same: ".to_string(),
+                    (false, _) => "B3 draft: unexplained code hunks: ".to_string(),
+                };
+                w.push(format!("{lead}{}", v.summary()));
             } else if let (false, Some(pairs)) = (v.shape, proof) {
                 w.push(format!("B2 shape: the same behaviour, proved ({pairs} block pairs); the hunks: {}", v.summary()));
             } else {

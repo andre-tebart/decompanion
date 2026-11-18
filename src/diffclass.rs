@@ -388,6 +388,8 @@ pub struct Verdict {
     pub branches: Vec<String>,
     /// The jumps whose targets do not correspond for a code hunk's sake: one line per hunk, the hunk's difference.
     pub into_code: Vec<String>,
+    /// the instructions of the fpu hunks: no shape without a proof
+    pub fpu: usize,
 }
 
 impl Verdict {
@@ -840,10 +842,14 @@ fn judge(la: &[Line], lb: &[Line], hs: &[Hunk], tables: Option<&Tables>) -> Verd
     if !branches.is_empty() {
         bump(&mut weight, "branch", branches.len() as i64);
     }
-    let shape = (code.is_empty() || moved || renamed) && !bad && branches.is_empty();
+    // an fpu hunk says where the FPU code differs, not that it computes the same values (an x87 stack index is a
+    // position, not a name): no shape by itself, the prover decides (he_SetLifeByAge: the x87 stack carried another
+    // value across a branch and _ftol, the loop started from it, graded shape by its fpu 22)
+    let fpu: usize = hs.iter().filter(|h| h.4 == "fpu").map(|h| h.1 - h.0 + h.3 - h.2).sum();
+    let shape = (code.is_empty() || moved || renamed) && !bad && branches.is_empty() && fpu == 0;
     code.truncate(6);
     Verdict { shape, hunks: weight, moved, renamed, code, distance: distance(&a, &b), tables: tables.cloned(), frame: None,
-              branches: branches.into_iter().take(12).collect(), into_code }
+              branches: branches.into_iter().take(12).collect(), into_code, fpu }
 }
 
 /// diffclass.analyse: (the hunks, the verdict) of two listings: the plain diff, or the frame-aligned one when the
@@ -1184,6 +1190,43 @@ mod tests {
 
     fn weight(v: &Verdict, k: &str) -> Option<i64> {
         v.hunks.iter().find(|x| x.0 == k).map(|x| x.1)
+    }
+
+    /// he_SetLifeByAge (gildegold, 0x56fbc0): the original loads f018 before the `fnum <= f020` branch and keeps it
+    /// on the x87 stack across the branch and `_ftol` (which pops only the step count), so its loop starts from
+    /// f018; ours started from fnum - f020 (`fld st(0)` before `_ftol`). Every differing line is an FPU one (fpu 22),
+    /// and that class was shape by itself: graded shape with the meaning bug in. Now an fpu hunk needs a proof, and
+    /// the prover does not show the two the same.
+    #[test]
+    fn an_fpu_hunk_needs_a_proof() {
+        let hex = |parts: &[&str]| -> Vec<u8> {
+            let h: String = parts.concat();
+            (0..h.len()).step_by(2).map(|k| u8::from_str_radix(&h[k..k + 2], 16).unwrap()).collect()
+        };
+        let ours = hex(&[
+            "568b74240885f674768b44240c25ffff000089442408db442408d94620d9c1ded9dfe0f6c4417a1cddd8d94618d8661c",
+            "518b4e04d91c246a1c51e8c14ef5ff83c40c5ec3d866208b561489542408d9c0e803e9060085c07e11d9442408d8f1d9",
+            "c948d8642408dec175efd8661c8b460451d91c246a1c50e8844ef5ff83c40c5ec3",
+        ]);
+        let theirs = hex(&[
+            "568b74240885f674768b44240c25ffff000089442408db442408d954240cd85e20d94618dfe0f6c4417a17d8661c518b",
+            "4e04d91c246a1c51e8c34ef5ff83c40c5ec3d944240cd866208b561489542408e803e9060085c07e11d9442408d8f1d9",
+            "c948d8642408dec175efd8661c8b460451d91c246a1c50e8844ef5ff83c40c5ec3",
+        ]);
+        let va = 0x56fbc0;
+        let fills = HashSet::new();
+        let list = |b: &[u8]| x86::strip_fill(x86::listing(b, va, None, (0x400000, 0x600000), &fills));
+        let (hs, v) = analyse(&list(&ours), &list(&theirs), None);
+        assert!(!hs.is_empty() && hs.iter().all(|h| h.4 == "fpu"), "{hs:?}");
+        assert!(!v.shape && v.fpu == 22, "{:?}", v.hunks);
+        assert!(!matches!(crate::equiv::prove(&ours, &theirs, va), crate::equiv::Outcome::Equal { .. }));
+        // the fix (the original's code): no hunk
+        assert!(verdict(&list(&theirs), &list(&theirs), None).shape);
+        // the same FPU instructions with other stack indices: another value added, an fpu hunk all the same
+        let a = lines(&["fld dword ptr [ecx]", "fld dword ptr [edx]", "fld dword ptr [eax]", "fadd st(0), st(1)", "fstp dword ptr [eax]", "ret"]);
+        let b = lines(&["fld dword ptr [ecx]", "fld dword ptr [edx]", "fld dword ptr [eax]", "fadd st(0), st(2)", "fstp dword ptr [eax]", "ret"]);
+        let (hs, v) = analyse(&a, &b, None);
+        assert!(hs.iter().any(|h| h.4 == "fpu" && h.5 == "same FPU instructions, other stack order") && !v.shape, "{hs:?}");
     }
 
     #[test]

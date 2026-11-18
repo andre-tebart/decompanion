@@ -91,8 +91,10 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
   `jmp` to a function counts as a call. diffclass prints the same line, and the witness reads the same call set.
   Frames of other sizes are aligned as diffclass aligns them (`frame=0x3bc/0x3b8`): a line that differs only
   by the shift is equal (`~`), so only the real differences show; `--plain` diffs the texts as they are.
-- `dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`, `fpu`,
-  `frame`, `tail` (all explained: shape) and `code` (the rest: a meaning difference until shown otherwise).
+- `dcp diffclass NAME` - the hunks and their classes: `fill`, `order`, `regs`, `slots`, `sib`,
+  `frame`, `tail` (all explained: shape), `fpu` (only FPU lines differ: shape only when the `proof:` line says
+  equal, an x87 stack index is a position, not a name) and `code` (the rest: a meaning difference until shown
+  otherwise).
   `regs` / `slots` / `order`: the same code under a renaming of registers and stack offsets (a register reused
   once its value is dead may map anew; another order with a renaming is `order`, the renaming in its note).
   `tail`: one side jumps (or branches) to a block the other side has inline, the same code (VC6 merges
@@ -154,7 +156,8 @@ experiment is shape or byte, only readability is missing. `gates=` names the fai
 Explain every `code` hunk from the evidence and fix the C's meaning: a wrong condition, operand or constant, a
 missing or extra statement, a wrong type (signed / unsigned compare, `char` vs `int` load, a struct field at the
 wrong offset), a call with the wrong arguments, a loop of another form. Stop when only `fill` / `order` / `regs`
-/ `slots` / `sib` / `fpu` / `frame` / `tail` hunks remain: that is shape (B2). Reconstructing missing statements is always base
+/ `slots` / `sib` / `frame` / `tail` hunks remain (and `fpu` ones with the proof equal): that is shape (B2). An
+`fpu` hunk without a proof is draft: follow each st(i) to where it was loaded on both sides. Reconstructing missing statements is always base
 work, however long.
 - Every reference is checked, whatever the hunks (the listings read both sides' addresses as `X`): each relocated
   field of ours at an instruction that lines up must refer to where φ puts our object (its address comment or

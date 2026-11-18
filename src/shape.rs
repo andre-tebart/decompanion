@@ -10,6 +10,8 @@
 //!   taken at the hunk's start, also with a slot remap;
 //! - `sib`: base and index of `[r1 + r2 + disp]` exchanged;
 //! - `fpu`: only FPU instructions differ (and the same ones with the stack registers masked: other stack order);
+//!   it says where the code differs, not that the values are the same (an x87 stack index is a position, not a
+//!   name: `fadd st(1)` against `fadd st(2)` adds another value), so diffclass's verdict leaves it to the prover;
 //! - `frame`: stack offsets shifted by the difference of two frame sizes.
 //! A renaming is found by unifying the two sides once (linear), not by trying permutations; only `order`, which
 //! compares multisets, tries them.
