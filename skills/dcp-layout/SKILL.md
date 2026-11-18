@@ -175,8 +175,10 @@ A helper the original inlined everywhere (so no address) stands in its unit's fi
   0xADDR moves into `src/NEW.c` (comments and text byte for byte, in the file's order, with what lies between
   them); NEW gets UNIT's head (its leading comment left out, its data definitions extern, `#include "NEW.h"`),
   the macros, types, externs and prototypes of UNIT before the moved functions it uses, and declarations of
-  UNIT's definitions it calls; UNIT gets prototypes of the moved functions its rest uses. Data definitions stay
-  in UNIT (dcp tracks no data per unit; NEW declares them extern). The boundary lines follow (NEW starts at
+  UNIT's definitions it calls; UNIT gets prototypes of the moved functions its rest uses. Data definitions move
+  with the functions that own them (`data_moved` lines): addressed .data / .rdata / .bss by the original's data
+  layout per section, unaddressed data and commons (tentative definitions) when only the moved functions use them
+  (a forward `extern` is no use); the rest stay in UNIT and NEW declares them extern. The boundary lines follow (NEW starts at
   0xADDR, UNIT's declared end becomes NEW's; link order follows the addresses), placeholders `UNIT_<addr>` of
   the moved functions become `NEW_<addr>`, `include/NEW.h` is written. It refuses when a kept function lies
   among the moved ones in the file (put the file in address order first). `--dry-run` lists what would move

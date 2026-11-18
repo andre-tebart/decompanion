@@ -628,11 +628,14 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     // the data definitions outside the functions (one statement each; several declarators share a start)
     let mut datas: Vec<DataDef> = vec![];
     for d in &model.decls {
-        if let crate::clang::Decl::V(name, stat, ws, _, e, kind, init, _) = d {
+        if let crate::clang::Decl::V(name, stat, ws, np, e, kind, _, _) = d {
             let lo = (ws.0 - 1).max(0) as usize;
             if kind != "def" || lo >= lines.len() || in_fn(lo) {
                 continue;
             }
+            // an initialiser: a `=` between the declarator's name and its end (clang's init flag also counts an
+            // array's bound: `int a[4];` is a tentative definition, a common)
+            let init = &CODE_TOKEN.replace_all(&slice(&lines, *np, *e), " ").contains('=');
             if let Some(x) = datas.iter_mut().find(|x| x.start == *ws) {
                 x.names.push(name.clone());
                 x.init |= *init;
@@ -669,7 +672,15 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     // data layout
     let moved_text: String = moved.iter().map(|c| lines[c.lo..c.hi].join("\n")).collect::<Vec<_>>().join("\n");
     let moved_fn_words = code_words(&moved_text);
-    let rest_text: String = lines.iter().enumerate().map(|(i, l)| if in_moved(i) { "" } else { *l }).collect::<Vec<_>>().join("\n");
+    // a file-scope extern declaration is no use (a unit that declares its .bss and commons at its head and defines
+    // them after its functions)
+    let ext_lines: HashSet<usize> = model.decls.iter().filter_map(|d| match d {
+        crate::clang::Decl::V(_, _, ws, _, e, kind, _, _) if kind == "extern" && !in_fn((ws.0 - 1).max(0) as usize) => {
+            Some((ws.0 - 1).max(0) as usize..=(e.0 - 1).max(0) as usize)
+        }
+        _ => None,
+    }).flatten().collect();
+    let rest_text: String = lines.iter().enumerate().map(|(i, l)| if in_moved(i) || ext_lines.contains(&i) { "" } else { *l }).collect::<Vec<_>>().join("\n");
     let rest_counts = word_counts(&rest_text);
     let use_of = |d: &DataDef| -> (bool, bool) {
         let own = word_counts(&lines[d.lo..d.hi].join("\n"));

@@ -326,6 +326,41 @@ fn unit_split_comments_and_data() {
     assert!(read(&t, "decl/text.dcl").contains("tu=d -- a */ reason"));
 }
 
+/// A unit file that declares its zero and common data extern at its head and defines them after its functions (the
+/// gildegold form: .bss and commons at the end): the forward externs are no uses of the rest, so the data only the
+/// moved functions use moves along, a common array among them (its bound is no initialiser).
+const SPLIT_E: &str = "/* e: the whole test code */\n#include \"e.h\"\n\
+extern int cache[4];\nextern int tail_n;\nextern int zero_k;\nextern int shared_s;\n\
+int head_v = 1;  /* 0x10002000 */\n\n\
+/* 0x10001000, first */\nint e_10001000(void)\n{\n    return head_v + shared_s;\n}\n\n\
+/* 0x10001020, second */\nint Second(void)\n{\n    return 0;\n}\n\n\
+/* 0x10001030, third */\nint Third(void)\n{\n    return cache[1] + tail_n + zero_k + shared_s;\n}\n\n\
+/* 0x10001050, fourth */\nvoid e_10001050(void)\n{\n}\n\n\
+int cache[4];  /* 0x10002024, a common */\n\
+int tail_n;\n\
+int zero_k = 0;\n\
+int shared_s;\n";
+
+/// dcp unit split: .bss and commons move with the functions that own them, like .data (data_moved lines).
+#[test]
+fn unit_split_bss_and_commons() {
+    let t = tiny();
+    assert_eq!(dcp(&t, &["unit", "new", "e", "--range", "0x10001000..0x10001060", "--by", "guess", "--why", "the whole test code"]).0, 0);
+    write(&t, "src/e.c", SPLIT_E);
+    let (code, out) = dcp(&t, &["unit", "split", "e", "0x10001030", "f", "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("moved=2  kept=2  data_moved=3  data_kept=0"), "{out}");
+    assert!(out.contains("data=cache  lines=32..32  (moves to f: only the moved functions use it (a common))"), "{out}");
+    assert!(out.contains("data=tail_n  lines=33..33  (moves to f: only the moved functions use it (a common))"), "{out}");
+    assert!(out.contains("data=zero_k  lines=34..34  (moves to f: only the moved functions use it)") && !out.contains("data=shared_s"), "{out}");
+    let (_, out) = dcp(&t, &["unit", "split", "e", "0x10001030", "f"]);
+    assert!(out.contains("errors_before="), "{out}");
+    let (e, f) = (read(&t, "src/e.c"), read(&t, "src/f.c"));
+    assert!(f.contains("int cache[4];  /* 0x10002024, a common */\nint tail_n;\nint zero_k = 0;") && !f.contains("\nint shared_s;"), "{f}");
+    // the old file keeps its forward externs (no definition) and the datum the rest uses
+    assert!(!e.contains("\nint cache[4];") && !e.contains("\nint tail_n;") && !e.contains("\nint zero_k = 0;") && e.contains("\nint shared_s;"), "{e}");
+}
+
 #[test]
 fn l9_and_analyzer_report() {
     let t = tiny();
