@@ -1250,7 +1250,8 @@ pub fn unit_move(p: &crate::project::Project, from: &str, at: &str, to: &str, wh
         let mut n = d.clone();
         n.lo = at;
         n.hi = at + 1;
-        n.reason = why.to_string();
+        // the move's reason first, the line's evidence kept after it
+        n.reason = if d.reason.is_empty() { why.to_string() } else { format!("{why}; moved from {old_at:#x} by dcp unit move, before: {}", d.reason) };
         n
     };
     let n_lines = |t: &str| t.matches('\n').count() as i64;

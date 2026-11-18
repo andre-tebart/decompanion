@@ -192,7 +192,7 @@ A helper the original inlined everywhere (so no address) stands in its unit's fi
   0xADDR go to the front of TO; TO directly before FROM: FROM's functions below 0xADDR go to the end of TO. What
   moves along is what `dcp unit split` would move (the data they own, the declarations they need; FROM gets
   prototypes of moved functions its rest uses); TO's head takes the lines of FROM's head it lacks (trim them), the
-  boundary lines between the two move to 0xADDR (their reason the --why), placeholders `FROM_<addr>` become
+  boundary lines between the two move to 0xADDR (the --why before their reason), placeholders `FROM_<addr>` become
   `TO_<addr>`. The moved functions' prototypes stay in include/FROM.h. It builds before and after and exits 1 when a
   grade fell or errors were added. Undo with git. Commit `<FROM> -> <TO>: boundary at 0xADDR (layout)`.
 - **Unit rename** when a stronger name source turns up (`leaked` > `tag` > `guess`):
