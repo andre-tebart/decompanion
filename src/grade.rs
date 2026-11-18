@@ -217,6 +217,13 @@ impl Grader<'_> {
     /// start, `whi` the walk's or the source extent's end.
     pub(crate) fn grade(&self, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: i64, next: u32, whi: Option<i64>,
                         matched: bool) -> &'static str {
+        self.grade_refs(obj, code, lo, next, whi, matched).0
+    }
+
+    /// `grade`, and the rule of each reference that differs from the original's (M8 / M9 / M10: what a build's
+    /// grade lines name; a byte match with a crossed field is draft for that alone).
+    pub(crate) fn grade_refs(&self, obj: &crate::coff::Obj, code: &crate::coff::FunctionCode, lo: i64, next: u32, whi: Option<i64>,
+                             matched: bool) -> (&'static str, Vec<&'static str>) {
         let refs = Refs::new(obj, code, self.phi);
         let t = Task { i: 0, code, obj, lo, next, whi, matched, phi: self.phi, refs: &refs };
         let (_, _, _, o, sites, v) = compute(&self.env, &t, self.align);
@@ -231,7 +238,7 @@ impl Grader<'_> {
             crate::refcheck::check(obj, code, self.env.img, &judged().1, &refs, self.phi)
                 .settle_calls(obj, code, &refs, &self.env.img.read(lo as u32, o.code.max(0) as usize), lo as u32)
         };
-        decide(matched, &chk, judged)
+        (decide(matched, &chk, judged), chk.differs().map(|r| r.rule).collect())
     }
 }
 

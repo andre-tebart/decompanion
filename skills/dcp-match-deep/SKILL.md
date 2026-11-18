@@ -99,7 +99,9 @@ twin function's equal lines are never touched); a body without blocks is the fun
 first comment only marks it as such: `--apply` keeps the function's own address comment and note). Then
 `dcp try NAME FILE` prints one row per variant: `grade ins bytes code hunks`. `code` is a hash of the compiled
 function: variants with the same code print `= label`, and a variant with the control's code means that source
-lever does nothing for VC6 here (drop it). `BYTE` marks a byte match. The closest row, when it is close, gets its
+lever does nothing for VC6 here (drop it). The hash holds field displacements: a variant that only moves which
+field is read where (a crossed-field M8) has its own code, and its hunks start with `references differ: M8 ..`
+(0 ins can still be draft for that). `BYTE` marks a byte match. The closest row, when it is close, gets its
 `declaration set of <label>:` line (2.2). Generators: `dcp try NAME --move-line N --to A..B` moves file line N (a
 declaration) before each line of A..B. Keep a variant with `dcp try NAME FILE --apply LABEL`, then `dcp build`,
 `dcp grade NAME`.

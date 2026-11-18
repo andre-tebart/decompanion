@@ -21,8 +21,10 @@
 //! A..B the file's line N (a declaration inside the function) can move to.
 //!
 //! The table: one row per variant with the grade, the distance (differing instructions on both sides, differing
-//! bytes) and the hunk classes, and a hash of the object code (the relocated fields masked, the compiler's numbered
-//! names by kind): variants with the same code are listed as `= label`, which shows the source levers VC6 ignores.
+//! bytes) and the hunk classes, and a hash of the object code (the relocated fields' targets masked, their addends
+//! kept: a field displacement is code; the compiler's numbered names by kind): variants with the same code are
+//! listed as `= label`, which shows the source levers VC6 ignores. A reference that differs from the original's (a
+//! crossed field: M8) is in the grade but in no instruction: the hunks name it first (`references differ: M8 x2`).
 
 use crate::error::{Error, Result};
 use crate::project::{native_path, Project};
@@ -378,8 +380,10 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
         if let Some(x) = seen.iter().find(|x| x.0 == h) {
             return (Ok(x.2.clone()), Some(x.1.clone()));
         }
-        let g = bench.grade(o, &c, a).to_string();
+        let (g, refs) = bench.grade_refs(o, &c, a);
         let (ins, bytes, hunks) = bench.distance(o, &c, a);
+        // a reference that differs (a crossed field: M8) is in the grade, not in the instructions: named first
+        let (g, hunks) = (g.to_string(), if refs.is_empty() { hunks } else { format!("references differ: {refs}; {hunks}") });
         let r = (g, ins, bytes, hunks, h.clone());
         seen.push((h, label.to_string(), r.clone()));
         (Ok(r), None)

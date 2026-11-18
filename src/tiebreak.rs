@@ -300,12 +300,22 @@ impl Bench {
 
     /// One function's code grade as G.grade gives it.
     pub(crate) fn grade(&self, o: &Obj, code: &FunctionCode, a: i64) -> &'static str {
+        self.grade_refs(o, code, a).0
+    }
+
+    /// `grade`, and the references that differ from the original's by rule (`M8 x2`; '' when none does).
+    pub(crate) fn grade_refs(&self, o: &Obj, code: &FunctionCode, a: i64) -> (&'static str, String) {
         let img = &*self.img;
         let env = crate::diffclass::Env { img, range: (img.base as i64, img.end() as i64), fills: &self.fills, forms: &self.forms };
         let g = crate::grade::Grader { env, phi: &self.phi, align: self.align };
         let next = self.starts.get(self.starts.partition_point(|&x| x <= a)).copied().unwrap_or(img.end() as i64) as u32;
         let matched = crate::compare::compare(img, code, a as u32, self.relocs.as_deref(), next, &self.forms).matched();
-        g.grade(o, code, a, next, self.walk.get(&a).copied(), matched)
+        let (grade, rules) = g.grade_refs(o, code, a, next, self.walk.get(&a).copied(), matched);
+        let mut by: BTreeMap<&str, usize> = BTreeMap::new();
+        for r in rules {
+            *by.entry(r).or_default() += 1;
+        }
+        (grade, by.iter().map(|(r, n)| if *n == 1 { r.to_string() } else { format!("{r} x{n}") }).collect::<Vec<_>>().join(", "))
     }
 
     /// One function's distance from the original as `dcp grade` reads it: (differing instructions on both sides,
@@ -1301,11 +1311,22 @@ fn sample_text(lines: &[&str], places: &[Place], mems: &[Member], picks: &[Pick]
 }
 
 /// The code of a compiled function with what a declaration set may move (the relocated fields masked, the
-/// compiler's numbered names by kind): two samples with the same key have the same code.
+/// compiler's numbered names by kind): two samples with the same key have the same code. A relocated field's addend
+/// is code (`ai_Slots+0x10`: the field of a global struct array, `mov ecx,[eax+ai_Slots+0x10]`; a variant that
+/// only swaps two field loads differs there and nowhere else); only a section symbol's addend (`.data+0x1c8`: where
+/// the unit's other data lies) is masked, except into the function's own section (its jump tables: relative to the
+/// function's start).
 pub(crate) fn code_key(o: &Obj, c: &FunctionCode) -> (Vec<u8>, Vec<(u32, String)>) {
     let syms = c.relocs.iter().map(|(off, r)| {
-        let n = o.symbol_at(r.symbol_index).map(|s| s.name.clone()).unwrap_or_default();
-        (*off, if n.starts_with('$') { n.trim_end_matches(|ch: char| ch.is_ascii_digit()).to_string() } else { n })
+        let s = o.symbol_at(r.symbol_index);
+        let n = s.map(|s| s.name.clone()).unwrap_or_default();
+        let addend = o.addend(c.secnum, r);
+        if n.starts_with('.') {
+            let own = s.is_some_and(|s| s.secnum as usize == c.secnum);
+            return (*off, if own { format!("{n}+fn{:+#x}", addend as i64 - c.start as i64) } else { n });
+        }
+        let n = if n.starts_with('$') { n.trim_end_matches(|ch: char| ch.is_ascii_digit()).to_string() } else { n };
+        (*off, if addend == 0 { n } else { format!("{n}+{addend:#x}") })
     }).collect();
     (c.data.iter().zip(&c.mask).map(|(b, m)| if *m != 0 { 0 } else { *b }).collect(), syms)
 }
@@ -1487,6 +1508,35 @@ pub fn sample_command(p: &Project, name: &str, n: usize, seed: u64, dry: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `mov ecx, [eax + _ai_Slots + DISP]` (a field of a global struct array, the field in the relocated field's
+    /// addend), and a load of `.data + DATA` (a section symbol: where the unit's data lies).
+    fn field_load(disp: u32, data: u32) -> Obj {
+        use crate::coff::{Reloc, Section, Symbol};
+        let code: Vec<u8> = [&[0x8bu8, 0x88][..], &disp.to_le_bytes(), &[0xa1], &data.to_le_bytes(), &[0xc3]].concat();
+        let relocs = vec![Reloc { offset: 2, symbol_index: 1, typ: 0x06 }, Reloc { offset: 7, symbol_index: 2, typ: 0x06 }];
+        let text = Section { name: ".text".into(), chars: 0x6000_0020, size: code.len() as u32, data: Some(code), relocs, syms: vec![0] };
+        let none = Section { name: String::new(), chars: 0, data: None, size: 0, relocs: vec![], syms: vec![] };
+        let data_sec = Section { name: ".data".into(), chars: 0xc000_0040, size: 0x100, data: Some(vec![0; 0x100]), relocs: vec![], syms: vec![2] };
+        let symbols = vec![Symbol { index: 0, name: "_f".into(), value: 0, secnum: 1, typ: 0x20, cls: 2 },
+                           Symbol { index: 1, name: "_ai_Slots".into(), value: 0, secnum: 0, typ: 0, cls: 2 },
+                           Symbol { index: 2, name: ".data".into(), value: 0, secnum: 2, typ: 0, cls: 3 }];
+        Obj { name: String::new(), sections: vec![none, text, data_sec], by_index: (0..3).map(|k| (k, k)).collect(), symbols }
+    }
+
+    /// The code key holds a relocated field's addend (a field displacement: `make -= amount + pending` against
+    /// `pending + amount` swaps two field loads of a global array and nothing else; `dcp try` printed it `= control`,
+    /// the build graded it byte instead of draft), not where a section symbol's data lies.
+    #[test]
+    fn the_code_key_holds_field_displacements() {
+        let key = |o: &Obj| code_key(o, &o.function_code(0));
+        let (a, b) = (field_load(0x10, 0x20), field_load(0x14, 0x20));
+        assert_ne!(key(&a), key(&b));
+        assert_ne!(crate::variants::short_hash(&key(&a)), crate::variants::short_hash(&key(&b)));
+        assert_eq!(key(&a).1[0], (2, "_ai_Slots+0x10".to_string()));
+        // the same field: the same key, wherever the unit's data lies
+        assert_eq!(key(&a), key(&field_load(0x10, 0x48)));
+    }
 
     #[test]
     fn sampler_places_and_texts() {
