@@ -246,18 +246,33 @@ pub fn note_command(p: &Project, name: &str, text: &str) -> Result<(Vec<String>,
     }
     let root = p.root.to_string_lossy().into_owned();
     let file = s("file");
-    let base = crate::session::session_record(&root).0.unwrap_or_default();
-    // the note as the session found it: what earlier sessions wrote stays, this session's own text is replaced
-    let kept = if base.is_empty() {
-        None
-    } else {
-        Some(deep_reason(&git(&root, &["show", &format!("{base}:{file}")]), addr).unwrap_or_default())
-    };
+    let base = crate::session::session_record(&root).0;
     let line = r.get("comment").and_then(|v| v.as_i64()).filter(|&c| c != 0).unwrap_or(1);
-    let action = crate::queues::set_level_kept(&root, &file, Some("deep"), Some(text), line, kept.as_deref()).map_err(Error::value)?;
+    let action = note_at(&root, &file, addr, line, text, base.as_deref()).map_err(Error::value)?;
     let rec = crate::cliread::record(&[("fn", crate::cliread::Tok::I(addr)), ("name", crate::cliread::Tok::S(name.into())),
                                        ("file", crate::cliread::Tok::S(file)), ("action", crate::cliread::Tok::S(action))]);
     Ok((vec![rec], None, 0))
+}
+
+/// The note of the function at `addr` (its address comment at `line` of `file`) becomes `text`, the note as the
+/// session found it (its reason at the session's `base` commit; without a session the note as it is now) kept as
+/// `prior:`. The action.
+/// The action says which text is the prior: a worker read "the earlier reason kept as prior:" on its second note as
+/// its own first text kept (a report of match-deep s27).
+fn note_at(root: &str, file: &str, addr: i64, line: i64, text: &str, base: Option<&str>) -> std::result::Result<String, String> {
+    let base = base.filter(|b| !b.is_empty());
+    // the note as the session found it: what earlier sessions wrote stays, this session's own text is replaced
+    let kept = base.map(|b| deep_reason(&git(root, &["show", &format!("{b}:{file}")]), addr).unwrap_or_default());
+    let now = crate::edit::read_src(&crate::project::native_path(&format!("{root}/{file}"))).ok().and_then(|t| deep_reason(&t, addr));
+    let action = crate::queues::set_level_kept(root, file, Some("deep"), Some(text), line, kept.as_deref())?;
+    let Some(b) = base else { return Ok(action) };
+    let short: String = b.chars().take(8).collect();
+    let mut action = action.replace("the earlier reason kept as prior:", &format!("the note as the session found it (at its base {short}) kept as prior:"));
+    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if now.as_deref().is_some_and(|n| !n.is_empty() && Some(norm(n)) != kept.as_deref().map(norm)) {
+        action.push_str("; this session's earlier text replaced, not kept");
+    }
+    Ok(action)
 }
 
 // ------------------------------------------------------------------------------------------------ the migration
@@ -419,6 +434,42 @@ mod tests {
         // the prototype's bare address comment above the definition's (he_RunDecay in he_b.c, gm_CreateObject in f3gmt.c)
         let t = "void he_RunDecay(int ev);          /* 0x5702e0 */\n/* 0x5702e0 */\n\n/* 0x5702e0, the decay\n   @deep read the whole function */\nvoid he_RunDecay(int ev) {}\n";
         assert_eq!(deep_reason(t, 0x5702e0).as_deref(), Some("read the whole function"));
+    }
+
+    /// Two notes in one session: the second replaces the first, and only the note as the session found it (at its
+    /// base commit) stays as `prior:`; without a session the note as it is now is the prior.
+    #[test]
+    fn a_second_note_replaces_the_sessions_own() {
+        let dir = crate::testkit::scratch("note-twice");
+        let root = dir.to_string_lossy().into_owned();
+        let run = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&dir).output().unwrap().status.success(), "{args:?}");
+        run(&["init", "-q"]);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/u.c"), "/* 0x401000, does it
+   @deep s1: old round */
+int f(void) { return 1; }
+").unwrap();
+        run(&["add", "-A"]);
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base"]);
+        let base = git(&root, &["rev-parse", "HEAD"]).trim().to_string();
+        let note = |text: &str, base: Option<&str>| {
+            let action = note_at(&root, "src/u.c", 0x401000, 1, text, base).unwrap();
+            (deep_reason(&std::fs::read_to_string(dir.join("src/u.c")).unwrap(), 0x401000).unwrap(), action)
+        };
+        let short = &base[..8];
+        let (r, action) = note("s2: round one", Some(&base));
+        assert_eq!(r, "s2: round one prior: s1: old round");
+        assert_eq!(action, format!("@deep reason replaced (the note as the session found it (at its base {short}) kept as prior:)"));
+        // committed or not, the session's own first text is no prior, and the action says so
+        run(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "note"]);
+        let (r, action) = note("s2: round two", Some(&base));
+        assert_eq!(r, "s2: round two prior: s1: old round");
+        assert!(action.ends_with("kept as prior:); this session's earlier text replaced, not kept"), "{action}");
+        // without a session: the note as it is now
+        let (r, action) = note("s3: alone", None);
+        assert_eq!(r, "s3: alone prior: s2: round two prior: s1: old round");
+        assert_eq!(action, "@deep reason replaced (the earlier reason kept as prior:)");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
