@@ -34,12 +34,32 @@ static LEAD_ADDRS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"\A\s*({ADDR_ITEM})((?:\s*[,/]\s*{ADDR_ITEM})*)")).unwrap());
 static ONE_ADDR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:([A-Za-z][A-Za-z0-9_-]*):)?(0x[0-9a-fA-F]+)").unwrap());
 pub(crate) static UNLINKED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)\A\s*unlinked\b\s*,?\s*(.*)").unwrap());
-// a level tag's reason runs to the next tag or the comment's end, over line breaks (dcp escalate wraps a long one
-// onto lines of its own: queues.rs wrap_tag); its white space runs read as one space
+// a level tag's reason runs to the next tag, a blank line or a line that starts with a tag (reason_end), else the
+// comment's end, over line breaks (dcp escalate wraps a long one onto lines of its own: queues.rs wrap_tag); its
+// white space runs read as one space
 static DEEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@deep\b\s*(.*?)\s*(?:\*/|@stuck\b|@hard\b|@rough\b|\z)").unwrap());
 static STUCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@stuck\b\s*(.*?)\s*(?:\*/|@deep\b|@hard\b|@rough\b|\z)").unwrap());
 static HARD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)@hard\b\s*(.*?)\s*(?:\*/|@deep\b|@stuck\b|@rough\b|\z)").unwrap());
 static ROUGH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@rough\b").unwrap());
+
+/// Where a level tag's reason ends in a comment body (`from`: past the tag): before the first blank line after it, or
+/// before a line that starts with a tag of its own (`@original ...`), else at the body's end. What follows is no part
+/// of the reason: notes of their own, which a new reason (dcp escalate, dcp note) or the build's clearing of the tag
+/// keeps (a note written into the tag's paragraph was lost with it: a match-deep report).
+pub fn reason_end(body: &str, from: usize) -> usize {
+    static AT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[ \t]*@[A-Za-z]").unwrap());
+    let mut at = from;
+    while let Some(k) = body[at..].find('\n') {
+        let nl = at + k;
+        let next = &body[nl + 1..];
+        let line = next.split('\n').next().unwrap_or("");
+        if line.trim().is_empty() && !next.trim().is_empty() || AT.is_match(line) {
+            return nl;
+        }
+        at = nl + 1;
+    }
+    body.len()
+}
 static TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@(?:deep|stuck|hard|rough)\b").unwrap());
 static DESCRIBED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)\A\s*(?:[A-Za-z][A-Za-z0-9_-]*:)?(0x[0-9a-fA-F]+)\b\s*(.*)").unwrap());
@@ -476,9 +496,13 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         };
         let what = trim_space(trim_space(what).trim_start_matches(','));
         let what = trim_space(&SPACES.replace_all(before_tags(what), " ")).to_string();
-        let deep = DEEP.captures(body).map(|c| SPACES.replace_all(trim_space(&c[1]), " ").into_owned());
-        let stuck = STUCK.captures(body).map(|c| SPACES.replace_all(trim_space(&c[1]), " ").into_owned());
-        let hard = HARD.captures(body).map(|c| SPACES.replace_all(trim_space(&c[1]), " ").into_owned());
+        let reason = |c: regex::Captures| {
+            let g = c.get(1).unwrap();
+            SPACES.replace_all(trim_space(&body[g.start()..reason_end(body, g.start()).min(g.end())]), " ").into_owned()
+        };
+        let deep = DEEP.captures(body).map(reason);
+        let stuck = STUCK.captures(body).map(reason);
+        let hard = HARD.captures(body).map(reason);
         let unlinked = um.is_some() && addrs.is_empty();
         functions.push(((rel.to_string(), line, unit.clone(), fname, addrs, unlinked, what),
                         (deep, stuck, ROUGH.is_match(body), sf.line_of(sf.comments[k].0), fstatic, end.map(|e| e.0).unwrap_or(0), ts, hard)));

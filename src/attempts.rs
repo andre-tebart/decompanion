@@ -213,13 +213,17 @@ pub fn order_by<T>(items: &mut Vec<(i64, T)>, counts: &HashMap<i64, i64>, near: 
 pub fn deep_reason(text: &str, addr: i64) -> Option<String> {
     use std::sync::LazyLock;
     static COMMENT: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?s)/\*(.*?)\*/").unwrap());
-    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?s)(?:\A|\s)@deep\b(.*)\z").unwrap());
+    static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?s)(?:\A|\s)@deep\b").unwrap());
     let text = text.replace("\r\n", "\n");
     // every comment that leads with the address: a prototype's or a reference's bare `/* 0x500190 */` above the
     // definition holds no tag (dcp note kept no prior: on gm_CreateObject and he_RunDecay: it read that one)
     COMMENT.captures_iter(&text)
         .filter(|c| crate::srcscan::lead_addrs(&c[1]).0.iter().any(|x| x.1 as i64 == addr))
-        .find_map(|c| TAG.captures(&c[1]).map(|t| t[1].split_whitespace().collect::<Vec<_>>().join(" ")))
+        .find_map(|c| {
+            // the reason, not the notes after it (srcscan::reason_end)
+            let body = c.get(1).unwrap().as_str();
+            TAG.find(body).map(|t| body[t.end()..crate::srcscan::reason_end(body, t.end())].split_whitespace().collect::<Vec<_>>().join(" "))
+        })
 }
 
 /// `dcp note NAME "text"`: the match-deep journal. The function's `@deep` note becomes the text, the note as the

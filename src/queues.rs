@@ -737,8 +737,9 @@ pub fn set_level(root: &str, rel: &str, level: Option<&str>, reason: Option<&str
 /// comment's line count: the tag's lines are joined onto the comment's last line, or the comment padded.
 pub fn set_level_kept(root: &str, rel: &str, level: Option<&str>, reason: Option<&str>, line: i64, keep_prior: Option<&str>) -> Result<String, String> {
     use std::sync::LazyLock;
-    // the tag and its reason run to the end of the comment (written last, below): a reason may hold `*`, `/`, `(...)`
-    // and line breaks
+    // the tag and its reason run to a blank line, a line that starts with a tag of its own (srcscan::reason_end) or
+    // the end of the comment: a reason may hold `*`, `/`, `(...)` and line breaks. What follows the reason (notes of
+    // their own) stays after the tag whatever happens to the tag
     static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?:\A|\s)\s*@(deep|hard)\b").unwrap());
     let path = crate::project::native_path(&format!("{root}/{rel}"));
     // every byte kept: a Latin-1 byte of a string elsewhere in the unit stays that byte (edit::read_src)
@@ -755,17 +756,21 @@ pub fn set_level_kept(root: &str, rel: &str, level: Option<&str>, reason: Option
     let old = tag.as_ref().map(|c| format!("@{}", &c[1]));
     let cut = tag.as_ref().and_then(|c| c.get(0)).map(|m| m.start()).unwrap_or(body.len());
     let stripped = body[..cut].trim_end_matches(crate::srcscan::is_space).to_string();
+    let rend = tag.as_ref().and_then(|c| c.get(0)).map(|m| crate::srcscan::reason_end(body, m.end())).unwrap_or(body.len());
+    let tail = body[rend..].trim_end_matches(crate::srcscan::is_space);
+    let tail = if tail.trim().is_empty() { "" } else { tail };
     let (new_body, action) = match level {
         None => match old {
             None => return Ok("no @deep or @hard tag".into()),
-            Some(o) => (stripped, format!("{o} removed")),
+            Some(o) if tail.is_empty() => (stripped, format!("{o} removed")),
+            Some(o) => (stripped + tail, format!("{o} removed (the notes after its reason kept)")),
         },
         Some(l) => {
             let mut reason = crate::srcscan::trim_space(&reason.unwrap_or("").replace("*/", "* /")).to_string();
             // the earlier reason stays as `prior:` (else what earlier workers tried is lost on every escalation), the newest first, a reason given again once
             let old_reason = match keep_prior {
                 Some(k) => k.split_whitespace().collect::<Vec<_>>().join(" "),
-                None => tag.as_ref().and_then(|c| c.get(0)).map(|m| body[m.end()..].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default(),
+                None => tag.as_ref().and_then(|c| c.get(0)).map(|m| body[m.end()..rend].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default(),
             };
             let (prior, dropped) = prior_reasons(&reason, &old_reason);
             if !prior.is_empty() {
@@ -786,7 +791,7 @@ pub fn set_level_kept(root: &str, rel: &str, level: Option<&str>, reason: Option
             };
             let tag = format!("@{l} {reason}");
             let body = if raw.starts_with("/*") { wrap_tag(&stripped, *cs - own(*cs), &tag) } else { format!("{stripped} {tag}") };
-            (body, action)
+            (body + tail, action)
         }
     };
     let new_raw = if raw.starts_with("/*") { format!("/*{new_body} */") } else { format!("//{new_body}") };
@@ -1114,6 +1119,37 @@ mod level_tests {
         assert!(b.starts_with(b"/* 0x10001000, does it @deep slot order */\n") && b.ends_with(&head[25..]), "{}", String::from_utf8_lossy(&b));
         assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed");
         assert_eq!(std::fs::read(&p).unwrap(), head.to_vec());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tag's reason ends at a blank line or at a line that starts with a tag of its own (`@original`): the notes
+    /// after it stay when the reason is replaced (dcp note, dcp escalate) or the build clears the tag on byte, and are
+    /// no part of the `prior:` reason (an open Q1/Q2 note went with hmt_DecideElection's @deep paragraph).
+    #[test]
+    fn level_tag_keeps_the_notes_after_its_reason() {
+        let dir = crate::testkit::scratch("level-notes");
+        let root = dir.to_string_lossy().into_owned();
+        let p = format!("{root}/src/u.c");
+        let orig = "/* 0x10001000, does it\n   @deep B: 50 hunks left,\n   the field stores in another order\n\n   Q1/Q2 also open (the placeholder name)\n   @original the second store is dead there too */\nvoid f(void)\n{\n}\n";
+        crate::edit::write(&p, orig).unwrap();
+        assert_eq!(set_level(&root, "src/u.c", Some("deep"), Some("round 2: the stores"), 1).unwrap(),
+                   "@deep reason replaced (the earlier reason kept as prior:)");
+        let text = crate::edit::read(&p);
+        assert!(text.starts_with("/* 0x10001000, does it @deep round 2: the stores prior: B: 50 hunks left, the field stores in another order\n\n   \
+                                  Q1/Q2 also open (the placeholder name)\n   @original the second store is dead there too */\n"), "{text}");
+        assert_eq!(crate::attempts::deep_reason(&text, 0x10001000).as_deref(), Some("round 2: the stores prior: B: 50 hunks left, the field stores in another order"));
+        if let Some(part) = crate::srcscan::tests::scan_alone("src/u.c", &text) {
+            assert_eq!(part.functions[0].1 .0.as_deref(), Some("round 2: the stores prior: B: 50 hunks left, the field stores in another order"));
+        }
+        assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed (the notes after its reason kept)");
+        assert_eq!(crate::edit::read(&p), "/* 0x10001000, does it\n\n   Q1/Q2 also open (the placeholder name)\n   @original the second store is dead there too */\nvoid f(void)\n{\n}\n");
+        // an @original line right after the reason ends it as well; the padding blank lines of a #line unit are none
+        crate::edit::write(&p, "/* 0x10001000, does it @deep the slots\n   @original kept as the original has it */\nvoid f(void)\n{\n}\n").unwrap();
+        assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed (the notes after its reason kept)");
+        assert_eq!(crate::edit::read(&p), "/* 0x10001000, does it\n   @original kept as the original has it */\nvoid f(void)\n{\n}\n");
+        crate::edit::write(&p, "/* 0x10001000, does it @deep the slots\n\n\n   */\nvoid f(void)\n{\n}\n").unwrap();
+        assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed");
+        assert_eq!(crate::edit::read(&p), "/* 0x10001000, does it */\nvoid f(void)\n{\n}\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

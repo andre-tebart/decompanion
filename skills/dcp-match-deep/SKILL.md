@@ -133,7 +133,10 @@ write the note anew: `dcp note NAME "..."` with what the original does at the hu
 decides them, each round with its best row (`dcp try` rows: "index loop: shape, 9 ins; for-init: = control"),
 the best variant kept, and the exact hunks left (`asmdiff` lines). Each `dcp note` of this session replaces the
 session's own earlier text; the note as the session found it stays as `prior:` by itself (do not repeat it). Keep
-it to what the next reader needs, not a diary. Commit the note with the work it describes.
+it to what the next reader needs, not a diary. Commit the note with the work it describes. The note (the tag's
+reason) ends at a blank line or at a line that starts with a tag (`@original ...`): a note that must outlive the
+tag (an open question, a finding about another function) goes after a blank line, never into the `@deep` paragraph,
+which the build removes with the tag at byte.
 
 ### 2.6 Done
 - **Byte + readable** (built byte, or proven byte under a declaration set: 2.2): commit `<unit>: <name> byte

@@ -361,7 +361,8 @@ themselves, and `dcp grade NAME` shows the answer on its `declaration set:` line
   with what you tried.
 
 Then, or when a generated variant round would be needed:
-`dcp escalate NAME "why"`, build, commit `<unit>: <name> -> deep (match-base)`. The reason lists what was
+`dcp escalate NAME "why"`, build, commit `<unit>: <name> -> deep (match-base)`. (A tag's reason ends at a blank line
+or at a line that starts with a tag: a note that must outlive the tag goes after a blank line.) The reason lists what was
 read and tried and the exact remaining hunk (`asmdiff` lines). `dcp escalate` refuses a reason that only names
 missing statements, and one that admits a part not read against the original yet (not reconciled / checked /
 compared / verified, hard to judge): reconstruction and reading the whole function are base work. It also
