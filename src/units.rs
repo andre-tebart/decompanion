@@ -426,6 +426,8 @@ struct Split {
     warnings: Vec<String>,
     old_text: String,
     new_text: String,
+    new_head: Vec<String>,  // the new file's head lines (the old head, its data definitions extern), without the lead
+    new_parts: Vec<String>, // the new file's parts after its head: declarations, data that moves, the moved functions
     renamed: BTreeMap<String, String>,
 }
 
@@ -565,7 +567,11 @@ fn trim_blank(v: &mut Vec<String>) {
 /// of the moved functions the rest of the old file uses). A data definition takes along the comment lines that lead
 /// into it and the lines of a comment its statement's last line opens; a declaration line, the lines of a comment it
 /// opens.
-fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &str, section: &dyn Fn(i64) -> Option<String>)
+///
+/// `front`: the functions below `at` move instead (the front of the unit, into the unit before it: dcp unit move); the
+/// new object's data block is then the run up to the highest datum only the moved functions use, below every one only
+/// the rest uses.
+fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &str, section: &dyn Fn(i64) -> Option<String>, front: bool)
               -> Result<Split, String> {
     let rel = format!("src/{unit}.c");
     let path = p_of(root, &rel);
@@ -586,12 +592,13 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
         fns.push(Chunk { addr, name: f.0 .3.clone(), lo: (c - 1) as usize, hi: (e as usize).min(lines.len()), def_line: f.0 .1, stat: f.1 .4 });
     }
     fns.sort_by_key(|c| c.lo);
-    let (moved, kept): (Vec<&Chunk>, Vec<&Chunk>) = fns.iter().partition(|c| c.addr.is_some_and(|a| a >= at));
+    let (moved, kept): (Vec<&Chunk>, Vec<&Chunk>) = fns.iter().partition(|c| c.addr.is_some_and(|a| (a >= at) != front));
+    let side = if front { "below" } else { "at or above" };
     if moved.is_empty() {
-        return Err(format!("no function of {rel} lies at or above {at:#x}"));
+        return Err(format!("no function of {rel} lies {side} {at:#x}"));
     }
     if !kept.iter().any(|c| c.addr.is_some()) {
-        return Err(format!("every function of {rel} lies at or above {at:#x}: nothing would stay (dcp unit rename renames a unit)"));
+        return Err(format!("every function of {rel} lies {side} {at:#x}: nothing would stay (dcp unit rename renames a unit)"));
     }
     let (r0, r1) = (moved[0].lo, moved.iter().map(|c| c.hi).max().unwrap());
     if let Some(k) = kept.iter().find(|k| k.lo < r1 && k.hi > r0) {
@@ -708,17 +715,23 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
         }
     }
     for (kind, mut js) in by_sec {
+        // the moved block lies at the far end from the kept one: the top (a tail) or the bottom (a front, read from
+        // the top down)
         js.sort_by_key(|&j| addrs[j]);
+        if front {
+            js.reverse();
+        }
+        let (from, first_word, below) = if front { ("up to", "last", "above") } else { ("from", "first", "below") };
         let last_kept = js.iter().rposition(|&j| uses[j] == (false, true));
         let first = js.iter().enumerate().position(|(x, &j)| uses[j] == (true, false) && last_kept.is_none_or(|k| x > k));
         if let Some(f) = first {
             for &j in &js[f..] {
-                moves[j] = Some(format!("in the new object's {kind} block (from {:#x}, the first {kind} only the moved functions use)", addrs[js[f]].unwrap()));
+                moves[j] = Some(format!("in the new object's {kind} block ({from} {:#x}, the {first_word} {kind} only the moved functions use)", addrs[js[f]].unwrap()));
             }
         }
         for &j in &js[..first.unwrap_or(js.len())] {
             if uses[j] == (true, false) {
-                s.notes.push(format!("{rel}:{}: {} ({:#x}) only the moved functions use, but it lies below {kind} the rest of {unit} uses: it \
+                s.notes.push(format!("{rel}:{}: {} ({:#x}) only the moved functions use, but it lies {below} {kind} the rest of {unit} uses: it \
                                       stays, {new} declares it extern", datas[j].lo + 1, datas[j].name, addrs[j].unwrap()));
             }
         }
@@ -842,7 +855,7 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     let moved_defs: Vec<String> = datas.iter().filter(|d| moving(d) && !(r0 <= d.lo && d.lo < r1))
         .flat_map(|d| lines[d.lo..d.hi].iter().map(|l| l.to_string())).collect();
     moved_words.extend(code_words(&moved_defs.join("\n")));
-    for c in kept.iter().filter(|c| c.hi <= r0) {
+    for c in kept.iter().filter(|c| c.hi <= r0 || c.lo >= r1) {
         if !moved_words.contains(&c.name) || E::declared_in(&known, &c.name) {
             continue;
         }
@@ -852,7 +865,7 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
             s.decls_new.push(p);
         }
     }
-    for d in datas.iter().filter(|d| he <= d.lo && d.hi <= r0 && !moving(d)) {
+    for d in datas.iter().filter(|d| he <= d.lo && (d.hi <= r0 || d.lo >= r1) && !moving(d)) {
         if !d.names.iter().any(|n| moved_words.contains(n)) || d.names.iter().all(|n| E::declared_in(&known, n)) {
             continue;
         }
@@ -898,6 +911,7 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
     s.old_text = parts.iter().map(|p| p.join("\n")).collect::<Vec<_>>().join("\n\n") + "\n";
     // the new file
     trim_blank(&mut new_body);
+    s.new_head = head.clone();
     let mut parts: Vec<String> = vec![lead.trim_end_matches('\n').to_string() + "\n" + &head.join("\n")];
     s.carried = carried.len();
     if !carried.is_empty() {
@@ -910,6 +924,7 @@ fn plan_split(root: &str, unit: &str, at: i64, new: &str, target: &str, lead: &s
         parts.push(moved_defs.join("\n"));
     }
     parts.push(new_body.join("\n"));
+    s.new_parts = parts[1..].to_vec();
     s.new_text = parts.join("\n\n") + "\n";
     // placeholders of the moved functions: <unit>_<addr> -> <new>_<addr>
     let pre = format!("{}_", E::c_name(unit));
@@ -1023,7 +1038,7 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
         let sec = img.section_of(u32::try_from(a).ok()?)?;
         Some(if img.off(a as u32).is_none() { "bss".into() } else if sec.name.starts_with(".rdata") { "rdata".into() } else { "data".into() })
     };
-    let sp = match plan_split(&root, unit, at, new, &p.target_name, &lead, &section) {
+    let sp = match plan_split(&root, unit, at, new, &p.target_name, &lead, &section, false) {
         Ok(s) => s,
         Err(e) => return fail(e),
     };
@@ -1082,8 +1097,10 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
     build()?;
     let (before, err_before) = byte_state(&db)?;
     let write_all = || -> Result<(), String> {
-        E::write(&p_of(&root, &format!("src/{unit}.c")), &sp.old_text)?;
-        E::write(&p_of(&root, &format!("src/{new}.c")), &sp.new_text)?;
+        // the placeholders renamed in the texts first: a second write of a file in the same clock tick with the same
+        // size (a_<addr> -> b_<addr>) would keep the read memo's stamp, so the next scan would see the first text
+        E::write(&p_of(&root, &format!("src/{unit}.c")), &E::replace_words(&sp.old_text, &sp.renamed, None).0)?;
+        E::write(&p_of(&root, &format!("src/{new}.c")), &E::replace_words(&sp.new_text, &sp.renamed, None).0)?;
         E::write(&p_of(&root, &format!("include/{new}.h")), &E::header_text(new, &format!("split from {unit}")))?;
         rewrite_boundaries(&root, &mut |d: &Decl| {
             if tu_of(d) == Some(unit) && d.words.first().map(|w| w.as_str()) == Some("end") && Some(d.lo) == unit_end {
@@ -1134,6 +1151,190 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
         return Ok((out, None, 1));
     }
     out.push(undo);
+    Ok((out, None, 0))
+}
+
+// ------------------------------------------------------------------------------------------------ move
+
+/// The declared boundary lines of decl/*.dcl that `pick` takes.
+fn moved_bounds(root: &str, pick: &dyn Fn(&Decl) -> bool) -> Vec<Decl> {
+    let mut out = vec![];
+    for path in crate::decl::files(root) {
+        for raw in E::splitlines(&read(&path.to_string_lossy())) {
+            let st = raw.trim();
+            if st.is_empty() || st.starts_with('#') {
+                continue;
+            }
+            if let Ok(d) = crate::decl::parse_line(st, "", 0) {
+                if d.kind == "boundary" && pick(&d) {
+                    out.push(d);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `dcp unit move FROM AT TO`: move the boundary between two neighbouring units. TO directly after FROM: FROM's
+/// functions at or above AT go to the front of TO; TO directly before FROM: FROM's functions below AT go to the end
+/// of TO. The texts as dcp unit split plans them (plan_split: the data the moved functions own, declarations,
+/// prototypes); the moved part goes after TO's head (TO after FROM) or after TO's last function (TO before FROM), the
+/// lines of FROM's head TO's head lacks are added to it; the boundary lines between the two move to AT,
+/// placeholders `FROM_<addr>` of the moved functions become `TO_<addr>`. `build()` builds and refreshes the target.
+pub fn unit_move(p: &crate::project::Project, from: &str, at: &str, to: &str, why: &str, dry_run: bool,
+                 build: &mut dyn FnMut() -> Result<()>) -> Result<(Vec<String>, Option<String>, i32)> {
+    let root = p.root.to_string_lossy().into_owned();
+    let fail = |m: String| -> Result<(Vec<String>, Option<String>, i32)> { Ok((vec![], Some(m), 1)) };
+    let at = match crate::cliread::parse_addr(at) {
+        Ok(a) => a,
+        Err(e) => return fail(e.to_string()),
+    };
+    let db = p.store_path();
+    crate::storedb::st_open(&db)?;
+    let view = crate::layoutview::View::load(&db, &p.target.path)?;
+    let names: Vec<&str> = view.units.iter().map(|u| u.tu.as_str()).collect();
+    let (Some(i_from), Some(i_to)) = (names.iter().position(|n| *n == from), names.iter().position(|n| *n == to)) else {
+        let m = if names.contains(&from) { to } else { from };
+        return fail(format!("no unit {m} (units: {})", if names.is_empty() { "none".to_string() } else { names.join(", ") }));
+    };
+    let front = if i_to + 1 == i_from {
+        true
+    } else if i_from + 1 == i_to {
+        false
+    } else {
+        return fail(format!("{to} is no neighbour of {from} (a move shifts the boundary between two neighbouring units)"));
+    };
+    let u = &view.units[i_from];
+    if !(u.lo < at && at < u.hi) {
+        return fail(format!("{at:#x} does not lie inside unit {from} {:#010x}..{:#010x} above its start", u.lo, u.hi));
+    }
+    if !exists(&root, &format!("src/{to}.c")) {
+        return fail(format!("unit {to} has no file src/{to}.c"));
+    }
+    let img = crate::image(&p.target.path)?;
+    let section = |a: i64| -> Option<String> {
+        let sec = img.section_of(u32::try_from(a).ok()?)?;
+        Some(if img.off(a as u32).is_none() { "bss".into() } else if sec.name.starts_with(".rdata") { "rdata".into() } else { "data".into() })
+    };
+    let sp = match plan_split(&root, from, at, to, &p.target_name, "", &section, front) {
+        Ok(s) => s,
+        Err(e) => return fail(e),
+    };
+    // TO's file: its head plus the lines of FROM's head it lacks, then the moved part before (TO after FROM) or
+    // after (TO before FROM) its functions
+    let rel_to = format!("src/{to}.c");
+    let text_to = read(&p_of(&root, &rel_to));
+    let lines_to: Vec<&str> = text_to.trim_end_matches('\n').split('\n').collect();
+    let et = E::head_end(&root, &rel_to)?.min(lines_to.len());
+    let head_to = lines_to[..et].join("\n") + "\n";
+    let head_new = merge_lines(&head_to, &sp.new_head.join("\n"), &HashSet::new());
+    let added = E::splitlines(&head_new).len().saturating_sub(E::splitlines(&head_to).len());
+    let body_to = lines_to[et..].join("\n").trim_matches('\n').to_string();
+    let moved_part = sp.new_parts.join("\n\n").trim_matches('\n').to_string();
+    let bodies: Vec<&str> = if front { [body_to.as_str(), moved_part.as_str()] } else { [moved_part.as_str(), body_to.as_str()] }
+        .into_iter().filter(|x| !x.is_empty()).collect();
+    let new_to = head_new.trim_end_matches('\n').to_string() + "\n\n" + &bodies.join("\n\n") + "\n";
+    // the boundary lines between the two units: TO's start and FROM's end (TO after FROM), FROM's start and TO's
+    // end (TO before FROM)
+    let (first, second) = if front { (to, from) } else { (from, to) };
+    let old_at = if front { u.lo } else { u.hi };
+    let pick = |d: &Decl| {
+        let w = d.words.first().map(|w| w.as_str());
+        d.lo == old_at && ((tu_of(d) == Some(second) && w == Some("start")) || (tu_of(d) == Some(first) && w == Some("end")))
+    };
+    let shifted = moved_bounds(&root, &pick);
+    if !shifted.iter().any(|d| tu_of(d) == Some(second)) {
+        return fail(format!("no boundary start line of {second} at {old_at:#x} in decl/*.dcl (the boundary to move)"));
+    }
+    let shift = |d: &Decl| -> Decl {
+        let mut n = d.clone();
+        n.lo = at;
+        n.hi = at + 1;
+        n.reason = why.to_string();
+        n
+    };
+    let n_lines = |t: &str| t.matches('\n').count() as i64;
+    let mut out = vec![record(&[("move", s(from)), ("at", Tok::I(at)), ("to", s(to)), ("side", s(if front { "front" } else { "tail" })),
+                                ("moved", Tok::I(sp.moved.len() as i64)), ("kept", Tok::I(sp.kept as i64)),
+                                ("data_moved", Tok::I(sp.data_moved.len() as i64)), ("data_kept", Tok::I(sp.data.len() as i64)),
+                                ("from_lines", Tok::I(n_lines(&sp.old_text))), ("to_lines", Tok::I(n_lines(&new_to)))])];
+    for (a, n, l, h) in &sp.moved {
+        out.push(format!("  {}", record(&[("fn", Tok::I(*a)), ("name", s(n.clone())), ("lines", s(format!("{}..{}", l + 1, h)))])));
+    }
+    for (n, l, h, why) in &sp.data_moved {
+        out.push(format!("  {}  (moves to {to}: {why})", record(&[("data", s(n.clone())), ("lines", s(format!("{}..{}", l + 1, h)))])));
+    }
+    for (n, l, h) in &sp.data {
+        out.push(format!("  {}  (stays in {from}: neither its uses nor the data layout give it to {to}; {to} declares it extern)",
+                         record(&[("data", s(n.clone())), ("lines", s(format!("{}..{}", l + 1, h)))])));
+    }
+    if added > 0 {
+        out.push(format!("  {to}'s head takes {added} line(s) of {from}'s head it lacks (includes, macros, types, externs: trim what it does not use)"));
+    }
+    if sp.carried > 0 {
+        out.push(format!("  {to} copies {} declaration line(s) of {from} before the moved functions", sp.carried));
+    }
+    if sp.copied > 0 {
+        out.push(format!("  {from} keeps a copy of {} declaration line(s) between the moved functions", sp.copied));
+    }
+    for x in &sp.protos_old {
+        out.push(format!("  {from} declares  {x}"));
+    }
+    for x in &sp.decls_new {
+        out.push(format!("  {to} declares  {x}"));
+    }
+    for (o, n) in &sp.renamed {
+        out.push(format!("  rename {o} -> {n}"));
+    }
+    out.extend(sp.notes.iter().map(|n| format!("  note: {n}")));
+    out.extend(sp.warnings.iter().map(|w| format!("  warning: {w}")));
+    out.push(format!("  note: the moved functions' prototypes stay in include/{from}.h (move them to include/{to}.h by hand)"));
+    for d in &shifted {
+        out.push(format!("  decl  {}  =>  {}", d.text(), shift(d).text()));
+    }
+    if dry_run {
+        out.push("dry run: nothing written".into());
+        return Ok((out, None, 0));
+    }
+    build()?;
+    let (before, err_before) = byte_state(&db)?;
+    let write_all = || -> Result<(), String> {
+        // the placeholders renamed in the texts first (as dcp unit split: one write per file)
+        E::write(&p_of(&root, &format!("src/{from}.c")), &E::replace_words(&sp.old_text, &sp.renamed, None).0)?;
+        E::write(&p_of(&root, &rel_to), &E::replace_words(&new_to, &sp.renamed, None).0)?;
+        rewrite_boundaries(&root, &mut |d: &Decl| Some(if pick(d) { shift(d) } else { d.clone() }))?;
+        if !sp.renamed.is_empty() {
+            E::rename_words(&root, &sp.renamed, false, None)?;
+            E::log_names(&root, &placeholder_events(&sp.renamed), &format!("move: {why}"))?;
+        }
+        crate::fsmemo::new_epoch();
+        Ok(())
+    };
+    if let Err(e) = write_all() {
+        return Ok((out, Some(e), 1));
+    }
+    out.push(format!("wrote src/{from}.c, src/{to}.c, decl/text.dcl"));
+    build()?;
+    let (after, err_after) = byte_state(&db)?;
+    let keys: std::collections::BTreeSet<i64> = before.keys().chain(after.keys()).copied().collect();
+    let get = |m: &BTreeMap<i64, Option<String>>, k: &i64| m.get(k).cloned().flatten();
+    let changed: Vec<i64> = keys.into_iter().filter(|k| get(&before, k) != get(&after, k)).collect();
+    let fell = changed.iter().filter(|k| grade_rank(get(&after, k).as_deref()) < grade_rank(get(&before, k).as_deref())).count();
+    let byte = |m: &BTreeMap<i64, Option<String>>| m.values().filter(|c| c.as_deref() == Some("byte")).count() as i64;
+    out.push(record(&[("move", s(from)), ("to", s(to)), ("byte_before", Tok::I(byte(&before))), ("byte_after", Tok::I(byte(&after))),
+                      ("grades_changed", Tok::I(changed.len() as i64)), ("grades_fell", Tok::I(fell as i64)),
+                      ("errors_before", Tok::I(err_before as i64)), ("errors_after", Tok::I(err_after as i64))]));
+    let ot = |x: Option<String>| x.map(Tok::S).unwrap_or(Tok::No);
+    for k in &changed {
+        out.push(format!("  {}", record(&[("fn", Tok::I(*k)), ("before", ot(get(&before, k))), ("after", ot(get(&after, k)))])));
+    }
+    let undo = "undo: git checkout -- . && git clean -fd src include";
+    if fell > 0 || err_after > err_before {
+        let left = if sp.warnings.is_empty() { String::new() } else { " (or what the warnings above name is left unshared: share it and rebuild first)".into() };
+        out.push(format!("the move lowered grades or added errors: evidence against a boundary at {at:#x}{left}; {undo}"));
+        return Ok((out, None, 1));
+    }
+    out.push(undo.into());
     Ok((out, None, 0))
 }
 

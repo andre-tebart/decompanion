@@ -264,6 +264,9 @@ pub enum UnitCmd {
     Join(UnitJoinArgs),
     /// split unit UNIT at AT: its functions at or above AT into a new unit NEW (src/NEW.c, include/NEW.h, its boundaries)
     Split(UnitSplitArgs),
+    /// move the boundary between neighbouring units FROM and TO to AT: FROM's functions at or above AT go to the
+    /// front of TO (TO after FROM), or those below AT to the end of TO (TO before FROM), with the data they own
+    Move(UnitMoveArgs),
     /// rename a unit (directory, header, includes, boundaries, placeholders)
     Rename(UnitRenameArgs),
 }
@@ -1041,6 +1044,23 @@ pub struct UnitSplitArgs {
     /// the reason on the boundary lines (default: split from UNIT at AT)
     #[arg(long)]
     pub why: Option<String>,
+}
+
+/// `UnitCmd::Move`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct UnitMoveArgs {
+    /// the unit that gives functions
+    pub from: String,
+    /// the boundary's new address: FROM keeps the side of AT away from TO
+    pub at: String,
+    /// the neighbouring unit that takes them
+    pub to: String,
+    /// print what would move (functions, data, lines, boundary lines) without writing
+    #[arg(long)]
+    pub dry_run: bool,
+    /// the reason on the moved boundary lines
+    #[arg(long, required = true)]
+    pub why: String,
 }
 
 /// `UnitCmd::Rename`'s arguments (its own type: clap builds and reads them in a function of their own).

@@ -361,6 +361,62 @@ fn unit_split_bss_and_commons() {
     assert!(!e.contains("\nint cache[4];") && !e.contains("\nint tail_n;") && !e.contains("\nint zero_k = 0;") && e.contains("\nint shared_s;"), "{e}");
 }
 
+const MOVE_A: &str = "/* a: the first half */\n#include \"a.h\"\nextern int a_data;\nint counter = 1;  /* 0x10002000 */\n\n\
+/* 0x10001000, first */\nint a_10001000(void)\n{\n    return counter;\n}\n\n\
+/* 0x10001020, second */\nint a_10001020(void)\n{\n    return a_data;\n}\n\n\
+int a_data;\n";
+
+const MOVE_B: &str = "/* b: the second half */\n#include \"b.h\"\n\n\
+/* 0x10001030, third */\nint Third(void)\n{\n    return b_10001050();\n}\n\n\
+/* 0x10001050, fourth */\nint b_10001050(void)\n{\n    return 0;\n}\n";
+
+/// dcp unit move: the tail of a unit into the front of the next one (its common along), and back as the front of
+/// that unit into the end of the one before; the boundary lines follow, placeholders take the new unit's prefix.
+#[test]
+fn unit_move_boundary() {
+    let t = tiny();
+    assert_eq!(dcp(&t, &["unit", "new", "a", "--range", "0x10001000..0x10001030", "--by", "guess", "--why", "the first half"]).0, 0);
+    assert_eq!(dcp(&t, &["unit", "new", "b", "--range", "0x10001030..0x10001060", "--by", "guess", "--why", "the second half"]).0, 0);
+    write(&t, "src/a.c", MOVE_A);
+    write(&t, "src/b.c", MOVE_B);
+    let n_err = errors(&t).len();
+    // refusals: an address outside FROM, a unit that is no neighbour, no unit
+    assert_eq!(dcp(&t, &["unit", "move", "a", "0x10001040", "b", "--why", "x"]).0, 1);
+    assert_eq!(dcp(&t, &["unit", "move", "a", "0x10001020", "a", "--why", "x"]).0, 1);
+    assert_eq!(dcp(&t, &["unit", "move", "a", "0x10001020", "nosuch", "--why", "x"]).0, 1);
+    // the dry run
+    let (code, out) = dcp(&t, &["unit", "move", "a", "0x10001020", "b", "--why", "second is b's", "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("move=a  at=0x10001020  to=b  side=tail  moved=1  kept=1  data_moved=1  data_kept=0"), "{out}");
+    assert!(out.contains("fn=0x10001020  name=a_10001020") && out.contains("data=a_data") && out.contains("(a common)"), "{out}");
+    assert!(out.contains("rename a_10001020 -> b_10001020") && out.contains("0x10001020 boundary start") && out.contains("dry run: nothing written"), "{out}");
+    assert!(read(&t, "src/a.c") == MOVE_A && read(&t, "src/b.c") == MOVE_B);
+    // the move: the function and its common at b's front, b's head keeps its own lines and takes a's it lacks
+    let (_, out) = dcp(&t, &["unit", "move", "a", "0x10001020", "b", "--why", "second is b's"]);
+    assert!(out.contains("errors_before="), "{out}");
+    let (a, b) = (read(&t, "src/a.c"), read(&t, "src/b.c"));
+    assert!(!a.contains("0x10001020") && !a.contains("\nint a_data;") && a.contains("int a_10001000(void)"), "{a}");
+    assert!(b.starts_with("/* b: the second half */\n#include \"b.h\"\n") && b.contains("extern int counter;") && b.contains("extern int a_data;"), "{b}");
+    let (s2, t3) = (b.find("/* 0x10001020, second */\nint b_10001020(void)").unwrap(), b.find("/* 0x10001030, third */").unwrap());
+    assert!(b.find("\nint a_data;").unwrap() < s2 && s2 < t3, "{b}");
+    let (_, out) = dcp(&t, &["layout", "units"]);
+    assert!(out.contains("unit=a  range=0x10001000..0x10001020") && out.contains("unit=b  range=0x10001020..0x10001060"), "{out}");
+    assert!(read(&t, "decl/text.dcl").contains("0x10001020 boundary start by=guess tu=b -- second is b's"), "{}", read(&t, "decl/text.dcl"));
+    assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
+    // and back: the front of b (below 0x10001030) to the end of a; b's rest calls nothing of it
+    let (code, out) = dcp(&t, &["unit", "move", "b", "0x10001030", "a", "--why", "second is a's after all", "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("move=b  at=0x10001030  to=a  side=front  moved=1  kept=2"), "{out}");
+    let (_, out) = dcp(&t, &["unit", "move", "b", "0x10001030", "a", "--why", "second is a's after all"]);
+    assert!(out.contains("errors_before="), "{out}");
+    let (a, b) = (read(&t, "src/a.c"), read(&t, "src/b.c"));
+    let (f1, f2) = (a.find("int a_10001000(void)").unwrap(), a.find("/* 0x10001020, second */\nint a_10001020(void)").unwrap());
+    assert!(f1 < f2 && !b.contains("0x10001020"), "{a}\n----\n{b}");
+    let (_, out) = dcp(&t, &["layout", "units"]);
+    assert!(out.contains("unit=a  range=0x10001000..0x10001030") && out.contains("unit=b  range=0x10001030..0x10001060"), "{out}");
+    assert_eq!(errors(&t).len(), n_err, "{:?}", errors(&t));
+}
+
 #[test]
 fn l9_and_analyzer_report() {
     let t = tiny();

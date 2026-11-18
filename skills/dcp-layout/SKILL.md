@@ -150,7 +150,7 @@ Commands: `dcp unit new NAME --range 0xSTART..0xEND --by ... --why "..."` (runs 
 proposal first and refuses errors, writes the boundary lines and the files `src/NAME.c` (its head),
 `include/NAME.h`); `dcp layout units -v` (every unit: range, status, boundary
 levels, open bytes, undrafted functions, dead bytes, unlinked helpers, L10); `dcp layout unit propose`
-(the check without the files); `dcp unit split UNIT 0xADDR NEW [--dry-run]` (section 4); `dcp decl add "LINE"`
+(the check without the files); `dcp unit split UNIT 0xADDR NEW [--dry-run]`, `dcp unit move FROM 0xADDR TO [--dry-run]` (section 4); `dcp decl add "LINE"`
 (one declaration, inserted in order).
 
 Unexplained bytes: code no function explains inside a unit keeps it open (`open_bytes=`). Either it is a
@@ -187,6 +187,14 @@ A helper the original inlined everywhere (so no address) stands in its unit's fi
   (`git checkout -- . && git clean -fd src include`), not with `dcp unit join`: a join puts NEW's head lines
   into UNIT's head and NEW's functions after UNIT's tail, which is not the text before the split. Trim the copied head of NEW to what it uses, then
   commit `<UNIT>: split <NEW> at 0xADDR (layout)`.
+- **Move a boundary** when evidence puts the first or last functions of a unit into its neighbour:
+  `dcp unit move FROM 0xADDR TO --why "..." [--dry-run]`. TO directly after FROM: FROM's functions at or above
+  0xADDR go to the front of TO; TO directly before FROM: FROM's functions below 0xADDR go to the end of TO. What
+  moves along is what `dcp unit split` would move (the data they own, the declarations they need; FROM gets
+  prototypes of moved functions its rest uses); TO's head takes the lines of FROM's head it lacks (trim them), the
+  boundary lines between the two move to 0xADDR (their reason the --why), placeholders `FROM_<addr>` become
+  `TO_<addr>`. The moved functions' prototypes stay in include/FROM.h. It builds before and after and exits 1 when a
+  grade fell or errors were added. Undo with git. Commit `<FROM> -> <TO>: boundary at 0xADDR (layout)`.
 - **Unit rename** when a stronger name source turns up (`leaked` > `tag` > `guess`):
   `dcp unit rename OLD NEW --by leaked|tag --why "..."` (its file and notes, header and guard, includes,
   boundary lines, placeholders `OLD_<addr>`, names.log). Commit `<old> -> <new> (layout, <by>)`.
