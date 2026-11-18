@@ -17,7 +17,9 @@
 //!
 //! A block whose new text is empty (`===` then `>>>`) deletes its old text. Each marker stands on a line of its own,
 //! and a marker out of order is an error. An old text must occur exactly once in the function (not in the file: a twin function's equal lines are never
-//! touched). `--move-line N --to A..B` adds a variant for each place in
+//! touched), unless its block's opening marker picks the occurrences: `<<<2` replaces the second (counted in the
+//! function's text as the blocks before it left it), `<<<*` every one (the same statement in both loops of a
+//! function). `--move-line N --to A..B` adds a variant for each place in
 //! A..B the file's line N (a declaration inside the function) can move to.
 //!
 //! The table: one row per variant with the grade, the distance (differing instructions on both sides, differing
@@ -45,10 +47,31 @@ pub struct Variant {
 pub enum Edit {
     /// the function's whole new text
     Whole(String),
-    /// (old, new) replacements within the function's text, in order
-    Pairs(Vec<(String, String)>),
+    /// (old, new, which occurrences) replacements within the function's text, in order
+    Pairs(Vec<(String, String, Occ)>),
     /// the function's line (an index into its lines) moved before another (an index; the length: after the last)
     Move(usize, usize),
+}
+
+/// Which occurrences of a block's old text it replaces: `<<<` the one occurrence (the old text must occur once),
+/// `<<<N` the N-th (from 1, in the function's text as the blocks before it left it), `<<<*` every one (at least one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Occ {
+    Once,
+    Nth(usize),
+    All,
+}
+
+impl Occ {
+    /// The selector of an opening marker (a trimmed line): `<<<`, `<<<N` (N from 1), `<<<*`; None for any other line.
+    fn of_marker(t: &str) -> Option<Occ> {
+        match t.strip_prefix("<<<")? {
+            "" => Some(Occ::Once),
+            "*" => Some(Occ::All),
+            n if n.bytes().all(|b| b.is_ascii_digit()) => n.parse::<usize>().ok().filter(|&k| k >= 1).map(Occ::Nth),
+            _ => None,
+        }
+    }
 }
 
 /// The variants of a variants file, or what is wrong with it.
@@ -76,26 +99,36 @@ pub fn parse(text: &str) -> std::result::Result<Vec<Variant>, String> {
         // new one (empty: a deletion). A marker out of order is an error, never text: the first block of a variant
         // whose block lacked its `===` (a deletion written `<<< old >>>`) took the next block's `===` for its own, and
         // the next block into its old text
-        // (a marker: the line is one, or starts with one and a space: `=== >>>`; `=====` in a comment is text)
+        // (a marker: the line is one, or starts with one and a space: `=== >>>`; `=====` in a comment is text; `<<<2`
+        // and `<<<*` open a block that picks its old text's occurrences: Occ)
         let marker = |l: &str| -> Option<&'static str> {
             let t = l.trim();
+            if Occ::of_marker(t.split_whitespace().next().unwrap_or("")).is_some() {
+                return Some("<<<");
+            }
             ["<<<", "===", ">>>"].into_iter().find(|m| t.strip_prefix(m).is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace)))
         };
-        let edit = if body[0].trim() == "<<<" {
+        let edit = if Occ::of_marker(body[0].trim()).is_some() {
             let mut pairs = vec![];
             let (mut old, mut new): (Option<Vec<&str>>, Option<Vec<&str>>) = (None, None);
+            let mut occ = Occ::Once;
             for (k, l) in body.iter().enumerate() {
                 let at = format!("variant `{label}`, line {} of its text", k + 1);
                 match (marker(l), l.trim()) {
-                    (Some(_), t) if !["<<<", "===", ">>>"].contains(&t) => return Err(format!("{at}: `{t}`: a <<< / === / >>> marker stands on a line of its own")),
-                    (Some("<<<"), _) if old.is_none() => old = Some(vec![]),
+                    (Some(_), t) if !["===", ">>>"].contains(&t) && Occ::of_marker(t).is_none() => {
+                        return Err(format!("{at}: `{t}`: a <<< / === / >>> marker stands on a line of its own"));
+                    }
+                    (Some("<<<"), t) if old.is_none() => {
+                        occ = Occ::of_marker(t).unwrap_or(Occ::Once);
+                        old = Some(vec![]);
+                    }
                     (Some("==="), _) if old.is_some() && new.is_none() => new = Some(vec![]),
                     (Some(">>>"), _) if new.is_some() => {
                         let o = old.take().unwrap().join("\n");
                         if o.trim().is_empty() {
                             return Err(format!("{at}: an empty old text"));
                         }
-                        pairs.push((o, new.take().unwrap().join("\n")));
+                        pairs.push((o, new.take().unwrap().join("\n"), occ));
                     }
                     (Some(m), _) => {
                         let why = match (m, old.is_some(), new.is_some()) {
@@ -121,7 +154,7 @@ pub fn parse(text: &str) -> std::result::Result<Vec<Variant>, String> {
             }
             Edit::Pairs(pairs)
         } else {
-            if let Some(l) = body.iter().find(|l| ["<<<", "===", ">>>"].contains(&l.trim())) {
+            if let Some(l) = body.iter().find(|l| ["===", ">>>"].contains(&l.trim()) || Occ::of_marker(l.trim()).is_some()) {
                 return Err(format!("variant `{label}`: `{}` in a whole-function variant (a variant of <<< === >>> blocks starts with <<<)", l.trim()));
             }
             Edit::Whole(body.join("\n"))
@@ -153,17 +186,36 @@ pub fn apply(func: &str, edit: &Edit) -> std::result::Result<String, String> {
         Edit::Whole(t) => Ok(t.clone()),
         Edit::Pairs(pairs) => {
             let mut t = func.to_string();
-            for (old, new) in pairs {
+            for (old, new, occ) in pairs {
                 let n = t.matches(old.as_str()).count();
-                if n != 1 {
+                let ok = match occ {
+                    Occ::Once => n == 1,
+                    Occ::Nth(k) => n >= *k,
+                    Occ::All => n >= 1,
+                };
+                if !ok {
                     let first = old.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
                     // the old text with each backslash doubled is there: the file lost every other backslash on its
                     // way (dcp reads it byte for byte)
-                    let halved = n == 0 && old.contains('\\') && t.matches(old.replace('\\', "\\\\").as_str()).count() == 1;
+                    let halved = n == 0 && old.contains('\\') && t.matches(old.replace('\\', "\\\\").as_str()).count() >= 1;
                     let why = if halved { format!(" ({HALVED})") } else { String::new() };
-                    return Err(format!("the old text `{first}`.. occurs {n} times in the function (once needed){why}"));
+                    let need = match occ {
+                        Occ::Once if n > 1 => "once needed: <<<N picks the N-th, <<<* every one".to_string(),
+                        Occ::Once => "once needed".to_string(),
+                        Occ::Nth(k) => format!("<<<{k} needs at least {k}"),
+                        Occ::All => "<<<* needs at least one".to_string(),
+                    };
+                    return Err(format!("the old text `{first}`.. occurs {n} times in the function ({need}){why}"));
                 }
-                t = t.replacen(old.as_str(), new, 1);
+                t = match occ {
+                    Occ::Once => t.replacen(old.as_str(), new, 1),
+                    Occ::All => t.replace(old.as_str(), new),
+                    Occ::Nth(k) => {
+                        // the k-th of the non-overlapping occurrences, as `matches` counts them
+                        let at = t.match_indices(old.as_str()).nth(k - 1).map(|m| m.0).unwrap_or(0);
+                        format!("{}{new}{}", &t[..at], &t[at + old.len()..])
+                    }
+                };
             }
             Ok(t)
         }
@@ -476,11 +528,11 @@ mod tests {
         let v = parse(file).unwrap();
         assert_eq!(v.len(), 2);
         assert_eq!(v[0], Variant { label: "whole".into(), edit: Edit::Whole("/* 0x1 */\nint f(void) { return 2; }".into()) });
-        assert_eq!(v[1].edit, Edit::Pairs(vec![("  a = 1;".into(), "  a = 2;".into()), ("b".into(), "c".into())]));
+        assert_eq!(v[1].edit, Edit::Pairs(vec![("  a = 1;".into(), "  a = 2;".into(), Occ::Once), ("b".into(), "c".into(), Occ::Once)]));
         let func = "/* 0x1 */\nvoid f(void)\n{\n  a = 1;\n  b;\n}";
         assert_eq!(apply(func, &v[1].edit).unwrap(), "/* 0x1 */\nvoid f(void)\n{\n  a = 2;\n  c;\n}");
         // an old text twice in the function: refused (a twin's lines are another function's)
-        assert!(apply("x\nx", &Edit::Pairs(vec![("x".into(), "y".into())])).unwrap_err().contains("occurs 2 times"));
+        assert!(apply("x\nx", &Edit::Pairs(vec![("x".into(), "y".into(), Occ::Once)])).unwrap_err().contains("occurs 2 times"));
         assert!(parse("junk\n### a\nx\n").is_err());
         assert!(parse("### a\n\n### b\nx\n").is_err());
         assert!(parse("### a\n<<<\nx\n>>>\n").is_err());
@@ -505,7 +557,7 @@ mod tests {
         let func = "/* 0x1 \"misc\\quickchat\" */\nvoid f(void)\n{\n    g(\"misc\\\\quickchat\");\n}";
         let file = "### blk\n<<<\n    g(\"misc\\\\quickchat\");\n===\n    g(\"misc\\\\quickchat\", 1);\n>>>\n\n### whole\nvoid f(void)\n{\n    g(\"misc\\\\quickchat\");\n}\n";
         let v = parse(file).unwrap();
-        assert_eq!(v[0].edit, Edit::Pairs(vec![("    g(\"misc\\\\quickchat\");".into(), "    g(\"misc\\\\quickchat\", 1);".into())]));
+        assert_eq!(v[0].edit, Edit::Pairs(vec![("    g(\"misc\\\\quickchat\");".into(), "    g(\"misc\\\\quickchat\", 1);".into(), Occ::Once)]));
         assert_eq!(apply(func, &v[0].edit).unwrap(), "/* 0x1 \"misc\\quickchat\" */\nvoid f(void)\n{\n    g(\"misc\\\\quickchat\", 1);\n}");
         let whole = keep_comment(func, &apply(func, &v[1].edit).unwrap());
         assert_eq!(whole, func);
@@ -516,7 +568,7 @@ mod tests {
         assert!(e.contains("occurs 0 times") && e.contains("lost a backslash"), "{e}");
         assert_eq!(halved_literals(func, "void f(void)\n{\n    g(\"misc\\quickchat\");\n}"), ["\"misc\\\\quickchat\""]);
         // an old text simply absent: no such hint
-        assert!(!apply(func, &Edit::Pairs(vec![("zz\\q".into(), "y".into())])).unwrap_err().contains("backslash"));
+        assert!(!apply(func, &Edit::Pairs(vec![("zz\\q".into(), "y".into(), Occ::Once)])).unwrap_err().contains("backslash"));
     }
 
     #[test]
@@ -531,14 +583,39 @@ mod tests {
         assert!(moves(30, (11, 12), 10, 6).is_err());
     }
 
+    /// A block may pick the occurrences of an old text the function has more than once (the same statement in both
+    /// loops, ai_TransportFromLager): `<<<2` the second, `<<<*` every one; `<<<` still needs it once.
+    #[test]
+    fn a_block_picks_occurrences() {
+        let func = "{\n    inv = 1.0f / f;\n    a(inv);\n    inv = 1.0f / f;\n    b(inv);\n}";
+        let v = parse("### second\n<<<2\n    inv = 1.0f / f;\n===\n    inv = 1 / f;\n>>>\n\n### all\n<<<*\n    inv = 1.0f / f;\n===\n>>>\n\n### once\n<<<\n    inv = 1.0f / f;\n===\n    x;\n>>>\n").unwrap();
+        assert_eq!(v[0].edit, Edit::Pairs(vec![("    inv = 1.0f / f;".into(), "    inv = 1 / f;".into(), Occ::Nth(2))]));
+        assert_eq!(apply(func, &v[0].edit).unwrap(), "{\n    inv = 1.0f / f;\n    a(inv);\n    inv = 1 / f;\n    b(inv);\n}");
+        assert_eq!(apply(func, &v[1].edit).unwrap(), "{\n\n    a(inv);\n\n    b(inv);\n}");
+        let e = apply(func, &v[2].edit).unwrap_err();
+        assert!(e.contains("occurs 2 times") && e.contains("<<<N picks the N-th"), "{e}");
+        // the N-th counts in the text the blocks before it left: the first replaced, the old second is now the first
+        let chain = parse("### c\n<<<1\n    inv = 1.0f / f;\n===\n    y;\n>>>\n<<<\n    inv = 1.0f / f;\n===\n    z;\n>>>\n").unwrap();
+        assert_eq!(apply(func, &chain[0].edit).unwrap(), "{\n    y;\n    a(inv);\n    z;\n    b(inv);\n}");
+        // too few occurrences, and none for <<<*
+        assert!(apply(func, &Edit::Pairs(vec![("    inv = 1.0f / f;".into(), "".into(), Occ::Nth(3))])).unwrap_err().contains("<<<3 needs at least 3"));
+        assert!(apply(func, &Edit::Pairs(vec![("zz".into(), "".into(), Occ::All)])).unwrap_err().contains("<<<* needs at least one"));
+        // a selector is a marker of its own line; <<<0 and <<<x are no selectors
+        assert!(parse("### a\n<<<\n    w;\n===\n>>>\n<<<2 x\n    y;\n===\n    z;\n>>>\n").unwrap_err().contains("on a line of its own"));
+        assert!(parse("### a\n<<<\n    y;\n===\n<<<2\n>>>\n").unwrap_err().contains("<<< inside a block's new text"));
+        assert!(parse("### a\n<<<0\n    y;\n===\n    z;\n>>>\n").unwrap_err().contains("whole-function variant"));
+        assert!(matches!(parse("### a\n<<<x\nint f(void);\n").unwrap()[0].edit, Edit::Whole(_)));
+        assert!(parse("### a\nint f(void)\n<<<*\n").unwrap_err().contains("whole-function variant"));
+    }
+
     /// A block with an empty replacement (a deletion) ends at its `>>>`: the next block is a block of its own, in the
     /// same variant and the next one. A block whose markers are out of order (a deletion written without its `===`,
     /// a block without its `>>>`, two markers on one line) is an error naming it, never another block's text.
     #[test]
     fn empty_replacement_ends_its_block() {
         let v = parse("### del\n<<<\n    x = 1;\n===\n>>>\n<<<\n    y = 2;\n===\n    y = 3;\n>>>\n\n### next\n<<<\n    z;\n===\n\n>>>\n<<<\n    w;\n===\n    v;\n>>>\n").unwrap();
-        assert_eq!(v[0].edit, Edit::Pairs(vec![("    x = 1;".into(), "".into()), ("    y = 2;".into(), "    y = 3;".into())]));
-        assert_eq!(v[1].edit, Edit::Pairs(vec![("    z;".into(), "".into()), ("    w;".into(), "    v;".into())]));
+        assert_eq!(v[0].edit, Edit::Pairs(vec![("    x = 1;".into(), "".into(), Occ::Once), ("    y = 2;".into(), "    y = 3;".into(), Occ::Once)]));
+        assert_eq!(v[1].edit, Edit::Pairs(vec![("    z;".into(), "".into(), Occ::Once), ("    w;".into(), "    v;".into(), Occ::Once)]));
         assert_eq!(apply("{\n    x = 1;\n    y = 2;\n}", &v[0].edit).unwrap(), "{\n\n    y = 3;\n}");
         let e = |f: &str| parse(f).unwrap_err();
         assert!(e("### a\n<<<\n    x;\n>>>\n<<<\n    y;\n===\n    z;\n>>>\n").contains(">>> without ==="));
@@ -549,7 +626,7 @@ mod tests {
         assert!(e("### a\nint f(void)\n===\n").contains("whole-function variant"));
         // `=====` in a comment is text
         let v = parse("### c\n<<<\n    /* a\n       ===== */\n===\n    /* b */\n>>>\n").unwrap();
-        assert_eq!(v[0].edit, Edit::Pairs(vec![("    /* a\n       ===== */".into(), "    /* b */".into())]));
+        assert_eq!(v[0].edit, Edit::Pairs(vec![("    /* a\n       ===== */".into(), "    /* b */".into(), Occ::Once)]));
     }
 
     /// --apply writes the variant over the function's lines and keeps every other byte: a Latin-1 byte (0xfc) in

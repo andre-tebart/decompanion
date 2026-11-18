@@ -95,7 +95,9 @@ unsigned short f(unsigned short k)
 ```
 
 A `<<< old === new >>>` block replaces text inside this function only (each old text must occur once in it: a
-twin function's equal lines are never touched); a body without blocks is the function's whole new text (its
+twin function's equal lines are never touched); an old text the function repeats (the same statement in both
+loops) is picked by the opening marker: `<<<2` replaces the second occurrence (counted after the blocks before
+it), `<<<*` every one. A body without blocks is the function's whole new text (its
 first comment only marks it as such: `--apply` keeps the function's own address comment and note). Then
 `dcp try NAME FILE` prints one row per variant: `grade ins bytes code hunks`. `code` is a hash of the compiled
 function: variants with the same code print `= label`, and a variant with the control's code means that source

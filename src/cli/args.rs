@@ -929,7 +929,7 @@ pub struct TryArgs {
     #[arg(value_name = "NAME")]
     pub name: String,
     /// the variants file: `### label` lines, each followed by the function's whole text or by `<<<` old `===` new
-    /// `>>>` blocks (each old text once in the function)
+    /// `>>>` blocks (each old text once in the function; `<<<2` the second occurrence, `<<<*` every one)
     #[arg(value_name = "FILE")]
     pub file: Option<String>,
     /// generate variants: move this file line (a declaration inside the function) ...
