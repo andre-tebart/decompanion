@@ -385,7 +385,7 @@ pub(crate) fn defs(r: &ScanRef) -> Result<HashMap<String, Defs>> {
 }
 
 pub(crate) type FnRow = ((String, i64, String, String, Addrs, bool, String), (Option<String>, Option<String>, bool, i64, bool, i64, Vec<String>, Option<String>));
-pub(crate) type DataRow = (String, i64, String, String, String, Addrs, bool, bool, i64); // .., static, the type's size (0: unknown)
+pub(crate) type DataRow = (String, i64, String, String, String, Addrs, bool, bool, i64, bool); // .., static, the type's size (0: unknown), tentative
 pub(crate) type ViewRow = (String, i64, String, String, String, u64, Addrs, bool);
 pub(crate) type ErrRow = (String, i64, String, String);
 
@@ -505,6 +505,15 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
             }
         }
     }
+    // a declarator's initialiser: a `=` between its name and its end (clang's Decl::V; its init flag also counts an
+    // array's bound)
+    let inits: HashMap<(&str, Lc), bool> = model.decls.iter().filter_map(|d| match d {
+        crate::clang::Decl::V(n, _, ws, np, e, _, _, _) => {
+            let t = sf.code.get(sf.offset(np.0, np.1)..sf.offset(e.0, e.1)).unwrap_or("=");
+            Some(((n.as_str(), *ws), t.contains('=')))
+        }
+        _ => None,
+    }).collect();
     let mut data: Vec<DataRow> = vec![];
     for ((line, col), ds) in &stmts {
         let s = sf.offset(*line, *col);
@@ -515,8 +524,12 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         }
         let i = if sf.code.as_bytes().get(j) == Some(&b';') { j + 1 } else { e };
         let (per, unlinked) = sf.attach(s, i, ds.len(), &skip);
+        // a tentative definition: no initialiser, not static, no alignment of its own (a GAPDATA block); C's common
+        // model, so two units may each hold one of the same object (LINK merges them)
+        let aligned = sf.code.get(s..i).is_some_and(|t| t.contains("GAPDATA") || t.contains("__declspec"));
         for (k, d) in ds.iter().enumerate() {
-            data.push((rel.to_string(), sf.line_of(s), unit.clone(), d.4.clone(), d.5.clone(), per[k].clone(), unlinked, d.6, d.7));
+            let tentative = d.5 == "def" && !d.6 && !aligned && inits.get(&(d.4.as_str(), (d.0, d.1))) == Some(&false);
+            data.push((rel.to_string(), sf.line_of(s), unit.clone(), d.4.clone(), d.5.clone(), per[k].clone(), unlinked, d.6, d.7, tentative));
         }
     }
     // the integer literals cast to a pointer type: the front end's in code, PTR_CAST over the macros' bodies
@@ -629,7 +642,7 @@ pub(crate) fn scan_file_rs(rel: &str, text: &str, model: &FileModel, views: &[(O
         data: data.iter().map(|d| (d.0.clone(), d.1, d.4.clone(), d.3.clone(), ad(&d.5))).collect(),
         items: crate::layout::ScanItems {
             fns: functions.iter().map(|(a, b)| (a.0.clone(), a.1, b.3, b.5, a.2.clone(), a.3.clone(), b.4, ad(&a.4), (b.0.clone(), b.1.clone(), b.7.clone()), b.2, a.6.clone())).collect(),
-            datas: data.iter().map(|d| (d.0.clone(), d.1, d.2.clone(), d.3.clone(), d.4.clone(), d.7, ad(&d.5), d.8)).collect(),
+            datas: data.iter().map(|d| (d.0.clone(), d.1, d.2.clone(), d.3.clone(), d.4.clone(), d.7, ad(&d.5), d.8, d.9)).collect(),
             views: vrows.iter().map(|v| (v.0.clone(), v.1, v.2.clone(), v.3.clone(), v.4.clone(), v.5 as i64, v.7, ad(&v.6))).collect(),
             errors: errors.iter().map(|e| (e.2.clone(), e.0.clone(), e.1, e.3.clone())).collect(),
         },

@@ -1181,11 +1181,19 @@ pub(crate) struct ScanItems {
     // file, line, comment line, end line, unit, name, static, addrs, (deep, stuck, hard), rough, what
     pub(crate) fns: Vec<(String, i64, i64, i64, String, String, bool, Addrs, (Option<String>, Option<String>, Option<String>), bool, String)>,
     // file, line, unit, name, kind, static, addrs
-    pub(crate) datas: Vec<(String, i64, String, String, String, bool, Addrs, i64)>, // .., the type's size (0: unknown)
+    pub(crate) datas: Vec<(String, i64, String, String, String, bool, Addrs, i64, bool)>, // .., the type's size (0: unknown), tentative
     // file, line, unit, name, container, offset, alias, addrs
     pub(crate) views: Vec<(String, i64, String, String, String, i64, bool, Addrs)>,
     // check, file, line, message
     pub(crate) errors: Vec<(String, String, i64, String)>,
+}
+
+/// Several definitions at one address that are one common: every one a tentative definition (no initialiser, not
+/// `static`, not GAPDATA) of one name and one type size. C's common model: LINK merges them into one object, given
+/// to the first object in link order that holds one (d3s_EdgeX in d3_engine.c and d3s.c).
+fn one_common(bys: &[String], tentatives: &HashMap<String, (String, i64)>) -> bool {
+    let ts: Vec<&(String, i64)> = bys.iter().filter_map(|b| tentatives.get(b)).collect();
+    ts.len() == bys.len() && ts.iter().all(|t| *t == ts[0] && t.1 > 0)
 }
 
 /// L.src: the address comments of the sources for the current target (facts source / name / start, the errors).
@@ -1206,6 +1214,8 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
     }
     let code = code_ranges(&img);
     let mut defs_at: std::collections::BTreeMap<i64, Vec<String>> = std::collections::BTreeMap::new();
+    // by -> (name, the type's size) of the tentative data definitions
+    let mut tentatives: HashMap<String, (String, i64)> = HashMap::new();
     // (name, unit of a static or None) -> address -> by
     let mut names_at: HashMap<(String, Option<String>), Vec<(i64, String)>> = HashMap::new();
     let mut name_at = |key: (String, Option<String>), a: i64, by: &str| {
@@ -1257,7 +1267,7 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         decl(out, a, "name", serde_json::json!({"name": name, "origin": "source"}), &by, reason);
         decl(out, a, "start", serde_json::json!({"skind": "func", "how": "source"}), &by, reason);
     }
-    for (file, line, unit, name, kind, stat, addrs, size) in &sc.datas {
+    for (file, line, unit, name, kind, stat, addrs, size, tentative) in &sc.datas {
         let by = format!("src:{file}:{line}");
         unknown_prefix(out, addrs, &by);
         let Some(a) = address_for(addrs, cur, &default) else { continue };
@@ -1270,6 +1280,9 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         name_at(key.clone(), a, &by);
         if kind == "def" {
             defs_at.entry(a).or_default().push(by.clone());
+            if *tentative {
+                tentatives.insert(by.clone(), (name.clone(), *size));
+            }
             let mut v = serde_json::json!({"file": file, "line": line, "unit": unit, "symbol": name, "what": "data"});
             if *size > 0 {
                 v["size"] = serde_json::json!(size); // the declared type's size, the front end's
@@ -1322,7 +1335,7 @@ pub fn l_src(ctx: &Ctx, _db: &Connection, out: &mut Out) -> Result<()> {
         pending = rest;
     }
     for (a, bys) in &defs_at {
-        if bys.len() > 1 {
+        if bys.len() > 1 && !one_common(bys, &tentatives) {
             err(out, "L.src", *a, format!("{} definitions at {:#x}: {}", bys.len(), a, bys.iter().map(|b| &b[4..]).collect::<Vec<_>>().join(", ")),
                 &bys[0], &bys[1]);
         }

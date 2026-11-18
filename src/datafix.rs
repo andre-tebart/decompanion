@@ -105,7 +105,7 @@ pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataD
     let default = p.target_name.clone();
     let mut out = vec![];
     for part in &scan.parts {
-        for (file, line, unit, name, kind, addrs, _, statik, _) in &part.data {
+        for (file, line, unit, name, kind, addrs, _, statik, _, _) in &part.data {
             let a = addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == p.target_name).map(|x| x.1 as i64);
             if let Some(a) = a {
                 out.push(DataDef { unit: unit.clone(), name: name.clone(), file: file.clone(), line: *line, kind: kind.clone(), addr: a,

@@ -300,3 +300,22 @@ fn name_alias_and_extern_only() {
     let (_, out) = dcp(&t, &["rename", "counter", "net_Total", "--why", "what it counts"]);
     assert!(out.contains("note: other names of ours at 0x10002000: net_Count (src/net.c:2) (one object has one name: dcp rename each to net_Total)"), "{out}");
 }
+
+/// Two units that each hold a tentative definition of one common (the original's shared header: d3s_EdgeX in
+/// d3_engine.c and d3s.c) are one definition (LINK merges them): no L.src; an initialised, a static or a GAPDATA
+/// one, or one of another type size, is a second definition.
+#[test]
+fn tentative_definitions_of_one_common() {
+    let t = tiny();
+    let get = "/* 0x10001020, reads the table */\nint get(void)\n{\n    return shared[1];\n}\n";
+    let hello = "/* 0x10001030, logs hello */\nint log_hello(void)\n{\n    return shared[2];\n}\n";
+    let defs_at = |t: &Path| errors(t, "L.src").into_iter().filter(|c| c.4.contains("definitions at 0x10002024")).count();
+    unit(&t, "log", &["int shared[2];  /* 0x10002024 */\n", hello]);
+    for (other, n) in [("int shared[2];  /* 0x10002024 */\n", 0), ("int shared[2] = {0};  /* 0x10002024 */\n", 1),
+                       ("static int shared[2];  /* 0x10002024 */\n", 1), ("char shared[4];  /* 0x10002024 */\n", 1),
+                       ("#define GAPDATA __declspec(align(1)) unsigned char\nGAPDATA shared[8];  /* 0x10002024 */\n", 1)] {
+        unit(&t, "net", &[other, get]);
+        let (_, out) = dcp(&t, &["check"]);
+        assert_eq!(defs_at(&t), n, "{other}: {out}");
+    }
+}

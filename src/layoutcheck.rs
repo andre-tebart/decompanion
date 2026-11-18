@@ -168,14 +168,30 @@ pub fn run(objects: &[(String, String)], map_path: &str, phi: &Phi) -> Vec<Strin
     let Ok(text) = std::fs::read_to_string(map_path) else { return vec![] };
     let map = map_addresses(&text);
     let mut gs = vec![];
+    let mut all_commons = BTreeSet::new();
     for (_, path) in objects {
         if let Ok(data) = std::fs::read(path) {
             if let Ok(obj) = Obj::parse(&data) {
+                all_commons.extend(obj.symbols.iter().filter(|s| s.common()).map(|s| crate::coff::undecorate(&s.name)));
                 gs.extend(groups(&obj));
             }
         }
     }
+    mark_commons(&mut gs, &all_commons);
     check(&gs, &map, phi).iter().map(|v| v.line()).collect()
+}
+
+/// A group's commons are the objects that are commons in any linked object, not only in the function's own: a
+/// unit that reads a common another unit defines tentatively (d3s.c's `extern int d3s_EdgeX[4]` against
+/// d3_engine.c's `int d3s_EdgeX[4];`) addresses it as an external, but LINK still places it as a common.
+pub fn mark_commons(gs: &mut [Group], commons: &BTreeSet<String>) {
+    for g in gs {
+        for (o, _) in &g.objects {
+            if commons.contains(o) {
+                g.commons.insert(o.clone());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -236,6 +252,20 @@ mod tests {
         assert!(check(&gs, &map, &p).is_empty());
         gs[0].commons = ["g_b".to_string()].into_iter().collect();
         assert_eq!(check(&gs, &map, &p).len(), 1);
+    }
+
+    /// The pair is defined tentatively by another object (the reader holds both as plain externals): the commons
+    /// of every linked object exempt it, a pair with one defined datum is still judged.
+    #[test]
+    fn commons_of_another_object_are_placed_by_link() {
+        let mut gs = groups(&obj());
+        assert!(gs[0].commons.is_empty());
+        let p = phi(&[(0x92c500, "g_a", 0x40), (0x92c540, "g_b", 0x40)]);
+        let map: HashMap<String, u32> = [("g_a".to_string(), 0x7040), ("g_b".to_string(), 0x7000)].into_iter().collect();
+        mark_commons(&mut gs, &["g_a".to_string()].into_iter().collect());
+        assert_eq!(check(&gs, &map, &p).len(), 1);
+        mark_commons(&mut gs, &["g_a".to_string(), "g_b".to_string(), "g_z".to_string()].into_iter().collect());
+        assert!(check(&gs, &map, &p).is_empty());
     }
 
     /// groups() reads the commons off the object's symbols (external, no section, the value its size).
