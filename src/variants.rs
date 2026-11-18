@@ -263,20 +263,73 @@ fn leading_comment(t: &str) -> Option<(usize, &str)> {
     Some((end, &t[start..end]))
 }
 
+/// The preprocessor lines (`#undef X`, `#define X 1`, a `\`-continued one whole) at the start of a text, blank lines
+/// between them skipped: (the directives' lines, the text after the last one's line break, or the whole text when
+/// there is none).
+fn leading_directives(t: &str) -> (Vec<&str>, &str) {
+    let (mut pre, mut rest) = (vec![], t);
+    loop {
+        let blank = rest.len() - rest.trim_start().len();
+        if !rest[blank..].starts_with('#') {
+            return (pre, rest);
+        }
+        let start = rest[..blank].rfind('\n').map(|k| k + 1).unwrap_or(0);
+        // the directive's lines: up to one that does not end in a backslash
+        let mut end = start;
+        loop {
+            let nl = rest[end..].find('\n').map(|k| end + k);
+            let line = &rest[end..nl.unwrap_or(rest.len())];
+            end = nl.map(|k| k + 1).unwrap_or(rest.len());
+            if nl.is_none() || !line.trim_end().ends_with('\\') {
+                break;
+            }
+        }
+        pre.push(rest[start..end].trim_end_matches(['\n', '\r']));
+        rest = &rest[end..];
+    }
+}
+
 /// A whole-function variant with the function's own address comment (its description and @deep note) in place of
 /// the variant's first comment, or before the variant when it has none: the comment is not what `dcp try` compiles,
 /// and a function without its address comment leaves the grades. The white space between the comment and the
-/// function stays as the source has it (a blank line, or none).
+/// function stays as the source has it (a blank line, or none). Preprocessor lines the variant has before its
+/// definition (`#undef X` / `#define X 1`, before or after its comment) go before the address comment, as the tree
+/// writes them: the scan pairs an address comment only with a definition directly below it, and a function whose
+/// comment stood above a `#define` fell out of the grades.
 pub fn keep_comment(func: &str, new: &str) -> String {
     let Some((fend, own)) = leading_comment(func) else { return new.to_string() };
     let lead = &func[..func.len() - func.trim_start().len()];
     let gap = &func[fend..];
     let sep = &gap[..gap.len() - gap.trim_start().len()];
-    let body = match leading_comment(new) {
-        Some((end, _)) => new[end..].trim_start(),
-        None => new.trim_start(),
+    let (mut pre, rest) = leading_directives(new);
+    let rest = match leading_comment(rest) {
+        Some((end, _)) => &rest[end..],
+        None => rest,
     };
-    format!("{lead}{own}{sep}{body}")
+    let (more, body) = leading_directives(rest);
+    pre.extend(more);
+    let pre: String = pre.iter().map(|l| format!("{l}\n")).collect();
+    format!("{lead}{pre}{own}{sep}{}", body.trim_start())
+}
+
+/// A function's edited text (a block or a moved line) with the preprocessor lines between its address comment and
+/// its definition moved before the comment (keep_comment: the scan pairs the comment only with a definition directly
+/// below it); the text as it is when it has none there.
+pub fn hoist_directives(t: &str) -> String {
+    let Some((end, own)) = leading_comment(t) else { return t.to_string() };
+    let lead = &t[..t.len() - t.trim_start().len()];
+    let (pre, rest) = leading_directives(&t[end..]);
+    if pre.is_empty() {
+        return t.to_string();
+    }
+    let pre: String = pre.iter().map(|l| format!("{l}\n")).collect();
+    format!("{lead}{pre}{own}\n{}", rest.trim_start_matches([' ', '\t']))
+}
+
+/// The function's text after a variant, as --apply writes it and `dcp try` compiles it.
+fn variant_text(func: &str, edit: &Edit) -> std::result::Result<String, String> {
+    let t = apply(func, edit)?;
+    Ok(if matches!(edit, Edit::Whole(_)) { keep_comment(func, &t) } else { hoist_directives(&t) })
 }
 
 /// The variants that move the function's line `line` (a file line) before each line of `to` (file lines, `hi + 1`:
@@ -324,8 +377,7 @@ pub(crate) fn apply_to_file(path: &str, comment: i64, end: i64, edit: &Edit) -> 
         return Err(format!("the span {comment}..{end} is not in {path}"));
     }
     let func = lines[lo..hi].join("\n");
-    let new = apply(&func, edit)?;
-    let new = if matches!(edit, Edit::Whole(_)) { keep_comment(&func, &new) } else { new };
+    let new = variant_text(&func, edit)?;
     let out: Vec<&str> = lines[..lo].iter().copied().chain(new.split('\n')).chain(lines[hi..].iter().copied()).collect();
     crate::edit::write(path, &out.join("\n"))?;
     Ok((func, new))
@@ -409,7 +461,7 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
     // the control (the unit as it is) and the variants that apply, compiled together
     // a whole function compiled as --apply writes it: with the function's own address comment
     let texts: Vec<std::result::Result<String, String>> = variants.iter()
-        .map(|v| apply(&func, &v.edit).map(|t| if matches!(v.edit, Edit::Whole(_)) { keep_comment(&func, &t) } else { t })).collect();
+        .map(|v| variant_text(&func, &v.edit)).collect();
     let mut jobs = vec![crate::tiebreak::Job { unit: t, tag: "tctl".into(), prefix: String::new(), text: text.clone() }];
     let mut job_of: HashMap<usize, usize> = HashMap::new();
     for (k, x) in texts.iter().enumerate() {
@@ -549,6 +601,35 @@ mod tests {
         assert_eq!(keep_comment(own, "/* 0x1 */\n\n\nint f(void) { return 2; }"), "/* 0x1, adds @deep round 3: shape\n   prior: round 1 */\nint f(void) { return 2; }");
         // a function without a comment takes the variant as it is
         assert_eq!(keep_comment("int f(void) { return 1; }", "/* c */\nint f(void) { return 2; }"), "/* c */\nint f(void) { return 2; }");
+    }
+
+    /// A whole-function variant with `#undef X` / `#define X 1` between its address comment and its definition: the
+    /// lines go before the function's address comment, which stays directly above the definition (the scan pairs
+    /// them only so: gildegold deep s39, a function fell draft+readable -> none+none after --apply).
+    #[test]
+    fn directives_go_before_the_address_comment() {
+        let own = "/* 0x1, f @deep r1 */\nint f(void) { return X; }";
+        let want = "#undef X\n#define X 1\n/* 0x1, f @deep r1 */\nint f(void) { return X; }";
+        assert_eq!(keep_comment(own, "/* 0x1 */\n#undef X\n#define X 1\nint f(void) { return X; }"), want);
+        assert_eq!(keep_comment(own, "/* 0x1 */\n#undef X\n\n#define X 1\n\nint f(void) { return X; }"), want);
+        assert_eq!(keep_comment(own, "#undef X\n#define X 1\n/* 0x1 */\nint f(void) { return X; }"), want);
+        assert_eq!(keep_comment(own, "#undef X\n/* 0x1 */\n#define X 1\nint f(void) { return X; }"), want);
+        assert_eq!(keep_comment(own, "#undef X\n#define X 1\nint f(void) { return X; }"), want);
+        // a continued #define is one directive
+        assert_eq!(keep_comment(own, "/* 0x1 */\n#define X \\\n    1\nint f(void) { return X; }"),
+                   "#define X \\\n    1\n/* 0x1, f @deep r1 */\nint f(void) { return X; }");
+        // a block that puts a directive below the comment: hoisted as well
+        let v = parse("### d\n<<<\nint f(void)\n===\n#define X 1\nint f(void)\n>>>\n").unwrap();
+        assert_eq!(variant_text("/* 0x1 */\nint f(void)\n{ return X; }", &v[0].edit).unwrap(), "#define X 1\n/* 0x1 */\nint f(void)\n{ return X; }");
+        assert_eq!(hoist_directives("/* 0x1 */\nint f(void) { return 1; }"), "/* 0x1 */\nint f(void) { return 1; }");
+        // --apply writes it so: the file's address comment stays directly above the definition
+        let dir = crate::testkit::scratch("try-directives");
+        let p = dir.join("u.c").to_string_lossy().into_owned();
+        std::fs::write(&p, "int g;\n/* 0x1000, f */\nint f(void)\n{\n    return 0;\n}\n").unwrap();
+        let v = parse("### mac\n/* 0x1000 */\n#undef X\n#define X 1\nint f(void)\n{\n    return X;\n}\n").unwrap();
+        apply_to_file(&p, 2, 6, &v[0].edit).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "int g;\n#undef X\n#define X 1\n/* 0x1000, f */\nint f(void)\n{\n    return X;\n}\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
