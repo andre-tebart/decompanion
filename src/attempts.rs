@@ -215,13 +215,11 @@ pub fn deep_reason(text: &str, addr: i64) -> Option<String> {
     static COMMENT: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?s)/\*(.*?)\*/").unwrap());
     static TAG: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?s)(?:\A|\s)@deep\b(.*)\z").unwrap());
     let text = text.replace("\r\n", "\n");
-    for c in COMMENT.captures_iter(&text) {
-        let body = &c[1];
-        if crate::srcscan::lead_addrs(body).0.iter().any(|x| x.1 as i64 == addr) {
-            return TAG.captures(body).map(|t| t[1].split_whitespace().collect::<Vec<_>>().join(" "));
-        }
-    }
-    None
+    // every comment that leads with the address: a prototype's or a reference's bare `/* 0x500190 */` above the
+    // definition holds no tag (dcp note kept no prior: on gm_CreateObject and he_RunDecay: it read that one)
+    COMMENT.captures_iter(&text)
+        .filter(|c| crate::srcscan::lead_addrs(&c[1]).0.iter().any(|x| x.1 as i64 == addr))
+        .find_map(|c| TAG.captures(&c[1]).map(|t| t[1].split_whitespace().collect::<Vec<_>>().join(" ")))
 }
 
 /// `dcp note NAME "text"`: the match-deep journal. The function's `@deep` note becomes the text, the note as the
@@ -414,6 +412,9 @@ mod tests {
         let t = "/* 0x401000, does it @deep round 2: shape, 9 ins\n   prior: round 1 */\nint f(void) {}\n/* 0x402000 */\nint g(void) {}\n";
         assert_eq!(deep_reason(t, 0x401000).as_deref(), Some("round 2: shape, 9 ins prior: round 1"));
         assert_eq!(deep_reason(t, 0x402000), None);
+        // the prototype's bare address comment above the definition's (he_RunDecay in he_b.c, gm_CreateObject in f3gmt.c)
+        let t = "void he_RunDecay(int ev);          /* 0x5702e0 */\n/* 0x5702e0 */\n\n/* 0x5702e0, the decay\n   @deep read the whole function */\nvoid he_RunDecay(int ev) {}\n";
+        assert_eq!(deep_reason(t, 0x5702e0).as_deref(), Some("read the whole function"));
     }
 
     #[test]
