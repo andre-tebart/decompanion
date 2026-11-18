@@ -173,34 +173,46 @@ pub fn text_hash(normalized: &str) -> String {
 
 /// M.tiebreak: each record of ledger/tiebreak.tsv of the current target whose function (L.src) still has the text
 /// it was probed with, as a derived `tiebreak` claim at the function's address {name, unit, file, comment, end,
-/// sensitive, best, witness}. A record whose text changed is stale and gives nothing.
+/// sensitive, best, witness}, merged with the function's NOW record of the same text (tiebreak_of). A record whose
+/// text changed is stale and gives nothing; a NOW record of the current text then stands alone (the text changed in
+/// an earlier commit: its ledger row changes only with the next edit of the function).
 pub fn m_tiebreak(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
     let recs: HashMap<i64, Record> = read(&ctx.root).into_iter().filter(|r| r.target == ctx.inputs.target).map(|r| (r.addr, r)).collect();
-    if recs.is_empty() {
+    let now: HashMap<i64, Record> = now_read(&ctx.root).into_iter().filter(|r| r.target == ctx.inputs.target).map(|r| (r.addr, r)).collect();
+    if recs.is_empty() && now.is_empty() {
         return Ok(());
     }
-    let now: HashMap<i64, Record> = now_read(&ctx.root).into_iter().filter(|r| r.target == ctx.inputs.target).map(|r| (r.addr, r)).collect();
     let srcs = store::claims(db, &ctx.db, "source", &ctx.needed, |f| &*f.rule == "L.src" && f.s("what") == Some("func")).map_err(err)?;
     for s in srcs {
-        let Some(r) = recs.get(&s.lo) else { continue };
-        let (file, comment, end) = (s.s("file").unwrap_or(""), s.value["comment"].as_i64().unwrap_or(0), s.value["end"].as_i64().unwrap_or(0));
-        if fn_text(&ctx.root, file, comment, end).is_none_or(|t| text_hash(&t) != r.text) {
+        let (r, n) = (recs.get(&s.lo), now.get(&s.lo));
+        if r.is_none() && n.is_none() {
             continue;
         }
-        let v = match now.get(&s.lo).filter(|n| n.text == r.text) {
-            // the latest measurement of the same text under other inputs (NOW): its inputs and its best for
-            // declaration_move; the better of the two proves the text's grade (proof is proof)
-            Some(n) => {
-                let b = if rank(&n.best) > rank(&r.best) { n } else { r };
-                json!({"name": s.value["symbol"], "unit": s.value["unit"], "file": file, "comment": comment, "end": end,
-                       "sensitive": r.sensitive || n.sensitive, "best": b.best, "witness": b.witness, "inputs": n.inputs, "inputs_best": n.best})
-            }
-            None => json!({"name": s.value["symbol"], "unit": s.value["unit"], "file": file, "comment": comment, "end": end,
-                           "sensitive": r.sensitive, "best": r.best, "witness": r.witness, "inputs": r.inputs}),
-        };
+        let (file, comment, end) = (s.s("file").unwrap_or(""), s.value["comment"].as_i64().unwrap_or(0), s.value["end"].as_i64().unwrap_or(0));
+        let Some(th) = fn_text(&ctx.root, file, comment, end).map(|t| text_hash(&t)) else { continue };
+        let Some(mut v) = tiebreak_of(r, n, &th) else { continue };
+        for (k, x) in [("name", s.value["symbol"].clone()), ("unit", s.value["unit"].clone()), ("file", json!(file)), ("comment", json!(comment)), ("end", json!(end))] {
+            v[k] = x;
+        }
         out.claim(s.lo, s.lo + 1, "tiebreak", v, DERIVED);
     }
     Ok(())
+}
+
+/// The `tiebreak` claim's record part for a function whose text hashes to `th`: its ledger record `led` and its NOW
+/// record `now` (the latest measurement under other inputs), each only when of that text. Both: NOW's inputs and its
+/// own best (inputs_best) for declaration_move, the better best proves the text's grade (proof is proof). One alone
+/// stands for itself.
+fn tiebreak_of(led: Option<&Record>, now: Option<&Record>, th: &str) -> Option<Value> {
+    let (led, now) = (led.filter(|r| r.text == th), now.filter(|r| r.text == th));
+    Some(match (led, now) {
+        (Some(r), Some(n)) => {
+            let b = if rank(&n.best) > rank(&r.best) { n } else { r };
+            json!({"sensitive": r.sensitive || n.sensitive, "best": b.best, "witness": b.witness, "inputs": n.inputs, "inputs_best": n.best})
+        }
+        (Some(r), None) | (None, Some(r)) => json!({"sensitive": r.sensitive, "best": r.best, "witness": r.witness, "inputs": r.inputs}),
+        (None, None) => return None,
+    })
 }
 
 // ------------------------------------------------------------------------------------------------ attribution
@@ -417,11 +429,21 @@ fn now_put(root: &str, fresh: &[Record], gone: &[(String, i64)]) {
     let _ = std::fs::write(&path, render(&by.into_values().collect::<Vec<_>>()));
 }
 
-/// Where a measured record goes: the ledger when the function has no record there, one of another text (its text
-/// changed) or one of the same inputs (a refinement), else NOW (the same text under other inputs: the ledger row
-/// does not churn with every edit of its unit).
-fn to_ledger(ledger: &[Record], rec: &Record) -> bool {
-    ledger.iter().find(|r| r.target == rec.target && r.addr == rec.addr).is_none_or(|r| r.text != rec.text || r.inputs == rec.inputs)
+/// Where a measured record goes: the ledger when the function has no record there, one of another text while the
+/// working tree changed the function's text (`edited`: against HEAD) or one of the same inputs (a refinement), else
+/// NOW: the same text under other inputs (the ledger row does not churn with every edit of its unit), or a row left
+/// stale by a text an earlier commit changed (it changes with the function's next edit, not in the commit of a
+/// sibling's: he_RunSecretRoom's row rewritten by a build after a note on he_RunDecay).
+fn to_ledger(ledger: &[Record], rec: &Record, edited: bool) -> bool {
+    ledger.iter().find(|r| r.target == rec.target && r.addr == rec.addr).is_none_or(|r| (r.text != rec.text && edited) || (r.text == rec.text && r.inputs == rec.inputs))
+}
+
+/// Whether the working tree changed a function's text (normalized, `now`) of `file` against HEAD; true outside git
+/// or when HEAD has no such file. `heads` keeps each file's normalized HEAD text.
+fn edited_since_head(root: &str, ch: &Option<crate::cause::Changes>, heads: &mut HashMap<String, Option<String>>, file: &str, now: &str) -> bool {
+    let Some(ch) = ch else { return true };
+    let then = heads.entry(file.to_string()).or_insert_with(|| ch.text_at(root, file).map(|t| normalize(&t)));
+    then.as_ref().is_none_or(|t| !t.contains(now))
 }
 
 fn cache_read(root: &str) -> Vec<Record> {
@@ -494,6 +516,9 @@ pub(crate) fn measure(p: &Project, wants: &[Want], max_swept: usize) -> Result<(
     let mut todo: BTreeMap<String, (String, String, Vec<(Target, String, String)>)> = BTreeMap::new();
     let (mut queued, mut left) = (0, 0);
     let loc = Locator::of(p)?;
+    // the functions whose ledger row is of another text: whether the working tree changed it (to_ledger)
+    let mut edited: HashMap<i64, bool> = HashMap::new();
+    let (mut head, mut heads): (Option<Option<crate::cause::Changes>>, HashMap<String, Option<String>>) = (None, HashMap::new());
     for w in wants {
         let Some(l) = loc.get(&w.name).ok() else { continue };
         let Some(t) = plan.iter().find(|t| t.unit == l.unit) else { continue };
@@ -505,6 +530,10 @@ pub(crate) fn measure(p: &Project, wants: &[Want], max_swept: usize) -> Result<(
         let path = native_path(&format!("{root}/{}", t.file));
         let inputs = inputs_of(&crate::fsmemo::sha256(&path).map_err(err)?, &k.flags_hash, &k.include_hash);
         let th = text_hash(&ftext);
+        if ledger.iter().any(|r| r.target == p.target_name && r.addr == l.addr && r.text != th) {
+            let ch = head.get_or_insert_with(|| crate::cause::Changes::since(&root, "HEAD"));
+            edited.insert(l.addr, edited_since_head(&root, ch, &mut heads, &l.file, &ftext));
+        }
         if let Some((rec, _)) = known(&root, &ledger, &p.target_name, l.addr, &th, &inputs, w.goal) {
             out.push(Measured { rec, built: l.built.clone(), swept: false, new: false });
             continue;
@@ -547,7 +576,7 @@ pub(crate) fn measure(p: &Project, wants: &[Want], max_swept: usize) -> Result<(
             continue;
         }
         m.new = true;
-        if to_ledger(&ledger, &m.rec) {
+        if to_ledger(&ledger, &m.rec, edited.get(&m.rec.addr).copied().unwrap_or(true)) {
             fresh.push(m.rec.clone());
         } else {
             now.push(m.rec.clone());
@@ -605,17 +634,16 @@ pub fn build_sweeps(p: &Project, compiled: &[String]) -> Result<Vec<String>> {
         compiled.iter().any(|u| u == unit) && code != "byte" && code != crate::grade::NOT_RUN && close(code, ins) && !wants.iter().any(|w| w.name == name)
     }).map(|r| r["name"].as_str().unwrap_or("")).collect();
     if !cands.is_empty() {
-        if let Some(ch) = crate::cause::Changes::since(&root, "HEAD") {
-            let mut head: HashMap<String, Option<String>> = HashMap::new();
+        let ch = crate::cause::Changes::since(&root, "HEAD");
+        if ch.is_some() {
+            let mut heads: HashMap<String, Option<String>> = HashMap::new();
             let loc = Locator::of(p)?;
             for name in cands {
                 let Some(l) = loc.get(name).ok() else { continue };
-                let then = head.entry(l.file.clone()).or_insert_with(|| ch.text_at(&root, &l.file).map(|t| normalize(&t)));
                 let Some(now) = fn_text(&root, &l.file, l.comment, l.end) else { continue };
-                if then.as_ref().is_some_and(|t| t.contains(&now)) {
-                    continue;
+                if edited_since_head(&root, &ch, &mut heads, &l.file, &now) {
+                    wants.push(Want { name: name.into(), goal: "byte" });
                 }
-                wants.push(Want { name: name.into(), goal: "byte" });
             }
         }
     }
@@ -1544,13 +1572,53 @@ mod tests {
         let r = |text: &str, inputs: &str, best: &str| Record { target: "t".into(), addr: 0x401000, name: "f".into(), unit: "u".into(), text: text.into(),
                                                               sensitive: true, best: best.into(), witness: "w".into(), inputs: inputs.into() };
         let ledger = vec![r("ab", "i1", "byte")];
-        assert!(!to_ledger(&ledger, &r("ab", "i2", "shape")));
-        assert!(to_ledger(&ledger, &r("cd", "i2", "shape")));
-        assert!(to_ledger(&ledger, &r("ab", "i1", "byte")));
-        assert!(to_ledger(&[], &r("ab", "i2", "shape")));
+        assert!(!to_ledger(&ledger, &r("ab", "i2", "shape"), false));
+        assert!(to_ledger(&ledger, &r("cd", "i2", "shape"), true));
+        assert!(to_ledger(&ledger, &r("ab", "i1", "byte"), false));
+        assert!(to_ledger(&[], &r("ab", "i2", "shape"), false));
         let mut other = r("ab", "i1", "byte");
         other.addr = 0x402000;
-        assert!(to_ledger(&[other], &r("ab", "i2", "shape")));
+        assert!(to_ledger(&[other], &r("ab", "i2", "shape"), false));
+    }
+
+    /// he_RunSecretRoom (bug report tiebreak-row-rewritten-after-note): its text changed in an earlier commit (a
+    /// name became a literal) and its row stayed of the old text; a build after a comment-only edit of a sibling
+    /// (dcp note he_RunDecay) measured it. The record goes to NOW (the working tree did not change the function),
+    /// the ledger row stays, and M.tiebreak's record part comes from NOW alone.
+    #[test]
+    fn sibling_comment_edit_leaves_a_stale_row() {
+        let d = crate::testkit::scratch("tiebreak-sibling-note");
+        let _ = std::fs::remove_dir_all(&d);
+        let root = d.to_string_lossy().replace('\\', "/");
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&d).output().unwrap().status.success());
+        let room = "/* 0x56e5b0, the room */\nvoid room(int ev)\n{\n    walk(ev, \"ASSASSIN\");\n}\n";
+        let decay = |note: &str| format!("/* 0x5702e0, decay\n   @deep {note} */\nvoid decay(int ev)\n{{\n    walk(ev, 0);\n}}\n");
+        crate::testkit::write(&d, "src/he_b.c", &format!("{room}{}", decay("first reading")));
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"]);
+        // the note: only decay's comment changes
+        crate::testkit::write(&d, "src/he_b.c", &format!("{room}{}", decay("second reading")));
+        let ch = crate::cause::Changes::since(&root, "HEAD");
+        assert!(ch.is_some());
+        let mut heads = HashMap::new();
+        let room_now = fn_text(&root, "src/he_b.c", 1, 5).unwrap();
+        assert!(!edited_since_head(&root, &ch, &mut heads, "src/he_b.c", &room_now));
+        let r = |text: &str, inputs: &str, best: &str| Record { target: "exe".into(), addr: 0x56e5b0, name: "room".into(), unit: "he_b".into(), text: text.into(),
+                                                              sensitive: false, best: best.into(), witness: "sweep".into(), inputs: inputs.into() };
+        let th = text_hash(&room_now);
+        let ledger = vec![r("bfa7a700d3f8d72e", "i0", "shape")];
+        let measured = r(&th, "i1", "shape");
+        assert!(!to_ledger(&ledger, &measured, false));
+        assert_eq!(tiebreak_of(ledger.first(), Some(&measured), &th).unwrap()["inputs"], "i1");
+        assert!(tiebreak_of(ledger.first(), None, &th).is_none());
+        // the function's own edit: its row changes
+        crate::testkit::write(&d, "src/he_b.c", &format!("{}{}", room.replace("ASSASSIN", "SPY"), decay("second reading")));
+        crate::fsmemo::new_epoch(); // a new command: the file is read again
+        let room_edit = fn_text(&root, "src/he_b.c", 1, 5).unwrap();
+        assert!(edited_since_head(&root, &ch, &mut heads, "src/he_b.c", &room_edit));
+        assert!(to_ledger(&ledger, &r(&text_hash(&room_edit), "i2", "shape"), true));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
