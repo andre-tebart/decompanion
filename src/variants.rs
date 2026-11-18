@@ -15,7 +15,8 @@
 //! >>>
 //! ```
 //!
-//! An old text must occur exactly once in the function (not in the file: a twin function's equal lines are never
+//! A block whose new text is empty (`===` then `>>>`) deletes its old text. Each marker stands on a line of its own,
+//! and a marker out of order is an error. An old text must occur exactly once in the function (not in the file: a twin function's equal lines are never
 //! touched). `--move-line N --to A..B` adds a variant for each place in
 //! A..B the file's line N (a declaration inside the function) can move to.
 //!
@@ -69,28 +70,58 @@ pub fn parse(text: &str) -> std::result::Result<Vec<Variant>, String> {
         if out.iter().any(|v| v.label == label) {
             return Err(format!("line {line}: a second variant `{label}`"));
         }
+        // a block's markers, each on a line of its own, read in order: `<<<` opens, `===` ends the old text, `>>>` the
+        // new one (empty: a deletion). A marker out of order is an error, never text: the first block of a variant
+        // whose block lacked its `===` (a deletion written `<<< old >>>`) took the next block's `===` for its own, and
+        // the next block into its old text
+        // (a marker: the line is one, or starts with one and a space: `=== >>>`; `=====` in a comment is text)
+        let marker = |l: &str| -> Option<&'static str> {
+            let t = l.trim();
+            ["<<<", "===", ">>>"].into_iter().find(|m| t.strip_prefix(m).is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace)))
+        };
         let edit = if body[0].trim() == "<<<" {
             let mut pairs = vec![];
-            let mut k = 0;
-            while k < body.len() {
-                if body[k].trim().is_empty() {
-                    k += 1;
-                    continue;
+            let (mut old, mut new): (Option<Vec<&str>>, Option<Vec<&str>>) = (None, None);
+            for (k, l) in body.iter().enumerate() {
+                let at = format!("variant `{label}`, line {} of its text", k + 1);
+                match (marker(l), l.trim()) {
+                    (Some(_), t) if !["<<<", "===", ">>>"].contains(&t) => return Err(format!("{at}: `{t}`: a <<< / === / >>> marker stands on a line of its own")),
+                    (Some("<<<"), _) if old.is_none() => old = Some(vec![]),
+                    (Some("==="), _) if old.is_some() && new.is_none() => new = Some(vec![]),
+                    (Some(">>>"), _) if new.is_some() => {
+                        let o = old.take().unwrap().join("\n");
+                        if o.trim().is_empty() {
+                            return Err(format!("{at}: an empty old text"));
+                        }
+                        pairs.push((o, new.take().unwrap().join("\n")));
+                    }
+                    (Some(m), _) => {
+                        let why = match (m, old.is_some(), new.is_some()) {
+                            ("<<<", _, false) => "<<< inside a block's old text: the block before it has no === (an empty replacement is `===` then `>>>`)",
+                            ("<<<", _, true) => "<<< inside a block's new text: the block before it has no >>>",
+                            ("===", false, _) => "=== outside a <<< === >>> block",
+                            ("===", true, _) => "a second === in one block: the block has no >>>",
+                            (_, false, _) => ">>> outside a <<< === >>> block",
+                            _ => ">>> without === (an empty replacement is `===` then `>>>`)",
+                        };
+                        return Err(format!("{at}: {why}"));
+                    }
+                    (None, t) => match (&mut old, &mut new) {
+                        (_, Some(n)) => n.push(l),
+                        (Some(o), None) => o.push(l),
+                        (None, None) if t.is_empty() => {}
+                        (None, None) => return Err(format!("{at}: `{l}` outside a <<< === >>> block")),
+                    },
                 }
-                if body[k].trim() != "<<<" {
-                    return Err(format!("variant `{label}`: `{}` outside a <<< === >>> block", body[k]));
-                }
-                let mid = body[k..].iter().position(|l| l.trim() == "===").map(|i| i + k).ok_or_else(|| format!("variant `{label}`: <<< without ==="))?;
-                let end = body[mid..].iter().position(|l| l.trim() == ">>>").map(|i| i + mid).ok_or_else(|| format!("variant `{label}`: === without >>>"))?;
-                let old = body[k + 1..mid].join("\n");
-                if old.trim().is_empty() {
-                    return Err(format!("variant `{label}`: an empty old text"));
-                }
-                pairs.push((old, body[mid + 1..end].join("\n")));
-                k = end + 1;
+            }
+            if old.is_some() {
+                return Err(format!("variant `{label}`: its last block has no {}", if new.is_some() { ">>>" } else { "=== and >>>" }));
             }
             Edit::Pairs(pairs)
         } else {
+            if let Some(l) = body.iter().find(|l| ["<<<", "===", ">>>"].contains(&l.trim())) {
+                return Err(format!("variant `{label}`: `{}` in a whole-function variant (a variant of <<< === >>> blocks starts with <<<)", l.trim()));
+            }
             Edit::Whole(body.join("\n"))
         };
         out.push(Variant { label, edit });
@@ -494,6 +525,27 @@ mod tests {
         assert_eq!(apply(func, &v[1].edit).unwrap(), "a\nb\nd\nc\ne\nf");
         assert_eq!(apply(func, &v[3].edit).unwrap(), "a\nb\nd\ne\nf\nc");
         assert!(moves(30, (11, 12), 10, 6).is_err());
+    }
+
+    /// A block with an empty replacement (a deletion) ends at its `>>>`: the next block is a block of its own, in the
+    /// same variant and the next one. A block whose markers are out of order (a deletion written without its `===`,
+    /// a block without its `>>>`, two markers on one line) is an error naming it, never another block's text.
+    #[test]
+    fn empty_replacement_ends_its_block() {
+        let v = parse("### del\n<<<\n    x = 1;\n===\n>>>\n<<<\n    y = 2;\n===\n    y = 3;\n>>>\n\n### next\n<<<\n    z;\n===\n\n>>>\n<<<\n    w;\n===\n    v;\n>>>\n").unwrap();
+        assert_eq!(v[0].edit, Edit::Pairs(vec![("    x = 1;".into(), "".into()), ("    y = 2;".into(), "    y = 3;".into())]));
+        assert_eq!(v[1].edit, Edit::Pairs(vec![("    z;".into(), "".into()), ("    w;".into(), "    v;".into())]));
+        assert_eq!(apply("{\n    x = 1;\n    y = 2;\n}", &v[0].edit).unwrap(), "{\n\n    y = 3;\n}");
+        let e = |f: &str| parse(f).unwrap_err();
+        assert!(e("### a\n<<<\n    x;\n>>>\n<<<\n    y;\n===\n    z;\n>>>\n").contains(">>> without ==="));
+        assert!(e("### a\n<<<\n    x;\n<<<\n    y;\n===\n    z;\n>>>\n").contains("<<< inside a block's old text"));
+        assert!(e("### a\n<<<\n    x;\n===\n<<<\n    y;\n===\n    z;\n>>>\n").contains("<<< inside a block's new text"));
+        assert!(e("### a\n<<<\n    x;\n=== >>>\n<<<\n    y;\n===\n    z;\n>>>\n").contains("on a line of its own"));
+        assert!(e("### a\n<<<\n    x;\n===\n    y;\n").contains("its last block has no >>>"));
+        assert!(e("### a\nint f(void)\n===\n").contains("whole-function variant"));
+        // `=====` in a comment is text
+        let v = parse("### c\n<<<\n    /* a\n       ===== */\n===\n    /* b */\n>>>\n").unwrap();
+        assert_eq!(v[0].edit, Edit::Pairs(vec![("    /* a\n       ===== */".into(), "    /* b */".into())]));
     }
 
     /// --apply writes the variant over the function's lines and keeps every other byte: a Latin-1 byte (0xfc) in
