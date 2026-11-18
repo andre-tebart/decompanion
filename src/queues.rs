@@ -766,11 +766,18 @@ pub fn set_level_kept(root: &str, rel: &str, level: Option<&str>, reason: Option
                 Some(k) => k.split_whitespace().collect::<Vec<_>>().join(" "),
                 None => tag.as_ref().and_then(|c| c.get(0)).map(|m| body[m.end()..].split_whitespace().collect::<Vec<_>>().join(" ")).unwrap_or_default(),
             };
-            let prior = prior_reasons(&reason, &old_reason);
+            let (prior, dropped) = prior_reasons(&reason, &old_reason);
             if !prior.is_empty() {
                 reason = format!("{reason} prior: {prior}");
             }
-            let kept = if prior.is_empty() { String::new() } else { " (the earlier reason kept as prior:)".into() };
+            // a level tag quoted in a reason is no second tag (M2): the word stays, its `@` goes
+            reason = untag(&reason);
+            let kept = match (prior.is_empty(), dropped) {
+                (true, _) => String::new(),
+                (false, None) => " (the earlier reason kept as prior:)".into(),
+                (false, Some((n, c))) => format!(" (the earlier reason kept as prior:; {n} older prior: reason(s), {c} characters, dropped past {PRIOR_MAX}: \
+                                                   git log -p has them)"),
+            };
             let action = match old {
                 None => format!("@{l} added"),
                 Some(o) if o == format!("@{l}") => format!("@{l} reason replaced{kept}"),
@@ -803,28 +810,34 @@ fn same_lines(c: &str, breaks: usize) -> String {
     }
 }
 
-/// How many characters of earlier reasons a level tag keeps (the oldest are cut).
+/// How many characters of earlier reasons a level tag keeps: the most recent one is kept whole whatever its length,
+/// older ones while they fit; an older one that does not fit is dropped whole with those after it (never cut
+/// mid-word: a match-deep report, the readability record at a prior's end was lost), and the action says so.
 const PRIOR_MAX: usize = 900;
 
 /// The earlier reasons a new level reason keeps: the old tag's reason split at its own `prior:` marks, every part the
-/// new reason repeats left out, joined by ` prior: ` and cut to PRIOR_MAX characters.
-fn prior_reasons(new: &str, old: &str) -> String {
+/// new reason repeats left out, joined by ` prior: ` (PRIOR_MAX). And the older parts dropped: (how many, characters).
+fn prior_reasons(new: &str, old: &str) -> (String, Option<(usize, usize)>) {
     let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let new = norm(new);
     let parts: Vec<String> = old.split(" prior: ").map(norm).filter(|p| !p.is_empty() && *p != new && !new.contains(p.as_str())).collect();
     let mut out = String::new();
-    for p in parts {
+    for (i, p) in parts.iter().enumerate() {
         let sep = if out.is_empty() { "" } else { " prior: " };
-        if out.chars().count() + sep.len() + p.chars().count() > PRIOR_MAX {
-            let room = PRIOR_MAX.saturating_sub(out.chars().count() + sep.len());
-            if room > 40 {
-                out = format!("{out}{sep}{}...", p.chars().take(room).collect::<String>());
-            }
-            break;
+        if i > 0 && out.chars().count() + sep.len() + p.chars().count() > PRIOR_MAX {
+            let rest = &parts[i..];
+            return (out, Some((rest.len(), rest.iter().map(|r| r.chars().count()).sum())));
         }
         out = format!("{out}{sep}{p}");
     }
-    out
+    (out, None)
+}
+
+/// A reason with its level tags quoted as plain words (`@deep` -> `deep`): the comment carries one tag.
+fn untag(reason: &str) -> String {
+    use std::sync::LazyLock;
+    static AT: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"@(deep|hard|stuck)\b").unwrap());
+    AT.replace_all(reason, "$1").into_owned()
 }
 
 /// The column a level tag's comment is wrapped at.
@@ -1074,8 +1087,12 @@ mod level_tests {
             let flat = why.split_whitespace().collect::<Vec<_>>().join(" ");
             assert_eq!(part.functions[0].1 .0.as_deref(), Some(format!("{flat} prior: x * y (z)").as_str()));
         }
-        assert_eq!(prior_reasons("new", &"a".repeat(2000)).chars().count(), PRIOR_MAX + 3);
-        assert_eq!(prior_reasons("new", &format!("old prior: {}", "a".repeat(2000))).chars().count(), PRIOR_MAX + 3);
+        // the most recent prior whole whatever its length; an older one that does not fit dropped whole and counted
+        // (stuck-truncates-prior-text: priors were cut mid-word)
+        assert_eq!(prior_reasons("new", &"a ".repeat(1000)), ("a ".repeat(1000).trim_end().to_string(), None));
+        assert_eq!(prior_reasons("new", &format!("old prior: {}", "b".repeat(2000))), ("old".to_string(), Some((1, 2000))));
+        assert_eq!(prior_reasons("new", &format!("{} prior: old prior: older", "a".repeat(950))), ("a".repeat(950), Some((2, 8))));
+        assert_eq!(untag("quoted ai_X's @deep reason, @hard and @deeper"), "quoted ai_X's deep reason, hard and @deeper");
         assert_eq!(set_level(&root, "src/u.c", None, None, 1).unwrap(), "@deep removed");
         assert_eq!(crate::edit::read(&format!("{root}/src/u.c")), orig);
         let _ = std::fs::remove_dir_all(&dir);
