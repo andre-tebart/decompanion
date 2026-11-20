@@ -6,8 +6,10 @@ mod layout;
 mod launch;
 mod layout_tools;
 mod matching;
+mod multitarget;
 mod obligations;
 mod source_checks;
+mod targets;
 
 use crate::storedb;
 use crate::store::Claim;
@@ -40,14 +42,21 @@ pub fn set_config(root: &Path, old: &str, new: &str) {
     write(root, "decompanion.toml", &t.replacen(old, new, 1));
 }
 
-/// Key lines appended to the [[target]] table of `name`.
-pub fn target_table(root: &Path, name: &str, extra: &str) {
-    set_config(root, &format!("name = \"{name}\"\n"), &format!("name = \"{name}\"\n{extra}\n"));
+/// `old` replaced by `new` in the [[target]] table of `name` (its first occurrence after the table's name line).
+pub fn target_set(root: &Path, name: &str, old: &str, new: &str) {
+    let t = read(root, "decompanion.toml");
+    let at = t.find(&format!("name = \"{name}\"\n")).unwrap_or_else(|| panic!("no target {name}"));
+    assert!(t[at..].contains(old), "{old:?} not in target {name}");
+    write(root, "decompanion.toml", &format!("{}{}", &t[..at], t[at..].replacen(old, new, 1)));
 }
 
 
 pub fn tiny() -> PathBuf {
-    make_project(&tmp("proj").join("proj"))
+    make_project(&tmp("proj").join("proj"), false)
+}
+
+pub fn tiny2() -> PathBuf {
+    make_project(&tmp("proj2").join("proj2"), true)
 }
 
 /// Write src/<name>.c from its parts, a blank line between two parts; an empty part is left out.
@@ -83,13 +92,13 @@ pub fn dcp_bare(args: &[&str]) -> (i32, String, String) {
     (code, String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned())
 }
 
-pub fn project(root: &Path) -> crate::project::Project {
-    crate::project::Project::find(Some(&root.to_string_lossy())).unwrap()
+pub fn project(root: &Path, target: Option<&str>) -> crate::project::Project {
+    crate::project::Project::find(Some(&root.to_string_lossy()), target).unwrap()
 }
 
 /// The facts of one kind of a target's current runs.
-pub fn facts(root: &Path, kind: &str) -> Vec<Rc<Claim>> {
-    let p = project(root);
+pub fn facts(root: &Path, kind: &str, target: Option<&str>) -> Vec<Rc<Claim>> {
+    let p = project(root, target);
     let db = p.store_path();
     storedb::st_open(&db).unwrap();
     storedb::st_facts(&db, Some(kind), None, None, None).unwrap().into_iter().map(|(_, f)| f).collect()
@@ -98,20 +107,20 @@ pub fn facts(root: &Path, kind: &str) -> Vec<Rc<Claim>> {
 /// A finding: (severity, check, lo, hi, message, a, b).
 pub type FindingRow = (String, String, i64, i64, String, String, String);
 
-pub fn findings(root: &Path) -> Vec<FindingRow> {
-    let p = project(root);
+pub fn findings(root: &Path, target: Option<&str>) -> Vec<FindingRow> {
+    let p = project(root, target);
     let db = p.store_path();
     storedb::st_open(&db).unwrap();
     storedb::st_findings(&db, None, None).unwrap()
 }
 
-pub fn findings_of(root: &Path, check: &str) -> Vec<FindingRow> {
-    findings(root).into_iter().filter(|c| c.1 == check).collect()
+pub fn findings_of(root: &Path, target: Option<&str>, check: &str) -> Vec<FindingRow> {
+    findings(root, target).into_iter().filter(|c| c.1 == check).collect()
 }
 
 /// The rules of a target refreshed as a command refreshes them: whether any ran.
-pub fn engine_ran(root: &Path) -> bool {
-    let p = project(root);
+pub fn engine_ran(root: &Path, target: Option<&str>) -> bool {
+    let p = project(root, target);
     storedb::st_open(&p.store_path()).unwrap();
     crate::engine::engine_run(&p, None, false).unwrap().iter().any(|r| r.ran)
 }

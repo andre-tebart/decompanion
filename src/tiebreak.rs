@@ -361,7 +361,7 @@ pub(crate) fn compile(p: &Project, jobs: &[Job]) -> Result<Vec<std::result::Resu
     let mut flags: HashMap<&str, Vec<String>> = HashMap::new();
     for j in jobs {
         if !flags.contains_key(j.unit.unit.as_str()) {
-            flags.insert(&j.unit.unit, crate::plan::compile_flags(p, &j.unit.unit).map_err(err)?);
+            flags.insert(&j.unit.unit, crate::plan::compile_flags(p, &j.unit.target, &j.unit.unit).map_err(err)?);
         }
     }
     let n = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
@@ -1360,7 +1360,7 @@ pub fn sample_function(p: &Project, name: &str, n: usize, seed: u64) -> Result<s
     let Some(text) = fn_text(&root, &file, comment, end) else { return Ok(Err(format!("{name}: its text is not readable"))) };
     // the unit preprocessed as the trial compiles it (its directory, then include/)
     let tools = crate::vc6::Tools::of(p);
-    let flags = crate::plan::compile_flags(p, &t.unit).map_err(err)?;
+    let flags = crate::plan::compile_flags(p, &t.target, &t.unit).map_err(err)?;
     let mut dirs = vec![];
     if let Some((d, _)) = t.file.rsplit_once('/') {
         dirs.push(d.replace('/', "\\"));

@@ -283,7 +283,7 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
             d.declared.push(format!("dropped the declaration of {name} from src/{f}'s dcp block"));
         }
     }
-    let default = x.p.target_name.clone();
+    let default = x.p.targets[0].name.clone();
     let target = x.p.target_name.clone();
     let tag = if target == default { fmt_addr(a) } else { format!("{target}:{}", fmt_addr(a)) };
     let (text, uses) = x.rewrite_body(e, &name);
@@ -291,6 +291,7 @@ fn draft(x: &Ctx, a: i64, unit: Option<&str>) -> Result<Result<Draft, String>> {
     let lead: String = lead_comments(&text).iter().map(|c| format!("{c}\n")).collect();
     let block = format!("/* {tag}, {name} */\n{lead}{sig}\n{}\n", body.trim_matches('\n'));
     d.uses = uses.len();
+    let block = if target != default { format!("#if defined({})\n{block}#endif\n", crate::frontend::target_macro(&target)) } else { block };
     let next = scan.functions().filter(|f| f.0 .0 == rel)
         .filter_map(|f| f.0 .4.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == target).map(|(_, x)| (*x as i64, f.1 .3)))
         .filter(|(x, _)| *x > a).min().map(|m| m.1);

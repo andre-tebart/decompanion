@@ -10,7 +10,7 @@ original); (2) draft C for every function of each unit in address order, no gaps
 draft marked `@rough` in its address comment, it is never skipped); (3) quick byte fixes only.
 
 Hard rules
-- Every tool is `dcp ...` from the project root.
+- Every tool is `dcp ...` from the project root (`--target NAME` for a target other than the first).
   Every `dcp` of the project runs in the project's daemon, which the first command starts (and a new dcp
   build restarts: `dcp: the daemon restarts ...` once, then the command runs). `dcp serve --status` shows it,
   `dcp serve --stop` stops it (before deleting build/).
@@ -54,6 +54,15 @@ Hard rules
    work loop only: the wrap-up has no time limit. The only failure is ending the turn before `over=yes` (a
    complete layout is the one exception, below), not the clock running out mid-function.
 3. Read the lead comment of `src/<unit>.c` of the unit the `next=` line names (its `Open:` lines) when it exists.
+4. A target other than the first (`--target NAME` on every command of the session) is built from the same sources
+   as the first: before drafting anything, `dcp --target NAME layout shared` lists the functions the sources already
+   hold that this target contains byte for byte, per unit with the range they span, and `--write` adds
+   `NAME:0xADDR` to their address comments. Then `dcp --target NAME build`; commit that before the work loop. A
+   function `dcp layout next` hands out afterwards may still be one the sources hold under another target's address
+   (the same function compiled with another constant or under an `#if`): look for it by its strings and callees in
+   the first target's source (`dcp fn`, `dcp why`) before drafting it, give the existing function the address
+   (`/* 0xADDR, NAME:0xADDR, ... */`) and put what differs under `#if defined(DCP_TARGET_NAME)`. A function without
+   an address of a target is not linked into that target; it needs no guard.
 
 ## 2. Work loop (until the clock says over=yes)
 

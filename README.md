@@ -108,6 +108,43 @@ dxsdk = "C:/Tools/DXSDK61"
 ghidra = "C:/Tools/ghidra_12.1.4_PUBLIC"
 ```
 
+### Several binaries from one source tree
+
+A project can hold more than one target: the binaries that were built from the same sources (a game's executable,
+its server DLL, a second build of the executable). `dcp target add NAME PATH` appends a `[[target]]` table; the
+single `[target]` table becomes the first of the list and stays the default target.
+
+```toml
+[[target]]
+name = "exe"                       # the default target: the first of the list
+path = "{game}/Game.exe"
+...
+
+[[target]]
+name = "server"
+path = "{game}/server/server.dll"
+...                                # its own compiler, linker, cflags, archives, each with its reason
+```
+
+- `dcp --target NAME <command>` works on that target; without it a command works on the default one. `dcp status`,
+  `dcp toolchain`, `dcp check`, `dcp promote` and the session gate cover every target; `setup`, `build`, `report`,
+  `link` and `lint` take `--all-targets`.
+- Each target has its own store (`build/<name>.sqlite`) and its own grades (the ledgers' first column).
+- An address of another target than the default one carries its name, in the sources and in `decl/*.dcl`:
+
+  ```c
+  /* 0x4616d0, server:0x10001000, computes the Adler-32 checksum of a buffer */
+  ```
+  ```
+  server:0x10001000 boundary start tu=adler32 -- ...
+  ```
+- A unit is a unit of every target one of its functions has an address of. It is compiled once per target, with
+  `DCP_TARGET_<name>` defined, so code that differs between the binaries goes under `#if`. A function without an
+  address of a target is not linked into that target.
+- `dcp --target NAME layout shared` finds the functions of the sources that the target holds byte for byte (by the
+  objects the default target was built from) and, with `--write`, adds their `NAME:0xADDR` addresses: the start of a
+  second target's layout.
+
 On another machine, `decompanion.local.toml` (not committed) gives that machine's directories:
 
 ```toml

@@ -540,17 +540,24 @@ fn detail(out: &mut Vec<String>, label: &str, text: &str) {
     out.extend(fill(text, WRAP, &format!("{DETAIL}{label:<6}")));
 }
 
-/// The status. Human output: the phase, whether the gate is blocked, then one numbered step per open obligation
-/// (what is missing, the evidence, the command that resolves it), and a `next:` line for the first one to do.
-/// `as_json`: the records of the output contract instead.
-fn status(c: &Ctx, work: bool, as_json: bool) -> Result<Vec<String>> {
+/// The status of one target. Human output: the phase, whether the gate is blocked, then one numbered step per open
+/// obligation (target, what is missing, the evidence, the command that resolves it), and a `next:` line for the
+/// first one to do. `shown`: ids of project-wide obligations already printed (multi-target output prints them
+/// once), extended. `as_json`: the records of the output contract instead.
+fn status(c: &Ctx, shown: &mut Vec<String>, work: bool, as_json: bool) -> Result<Vec<String>> {
     let p = c.p;
     let obls = compute(c, work)?;
-    let rows: Vec<&Obligation> = obls.iter().collect();
+    let was_shown = shown.clone();
+    let rows: Vec<&Obligation> = obls.iter().filter(|o| !(o.target.is_none() && was_shown.contains(&o.id))).collect();
     let mut out = vec![];
     if as_json {
         out.push(json_line(&[("status", J::S(p.target_name.clone())), ("phase", J::S(phase(&obls).into())), ("open", J::I(obls.len() as i64))]));
-        out.extend(rows.iter().map(|o| o.json()));
+        for o in &rows {
+            out.push(o.json());
+            if o.target.is_none() {
+                shown.push(o.id.clone());
+            }
+        }
         return Ok(out);
     }
     let waiting = obls.iter().filter(|o| !o.waits.is_empty()).count();
@@ -564,6 +571,10 @@ fn status(c: &Ctx, work: bool, as_json: bool) -> Result<Vec<String>> {
     } else {
         "clear".to_string()
     }));
+    let hidden: Vec<&str> = obls.iter().filter(|o| o.target.is_none() && was_shown.contains(&o.id)).map(|o| o.id.as_str()).collect();
+    if !hidden.is_empty() {
+        out.push(format!("  also   {} (project-wide, printed above)", hidden.join(", ")));
+    }
     if obls.is_empty() {
         out.push(String::new());
         out.push("nothing open: every decision is declared and every function is byte + readable".into());
@@ -571,7 +582,11 @@ fn status(c: &Ctx, work: bool, as_json: bool) -> Result<Vec<String>> {
     }
     out.push(String::new());
     for (i, o) in rows.iter().enumerate() {
-        out.push(format!("{:>2}. {}", i + 1, o.id));
+        let tgt = match &o.target {
+            None => "every target".to_string(),
+            Some(t) => format!("target {t}"),
+        };
+        out.push(format!("{:>2}. {:<18} {tgt}", i + 1, o.id));
         detail(&mut out, "need", &o.missing);
         if !o.waits.is_empty() {
             detail(&mut out, "wait", &format!("on {}: declare that first", o.waits));
@@ -586,19 +601,28 @@ fn status(c: &Ctx, work: bool, as_json: bool) -> Result<Vec<String>> {
             }
         }
         out.push(String::new());
+        if o.target.is_none() {
+            shown.push(o.id.clone());
+        }
     }
     if let Some(n) = rows.iter().find(|o| o.waits.is_empty()) {
         out.push(format!("next: {}", n.resolve.split("; ").next().unwrap_or("")));
-    } else {
+    } else if !rows.is_empty() {
         let w: std::collections::BTreeSet<&str> = rows.iter().map(|o| o.waits.as_str()).collect();
         out.push(format!("next: waiting for {}", w.into_iter().collect::<Vec<_>>().join(", ")));
+    } else {
+        out.push("next: see the project-wide obligations above".into());
     }
     Ok(out)
 }
 
-/// The status lines (`dcp status`; other commands print them as their tail after an empty line).
-pub fn decide_status(p: &crate::project::Project, work: bool, as_json: bool) -> Result<Vec<String>> {
-    status(&Ctx::new(p)?, work, as_json)
+/// The status lines of one target (`dcp status`; other commands print them as their tail after an empty line) and
+/// the project-wide obligation ids shown so far (`shown` extended).
+pub fn decide_status(p: &crate::project::Project, shown: Vec<String>, work: bool, as_json: bool) -> Result<(Vec<String>, Vec<String>)> {
+    let c = Ctx::new(p)?;
+    let mut shown = shown;
+    let lines = status(&c, &mut shown, work, as_json)?;
+    Ok((lines, shown))
 }
 
 /// The open toolchain and libs obligations of the current target (the session and check gate), as records.
@@ -766,6 +790,12 @@ fn parse_pairs(pairs: &[String], known: &[&str]) -> Result<Vec<(String, String)>
     Ok(out)
 }
 
+/// The [[target]] index of the current target for the line editor (None: the single-table form `[target]`).
+fn target_index(p: &Project) -> Result<Option<usize>> {
+    let single = matches!(p.cfg.get("target"), Some(toml::Value::Table(_)));
+    Ok(if single { None } else { p.targets.iter().position(|x| x.name == p.target_name) })
+}
+
 fn config_path(p: &Project) -> String {
     native_path(&p.root.join(crate::project::CONFIG_NAME).to_string_lossy())
 }
@@ -818,7 +848,7 @@ fn toolchain_declare(p: &Project, pairs: &[String], why: &Option<String>) -> Res
         vals.iter().cloned().chain(vals.iter().map(|(k, _)| (format!("reason.{k}"), TV::S(why.clone())))).collect()
     };
     if !tgt.is_empty() {
-        tomledit::set_keys(&path, "target", &with_reasons(&tgt), None, &TARGET_COVERED).map_err(err)?;
+        tomledit::set_keys(&path, "target", &with_reasons(&tgt), target_index(p)?, &TARGET_COVERED).map_err(err)?;
     }
     if !proj.is_empty() {
         tomledit::set_keys(&path, "toolchain", &with_reasons(&proj), None, &["root", "compiler", "linker", "cflags"]).map_err(err)?;
@@ -857,7 +887,7 @@ pub fn decide_toolchain_after(p: &crate::project::Project, root: Option<String>)
         out.extend(bad.iter().map(|m| format!("  {m}")));
     }
     out.push(String::new());
-    out.extend(status(&c, true, false)?);
+    out.extend(status(&c, &mut vec![], true, false)?);
     Ok((out, if bad.is_empty() { 0 } else { 1 }))
 }
 
@@ -879,7 +909,7 @@ pub fn decide_libs_declare(p: &crate::project::Project, archives: Vec<String>, w
     }
     let why = why.unwrap_or_default().trim().to_string();
     tomledit::set_keys(&config_path(p), "target", &[("archives".into(), TV::L(specs.clone())), ("reason.archives".into(), TV::S(why.clone()))],
-                       None, &TARGET_COVERED).map_err(err)?;
+                       target_index(p)?, &TARGET_COVERED).map_err(err)?;
     let names = specs.iter().map(|x| name_of(x)).collect::<Vec<_>>().join(",");
     Ok((vec![record(&[("declared", s("archives")), ("value", s(names)), ("level", s("declared")), ("where", s(format!("target {}", p.target_name))),
                       ("why", s(why))])], None, 0))
@@ -898,7 +928,7 @@ pub fn decide_libs_after(p: &crate::project::Project) -> Result<Vec<String>> {
     }
     let placed: Vec<String> = per.iter().map(|(k, v)| format!("{k}={v}")).collect();
     let mut out = vec![format!("  placed: {}  (S.crt.code)", if placed.is_empty() { "nothing".into() } else { placed.join("  ") }), String::new()];
-    out.extend(status(&c, true, false)?);
+    out.extend(status(&c, &mut vec![], true, false)?);
     Ok(out)
 }
 
@@ -924,7 +954,7 @@ pub fn decide_analyzer_declare(p: &crate::project::Project, pairs: Vec<String>, 
     let why = why.unwrap_or_default().trim().to_string();
     vals.push(("reason".into(), TV::S(why.clone())));
     tomledit::set_keys(&config_path(p), "analyzer", &vals, None, &[]).map_err(err)?;
-    let p = Project::open(&p.root, &p.core_hash).map_err(crate::project::cfg_err)?;
+    let p = Project::open(&p.root, Some(&p.target_name), &p.core_hash).map_err(crate::project::cfg_err)?;
     let inst = crate::analyzers::Analyzer::of(&p).map_err(crate::project::cfg_err)?.available();
     let mut out = vec![record(&[("declared", s("analyzer")), ("value", s(crate::analyzers::NAME)), ("level", s("declared")), ("where", s("[analyzer]")), ("why", s(why)),
                                 ("available", Tok::B(inst.ok())), ("at", if inst.ok() { s(inst.at.clone()) } else { Tok::No })])];

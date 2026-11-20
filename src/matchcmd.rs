@@ -702,8 +702,7 @@ fn write_baseline(root: &str, text: &str) -> Result<()> {
 
 /// `dcp promote` (every target built): ledger/grades.tsv from the current grades of every target; refused when the
 /// source (src/, include/, decl/) has uncommitted changes, and when a grade fell against it unless `accept_falls`.
-pub fn promote_command(p: &Project, accept_falls: bool) -> Result<Out> {
-    let root = &p.root.to_string_lossy().into_owned();
+pub fn promote_command(root: &str, projects: &[Project], accept_falls: bool) -> Result<Out> {
     // a witness is a commit: grades of uncommitted source are in no history
     let dirty = crate::session::source_dirty(root);
     if !dirty.is_empty() {
@@ -716,17 +715,25 @@ pub fn promote_command(p: &Project, accept_falls: bool) -> Result<Out> {
         return Ok((out, None, 1));
     }
     let old = read_baseline(root);
-    let db = opened(p)?;
+    let mut targets = vec![];
+    let mut falls = vec![];
     // a function not run has no grade to write: the baseline would lose its entry (not even --accept-falls)
-    let unbuilt: Vec<String> = queues::not_run(&db)?.into_iter().map(|(u, n)| format!("  unbuilt: unit {u}: {n} function(s) not run")).collect();
+    let mut unbuilt = vec![];
+    for p in projects {
+        let db = opened(p)?;
+        unbuilt.extend(queues::not_run(&db)?.into_iter().map(|(u, n)| format!("  unbuilt: {} unit {u}: {n} function(s) not run", p.target_name)));
+    }
     if !unbuilt.is_empty() {
         let mut out = vec![record(&[("promote", s("refused")), ("unbuilt", Tok::I(unbuilt.len() as i64))])
             + "  (a unit has no object: its functions have no experiment; fix the compile (dcp check: M.compile), then promote)"];
         out.extend(unbuilt);
         return Ok((out, None, 1));
     }
-    let falls = queues::regressions(Some(root), &p.target_name, &db, &old)?;
-    let targets = vec![(p.target_name.clone(), db)];
+    for p in projects {
+        let db = opened(p)?;
+        falls.extend(queues::regressions(Some(root), &p.target_name, &db, &old)?);
+        targets.push((p.target_name.clone(), db));
+    }
     if !falls.is_empty() && !accept_falls {
         let mut out = vec![record(&[("promote", s("refused")), ("falls", Tok::I(falls.len() as i64))])
             + "  (promote raises entries only: dcp debt add FN --to GRADE --why TEXT [--waits-for WHAT] for a fall wanted on purpose, --accept-falls takes them all)"];
@@ -737,7 +744,7 @@ pub fn promote_command(p: &Project, accept_falls: bool) -> Result<Out> {
     let accepted = queues::parse_baseline(&text).iter().filter(|x| !x.1.accepted.is_empty()).count();
     write_baseline(root, &text)?;
     let n = text.matches('\n').count() as i64 - 1;
-    let mut out = vec![record(&[("promoted", s("ledger/grades.tsv")), ("functions", Tok::I(n)),
+    let mut out = vec![record(&[("promoted", s("ledger/grades.tsv")), ("functions", Tok::I(n)), ("targets", Tok::I(projects.len() as i64)),
                                 ("falls_against_old", Tok::I(falls.len() as i64)), ("debt", Tok::I(accepted as i64))])];
     out.extend(falls.iter().map(|f| format!("  fell (accepted): {f}")));
     // the entries that carry an accepted fall, from this promote or earlier ones (else `accepted=8` with no fall
@@ -992,8 +999,7 @@ mod tests {
         crate::testkit::write(&d, "notes.md", "x");
         assert!(crate::session::source_dirty(&root).is_empty()); // the ledger, a note: not our source
         crate::testkit::write(&d, "include/net.h", "int f(void);\n");
-        std::fs::write(d.join("decompanion.toml"), "[target]\nname = \"net\"\npath = \"net.dll\"\n").unwrap();
-        let (out, _, code) = promote_command(&crate::project::Project::open(&d, "core").unwrap(), false).unwrap();
+        let (out, _, code) = promote_command(&root, &[], false).unwrap();
         assert!(code == 1 && out[0].starts_with("promote=refused  dirty=1") && out[1] == "  dirty ?? include/net.h", "{out:?}");
         assert_eq!(read_baseline(&root), "target\taddress\n");
         let _ = std::fs::remove_dir_all(&d);

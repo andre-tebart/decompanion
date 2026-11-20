@@ -210,8 +210,8 @@ impl<'a> Engine<'a> {
             libs,
             decl: p.toolchain_decl().map_err(cfg)?,
             target: p.target_name.clone(),
-            targets: vec![p.target_name.clone()],
-            images: [(p.target_name.clone(), p.target.path.clone())].into_iter().collect(),
+            targets: p.targets.iter().map(|t| t.name.clone()).collect(),
+            images: p.targets.iter().map(|t| (t.name.clone(), t.path.clone())).collect(),
             function_alignment: tc.function_alignment() as i64,
             code_rank: crate::grade::CODE.iter().enumerate().map(|(i, c)| (c.to_string(), i as i64)).collect(),
             max_debt: p.max_debt(),
@@ -376,8 +376,8 @@ mod tests {
         let d = crate::testkit::scratch("engine");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("net.dll"), crate::pe::testpe::build(None)).unwrap();
-        std::fs::write(d.join("decompanion.toml"), "[target]\nname = \"net\"\npath = \"net.dll\"\n").unwrap();
-        let p = Project::open(&d, "core").unwrap();
+        std::fs::write(d.join("decompanion.toml"), "[[target]]\nname = \"net\"\npath = \"net.dll\"\n").unwrap();
+        let p = Project::open(&d, None, "core").unwrap();
         let mut e = Engine::new(&p, "core");
         let ids = ["S.sections".to_string()];
         let ran = |res: Vec<Result_>| res.iter().filter(|r| r.ran).map(|r| r.rule).collect::<Vec<_>>();

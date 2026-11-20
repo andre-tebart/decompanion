@@ -284,7 +284,7 @@ impl Texts {
 impl Ctx<'_> {
     /// (file, line) -> the target's function whose span holds the line.
     fn spans(&self) -> Spans {
-        let default = self.p.target_name.clone();
+        let default = self.p.targets[0].name.clone();
         let mut by: HashMap<String, Vec<(i64, i64, i64)>> = HashMap::new();
         for ((file, _, _, _, addrs, _, _), (_, _, _, comment_line, _, end_line, ..)) in self.scan.functions() {
             if let Some((_, a)) = addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(&default) == self.p.target_name) {
@@ -592,7 +592,7 @@ fn vc6_diags(p: &Project, tools: &crate::vc6::Tools, a: &crate::plan::Tu, rel: &
     if !tools.available() {
         return Ok(None);
     }
-    let flags = crate::plan::compile_flags(p, &a.unit)?;
+    let flags = crate::plan::compile_flags(p, &a.target, &a.unit)?;
     let res = tools.syntax_check(rel, &flags, &["include".to_string()], root)?;
     Ok(Some(res.diags.iter().map(|d| Dg {
         file: if d.file.is_empty() { String::new() } else { project_rel(root, &d.file) },
@@ -647,7 +647,7 @@ fn trial(x: &Ctx, unit: &str, headers: &[String], drop: &BTreeMap<i64, HashSet<S
     let (rb, rn) = (format!("{dir}/{unit}.base.c"), format!("{dir}/{unit}.trial.c"));
     std::fs::write(native_path(&format!("{}/{rb}", x.root)), crate::edit::encode(&old)).map_err(|e| e.to_string())?;
     std::fs::write(native_path(&format!("{}/{rn}", x.root)), crate::edit::encode(&new)).map_err(|e| e.to_string())?;
-    let args = x.front.args(&[]);
+    let args = x.front.args(&[frontend::target_macro(&p.target_name)]);
     let tools = crate::vc6::Tools::of(p);
     let root = x.root.as_str();
     let clang = |rel: &str, text: &str| -> Result<Vec<Dg>, String> {

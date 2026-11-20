@@ -3,7 +3,7 @@
 //!
 //! - The front end: the project's libclang (`[lint] libclang = "<path>"`, else the libclang.dll beside `clang` on
 //!   PATH, else the LLVM default install path), the toolchain's headers as system headers, include/ for the
-//!   quoted includes.
+//!   quoted includes, the target's `DCP_TARGET_<name>` defined.
 //! - models: each unit file src/<unit>.c is one translation unit; a header takes the model of the first unit (by
 //!   name) that includes it; a file no unit holds is parsed alone. Each parse is kept by its text, arguments and
 //!   libclang (in memory and in build/cache/cparse/<key>.json) as long as every file it read is unchanged. The
@@ -54,6 +54,11 @@ pub fn clang_library() -> Option<String> {
     library(None)
 }
 
+/// The macro every compile of a target defines (a function of some targets only stands under `#if` on it).
+pub fn target_macro(name: &str) -> String {
+    format!("DCP_TARGET_{}", name.chars().map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' }).collect::<String>())
+}
+
 /// What a parse of the project needs: its root, the system include directories, the include directories, the
 /// targets with the macros their compiles define (the default first; one unnamed target without a configuration).
 pub struct Front {
@@ -72,9 +77,9 @@ impl Front {
             clang::load(&library(None).ok_or(NOT_FOUND)?)?;
             return Ok(Front { root: root.into(), sysdirs: vec![], incdirs, targets: vec![(None, vec![])] });
         }
-        let p = Project::open(r, "")?;
+        let p = Project::open(r, None, "")?;
         clang::load(&library(Some(&p.cfg)).ok_or(NOT_FOUND)?)?;
-        Ok(Front { root: root.into(), sysdirs: system_dirs(&p), incdirs, targets: vec![(Some(p.target_name.clone()), vec![])] })
+        Ok(Front { root: root.into(), sysdirs: system_dirs(&p), incdirs, targets: p.targets.iter().map(|t| (Some(t.name.clone()), vec![target_macro(&t.name)])).collect() })
     }
 
     pub fn args(&self, defines: &[String]) -> Vec<String> {
@@ -381,23 +386,17 @@ fn address_for(addrs: &[(Option<String>, u64)], target: &str, default: &str) -> 
     addrs.iter().find(|(t, _)| t.as_deref().unwrap_or(default) == target).map(|x| x.1)
 }
 
-/// L16: a function compiled into a target its address comment does not list, or listed for a target whose compile
-/// does not hold it (its `#if` on the DCP_TARGET_<name> macros).
+/// L16: a function whose address comment lists a target whose compile does not hold it (its `#if` on the
+/// DCP_TARGET_<name> macros). The other direction is no error: a function compiled into a target its comment lists
+/// no address for is not linked into that target (plan.rs).
 fn guards(functions: &[&srcscan::FnRow], targets: &[String]) -> Vec<srcscan::ErrRow> {
     let mut out = vec![];
     for ((file, line, _, name, addrs, unlinked, _), (_, _, _, _, _, _, ts, _)) in functions.iter().map(|f| (&f.0, &f.1)) {
         if *unlinked || ts.is_empty() || addrs.iter().any(|(t, _)| t.as_ref().is_some_and(|t| !targets.contains(t))) {
             continue;
         }
-        let listed: Vec<&String> = targets.iter().filter(|t| address_for(addrs, t, &targets[0]).is_some()).collect();
-        let extra: Vec<&String> = ts.iter().filter(|t| !listed.contains(t)).collect();
-        let missing: Vec<&String> = listed.iter().copied().filter(|t| !ts.contains(t)).collect();
+        let missing: Vec<&String> = targets.iter().filter(|t| address_for(addrs, t, &targets[0]).is_some() && !ts.contains(t)).collect();
         let join = |xs: &[&String]| xs.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-        if !extra.is_empty() {
-            out.push((file.clone(), *line, "L16".to_string(), format!(
-                "{name} is compiled into {}, its address comment lists no address there (guard it: #if on {})", join(&extra),
-                listed.iter().map(|t| format!("DCP_TARGET_{t}")).collect::<Vec<_>>().join(", "))));
-        }
         if !missing.is_empty() {
             out.push((file.clone(), *line, "L16".to_string(), format!("{name}: its address comment lists {}, whose compile does not hold it (its #if)", join(&missing))));
         }
@@ -627,11 +626,14 @@ mod tests {
         assert!(errs[1].3.contains("g: no address comment") && errs[2].3.contains("h: no address comment"));
         assert!(errs[3].3.contains("unexpected source file src/net/extra.c"));
         assert_eq!(sc.no_unit_files(), [errs[0].3.as_str()]);
-        // the plan keeps the file as a unit of every target (its compile shows what is wrong), without functions
+        // the plan keeps the file as a unit of every target (its compile shows what is wrong), without functions;
+        // NetOpen has an address of tiny only: other's unit lists it without one (not linked into other)
         for t in ["tiny", "other"] {
             let units = crate::plan::units(&root, &sc, t, "tiny", &HashMap::new()).unwrap();
             let got: Vec<(&str, usize)> = units.iter().map(|u| (u.unit.as_str(), u.functions.len())).collect();
-            assert_eq!(got, [("gv", 0), ("net", if t == "tiny" { 3 } else { 2 })], "{t}");
+            assert_eq!(got, [("gv", 0), ("net", 3)], "{t}");
+            let open = units[1].functions.iter().find(|f| f.1 == "NetOpen").unwrap();
+            assert_eq!(open.0.is_some(), t == "tiny");
         }
         let ph: Vec<&str> = sc.parts.iter().flat_map(|p| p.placeholders.iter()).map(|p| p.2.as_str()).collect();
         assert_eq!(ph, ["FUN_10001020"]);

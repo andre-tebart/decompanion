@@ -1,11 +1,13 @@
-//! The project: decompanion.toml and what hangs off it that is plain data: the target, its toolchain and
-//! library-archive declarations with their reasons, the obligations an input waits on, and the content hashes of
+//! The project: decompanion.toml and what hangs off it that is plain data: the targets, each with its toolchain and
+//! library-archive declarations and their reasons, the obligations an input waits on, and the content hashes of
 //! the named external inputs.
 //!
 //! decompanion.toml
-//!   [target]       name, path, sha256; compiler, linker, cflags, archives; reason.<key> (or reason = "..." for every
-//!                  key of the table). The name (the store's file name, the ledgers' first column, `target=` in the
-//!                  output) defaults to the binary's stem.
+//!   [[target]]     name, path, sha256; compiler, linker, cflags, archives; reason.<key> (or reason = "..." for every
+//!                  key of the table). One table per binary built from this source tree; the first is the default
+//!                  one, `--target NAME` selects another. The name (the store's file name, the ledgers' first
+//!                  column, `target=` in the output, the prefix of an address: `NAME:0x...`) defaults to the
+//!                  binary's stem. A project of one binary may write the single table `[target]`.
 //!   [toolchain]    root, include_dirs, lib_dirs, [[toolchain.unit]] flag overrides.
 //!   [[variant]], [[setup]], [[run]]  build variants and running a build (run.rs).
 //!   [paths]        name = "directory": the directories outside the project the configuration reads, each the
@@ -136,6 +138,9 @@ pub(crate) fn is_identifier(name: &str) -> bool {
 pub struct Project {
     pub root: PathBuf,
     pub cfg: toml::Table,
+    /// Every target, in the configuration's order (the first is the default one).
+    pub targets: Vec<Target>,
+    /// The selected target, and its name.
     pub target: Target,
     pub target_name: String,
     pub(crate) core_hash: String,
@@ -149,16 +154,46 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
 }
 
 impl Project {
-    pub fn open(root: &Path, core_hash: &str) -> Result<Project, String> {
+    /// The project at `root` with `target` selected (None: the first target of the configuration).
+    pub fn open(root: &Path, target: Option<&str>, core_hash: &str) -> Result<Project, String> {
         let text = std::fs::read_to_string(root.join(CONFIG_NAME)).map_err(|e| format!("{}: {e}", root.join(CONFIG_NAME).display()))?;
         let (cfg, _) = load_config(root, &text)?;
-        let target = parse_target(&cfg, root)?;
-        let p = Project { root: root.to_path_buf(), cfg, target_name: target.name.clone(), target, core_hash: core_hash.into(),
+        let targets = parse_targets(&cfg, root)?;
+        let target = match target {
+            None => targets[0].clone(),
+            Some(n) => find_target(&targets, n)?.clone(),
+        };
+        let p = Project { root: root.to_path_buf(), cfg, targets, target_name: target.name.clone(), target, core_hash: core_hash.into(),
                               hashes: Mutex::new(HashMap::new()), waits: Mutex::new(HashMap::new()) };
         if ["variant", "setup", "run"].iter().any(|k| p.cfg.contains_key(*k)) {
             p.run_cfg()?; // a contradiction in the run tables is an error of every command, as one in the targets is
         }
         Ok(p)
+    }
+
+    /// The target of that name.
+    pub fn target_named(&self, name: &str) -> Result<&Target, String> {
+        find_target(&self.targets, name)
+    }
+
+    /// The selected target is the default one (the first of the configuration): its addresses take no prefix.
+    pub fn is_default_target(&self) -> bool {
+        self.targets[0].name == self.target_name
+    }
+
+    /// The names of the targets, in the configuration's order.
+    pub fn target_names(&self) -> Vec<String> {
+        self.targets.iter().map(|t| t.name.clone()).collect()
+    }
+
+    /// The prefix a declaration or an address comment of the selected target takes: None for the default target.
+    pub fn target_prefix(&self) -> Option<String> {
+        (!self.is_default_target()).then(|| self.target_name.clone())
+    }
+
+    /// The targets as the `targets` input hashes them.
+    pub fn targets_value(&self) -> Value {
+        Value::Array(self.targets.iter().map(|t| json!({"name": t.name, "path": posix(&t.path), "sha256": t.sha256})).collect())
     }
 
     pub(crate) fn table(&self, name: &str) -> Option<&toml::Table> {
@@ -240,7 +275,7 @@ impl Project {
         for s in self.archives_decl().0.unwrap_or_default() {
             let p = self.expand(&s);
             if !Path::new(&p).exists() {
-                return Err(format!("[target] archives: {p} does not exist"));
+                return Err(format!("target {} archives: {p} does not exist", self.target_name));
             }
             out.push(p);
         }
@@ -335,7 +370,7 @@ impl Project {
             "src" => fsmemo::tree_hash(&[native_path(&format!("{root}/src")), native_path(&format!("{root}/include"))], &["*.c".into(), "*.h".into()])
                 .map_err(|e| e.to_string())?,
             "toolchain" => sha256_parts(&[canonical(&self.toolchain_decl()?)]),
-            "target" => sha256_parts(&[canonical(&json!({"name": self.target.name, "path": posix(&self.target.path), "sha256": self.target.sha256}))]),
+            "targets" => sha256_parts(&[canonical(&self.targets_value())]),
             "baseline" => {
                 let p = native_path(&format!("{root}/ledger/grades.tsv"));
                 if Path::new(&p).exists() { Self::file_hash(&p)? } else { "none".into() }
@@ -385,7 +420,7 @@ impl Project {
 impl Project {
     /// The project at `root` (None: the directory holding decompanion.toml at or above the working directory), with
     /// a target selected (None: the default one). A missing configuration is an Error::Config.
-    pub fn find(root: Option<&str>) -> Result<Project> {
+    pub fn find(root: Option<&str>, target: Option<&str>) -> Result<Project> {
         let start = match root {
             Some(r) => PathBuf::from(r),
             None => std::env::current_dir().map_err(|e| cfg_err(e.to_string()))?,
@@ -397,7 +432,7 @@ impl Project {
             find_root(&start).ok_or_else(|| cfg_err(format!("no {CONFIG_NAME} in {} or above (run dcp init)", start.display())))?
         };
         let root = PathBuf::from(native_path(&root.to_string_lossy()));
-        Project::open(&root, crate::CORE_HASH).map_err(cfg_err)
+        Project::open(&root, target, crate::CORE_HASH).map_err(cfg_err)
     }
 
     /// The target's image, checked: the file exists, its sha256 is the declared one.
@@ -425,7 +460,7 @@ mod tests {
         let d = crate::testkit::scratch(&format!("project-{}", sha_hex(toml.as_bytes())));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(CONFIG_NAME), toml).unwrap();
-        let p = Project::open(&d, "core");
+        let p = Project::open(&d, None, "core");
         let _ = std::fs::remove_dir_all(&d);
         p
     }
@@ -510,7 +545,19 @@ reason = "probe"
     #[test]
     fn errors_and_waiting() {
         assert_eq!(project("x = 1").err().unwrap(), "decompanion.toml: no [target] table");
-        assert!(project("[[target]]\npath = \"a.dll\"\n").err().unwrap().contains("one [target] table"));
+        let cfg2 = "[[target]]\npath = \"a.exe\"\n[[target]]\nname = \"srv\"\npath = \"s/server.dll\"\narchives = []\n";
+        assert!(project("[[target]]\npath = \"a.dll\"\n[[target]]\npath = \"b/a.dll\"\n").err().unwrap().contains("target 'a' declared twice"));
+        let two = project(cfg2).unwrap();
+        assert_eq!(two.targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["a", "srv"]);
+        assert!(two.target_name == "a" && two.is_default_target() && two.store_path().ends_with("a.sqlite"));
+        assert_eq!(two.waiting("libs").unwrap(), ["libs.archives"]);
+        let d = crate::testkit::scratch("project-two-targets");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(CONFIG_NAME), cfg2).unwrap();
+        let srv = Project::open(&d, Some("srv"), "core").unwrap();
+        assert!(!srv.is_default_target() && srv.store_path().ends_with("srv.sqlite") && srv.waiting("libs").unwrap().is_empty());
+        assert!(Project::open(&d, Some("nope"), "core").err().unwrap().contains("no target 'nope' (targets: a, srv)"));
+        let _ = std::fs::remove_dir_all(&d);
         assert!(project("[target]\npath = \"a.dll\"\nbogus = 1\n").err().unwrap().contains("has unknown keys bogus"));
         assert!(project("[target]\nname = \"1x\"\npath = \"a.dll\"\n").err().unwrap().contains("is not an identifier"));
         let p = project("[target]\npath = \"a.dll\"\n").unwrap();
@@ -528,47 +575,67 @@ reason = "probe"
     }
 }
 
-/// The [target] table of a configuration.
-fn parse_target(cfg: &toml::Table, root: &Path) -> Result<Target, String> {
-    let tab = match cfg.get("target") {
-        Some(toml::Value::Table(t)) => t,
-        Some(toml::Value::Array(_)) => return Err(format!("{CONFIG_NAME}: one [target] table, not a [[target]] list")),
+/// The target of that name among `targets`.
+fn find_target<'a>(targets: &'a [Target], name: &str) -> Result<&'a Target, String> {
+    targets.iter().find(|t| t.name == name).ok_or_else(|| {
+        format!("no target {} (targets: {})", crate::decl::quote_str(name), targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "))
+    })
+}
+
+/// The targets of a configuration: its `[[target]]` tables in order, or the one `[target]` table.
+fn parse_targets(cfg: &toml::Table, root: &Path) -> Result<Vec<Target>, String> {
+    let tables: Vec<&toml::Table> = match cfg.get("target") {
+        Some(toml::Value::Table(t)) => vec![t],
+        Some(toml::Value::Array(a)) if !a.is_empty() && a.iter().all(|v| v.is_table()) => a.iter().filter_map(|v| v.as_table()).collect(),
         _ => return Err(format!("{CONFIG_NAME}: no [target] table")),
     };
-    let Some(path) = tab.get("path").and_then(|v| v.as_str()) else { return Err(format!("{CONFIG_NAME}: [target] has no path")) };
     let tc_root = cfg.get("toolchain").and_then(|t| t.get("root")).and_then(|v| v.as_str()).unwrap_or("");
-    let path = path.replace("{toolchain.root}", tc_root);
-    let path = if is_absolute(&path) { native_path(&path) } else { native_path(&format!("{}/{path}", root.to_string_lossy())) };
-    let mut unknown: Vec<&str> = tab.keys().map(|k| k.as_str()).filter(|k| !TARGET_KEYS.contains(k)).collect();
-    unknown.sort();
-    if !unknown.is_empty() {
-        return Err(format!("{CONFIG_NAME}: [target] has unknown keys {} (known: {})", unknown.join(", "), TARGET_KEYS.join(", ")));
-    }
-    let archives = match tab.get("archives") {
-        None => None,
-        Some(toml::Value::Array(a)) if a.iter().all(|x| x.is_str()) => Some(a.iter().map(|x| x.as_str().unwrap().to_string()).collect()),
-        Some(_) => return Err(format!("{CONFIG_NAME}: [target] archives is not a list of paths")),
-    };
-    match tab.get("reason") {
-        Some(toml::Value::Table(r)) => {
-            let mut bad: Vec<&str> = r.keys().map(|k| k.as_str()).filter(|k| !REASON_KEYS.contains(k)).collect();
-            bad.sort();
-            if let Some(b) = bad.first() {
-                return Err(format!("{CONFIG_NAME}: [target] reason.{b} names no declaration (known: {})", REASON_KEYS.join(", ")));
-            }
+    let mut out: Vec<Target> = vec![];
+    for (i, tab) in tables.into_iter().enumerate() {
+        let Some(path) = tab.get("path").and_then(|v| v.as_str()) else { return Err(format!("{CONFIG_NAME}: target #{} has no path", i + 1)) };
+        let path = path.replace("{toolchain.root}", tc_root);
+        let path = if is_absolute(&path) { native_path(&path) } else { native_path(&format!("{}/{path}", root.to_string_lossy())) };
+        let name = tab.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()).unwrap_or_else(|| target_name_of(&path));
+        let rn = crate::decl::quote_str(&name);
+        if !is_identifier(&name) {
+            return Err(format!("{CONFIG_NAME}: target name {rn} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)"));
         }
-        Some(toml::Value::String(_)) | None => {}
-        Some(_) => return Err(format!("{CONFIG_NAME}: [target] reason is neither a string nor reason.<key> = ...")),
+        if out.iter().any(|o| o.name == name) {
+            return Err(format!("{CONFIG_NAME}: target {rn} declared twice"));
+        }
+        let mut unknown: Vec<&str> = tab.keys().map(|k| k.as_str()).filter(|k| !TARGET_KEYS.contains(k)).collect();
+        unknown.sort();
+        if !unknown.is_empty() {
+            return Err(format!("{CONFIG_NAME}: target {rn} has unknown keys {} (known: {})", unknown.join(", "), TARGET_KEYS.join(", ")));
+        }
+        let archives = match tab.get("archives") {
+            None => None,
+            Some(toml::Value::Array(a)) if a.iter().all(|x| x.is_str()) => Some(a.iter().map(|x| x.as_str().unwrap().to_string()).collect()),
+            Some(_) => return Err(format!("{CONFIG_NAME}: target {rn}: archives is not a list of paths")),
+        };
+        match tab.get("reason") {
+            Some(toml::Value::Table(r)) => {
+                let mut bad: Vec<&str> = r.keys().map(|k| k.as_str()).filter(|k| !REASON_KEYS.contains(k)).collect();
+                bad.sort();
+                if let Some(b) = bad.first() {
+                    return Err(format!("{CONFIG_NAME}: target {rn}: reason.{b} names no declaration (known: {})", REASON_KEYS.join(", ")));
+                }
+            }
+            Some(toml::Value::String(_)) | None => {}
+            Some(_) => return Err(format!("{CONFIG_NAME}: target {rn}: reason is neither a string nor reason.<key> = ...")),
+        }
+        let toolchain = TOOLCHAIN_KEYS.iter().filter_map(|k| tab.get(*k).map(|v| (k.to_string(), toml_json(v)))).collect();
+        let reasons = ["compiler", "linker", "cflags", "archives"].iter()
+            .filter_map(|k| Some(reason_of(Some(tab), k)).filter(|r| !r.is_empty()).map(|r| (k.to_string(), r))).collect();
+        out.push(Target { name, sha256: tab.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(), path, toolchain, archives, reasons });
     }
-    let toolchain = TOOLCHAIN_KEYS.iter().filter_map(|k| tab.get(*k).map(|v| (k.to_string(), toml_json(v)))).collect();
-    let reasons = ["compiler", "linker", "cflags", "archives"].iter()
-        .filter_map(|k| Some(reason_of(Some(tab), k)).filter(|r| !r.is_empty()).map(|r| (k.to_string(), r))).collect();
-    let name = tab.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()).unwrap_or_else(|| target_name_of(&path));
-    if !is_identifier(&name) {
-        return Err(format!("{CONFIG_NAME}: [target] name {} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)", crate::decl::quote_str(&name)));
-    }
-    Ok(Target { name, sha256: tab.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string(), path, toolchain, archives,
-                reasons })
+    Ok(out)
+}
+
+/// The targets (name, path) a configuration's text declares.
+pub fn targets_of(root: &str, text: &str) -> Result<Vec<(String, String)>, String> {
+    let (cfg, _) = load_config(Path::new(root), text)?;
+    Ok(parse_targets(&cfg, Path::new(root))?.into_iter().map(|t| (t.name, t.path)).collect())
 }
 
 /// `[paths]` of a configuration table: (name, directory) in name order, the names checked.

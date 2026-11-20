@@ -11,6 +11,9 @@ pub struct Cli {
     /// the target project (default: the decompanion.toml above the cwd)
     #[arg(long, global = true)]
     pub root: Option<String>,
+    /// the target to work on (default: the first [[target]] of decompanion.toml)
+    #[arg(long, global = true)]
+    pub target: Option<String>,
     /// run in this process, not in the project's daemon
     #[arg(long, global = true)]
     pub no_daemon: bool,
@@ -85,11 +88,13 @@ pub enum Cmd {
     /// the debt: regressions declared on purpose, each with its last witness; `add` declares one, `list` lists them
     Debt(DebtArgs),
     /// the full link of a target with the unresolved externals classified
-    Link,
+    Link(LinkArgs),
     /// clang as the declaration checker (M5 / M6, and M7: the consistency convention)
-    Lint,
+    Lint(LintArgs),
     /// create a target project (declares nothing: dcp setup, then dcp status)
     Init(InitArgs),
+    /// the binaries of the project
+    Target(TargetArgs),
     /// declarations (decl/*.dcl)
     Decl(DeclArgs),
     /// the layout phase
@@ -215,6 +220,14 @@ pub enum HeadersCmd {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum TargetCmd {
+    /// list the targets
+    List(TargetListArgs),
+    /// add a target
+    Add(TargetAddArgs),
+}
+
+#[derive(Subcommand, Debug)]
 pub enum DeclCmd {
     /// insert a declaration line in address order
     Add(DeclAddArgs),
@@ -232,6 +245,8 @@ pub enum LayoutCmd {
     Fptrs(LayoutFptrsArgs),
     /// every function start in a range with its evidence
     Starts(LayoutStartsArgs),
+    /// the functions of the sources this target holds byte for byte, found by another target's objects
+    Shared(LayoutSharedArgs),
     /// unit commands
     Unit(LayoutUnitArgs),
 }
@@ -330,6 +345,9 @@ pub struct SetupArgs {
     /// rerun every rule
     #[arg(long)]
     pub force: bool,
+    /// every target in config order
+    #[arg(long)]
+    pub all_targets: bool,
     /// skip the analyzer's export
     #[arg(long)]
     pub no_analyzer: bool,
@@ -341,6 +359,9 @@ pub struct SetupArgs {
 /// `Cmd::Report`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct ReportArgs {
+    /// every target in config order
+    #[arg(long)]
+    pub all_targets: bool,
     /// list every analyzer-only and ours-only start
     #[arg(short, long)]
     pub verbose: bool,
@@ -616,6 +637,20 @@ pub struct DebtArgs {
     pub sub: DebtCmd,
 }
 
+/// `Cmd::Link`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct LinkArgs {
+    #[arg(long)]
+    pub all_targets: bool,
+}
+
+/// `Cmd::Lint`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct LintArgs {
+    #[arg(long)]
+    pub all_targets: bool,
+}
+
 /// `Cmd::Init`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct InitArgs {
@@ -625,6 +660,13 @@ pub struct InitArgs {
     /// the project's name (default: the directory's)
     #[arg(long)]
     pub name: Option<String>,
+}
+
+/// `Cmd::Target`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct TargetArgs {
+    #[command(subcommand)]
+    pub sub: TargetCmd,
 }
 
 /// `Cmd::Decl`'s arguments (its own type: clap builds and reads them in a function of their own).
@@ -644,6 +686,9 @@ pub struct LayoutArgs {
 /// `Cmd::Build`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct BuildArgs {
+    /// every target in config order
+    #[arg(long)]
+    pub all_targets: bool,
     /// compile every unit
     #[arg(long)]
     pub force: bool,
@@ -943,6 +988,13 @@ pub struct TryArgs {
     pub apply: Option<String>,
 }
 
+/// `TargetCmd::List`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct TargetListArgs {
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// `DeclCmd::Add`'s arguments (its own type: clap builds and reads them in a function of their own).
 #[derive(Args, Debug)]
 pub struct DeclAddArgs {
@@ -994,6 +1046,20 @@ pub struct LayoutStartsArgs {
     /// LO..HI or LO HI; default: the game code
     #[arg(value_name = "LO..HI")]
     pub range: Vec<String>,
+}
+
+/// `LayoutCmd::Shared`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct LayoutSharedArgs {
+    /// the target whose built objects are searched for (default: the first target)
+    #[arg(long, value_name = "TARGET")]
+    pub from: Option<String>,
+    /// add `TARGET:0xADDR` to the address comment of every placed function
+    #[arg(long)]
+    pub write: bool,
+    /// list every placed and every ambiguous function
+    #[arg(short, long)]
+    pub verbose: bool,
 }
 
 /// `LayoutCmd::Unit`'s arguments (its own type: clap builds and reads them in a function of their own).
@@ -1104,6 +1170,13 @@ pub struct SkillsInstallArgs {
 #[derive(Args, Debug)]
 pub struct AnswersArgs {
     pub range: Option<String>,
+}
+
+/// `TargetCmd::Add`'s arguments (its own type: clap builds and reads them in a function of their own).
+#[derive(Args, Debug)]
+pub struct TargetAddArgs {
+    pub name: String,
+    pub path: String,
 }
 
 #[cfg(test)]

@@ -102,7 +102,7 @@ fn vstr(f: &Claim, k: &str) -> String {
 /// Every data declaration of the current target with an address, joined with its facts (module docs).
 pub fn data_model(p: &Project, scan: &crate::frontend::Scan) -> Result<Vec<DataDef>> {
     let db = p.store_path();
-    let default = p.target_name.clone();
+    let default = p.targets[0].name.clone();
     let mut out = vec![];
     for part in &scan.parts {
         for (file, line, unit, name, kind, addrs, _, statik, _, _) in &part.data {
@@ -787,7 +787,7 @@ impl<'a> Trial<'a> {
                 }
             };
             let k = TRIAL.fetch_add(1, Ordering::Relaxed);
-            let flags = crate::plan::compile_flags(self.p, unit).map_err(err)?;
+            let flags = crate::plan::compile_flags(self.p, &a.target, unit).map_err(err)?;
             texts.push((format!("build/trial/{unit}-{k}.c"), format!("build/obj/trial/{unit}-{k}.obj"), text, flags));
         }
         let (root, tools) = (&self.root, &self.tools);

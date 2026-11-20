@@ -2,16 +2,17 @@
 
 use super::Io;
 use crate::cliread::{record, Tok};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::project::Project;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime};
 
-/// The global options of the command line: the project root.
+/// The global options of the command line: the project root and the selected target.
 #[derive(Clone, Default)]
 pub struct Sel {
     pub root: Option<String>,
+    pub target: Option<String>,
 }
 
 /// The store files this process has open, by path: (size-independent identity) — a store deleted and made again
@@ -22,10 +23,10 @@ fn identity(path: &str) -> Option<SystemTime> {
     std::fs::metadata(path).ok().and_then(|m| m.created().ok())
 }
 
-/// The project, its file memo attached and its store open.
-pub fn open(sel: &Sel) -> Result<Project> {
+/// The project (`target`: else the selected one, else the default), its file memo attached and its store open.
+pub fn open(sel: &Sel, target: Option<&str>) -> Result<Project> {
     crate::timing::phase("open", || {
-        let p = Project::find(sel.root.as_deref())?;
+        let p = Project::find(sel.root.as_deref(), target.or(sel.target.as_deref()))?;
         crate::fsmemo::attach(&p.root.to_string_lossy());
         let db = p.store_path();
         let id = identity(&db);
@@ -41,9 +42,9 @@ pub fn open(sel: &Sel) -> Result<Project> {
     })
 }
 
-/// The project without a store (the configuration only).
-pub fn config(sel: &Sel) -> Result<Project> {
-    let p = Project::find(sel.root.as_deref())?;
+/// The project without a store (the configuration only): root and targets.
+pub fn config(sel: &Sel, target: Option<&str>) -> Result<Project> {
+    let p = Project::find(sel.root.as_deref(), target.or(sel.target.as_deref()))?;
     crate::fsmemo::attach(&p.root.to_string_lossy());
     Ok(p)
 }
@@ -87,8 +88,8 @@ pub fn refresh(io: &mut Io, p: &Project, verbose: bool, force: bool) -> Result<V
 }
 
 /// The project, refreshed.
-pub fn refreshed(io: &mut Io, sel: &Sel) -> Result<Project> {
-    let p = open(sel)?;
+pub fn refreshed(io: &mut Io, sel: &Sel, target: Option<&str>) -> Result<Project> {
+    let p = open(sel, target)?;
     refresh(io, &p, false, false)?;
     Ok(p)
 }
@@ -127,9 +128,9 @@ pub fn lint_built(p: &Project) -> Result<()> {
     Ok(())
 }
 
-/// Compile the stale units and refresh the rules: (project, compile report).
-pub fn build_target(io: &mut Io, sel: &Sel, quiet: bool, force: bool) -> Result<(Project, Compiled)> {
-    let p = open(sel)?;
+/// Compile the stale units of one target and refresh its rules: (project, compile report).
+pub fn build_target(io: &mut Io, sel: &Sel, target: Option<&str>, quiet: bool, force: bool) -> Result<(Project, Compiled)> {
+    let p = open(sel, target)?;
     let rep = ensure(io, &p, !quiet, force)?;
     lint_built(&p)?;
     refresh(io, &p, false, false)?;
@@ -153,13 +154,34 @@ pub fn rebuilt(io: &mut Io, sel: &Sel, p: Option<&Project>) -> Result<()> {
         refresh(io, p, false, false)?;
         return Ok(());
     }
-    let p = open(sel)?;
+    let p = open(sel, None)?;
     if p.toolchain_available() && has_build(&p)? {
-        build_target(io, sel, true, false)?;
+        build_target(io, sel, None, true, false)?;
     } else {
         refresh(io, &p, false, false)?;
     }
     Ok(())
+}
+
+/// The targets a command runs on: --all-targets: every target in config order; else the selected one (None: the
+/// default).
+pub fn target_names(sel: &Sel, all_targets: bool) -> Result<Vec<Option<String>>> {
+    if all_targets {
+        if sel.target.is_some() {
+            return Err(Error::config("--all-targets and --target exclude each other"));
+        }
+        let p = Project::find(sel.root.as_deref(), None)?;
+        return Ok(p.targets.iter().map(|t| Some(t.name.clone())).collect());
+    }
+    Ok(vec![sel.target.clone()])
+}
+
+/// --target NAME, else every target in config order.
+pub fn every_target(sel: &Sel) -> Result<Vec<String>> {
+    if let Some(t) = &sel.target {
+        return Ok(vec![t.clone()]);
+    }
+    Ok(Project::find(sel.root.as_deref(), None)?.targets.iter().map(|t| t.name.clone()).collect())
 }
 
 pub fn s(x: impl Into<String>) -> Tok {

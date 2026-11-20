@@ -373,8 +373,9 @@ pub fn full_link_with(p: &Project, variant: Option<(&str, &HashMap<String, Strin
     let parsed: Vec<(String, crate::coff::Obj)> = objs.iter()
         .filter_map(|(u, path)| std::fs::read(path).ok().and_then(|d| crate::coff::Obj::parse(&d).ok()).map(|o| (u.clone(), o))).collect();
     // library units (decl `libunit`): their objects go into their archive, not the object list
-    let (decls, _) = crate::decl::load(&crate::decl::files(&root), &root);
-    let lu = crate::decl::lib_units(&decls);
+    let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
+    let (decls, _) = crate::decl::load(&crate::decl::files(&root), &root, &targets);
+    let lu = crate::decl::lib_units(&decls, &p.target_name, &targets[0]);
     let lib_of = |u: &str| lu.get(u).and_then(|d| d.key("lib")).map(|k| k.s().to_string());
     let mut members: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for (u, path) in &objs {

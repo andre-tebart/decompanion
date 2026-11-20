@@ -1,4 +1,5 @@
-//! `dcp init DIR TARGET`: create a project around one binary; `dcp skills install`.
+//! `dcp init DIR TARGET`: create a project around one binary; `dcp target add`: another binary of the same source
+//! tree; `dcp skills install`.
 //!
 //! The project is a git repository of its own; the `dcp` on PATH works on it. It holds the typed state (sources,
 //! decl/, decompanion.toml, names.log, claims.log, ledger/grades.tsv) and nothing derived (build/ is ignored). The
@@ -11,7 +12,7 @@
 //! an existing project).
 
 use crate::error::{Error, Result};
-use crate::project::CONFIG_NAME;
+use crate::project::{is_identifier, CONFIG_NAME};
 use std::path::{Path, PathBuf};
 
 const CONFIG: &str = r#"# decompanion project: {name}
@@ -192,6 +193,71 @@ pub fn init_project(dir: &str, target: &str, name: Option<String>) -> (Vec<Strin
 }
 
 /// `dcp skills install`: the paths written.
+fn add(root: &str, name: &str, path: &str) -> Result<Vec<String>, String> {
+    let cfg_path = Path::new(root).join(CONFIG_NAME);
+    let text = crate::fsmemo::read_text(&cfg_path.to_string_lossy()).map_err(io)?;
+    let cfg: toml::Table = text.parse().map_err(|e: toml::de::Error| format!("{CONFIG_NAME}: {}", e.message()))?;
+    if !is_identifier(name) {
+        return Err(format!("target name {} is not an identifier ([A-Za-z][A-Za-z0-9_-]*)", crate::decl::quote_str(name)));
+    }
+    let path = resolve(Path::new(path));
+    if !path.exists() {
+        return Err(format!("{} does not exist", path.display()));
+    }
+    let sha = open_target(&path)?;
+    let existing = crate::project::targets_of(root, &text)?;
+    if existing.iter().any(|(n, _)| n == name) {
+        return Err(format!("target {} exists", crate::decl::quote_str(name)));
+    }
+    let mut lines: Vec<String> = text.split('\n').map(|l| l.to_string()).collect();
+    if let Some(toml::Value::Table(t)) = cfg.get("target") {
+        // the single table becomes the first of the list; it keeps its name, written when it had none
+        let i = lines.iter().position(|l| l.trim() == "[target]").ok_or("no [target] line")?;
+        lines[i] = "[[target]]".into();
+        if !t.contains_key("name") {
+            lines.insert(i + 1, format!("name = {}", toml_str(&existing[0].0)));
+        }
+    }
+    let heads: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.trim() == "[[target]]").map(|(k, _)| k).collect();
+    let last = *heads.last().ok_or("no [[target]] table")?;
+    let mut end = (last + 1..lines.len()).find(|&k| lines[k].trim_start().starts_with('[')).unwrap_or(lines.len());
+    while end > last + 1 && (lines[end - 1].trim().is_empty() || lines[end - 1].trim_start().starts_with('#')) {
+        end -= 1; // the blank lines and the comment that lead the next table stay with it
+    }
+    let mut block = target_block(&path, &sha);
+    block[0] = "[[target]]".into();
+    // under a named directory of [paths] the path is written by that name, as the other tables write theirs
+    let (_, names) = crate::project::load_config(Path::new(root), &text)?;
+    let full = posix(&path.to_string_lossy());
+    let named = names.iter().filter(|(_, d)| full.len() > d.len() && full.as_bytes()[d.len()] == b'/' && full[..d.len()].eq_ignore_ascii_case(d))
+        .max_by_key(|(_, d)| d.len());
+    if let Some((n, d)) = named {
+        block[1] = format!("path = {}", toml_str(&format!("{{{n}}}{}", &full[d.len()..])));
+    }
+    block.insert(1, format!("name = {}", toml_str(name)));
+    let mut ins = vec![String::new()];
+    ins.extend(block.iter().cloned());
+    lines.splice(end..end, ins);
+    let new = lines.join("\n");
+    crate::project::targets_of(root, &new)?;
+    std::fs::write(&cfg_path, &new).map_err(io)?;
+    crate::fsmemo::new_epoch();
+    let mut out = vec![format!("added to {CONFIG_NAME}:")];
+    out.extend(block.iter().map(|l| format!("  {l}")));
+    out.push(format!("target={name}  store=build/{name}.sqlite  (run `dcp --target {name} setup`)"));
+    Ok(out)
+}
+
+/// `dcp target add NAME PATH`: append a [[target]] table to decompanion.toml (after the last one), the single table
+/// `[target]` becoming the first of the list. Like `dcp init` it declares nothing. The lines, or the message to exit
+/// with.
+pub fn target_add(root: &str, name: &str, path: &str) -> (Vec<String>, Option<String>) {
+    match add(root, name, path) {
+        Ok(lines) => (lines, None),
+        Err(e) => (vec![], Some(e)),
+    }
+}
+
 pub fn skills_install(root: &str, force: bool) -> Result<Vec<String>> {
     install_skills(Path::new(root), force).map_err(|e| Error::os(e.to_string()))
 }
@@ -204,5 +270,34 @@ mod tests {
     fn target_lines() {
         assert_eq!(toml_str(r#"a\b"c"#), r#""a\\b\"c""#);
         assert_eq!(target_block(Path::new(r"C:\x\a.dll"), "ab"), ["[target]", "path = \"C:/x/a.dll\"", "sha256 = \"ab\""]);
+    }
+
+    #[test]
+    fn adds_a_target_to_the_single_table() {
+        let d = crate::testkit::scratch("init-target-add");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let bin = d.join("game.exe");
+        std::fs::write(&bin, crate::pe::testpe::build(None)).unwrap();
+        let root = d.to_string_lossy().into_owned();
+        std::fs::write(d.join(CONFIG_NAME), "# top\n[target]\npath = \"game.exe\"\n\n# the sources\n[sources]\nroots = [\"src\"]\n").unwrap();
+        let out = add(&root, "other", &bin.to_string_lossy()).unwrap();
+        assert_eq!(out[0], "added to decompanion.toml:");
+        let text = std::fs::read_to_string(d.join(CONFIG_NAME)).unwrap();
+        assert!(text.starts_with("# top\n[[target]]\nname = \"game\"\npath = \"game.exe\"\n\n[[target]]\nname = \"other\"\npath = "), "{text}");
+        assert!(text.ends_with("\"\n\n# the sources\n[sources]\nroots = [\"src\"]\n"), "{text}");
+        assert_eq!(add(&root, "other", &bin.to_string_lossy()).unwrap_err(), "target 'other' exists");
+        assert!(add(&root, "bad name", &bin.to_string_lossy()).unwrap_err().contains("is not an identifier"));
+        // a binary under a named directory is written by the name
+        let sub = d.join("Game Dir").join("server");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::copy(&bin, sub.join("server.dll")).unwrap();
+        let game = resolve(&d.join("Game Dir")).to_string_lossy().replace('\\', "/");
+        std::fs::write(d.join(CONFIG_NAME), format!("[target]\npath = \"game.exe\"\n[paths]\ngame = \"{game}\"\n")).unwrap();
+        crate::fsmemo::new_epoch(); // the configuration changed within the clock's tick
+        let out = add(&root, "server", &sub.join("server.dll").to_string_lossy()).unwrap();
+        assert!(out.iter().any(|l| l.trim() == "path = \"{game}/server/server.dll\""), "{out:?}");
+        assert_eq!(crate::project::targets_of(&root, &std::fs::read_to_string(d.join(CONFIG_NAME)).unwrap()).unwrap().len(), 2);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

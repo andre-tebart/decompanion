@@ -250,15 +250,16 @@ pub fn build_pe(path: &Path, variant: u32, rich: Option<&[(u32, u32, u32)]>) -> 
     path.to_path_buf()
 }
 
-const CONFIG: &str = r#"[target]
-name = "tiny"
-path = "{p1}"
+const TARGET: &str = r#"name = "{n}"
+path = "{p}"
 compiler = "cl 12.00.9044"
 linker = "link 6.00.8447"
 cflags = ["/O2"]
 archives = []
 reason = "test project"
+"#;
 
+const CONFIG: &str = r#"{targets}
 [toolchain]
 root = "C:/nowhere/vc6"
 reason = "test project"
@@ -267,11 +268,19 @@ reason = "test project"
 root = "C:/nowhere/ghidra"
 "#;
 
-/// The synthetic project: tiny.dll as the target `tiny`.
-pub fn make_project(d: &Path) -> PathBuf {
+/// The synthetic project: tiny.dll as the target `tiny` (the single table `[target]`); with `two`, the list of
+/// `tiny` and tiny2.dll as `other`.
+pub fn make_project(d: &Path, two: bool) -> PathBuf {
     std::fs::create_dir_all(d).unwrap();
     let p1 = build_pe(&d.join("tiny.dll"), 0, Some(RICH_TINY));
-    write(d, "decompanion.toml", &CONFIG.replace("{p1}", &posix(&p1)));
+    let table = |n: &str, p: &Path| TARGET.replace("{n}", n).replace("{p}", &posix(p));
+    let targets = if two {
+        let p2 = build_pe(&d.join("tiny2.dll"), 1, Some(RICH_OTHER));
+        format!("[[target]]\n{}\n[[target]]\n{}", table("tiny", &p1), table("other", &p2))
+    } else {
+        format!("[target]\n{}", table("tiny", &p1))
+    };
+    write(d, "decompanion.toml", &CONFIG.replace("{targets}", &targets));
     write(d, "decl/text.dcl", "# code\n");
     write(d, "decl/data.dcl", "# data\n");
     d.to_path_buf()

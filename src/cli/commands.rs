@@ -2,7 +2,7 @@
 //! modules named per command). The order of their output and their exit codes are the output contract.
 
 use super::args::*;
-use super::glue::{self, build_target, open, rec, refresh, refreshed, s, Sel};
+use super::glue::{self, build_target, every_target, open, rec, refresh, refreshed, s, target_names, Sel};
 use super::Io;
 use crate::cliread::Tok;
 use crate::error::{Error, Result};
@@ -10,39 +10,46 @@ use crate::project::Project;
 use std::collections::HashMap;
 
 pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
-    let sel = Sel { root: cli.root.clone() };
+    let sel = Sel { root: cli.root.clone(), target: cli.target.clone() };
     let sel = &sel;
     match cli.cmd {
-        Cmd::Setup(SetupArgs { verbose, force, no_analyzer, analyzer_force }) => setup(io, sel, verbose, force, no_analyzer, analyzer_force),
-        Cmd::Report(ReportArgs { verbose }) => {
-            let p = refreshed(io, sel)?;
-            let lines = crate::clicmd::report_command(&p, verbose)?;
-            Ok(io.report("report", &lines, None, 0))
+        Cmd::Setup(SetupArgs { verbose, force, all_targets, no_analyzer, analyzer_force }) => setup(io, sel, verbose, force, all_targets, no_analyzer, analyzer_force),
+        Cmd::Report(ReportArgs { all_targets, verbose }) => {
+            for (i, name) in target_names(sel, all_targets)?.iter().enumerate() {
+                if i > 0 {
+                    io.say("");
+                }
+                let p = refreshed(io, sel, name.as_deref())?;
+                let lines = crate::clicmd::report_command(&p, verbose)?;
+                io.report("report", &lines, None, 0);
+            }
+            Ok(0)
         }
         Cmd::Why(WhyArgs { addr, refs }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let (l, e, c) = crate::clicmd::why_command(&p, addr, refs)?;
             Ok(io.report("why", &l, e.as_deref(), c))
         }
         Cmd::Claims(ClaimsArgs { range, question, kind, support, json }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let l = crate::clicmd::claims_command(&p, &range, question, kind, support, json)?;
             Ok(io.report("claims", &l, None, 0))
         }
         Cmd::Answers(AnswersArgs { range }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let l = crate::clicmd::answers_command(&p, range)?;
             Ok(io.report("answers", &l, None, 0))
         }
         Cmd::Phi(PhiArgs { key, many }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let (l, e, c) = crate::clicmd::phi_command(&p, key, many)?;
             Ok(io.report("phi", &l, e.as_deref(), c))
         }
         Cmd::Exceptions => {
-            let p = glue::config(sel)?;
+            let p = glue::config(sel, None)?;
             let mut es = crate::exceptions::of_project(&p.root);
-            es.extend(crate::exceptions::of_decls(&p.root));
+            let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
+            es.extend(crate::exceptions::of_decls(&p.root, &targets));
             let n = |k: crate::exceptions::Kind| Tok::I(es.iter().filter(|e| e.kind == k).count() as i64);
             let mut l = vec![rec(&[("exceptions", Tok::I(es.len() as i64)), ("original", n(crate::exceptions::Kind::Original)),
                                    ("vc6", n(crate::exceptions::Kind::Checker)), ("overrun", n(crate::exceptions::Kind::Overrun)),
@@ -54,14 +61,14 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             Ok(io.report("exceptions", &l, None, 0))
         }
         Cmd::Findings(FindingsArgs { category, severity, json }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let l = crate::clicmd::findings_command(&p, category, severity.map(|s| s.as_str().to_string()), json)?;
             Ok(io.report("findings", &l, None, 0))
         }
         Cmd::Check(CheckArgs { strict, against }) => check(io, sel, strict, against),
         Cmd::Serve(ServeArgs { stop, status, foreground }) => Ok(crate::client::serve(io, sel.root.as_deref(), stop, status, foreground)),
         Cmd::Rules(RulesArgs { verbose }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let l = crate::clicmd::rules_command(&p, verbose)?;
             Ok(io.report("rules", &l, None, 0))
         }
@@ -69,16 +76,23 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         Cmd::Toolchain(ToolchainArgs { verbose, sub }) => match sub {
             None => {
                 let _ = verbose;
-                let p = refreshed(io, sel)?;
-                let l = crate::decide::decide_toolchain_view(&p)?;
-                Ok(io.report("toolchain", &l, None, 0))
+                let names = every_target(sel)?;
+                for (i, name) in names.iter().enumerate() {
+                    if i > 0 {
+                        io.say("");
+                    }
+                    let p = refreshed(io, sel, Some(name))?;
+                    let l = crate::decide::decide_toolchain_view(&p)?;
+                    io.report("toolchain", &l, None, 0);
+                }
+                Ok(0)
             }
             Some(ToolchainCmd::Probe(ToolchainProbeArgs { verbose })) => probe(io, sel, verbose),
             Some(ToolchainCmd::Declare(ToolchainDeclareArgs { pairs, why })) => toolchain_declare(io, sel, pairs, why),
         },
         Cmd::Libs(LibsArgs { sub }) => match sub {
             LibsCmd::Candidates(LibsCandidatesArgs { force, verbose }) => {
-                let p = open(sel)?;
+                let p = open(sel, None)?;
                 if p.toolchain_root().is_none() {
                     return Ok(io.report("libs candidates", &[], Some("no toolchain root declared: dcp toolchain declare root=DIR --why \"...\" first"), 2));
                 }
@@ -92,13 +106,13 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
                 Ok(io.report("libs candidates", &lines, None, 0))
             }
             LibsCmd::Declare(LibsDeclareArgs { archives, why }) => {
-                let p = glue::config(sel)?;
+                let p = glue::config(sel, None)?;
                 let (l, e, c) = crate::decide::decide_libs_declare(&p, archives, why)?;
                 let code = io.report("libs declare", &l, e.as_deref(), c);
                 if code != 0 {
                     return Ok(code);
                 }
-                if let Some(p) = rerun(io, sel)? {
+                if let Some(p) = rerun(io, sel, &p.target_name)? {
                     let l = crate::decide::decide_libs_after(&p)?;
                     io.report("libs declare", &l, None, 0);
                 }
@@ -106,26 +120,26 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             }
         },
         Cmd::Analyzer(AnalyzerArgs { sub: AnalyzerCmd::Declare(AnalyzerDeclareArgs { pairs, why }) }) => {
-            let p = glue::config(sel)?;
+            let p = glue::config(sel, None)?;
             let (l, e, c) = crate::decide::decide_analyzer_declare(&p, pairs, why)?;
             let code = io.report("analyzer declare", &l, e.as_deref(), c);
             if code != 0 {
                 return Ok(code);
             }
-            if let Some(p) = rerun(io, sel)? {
+            if let Some(p) = rerun(io, sel, &p.target_name)? {
                 status_tail(io, &p)?;
             }
             Ok(0)
         }
         Cmd::Data(DataArgs { sub }) => match sub {
             DataCmd::Map(DataMapArgs { unit, externs }) => {
-                let p = refreshed(io, sel)?;
+                let p = refreshed(io, sel, None)?;
                 let (lines, status) = crate::datafix::data_map(&p, unit, externs)?;
                 io.say(&lines.join("\n"));
                 Ok(status)
             }
             DataCmd::Fix(DataFixArgs { check, unit, write, limit, verbose }) => {
-                let p = open(sel)?;
+                let p = open(sel, None)?;
                 let (out, err) = (std::cell::RefCell::new(Vec::<u8>::new()), ());
                 let _ = (&out, err);
                 // sync: build and refresh the store; emit: a line on stdout
@@ -144,13 +158,13 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             }
         },
         Cmd::Headers(HeadersArgs { sub: HeadersCmd::Conflicts(HeadersConflictsArgs { unit, headers, write, trial, at }) }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let (lines, status) = crate::headers::headers_conflicts(&p, &unit, headers, write, at, trial)?;
             io.say(&lines.join("\n"));
             Ok(status)
         }
         Cmd::Headers(HeadersArgs { sub: HeadersCmd::Probe(HeadersProbeArgs { units, dry_run }) }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             let (lines, status) = crate::tiebreak::probe_command(&p, units, dry_run)?;
             if !dry_run {
                 refresh(io, &p, false, false)?;
@@ -158,7 +172,7 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             Ok(io.report("headers probe", &lines, None, status))
         }
         Cmd::Headers(HeadersArgs { sub: HeadersCmd::Sample(HeadersSampleArgs { name, n, seed, dry_run }) }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             let (lines, status) = crate::tiebreak::sample_command(&p, &name, n, seed, dry_run)?;
             if !dry_run {
                 refresh(io, &p, false, false)?;
@@ -166,13 +180,13 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             Ok(io.report("headers sample", &lines, None, status))
         }
         Cmd::Headers(HeadersArgs { sub: HeadersCmd::Sweep(HeadersSweepArgs { name, table, max, dry_run }) }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             let (lines, status) = crate::tiebreak::sweep_command(&p, &name, max, table, dry_run)?;
             refresh(io, &p, false, false)?;
             Ok(io.report("headers sweep", &lines, None, status))
         }
         Cmd::Grade(GradeArgs { what }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             // a close function below byte without a sweep of its text: swept now (tiebreak.rs), its verdict on the
             // grade's tiebreak line
             if let Some(name) = what.as_deref() {
@@ -186,42 +200,42 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         }
         Cmd::Next(NextArgs { base, tier, deep, names, n, unit, shard, peek, nearest }) => {
             let _ = base;
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             current_lint(io, &p)?;
             let which = if deep { "deep" } else if names { "names" } else { "base" };
             let (l, e, c) = crate::matchcmd::next_command(&p, which, tier.as_deref(), shard, unit, n, peek, nearest)?;
             Ok(io.report("next", &l, e.as_deref(), c))
         }
         Cmd::Asmdiff(AsmdiffArgs { name, regs, all, symbols, plain, changed, at, context, side, lines }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             let view = crate::matchcmd::View { changed, at, context, side, lines };
             let (l, e, c) = crate::matchcmd::asmdiff_command(&p, &name, regs, all, symbols, plain, view)?;
             Ok(io.report("asmdiff", &l, e.as_deref(), c))
         }
         Cmd::Diffclass(DiffclassArgs { name, all }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             let (l, e, c) = crate::matchcmd::diffclass_command(&p, &name, all)?;
             Ok(io.report("diffclass", &l, e.as_deref(), c))
         }
         Cmd::Listing(ListingArgs { name }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             let (lines, status) = crate::listing::listing_command(&p, &name)?;
             Ok(io.report("listing", &lines, None, status))
         }
         Cmd::Frame(FrameArgs { name }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             let (l, e, c) = crate::matchcmd::frame_command(&p, &name)?;
             Ok(io.report("frame", &l, e.as_deref(), c))
         }
         Cmd::Escalate(EscalateArgs { name, why, clear, hard, size_explained, divergence_explained }) =>
             level(io, sel, if hard { "hard" } else { "deep" }, &name, why, clear, size_explained, divergence_explained),
         Cmd::Note(NoteArgs { name, text }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let (lines, error, status) = crate::attempts::note_command(&p, &name, &text)?;
             Ok(io.report("note", &lines, error.as_deref(), status))
         }
         Cmd::Migrate(MigrateArgs { what: _ }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let lines = crate::attempts::migrate_stuck(&p)?;
             Ok(io.report("migrate", &lines, None, 0))
         }
@@ -232,30 +246,38 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
                 let (l, e, c) = crate::matchcmd::debt_add_command(None, &name, to, readability, Some(why), waits_for)?;
                 return Ok(io.report("debt", &l, e.as_deref(), c));
             }
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let (l, e, c) = crate::matchcmd::debt_add_command(Some(&p), &name, to, readability, Some(why), waits_for)?;
             Ok(io.report("debt", &l, e.as_deref(), c))
         }
         Cmd::Debt(DebtArgs { sub: DebtCmd::List }) => {
-            let p = glue::config(sel)?;
+            let p = glue::config(sel, None)?;
             let l = crate::matchcmd::debt_list_command(&p);
             Ok(io.report("debt", &l, None, 0))
         }
-        Cmd::Link => {
-            let (p, _) = build_target(io, sel, true, false)?;
-            let (lines, ok, _, _, _) = crate::matchcmd::link_command(&p)?;
-            io.report("link", &lines, None, 0);
-            Ok(!ok as i32)
-        }
-        Cmd::Lint => {
-            let (p, _) = build_target(io, sel, true, false)?;
-            if !crate::lintrun::lint_available(&p) {
-                return Ok(io.report("lint", &[], Some(crate::matchcmd::lint_not_found()), 2));
+        Cmd::Link(LinkArgs { all_targets }) => {
+            let mut failed = false;
+            for name in target_names(sel, all_targets)? {
+                let (p, _) = build_target(io, sel, name.as_deref(), true, false)?;
+                let (lines, ok, _, _, _) = crate::matchcmd::link_command(&p)?;
+                io.report("link", &lines, None, 0);
+                failed = failed || !ok;
             }
-            let (lines, bad) = crate::matchcmd::lint_command(&p)?;
-            refresh(io, &p, false, false)?;
-            io.report("lint", &lines, None, 0);
-            Ok(bad as i32)
+            Ok(failed as i32)
+        }
+        Cmd::Lint(LintArgs { all_targets }) => {
+            let mut failed = false;
+            for name in target_names(sel, all_targets)? {
+                let (p, _) = build_target(io, sel, name.as_deref(), true, false)?;
+                if !crate::lintrun::lint_available(&p) {
+                    return Ok(io.report("lint", &[], Some(crate::matchcmd::lint_not_found()), 2));
+                }
+                let (lines, bad) = crate::matchcmd::lint_command(&p)?;
+                refresh(io, &p, false, false)?;
+                io.report("lint", &lines, None, 0);
+                failed = failed || bad;
+            }
+            Ok(failed as i32)
         }
         Cmd::Init(InitArgs { dir, target_path, name }) => {
             let (lines, error) = crate::init::init_project(&dir, &target_path, name);
@@ -265,25 +287,41 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             }
             Ok(io.report("init", &lines, None, 0))
         }
+        Cmd::Target(TargetArgs { sub }) => match sub {
+            TargetCmd::List(TargetListArgs { json }) => {
+                let p = glue::config(sel, None)?;
+                let l = crate::clicmd::target_list(&p, json)?;
+                Ok(io.report("target list", &l, None, 0))
+            }
+            TargetCmd::Add(TargetAddArgs { name, path }) => {
+                let p = glue::config(sel, None)?;
+                let (lines, error) = crate::init::target_add(&p.root.to_string_lossy(), &name, &path);
+                if let Some(e) = error {
+                    io.warn(&e);
+                    return Ok(1);
+                }
+                Ok(io.report("target add", &lines, None, 0))
+            }
+        },
         Cmd::Decl(DeclArgs { sub: DeclCmd::Add(DeclAddArgs { line }) }) => {
-            let p = open(sel)?;
+            let p = open(sel, None)?;
             let (lines, error, code, made) = crate::clicmd::decl_add(&p, &line)?;
             io.report("decl add", &lines, error.as_deref(), 0);
-            let Some(by) = made else { return Ok(code) };
-            let p = refreshed(io, sel)?;
+            let Some((target, by)) = made else { return Ok(code) };
+            let p = refreshed(io, sel, Some(&target))?;
             let (lines, code) = crate::clicmd::decl_conflicts(&p, &by)?;
             Ok(io.report("decl add", &lines, None, code))
         }
         Cmd::Layout(LayoutArgs { sub }) => layout(io, sel, sub),
-        Cmd::Build(BuildArgs { force, units, variant }) => build(io, sel, force, units, variant),
+        Cmd::Build(BuildArgs { all_targets, force, units, variant }) => build(io, sel, all_targets, force, units, variant),
         Cmd::Unit(UnitArgs { sub }) => unit(io, sel, sub),
         Cmd::Try(TryArgs { name, file, move_line, to, apply }) => {
-            let (p, _) = build_target(io, sel, true, false)?;
+            let (p, _) = build_target(io, sel, None, true, false)?;
             let (lines, status) = crate::variants::try_command(&p, &name, file.as_deref(), move_line, to.as_deref(), apply.as_deref())?;
             Ok(io.report("try", &lines, None, status))
         }
         Cmd::Fn(FnArgs { key }) => {
-            let p = open(sel)?;
+            let p = open(sel, None)?;
             let (l, e, c) = crate::clicmd::fn_command(&p, &key)?;
             Ok(io.report("fn", &l, e.as_deref(), c))
         }
@@ -296,14 +334,14 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         }
         Cmd::Refs(RefsArgs { what }) => read(io, sel, "refs", "refs", &[("what", Some(what))]),
         Cmd::Draft(DraftArgs { addr, next, show, unit }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let (l, e, c) = crate::draft::draft_command(&p, addr, next, show, unit)?;
             Ok(draft_report(io, "draft", l, e, c))
         }
         Cmd::Rename(RenameArgs { pairs, from_file, why }) => rename(io, sel, pairs, from_file, why),
         Cmd::Session(SessionArgs { sub }) => session(io, sel, sub),
         Cmd::Skills(SkillsArgs { sub: SkillsCmd::Install(SkillsInstallArgs { force }) }) => {
-            let p = glue::config(sel)?;
+            let p = glue::config(sel, None)?;
             let written = crate::init::skills_install(&p.root.to_string_lossy(), force)?;
             io.say(&rec(&[("skills", Tok::I(written.len() as i64)), ("into", s(".claude/skills"))]));
             for w in &written {
@@ -336,32 +374,38 @@ fn draft_report(io: &mut Io, cmd: &str, lines: Vec<String>, error: Option<String
 
 // ------------------------------------------------------------------------------------------------ setup / check
 
-fn setup(io: &mut Io, sel: &Sel, verbose: bool, force: bool, no_analyzer: bool, analyzer_force: bool) -> Result<i32> {
+fn setup(io: &mut Io, sel: &Sel, verbose: bool, force: bool, all_targets: bool, no_analyzer: bool, analyzer_force: bool) -> Result<i32> {
     let mut failed = false;
-    let p = open(sel)?;
-    refresh(io, &p, verbose, force)?;
-    if !no_analyzer {
-        let (out, errs, ok, exported) = crate::analyzers::analyzer_step(&p, analyzer_force)?;
-        io.report("setup", &out, None, 0);
-        for l in &errs {
-            io.warn(l);
+    for (i, name) in target_names(sel, all_targets)?.iter().enumerate() {
+        if i > 0 {
+            io.say("");
         }
-        if exported {
-            refresh(io, &p, verbose, false)?;
+        let p = open(sel, name.as_deref())?;
+        refresh(io, &p, verbose, force)?;
+        if !no_analyzer {
+            let (out, errs, ok, exported) = crate::analyzers::analyzer_step(&p, analyzer_force)?;
+            io.report("setup", &out, None, 0);
+            for l in &errs {
+                io.warn(l);
+            }
+            if exported {
+                refresh(io, &p, verbose, false)?;
+            }
+            failed = failed || !ok;
         }
-        failed = !ok;
+        let l = crate::clicmd::report_command(&p, verbose)?;
+        io.report("setup", &l, None, 0);
+        status_tail(io, &p)?;
     }
-    let l = crate::clicmd::report_command(&p, verbose)?;
-    io.report("setup", &l, None, 0);
-    status_tail(io, &p)?;
     Ok(failed as i32)
 }
 
 fn check(io: &mut Io, sel: &Sel, strict: bool, against: Option<String>) -> Result<i32> {
-    let (p, _) = build_target(io, sel, true, false)?;
-    let name = p.target_name.clone();
-    let base = against.as_ref().map(|rev| crate::queues::grades_baseline_at(&p.root.to_string_lossy(), rev));
-    {
+    let p0 = glue::config(sel, None)?;
+    let mut failed = false;
+    let base = against.as_ref().map(|rev| crate::queues::grades_baseline_at(&p0.root.to_string_lossy(), rev));
+    for name in every_target(sel)? {
+        let (p, _) = build_target(io, sel, Some(&name), true, false)?;
         let built = glue::has_build(&p)?;
         if built && crate::lintrun::lint_available(&p) {
             crate::matchcmd::lint_command(&p)?;
@@ -397,52 +441,61 @@ fn check(io: &mut Io, sel: &Sel, strict: bool, against: Option<String>) -> Resul
             kv.push(("why", s(reasons.join(";"))));
         }
         io.say(&rec(&kv));
-        Ok(!reasons.is_empty() as i32)
+        failed = failed || !reasons.is_empty();
     }
+    Ok(failed as i32)
 }
 
 // ------------------------------------------------------------------------------------------------ status / decisions
 
-/// The status (decide.rs).
-fn print_status(io: &mut Io, p: &Project, work: bool, json: bool) -> Result<()> {
-    for l in &crate::decide::decide_status(p, work, json)? {
+/// The status of one target (decide.rs); `shown`: the project-wide obligations already printed, returned extended.
+fn print_status(io: &mut Io, p: &Project, shown: Vec<String>, work: bool, json: bool) -> Result<Vec<String>> {
+    let (lines, shown) = crate::decide::decide_status(p, shown, work, json)?;
+    for l in &lines {
         io.say(l);
     }
-    Ok(())
+    Ok(shown)
 }
 
 /// The tail other commands print (setup, session start).
 fn status_tail(io: &mut Io, p: &Project) -> Result<()> {
     io.say("");
-    print_status(io, p, true, false)?;
+    print_status(io, p, vec![], true, false)?;
     Ok(())
 }
 
 fn status(io: &mut Io, sel: &Sel, json: bool) -> Result<i32> {
-    let p = refreshed(io, sel)?;
-    print_status(io, &p, true, json)?;
+    let mut shown = vec![];
+    for (i, name) in every_target(sel)?.iter().enumerate() {
+        if i > 0 {
+            io.say("");
+        }
+        let p = refreshed(io, sel, Some(name))?;
+        shown = print_status(io, &p, shown, true, json)?;
+    }
     Ok(0)
 }
 
 /// The rules again after a declaration, so the next obligation shows at once: the project, or None before the first
-/// `dcp setup` (no store yet: setup runs the rules the first time, a declaration made before it only writes).
-fn rerun(io: &mut Io, sel: &Sel) -> Result<Option<Project>> {
-    let p = glue::config(sel)?;
+/// `dcp setup` of the target (no store yet: setup runs the rules the first time, a declaration made before it only
+/// writes).
+fn rerun(io: &mut Io, sel: &Sel, target: &str) -> Result<Option<Project>> {
+    let p = glue::config(sel, Some(target))?;
     if !std::path::Path::new(&p.store_path()).exists() {
         io.say("rules: not run yet (no store): `dcp setup` runs them and prints the next obligations");
         return Ok(None);
     }
-    Ok(Some(refreshed(io, sel)?))
+    Ok(Some(refreshed(io, sel, Some(target))?))
 }
 
 fn toolchain_declare(io: &mut Io, sel: &Sel, pairs: Vec<String>, why: Option<String>) -> Result<i32> {
-    let p = glue::config(sel)?;
+    let p = glue::config(sel, None)?;
     let (lines, error, code, root) = crate::decide::decide_toolchain_declare(&p, pairs, why)?;
     if error.is_some() || code != 0 {
         return Ok(io.report("toolchain declare", &lines, error.as_deref(), code));
     }
     io.report("toolchain declare", &lines, None, 0);
-    let Some(p) = rerun(io, sel)? else { return Ok(0) };
+    let Some(p) = rerun(io, sel, &p.target_name)? else { return Ok(0) };
     let (lines, code) = crate::decide::decide_toolchain_after(&p, root)?;
     Ok(io.report("toolchain declare", &lines, None, code))
 }
@@ -463,20 +516,24 @@ fn current_lint(io: &mut Io, p: &Project) -> Result<String> {
 #[allow(clippy::too_many_arguments)]
 fn level(io: &mut Io, sel: &Sel, lvl: &str, name: &str, why: Option<String>, clear: bool, size_explained: Option<String>,
          divergence_explained: Option<String>) -> Result<i32> {
-    let p = refreshed(io, sel)?;
+    let p = refreshed(io, sel, None)?;
     let (lines, error, status) = crate::queues::level_command(&p, lvl, name, clear, why, size_explained, divergence_explained)?;
     let label = if error.as_deref().is_some_and(|e| e.starts_with("refused")) { "escalate" } else { lvl };
     Ok(io.report(label, &lines, error.as_deref(), status))
 }
 
 fn promote(io: &mut Io, sel: &Sel, accept_falls: bool) -> Result<i32> {
-    let (p, _) = build_target(io, sel, true, false)?;
-    let (l, e, c) = crate::matchcmd::promote_command(&p, accept_falls)?;
+    let p0 = Project::find(sel.root.as_deref(), None)?;
+    let mut projects = vec![];
+    for t in &p0.targets {
+        projects.push(build_target(io, sel, Some(&t.name), true, false)?.0);
+    }
+    let (l, e, c) = crate::matchcmd::promote_command(&projects[0].root.to_string_lossy(), &projects, accept_falls)?;
     Ok(io.report("promote", &l, e.as_deref(), c))
 }
 
 fn probe(io: &mut Io, sel: &Sel, verbose: bool) -> Result<i32> {
-    let (p, _) = build_target(io, sel, true, false)?;
+    let (p, _) = build_target(io, sel, None, true, false)?;
     let (result, line) = crate::probe::probe_run(&p)?;
     if verbose {
         io.say(&line);
@@ -487,10 +544,13 @@ fn probe(io: &mut Io, sel: &Sel, verbose: bool) -> Result<i32> {
     Ok(io.report("toolchain probe", &l, None, 0))
 }
 
-fn build(io: &mut Io, sel: &Sel, force: bool, units: bool, variant: Option<String>) -> Result<i32> {
+fn build(io: &mut Io, sel: &Sel, all_targets: bool, force: bool, units: bool, variant: Option<String>) -> Result<i32> {
     let mut failed = false;
-    {
-        let (mut p, rep) = build_target(io, sel, false, force)?;
+    for (i, name) in target_names(sel, all_targets)?.iter().enumerate() {
+        if i > 0 {
+            io.say("");
+        }
+        let (mut p, rep) = build_target(io, sel, name.as_deref(), false, force)?;
         let (lines, bad) = crate::clicmd::build_summary(&p, (rep.units, rep.compiled, rep.removed, rep.ms), units)?;
         io.report("build", &lines, None, 0);
         failed = failed || bad;
@@ -511,7 +571,7 @@ fn build(io: &mut Io, sel: &Sel, force: bool, units: bool, variant: Option<Strin
         let cl: Vec<String> = cleared.iter().map(|l| format!("  {l}")).collect();
         io.report("build", &cl, None, 0);
         if !cleared.is_empty() {
-            p = build_target(io, sel, true, force)?.0;
+            p = build_target(io, sel, name.as_deref(), true, force)?.0;
         }
         if let Some(v) = &variant {
             let (lines, ok) = crate::run::variant_build_command(&p, v, force)?;
@@ -527,12 +587,12 @@ fn build(io: &mut Io, sel: &Sel, force: bool, units: bool, variant: Option<Strin
 fn layout(io: &mut Io, sel: &Sel, sub: LayoutCmd) -> Result<i32> {
     match sub {
         LayoutCmd::Next(LayoutNextArgs { n, start, json }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let l = crate::clicmd::layout_next(&p, n, start, json)?;
             Ok(io.report("layout next", &l, None, 0))
         }
         LayoutCmd::Units(LayoutUnitsArgs { verbose, json }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let l = crate::clicmd::layout_units(&p, verbose, json)?;
             Ok(io.report("layout units", &l, None, 0))
         }
@@ -542,25 +602,30 @@ fn layout(io: &mut Io, sel: &Sel, sub: LayoutCmd) -> Result<i32> {
             let r = (!range.is_empty()).then(|| range.join(".."));
             read(io, sel, "layout starts", "starts", &[("range", r)])
         }
+        LayoutCmd::Shared(LayoutSharedArgs { from, write, verbose }) => {
+            let p = open(sel, None)?;
+            let (l, e, c) = crate::shared::shared_command(&p, from.as_deref(), write, verbose)?;
+            Ok(io.report("layout shared", &l, e.as_deref(), c))
+        }
         LayoutCmd::Unit(LayoutUnitArgs { sub: LayoutUnitCmd::Propose(a) }) => propose(io, sel, a),
     }
 }
 
 fn propose(io: &mut Io, sel: &Sel, a: ProposeArgs) -> Result<i32> {
-    let p = refreshed(io, sel)?;
+    let p = refreshed(io, sel, None)?;
     let (lines, error, code, written) = crate::clicmd::propose_command(&p, &a.range, &a.name, &a.why, a.by.clone(), a.dry_run)?;
     io.report("layout unit propose", &lines, error.as_deref(), 0);
     if !written {
         return Ok(code);
     }
-    let p = refreshed(io, sel)?;
+    let p = refreshed(io, sel, None)?;
     let (lines, code) = crate::clicmd::propose_verdict(&p, &a.name)?;
     Ok(io.report("layout unit propose", &lines, None, code))
 }
 
 /// A reading command (cliread.rs): its lines, its error as `dcp TITLE: error` (exit 1).
 fn read(io: &mut Io, sel: &Sel, title: &str, cmd: &str, args: &[(&str, Option<String>)]) -> Result<i32> {
-    let p = refreshed(io, sel)?;
+    let p = refreshed(io, sel, None)?;
     let vals: HashMap<String, Option<String>> = args.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
     let (lines, error) = crate::cliread::read_command(&p, cmd, vals)?;
     if !lines.is_empty() {
@@ -582,7 +647,7 @@ fn unit(io: &mut Io, sel: &Sel, sub: UnitCmd) -> Result<i32> {
             if code != 0 {
                 return Ok(code);
             }
-            let p = glue::config(sel)?;
+            let p = glue::config(sel, None)?;
             for l in crate::units::unit_create(&p.root.to_string_lossy(), &name, &range, Some(by), &why)? {
                 io.say(&l);
             }
@@ -590,37 +655,37 @@ fn unit(io: &mut Io, sel: &Sel, sub: UnitCmd) -> Result<i32> {
             Ok(0)
         }
         UnitCmd::Join(UnitJoinArgs { a, b, why }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let cell = std::cell::RefCell::new(&mut *io);
             let mut build = || -> Result<()> {
-                build_target(&mut cell.borrow_mut(), sel, true, false)?;
+                build_target(&mut cell.borrow_mut(), sel, sel.target.as_deref(), true, false)?;
                 Ok(())
             };
             let (l, e, c) = crate::units::unit_join(&p, &a, &b, &why, &mut build)?;
             Ok(draft_report(cell.into_inner(), "unit join", l, e, c))
         }
         UnitCmd::Split(UnitSplitArgs { unit, at, new, dry_run, by, why }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let cell = std::cell::RefCell::new(&mut *io);
             let mut build = || -> Result<()> {
-                build_target(&mut cell.borrow_mut(), sel, true, false)?;
+                build_target(&mut cell.borrow_mut(), sel, None, true, false)?;
                 Ok(())
             };
             let (l, e, c) = crate::units::unit_split(&p, &unit, &at, &new, by, why, dry_run, &mut build)?;
             Ok(draft_report(cell.into_inner(), "unit split", l, e, c))
         }
         UnitCmd::Move(UnitMoveArgs { from, at, to, dry_run, why }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let cell = std::cell::RefCell::new(&mut *io);
             let mut build = || -> Result<()> {
-                build_target(&mut cell.borrow_mut(), sel, true, false)?;
+                build_target(&mut cell.borrow_mut(), sel, None, true, false)?;
                 Ok(())
             };
             let (l, e, c) = crate::units::unit_move(&p, &from, &at, &to, &why, dry_run, &mut build)?;
             Ok(draft_report(cell.into_inner(), "unit move", l, e, c))
         }
         UnitCmd::Rename(UnitRenameArgs { old, new, why, by }) => {
-            let p = refreshed(io, sel)?;
+            let p = refreshed(io, sel, None)?;
             let cell = std::cell::RefCell::new(&mut *io);
             let mut rebuild = || glue::rebuilt(&mut cell.borrow_mut(), sel, None);
             let (l, e, c) = crate::units::unit_rename(&p, &old, &new, by, &why, &mut rebuild)?;
@@ -638,11 +703,11 @@ fn rename(io: &mut Io, sel: &Sel, words: Vec<String>, from_file: Option<String>,
         io.warn(&format!("dcp rename: {msg}"));
         1
     };
-    let (error, pairs, first) = crate::rename::rename_pairs(words, from_file, why);
+    let (error, pairs, tgt, first) = crate::rename::rename_pairs(words, from_file, why);
     if let Some(e) = error {
         return Ok(fail(io, &e, None, None));
     }
-    let p = match open(sel) {
+    let p = match open(sel, tgt.as_deref().filter(|t| !t.is_empty())) {
         Ok(p) => p,
         Err(Error::Config(m)) => {
             let first = first.unwrap_or_default();
@@ -681,21 +746,27 @@ pub(crate) fn guidance(kind: Option<&str>) -> String {
     }
 }
 
-/// The gate: no open toolchain or libs obligation; then build, check and link: (ok, project, link ok, undrafted,
-/// the session state).
+/// No open toolchain or libs obligation; then build, check and link every target: (ok, [(target, project, link ok,
+/// undrafted)], {target: state}).
 #[allow(clippy::type_complexity)]
-fn gate(io: &mut Io, sel: &Sel) -> Result<(bool, Project, Option<bool>, Option<usize>, serde_json::Value)> {
-    let (p, rep) = build_target(io, sel, true, false)?;
-    let (lines, ok, link_ok, undrafted) = crate::clicmd::gate_target(&p, rep.units, false)?;
-    for l in &lines {
-        io.say(l);
+fn gate(io: &mut Io, sel: &Sel) -> Result<(bool, Vec<(String, Project, Option<bool>, Option<usize>)>, serde_json::Value)> {
+    let p0 = Project::find(sel.root.as_deref(), None)?;
+    let (mut ok, mut out, mut states) = (true, vec![], serde_json::Map::new());
+    for t in &p0.targets {
+        let (p, rep) = build_target(io, sel, Some(&t.name), true, false)?;
+        let (lines, good, link_ok, undrafted) = crate::clicmd::gate_target(&p, rep.units, false)?;
+        for l in &lines {
+            io.say(l);
+        }
+        ok = ok && good;
+        states.insert(t.name.clone(), crate::session::session_state(&p)?);
+        out.push((t.name.clone(), p, link_ok, undrafted));
     }
-    let state = crate::session::session_state(&p)?;
-    Ok((ok, p, link_ok, undrafted, state))
+    Ok((ok, out, serde_json::Value::Object(states)))
 }
 
 fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
-    let p0 = Project::find(sel.root.as_deref())?;
+    let p0 = Project::find(sel.root.as_deref(), None)?;
     let root = p0.root.to_string_lossy().into_owned();
     match sub {
         SessionCmd::Start(SessionStartArgs { kind }) => {
@@ -710,20 +781,22 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
             for l in d.iter().take(10) {
                 io.say(&format!("  dirty {l}"));
             }
-            let (ok, p, _, _, state) = gate(io, sel)?;
+            let (ok, targets, states) = gate(io, sel)?;
             if !(ok && d.is_empty()) {
                 io.say("gate: FAIL (resolve the obligations above (dcp status), commit or revert the working tree, fix the errors above, then start again)");
                 return Ok(1);
             }
-            for l in crate::session::session_overview(&p, crate::analyzers::NAME)? {
-                io.say(&l);
+            for (_, p, _, _) in &targets {
+                for l in crate::session::session_overview(p, crate::analyzers::NAME)? {
+                    io.say(&l);
+                }
+                status_tail(io, p)?;
             }
-            status_tail(io, &p)?;
             // the item of a match-deep session that ended without its wrap (attempts.rs)
-            for l in crate::attempts::close_item(&p, false)? {
+            for l in crate::attempts::close_item(&targets[0].1, false)? {
                 io.say(&l);
             }
-            crate::session::session_save(&root, &head, &p.target_name, &state, kind.as_deref())?;
+            crate::session::session_save(&root, &head, &states, kind.as_deref())?;
             io.say(&guidance(kind.as_deref()));
             Ok(0)
         }
@@ -742,8 +815,8 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
             let base = base.filter(|b| !b.is_empty()).unwrap_or_else(|| crate::session::session_head(&root));
             io.say(&rec(&[("session", s("wrap")), ("base", s(base.chars().take(8).collect::<String>())),
                           ("started", started.map(Tok::S).unwrap_or(Tok::No))]));
-            let (mut ok, p, link_ok, undrafted, state) = gate(io, sel)?;
-            for l in crate::attempts::close_item(&p, true)? {
+            let (mut ok, targets, states) = gate(io, sel)?;
+            for l in crate::attempts::close_item(&targets[0].1, true)? {
                 io.say(&l);
             }
             let (mut promoted, mut refused) = (None, false);
@@ -758,7 +831,8 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
                 promoted = Some(String::from_utf8_lossy(&buf).trim().to_string());
                 ok = ok && !refused;
             }
-            let report = crate::session::session_report(&root, &base, &p, link_ok, undrafted, &state, promoted, refused, ok)?;
+            let links: Vec<(String, &Project, Option<bool>, Option<usize>)> = targets.iter().map(|(n, p, l, u)| (n.clone(), p, *l, *u)).collect();
+            let report = crate::session::session_report(&root, &base, links, &states, promoted, refused, ok)?;
             let _ = write!(io.out, "{report}");
             Ok(if ok { 0 } else { 1 })
         }
@@ -768,16 +842,16 @@ fn session(io: &mut Io, sel: &Sel, sub: SessionCmd) -> Result<i32> {
 // ------------------------------------------------------------------------------------------------ run
 
 fn run(io: &mut Io, sel: &Sel, a: RunArgs) -> Result<i32> {
-    let p = open(sel)?;
+    let p = open(sel, None)?;
     let Some(name) = a.name.clone().filter(|_| !a.list) else {
         let l = crate::run::run_list(&p)?;
         return Ok(io.report("run", &l, None, 0));
     };
-    if !crate::run::run_exists(&p, &name)? {
+    let Some(target) = crate::run::run_target(&p, &name)? else {
         let (l, e, _) = crate::run::run_prepare(&p, &name, false, None, vec![], None, None)?;
         return Ok(io.report("run", &l, e.as_deref(), 2));
-    }
-    let p = if a.no_build { p } else { build_target(io, sel, true, false)?.0 };
+    };
+    let p = if a.no_build { open(sel, Some(&target))? } else { build_target(io, sel, Some(&target), true, false)?.0 };
     let debug = if a.debug { Some(true) } else if a.no_debug { Some(false) } else { None };
     let (lines, error, spec) = crate::run::run_prepare(&p, &name, a.no_build, a.seconds, a.extra.clone(), debug, a.dump.clone())?;
     io.report("run", &lines, error.as_deref(), 0);

@@ -1,9 +1,14 @@
 //! The translation units of a target (the compile's plan): one source file per unit,
 //! `src/<unit>.c`, compiled as it stands.
 //!
-//! A unit is a translation unit of a target when it holds a function with an address of that target or an unlinked
-//! function, or when it has code but no function addressed for any target or unlinked (ill-formed, the scan's L.src;
-//! it is still compiled, so the build shows it). A head alone (`dcp unit new`) is no unit yet.
+//! A unit is a translation unit of a target when it holds a function with an address of that target. A unit none of
+//! whose functions has an address of any target is one of every target when it holds an unlinked function, or code
+//! at all (ill-formed, the scan's L.src; it is still compiled, so the build shows it). A head alone (`dcp unit new`)
+//! is no unit yet.
+//!
+//! A unit is shared when its functions have addresses of several targets. A function of it without an address of
+//! one of them is not linked into that target (the linker dropped it there, or the target's `#if` leaves it out):
+//! the target's compile may define it, and it is listed with no address, as an unlinked function is.
 //!
 //! The flags of a unit: the target's declared cflags, then the cflags of the first [[toolchain.unit]] whose glob
 //! matches the unit name (and whose `targets`, when given, list the target), then the target's define
@@ -27,7 +32,7 @@ pub struct Tu {
     pub target: String,
     pub unit: String,
     pub file: String,                             // src/<unit>.c, project-relative posix
-    pub functions: Vec<(Option<i64>, String)>,    // (address, None for an unlinked one; name) in text order
+    pub functions: Vec<(Option<i64>, String)>,    // (address, None for one not linked into the target; name) in text order
     pub file_name: Option<String>,                // the declared original file name
     pub src_hash: String,
 }
@@ -39,11 +44,11 @@ impl Tu {
     }
 }
 
-/// unit -> its declared original file name (`file` declarations; the first per unit).
-pub fn unit_files(decls: &[crate::decl::Decl]) -> HashMap<String, String> {
+/// unit -> its declared original file name (`file` declarations of one target; the first per unit).
+pub fn unit_files(decls: &[crate::decl::Decl], target: &str, default: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for d in decls {
-        if d.kind == "file" {
+        if d.kind == "file" && d.target.as_deref().unwrap_or(default) == target {
             if let (Some(tu), Some(path)) = (d.key("tu"), d.key("path")) {
                 out.entry(tu.s().to_string()).or_insert_with(|| path.s().to_string());
             }
@@ -57,8 +62,8 @@ fn address_for(addrs: &[(Option<String>, u64)], target: &str, default: &str) -> 
 }
 
 /// The translation units of one target, in unit name order, planned from the file list: every `src/<unit>.c` with a
-/// function addressed for the target or unlinked, and every one with code but no function addressed for any target
-/// or unlinked (ill-formed, L.src), so its compile shows what is wrong instead of its row going.
+/// function addressed for the target, and every one without a function addressed for any target that holds an
+/// unlinked function or code at all (ill-formed, L.src), so its compile shows what is wrong instead of its row going.
 pub fn units(root: &str, scan: &frontend::Scan, target: &str, default: &str, names: &HashMap<String, String>) -> Result<Vec<Tu>, String> {
     let by_file: BTreeMap<&str, &crate::srcscan::FilePart> = scan.parts.iter().map(|p| (p.rel.as_str(), &**p)).collect();
     let mut out = vec![];
@@ -66,11 +71,16 @@ pub fn units(root: &str, scan: &frontend::Scan, target: &str, default: &str, nam
         let Some(unit) = rel.strip_prefix("src/").and_then(|r| r.strip_suffix(".c")).filter(|u| !u.contains('/')) else { continue };
         let mut fs: Vec<&crate::srcscan::FnRow> = part.functions.iter().collect();
         fs.sort_by_key(|f| f.0 .1);
+        // a function addressed for another target only, which this target's compile holds (no `#if` leaves it out),
+        // is in the list without an address: not linked into this target
         let fns: Vec<(Option<i64>, String)> = fs.iter().filter_map(|f| {
             let a = address_for(&f.0 .4, target, default);
-            (a.is_some() || f.0 .5).then(|| (a, f.0 .3.clone()))
+            let held = f.1 .6.is_empty() || f.1 .6.iter().any(|t| t == target);
+            (a.is_some() || f.0 .5 || (!f.0 .4.is_empty() && held)).then(|| (a, f.0 .3.clone()))
         }).collect();
-        if !fns.is_empty() || part.no_unit.is_some() {
+        let addressed_anywhere = fs.iter().any(|f| !f.0 .4.is_empty());
+        let of_target = if addressed_anywhere { fns.iter().any(|f| f.0.is_some()) } else { !fns.is_empty() || part.no_unit.is_some() };
+        if of_target {
             let path = native_path(&format!("{root}/{rel}"));
             let src_hash = fsmemo::sha256(&path).map_err(|e| format!("{path}: {e}"))?;
             out.push(Tu { target: target.into(), unit: unit.into(), file: rel.into(), functions: fns, file_name: names.get(unit).cloned(), src_hash });
@@ -88,14 +98,15 @@ thread_local! {
 pub fn plan(p: &Project) -> Result<Rc<Vec<Tu>>, String> {
     let h = |n: &str| p.input_hash(n).map(|x| x.unwrap_or_default());
     let root = p.root.to_string_lossy().into_owned();
-    let key = vec![root.clone(), p.target_name.clone(), h("src")?, h("decl")?, h("target")?];
+    let key = vec![root.clone(), p.target_name.clone(), p.targets[0].name.clone(), h("src")?, h("decl")?, h("targets")?];
     if let Some(hit) = PLANS.with(|c| c.borrow().iter().find(|x| x.0 == key).map(|x| x.1.clone())) {
         return Ok(hit);
     }
-    let scan = frontend::scan(&root, Some(&key[2]))?;
-    let (decls, _) = crate::decl::load(&crate::decl::files(&root), &root);
-    let names = unit_files(&decls);
-    let out = Rc::new(units(&root, &scan, &p.target_name, &p.target_name, &names)?);
+    let scan = frontend::scan(&root, Some(&key[3]))?;
+    let targets: Vec<String> = p.targets.iter().map(|t| t.name.clone()).collect();
+    let (decls, _) = crate::decl::load(&crate::decl::files(&root), &root, &targets);
+    let names = unit_files(&decls, &p.target_name, &targets[0]);
+    let out = Rc::new(units(&root, &scan, &p.target_name, &targets[0], &names)?);
     PLANS.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() > 2 {
@@ -117,11 +128,15 @@ fn strings(v: Option<&toml::Value>) -> Vec<String> {
 }
 
 /// (flags, the override table that applied): the target's declared cflags, then the cflags of the first
-/// [[toolchain.unit]] whose glob matches the unit name.
-pub fn flags_for(p: &Project, unit: &str) -> Result<(Vec<String>, Option<toml::Table>), String> {
+/// [[toolchain.unit]] whose glob matches the unit name (and whose `targets`, when given, list the target).
+pub fn flags_for(p: &Project, target: &str, unit: &str) -> Result<(Vec<String>, Option<toml::Table>), String> {
     let decl = p.toolchain_decl()?;
     let mut flags: Vec<String> = decl["cflags"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
     for o in unit_overrides(p) {
+        let ts = strings(o.get("targets"));
+        if !ts.is_empty() && !ts.iter().any(|t| t == target) {
+            continue;
+        }
         let glob = o.get("glob").map(|g| g.as_str().map(|s| s.to_string()).unwrap_or_else(|| crate::project::toml_json(g).to_string())).unwrap_or_default();
         if fsmemo::fnmatch(unit.as_bytes(), glob.as_bytes()) {
             flags.extend(strings(o.get("cflags")));
@@ -131,9 +146,11 @@ pub fn flags_for(p: &Project, unit: &str) -> Result<(Vec<String>, Option<toml::T
     Ok((flags, None))
 }
 
-/// The flags a unit compiles with: the declared cflags and the unit's override.
-pub fn compile_flags(p: &Project, unit: &str) -> Result<Vec<String>, String> {
-    Ok(flags_for(p, unit)?.0)
+/// The flags a unit compiles with: flags_for's and the target's define.
+pub fn compile_flags(p: &Project, target: &str, unit: &str) -> Result<Vec<String>, String> {
+    let mut f = flags_for(p, target, unit)?.0;
+    f.push(format!("/D{}", frontend::target_macro(target)));
+    Ok(f)
 }
 
 /// (name, first reported line, n lines, first physical line) of every stretch of the text one `#line` directive

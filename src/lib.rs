@@ -86,6 +86,7 @@ mod vc6;
 mod walk;
 mod written;
 mod shape;
+mod shared;
 mod slotmap;
 mod x86;
 

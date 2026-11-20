@@ -201,10 +201,10 @@ fn join(root: &str, a: &str, b: &str) -> Result<Join, String> {
         }
     }
     // decl: b's start goes, b's end becomes a's end, a's own end (at b's start) goes
-    let mut b_start: Option<i64> = None;
+    let mut b_start: HashMap<Option<String>, i64> = HashMap::new();
     rewrite_boundaries(root, &mut |d: &Decl| {
         if tu_of(d) == Some(b) && d.words.first().map(|w| w.as_str()) == Some("start") {
-            b_start = Some(d.lo);
+            b_start.insert(d.target.clone(), d.lo);
         }
         Some(d.clone())
     })?;
@@ -214,7 +214,7 @@ fn join(root: &str, a: &str, b: &str) -> Result<Join, String> {
         if tu == Some(b) && w == Some("start") {
             return None;
         }
-        if tu == Some(a) && w == Some("end") && b_start == Some(d.lo) {
+        if tu == Some(a) && w == Some("end") && b_start.get(&d.target) == Some(&d.lo) {
             return None;
         }
         if tu == Some(b) && w == Some("end") {
@@ -1083,7 +1083,7 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
         }
         // the reason once, on NEW's start; UNIT's end points there
         let reason = if with_by { why.clone() } else { format!("{new} starts here (dcp unit split)") };
-        Decl { lo: at, hi: at + 1, kind: "boundary".into(), words: vec![side.to_string()], keys, reason, file: String::new(), line: 0 }
+        Decl { lo: at, hi: at + 1, kind: "boundary".into(), words: vec![side.to_string()], keys, reason, target: p.target_prefix(), file: String::new(), line: 0 }
     };
     let mut adds = vec![mk(new, "start", true)];
     if let Some(e) = unit_end {
@@ -1112,7 +1112,7 @@ pub fn unit_split(p: &crate::project::Project, unit: &str, at: &str, new: &str, 
         })?;
         let path = p.root.join("decl").join("text.dcl");
         for d in &adds {
-            crate::decl::insert(&path, d).map_err(|e| e.to_string())?;
+            crate::decl::insert(&path, d, &p.target_names()).map_err(|e| e.to_string())?;
         }
         if !sp.renamed.is_empty() {
             E::rename_words(&root, &sp.renamed, false, None)?;
