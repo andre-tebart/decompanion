@@ -105,8 +105,11 @@ lever does nothing for VC6 here (drop it). The hash holds field displacements: a
 field is read where (a crossed-field M8) has its own code, and its hunks start with `references differ: M8 ..`
 (0 ins can still be draft for that). `BYTE` marks a byte match. The closest row, when it is close, gets its
 `declaration set of <label>:` line (2.2). Generators: `dcp try NAME --move-line N --to A..B` moves file line N (a
-declaration) before each line of A..B. Keep a variant with `dcp try NAME FILE --apply LABEL`, then `dcp build`,
-`dcp grade NAME`.
+declaration inside the body) before each line of A..B (lines of the body; its labels read `L12-before-L15`). To
+see where a variant differs, `dcp try NAME FILE --show LABEL` prints its asmdiff against the original (the differing
+lines) from a compile apart: nothing is written, no apply / build / revert. A block that "occurs 0 times" names the
+file lines where its old text does occur (another function's text). Keep a variant with
+`dcp try NAME FILE --apply LABEL`, then `dcp build`, `dcp grade NAME`.
 
 Work in rounds: one lever per round (declaration order, loop form, operand order, if/else order, a temporary
 introduced or removed, a narrower or wider type), many variants per round, keep the best, repeat. Generate the

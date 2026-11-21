@@ -55,7 +55,10 @@ pub fn function_part(asm: &str, name: &str) -> Option<Vec<String>> {
     let is = |l: &str, kw: &str| {
         let mut w = l.split_whitespace();
         let (a, b) = (w.next().unwrap_or(""), w.next().unwrap_or(""));
-        (a == format!("_{name}") || a == name) && b == kw
+        // `_f`, a stdcall's `_f@8` (err_ExceptionFilter: WINAPI), a fastcall's `@f@8`
+        let plain = a.trim_start_matches(['_', '@']);
+        let plain = plain.split_once('@').filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).map_or(plain, |(x, _)| x);
+        (a == format!("_{name}") || a == name || (a.contains('@') && plain == name)) && b == kw
     };
     let start = lines.iter().position(|l| is(l, "PROC"))?;
     let end = lines[start..].iter().position(|l| is(l, "ENDP")).map(|k| k + start)?;
@@ -140,6 +143,10 @@ pub fn symbol_depths(part: &[String]) -> Vec<(u32, String, i32)> {
         let t = l.trim_start();
         let Some(off) = t.split(['\t', ' ']).next().filter(|x| x.len() == 5 && x.chars().all(|c| c.is_ascii_hexdigit())) else { continue };
         let Some(i) = t.find("$[esp") else { continue };
+        // an indexed operand (`_inv$[esp+eax*4+36]`) holds the index's bias (`inv[i - 1]`): no evidence of the base
+        if t[i..].split(']').next().is_some_and(|x| x.contains('*')) {
+            continue;
+        }
         let sym: String = t[..i].chars().rev().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<Vec<_>>().into_iter().rev().collect();
         let sym = sym.trim_start_matches('_').to_string();
         // `$[esp+436]`, `$[esp-4]`, `$[esp+esi*4+436]`: K is the last term, with its sign

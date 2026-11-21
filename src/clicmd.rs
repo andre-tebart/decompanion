@@ -779,23 +779,42 @@ pub fn role_name(kind: &str) -> &'static str {
 }
 
 /// `dcp findings [--category C] [--severity S] [--json]`: grouped by category, by address within one.
-pub fn findings_command(p: &crate::project::Project, category: Option<crate::registry::Category>, severity: Option<String>, json: bool) -> Result<Vec<String>> {
+pub fn findings_command(p: &crate::project::Project, category: Option<crate::registry::Category>, severity: Option<String>, json: bool,
+                        function: Option<&str>) -> Result<(Vec<String>, Option<String>, i32)> {
     let db = opened(p)?;
     let all = findings(&db, severity)?;
-    let conf: Vec<FindingRow> = by_category(all.iter().filter(|c| category.is_none_or(|k| crate::registry::category(&c.1) == k))).into_iter().cloned().collect();
+    // one function's: the findings inside its code (its slot) and the ones whose message names it
+    let only = match function {
+        None => None,
+        Some(key) => match crate::asmcmd::find_function(&db, key)? {
+            Some(row) => {
+                let lo = row["addr"].as_i64().unwrap_or(0);
+                let len = row["dist"].get("slot").and_then(|v| v.as_i64()).unwrap_or(1).max(1);
+                let name = row["name"].as_str().unwrap_or(key).to_string();
+                Some((lo, lo + len, name))
+            }
+            None => return Ok((vec![], Some(format!("no graded function {key}")), 1)),
+        },
+    };
+    let names = |m: &str, n: &str| m.match_indices(n).any(|(i, _)| {
+        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        !word(m[..i].chars().next_back()) && !word(m[i + n.len()..].chars().next())
+    });
+    let mine = |c: &FindingRow| only.as_ref().is_none_or(|(lo, hi, name)| (*lo <= c.2 && c.2 < *hi) || names(&c.4, name));
+    let conf: Vec<FindingRow> = by_category(all.iter().filter(|c| category.is_none_or(|k| crate::registry::category(&c.1) == k) && mine(c))).into_iter().cloned().collect();
     if json {
-        return Ok(conf.iter().map(|c| {
+        return Ok((conf.iter().map(|c| {
             let v = serde_json::json!({"severity": c.0, "category": crate::registry::category(&c.1).name(), "check": c.1, "lo": c.2, "hi": c.3,
                                        "message": c.4, "a": c.5, "b": c.6});
             let mut o = String::new();
             crate::store::canon(&mut o, &v);
             o
-        }).collect());
+        }).collect(), None, 0));
     }
     let mut out = vec![format!("target={}  findings={}{}", p.target_name, conf.len(),
                                if conf.is_empty() { String::new() } else { format!("  {}  ({})", category_counts(&conf), severity_counts(&conf)) })];
     out.extend(conf.iter().map(finding_line));
-    Ok(out)
+    Ok((out, None, 0))
 }
 
 /// `dcp answers [RANGE]`: the answers of a range (default: the image), one line per run of bytes: the owner at its

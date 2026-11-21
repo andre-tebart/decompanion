@@ -41,8 +41,11 @@ pub fn save_pushes(ins: &[Ins]) -> std::collections::HashSet<u32> {
 }
 
 /// esp relative to the entry (the return address at 0) before each instruction reached from the entry, by address;
-/// None when the walk meets two depths at one address or an esp write it does not follow (an ebp frame's
-/// `mov esp, ebp`, `and esp`, `leave`).
+/// None when the walk meets two depths at one address or an esp write it does not follow. An aligned frame's
+/// `and esp, -8` (after `mov ebp, esp`) is taken as no change: the padding is not known, both sides have it.
+/// `mov eax, N; call __chkstk` (a frame of a page or more) takes N. A call through memory or a register pops its
+/// arguments (stdcall) unless an `add esp` that covers them follows before the next push, call or branch (cdecl
+/// with the cleanup scheduled a few instructions later: `call [edx+0x1f0]; fstp ..; add esp, 0xc`).
 pub fn depths(ins: &[Ins], va: u32) -> Option<HashMap<u32, i32>> {
     let at: HashMap<u32, usize> = ins.iter().enumerate().map(|(k, i)| (i.addr, k)).collect();
     let mut out: HashMap<u32, i32> = HashMap::new();
@@ -95,13 +98,36 @@ pub fn depths(ins: &[Ins], va: u32) -> Option<HashMap<u32, i32>> {
                     d = ebp?;
                     pending = 0;
                 }
+                "and" if esp0 && ebp.is_some() && imm1.is_some() => {}
                 "call" => {
                     // through memory or a register with no `add esp` after it: stdcall, the callee pops its arguments
-                    let next = ins.get(k + 1);
-                    let cleans = next.is_some_and(|n| n.mn == "add" && n.ops.first().is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::ESP));
+                    let add_esp = |n: &Ins| (n.mn == "add" && n.ops.first().is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::ESP))
+                        .then(|| n.ops.get(1).filter(|o| o.typ == OpType::Imm).map_or(0, |o| o.imm as i32));
+                    let mut cleans = ins.get(k + 1).is_some_and(|n| add_esp(n).is_some());
+                    if !cleans {
+                        // the cleanup a few instructions on, nothing that moves esp or leaves the block between
+                        for n in ins.iter().skip(k + 1).take(8) {
+                            if let Some(x) = add_esp(n) {
+                                cleans = x >= pending && pending > 0;
+                                break;
+                            }
+                            if n.flow != Flow::Next || matches!(n.mn, "push" | "pop" | "sub" | "leave") {
+                                break;
+                            }
+                        }
+                    }
                     if op0.is_some_and(|o| o.typ != OpType::Imm) && !cleans {
                         d += pending;
                         pending = 0;
+                    }
+                    // `mov eax, N; call __chkstk`: the frame of a page or more
+                    if let (Some(o), Some(prev)) = (op0.filter(|o| o.typ == OpType::Imm), k.checked_sub(1).map(|x| &ins[x])) {
+                        let _ = o;
+                        if prev.mn == "mov" && prev.ops.first().is_some_and(|o| o.typ == OpType::Reg && o.reg == Reg::EAX) {
+                            if let Some(n) = prev.ops.get(1).filter(|o| o.typ == OpType::Imm && o.imm >= 0x1000 && o.imm < 0x1000_0000) {
+                                d -= n.imm as i32;
+                            }
+                        }
                     }
                 }
                 _ if esp0 && !matches!(i.mn, "cmp" | "test") => return None,
@@ -337,10 +363,12 @@ fn slots(ins: &[Ins], d: &HashMap<u32, i32>) -> (Slots, i32, BTreeSet<i32>) {
             }
         }
     }
-    // the saved registers' slots: where each save push wrote
+    // the saved registers' slots: where each save push wrote. A save pushed after the first branch (the guard's
+    // early return keeps its registers: d2_ReadBmpPixels) is below the frame all the same: the body's depth has it
     for a in save_pushes(ins) {
         if let Some(&x) = d.get(&a) {
             saves.insert(x - 4);
+            body = body.min(x - 4);
         }
     }
     let mut out = Slots::new();
@@ -396,8 +424,11 @@ pub fn frame(ours: &[u8], theirs: &[u8], va: u32, la: &[Line], lb: &[Line], name
             format!("arg+{:#x}", slot - 4)
         } else if slot >= 0 {
             "ret".into()
-        } else if let Some(e) = ebp {
+        } else if let Some(e) = ebp.filter(|e| slot <= *e) {
             format!("[ebp-{:#x}]", e - slot)
+        } else if slot < body {
+            // below the body's esp: a pushed argument's place, read while it is pending
+            format!("[esp-{:#x}]", body - slot)
         } else {
             format!("[esp+{:#x}]", slot - body)
         }
@@ -499,6 +530,25 @@ mod tests {
     use super::*;
 
     const VA: u32 = 0x401000;
+
+    /// The walk follows the prologues and calls the frame view met and gave up on.
+    #[test]
+    fn the_depth_walk_follows_late_cleanups_aligned_frames_and_chkstk() {
+        let depth_at = |code: &[u8], off: u32| depths(&dis::decode(code, VA), VA).and_then(|d| d.get(&(VA + off)).copied());
+        // push eax; call [edx+0x1f0]; mov ecx, eax; add esp, 4; ret: cdecl through a pointer, the cleanup one
+        // instruction on (d3s_Project)
+        let cdecl = [0x50, 0xff, 0x92, 0xf0, 0x01, 0, 0, 0x8b, 0xc8, 0x83, 0xc4, 0x04, 0xc3];
+        assert_eq!((depth_at(&cdecl, 7), depth_at(&cdecl, 12)), (Some(-4), Some(0)));
+        // without an `add esp`: stdcall, the callee popped its argument
+        let stdcall = [0x50, 0xff, 0x92, 0xf0, 0x01, 0, 0, 0x8b, 0xc8, 0xc3];
+        assert_eq!((depth_at(&stdcall, 7), depth_at(&stdcall, 9)), (Some(0), Some(0)));
+        // push ebp; mov ebp, esp; and esp, -8; sub esp, 0x10; mov esp, ebp; pop ebp; ret (hmt_Election)
+        let aligned = [0x55, 0x8b, 0xec, 0x83, 0xe4, 0xf8, 0x83, 0xec, 0x10, 0x8b, 0xe5, 0x5d, 0xc3];
+        assert_eq!((depth_at(&aligned, 9), depth_at(&aligned, 12)), (Some(-0x14), Some(0)));
+        // mov eax, 0x2000; call __chkstk; add esp, 0x2000; ret (txt_OpenText's frame of more than a page)
+        let big = [0xb8, 0, 0x20, 0, 0, 0xe8, 0, 0, 0, 0, 0x81, 0xc4, 0, 0x20, 0, 0, 0xc3];
+        assert_eq!((depth_at(&big, 10), depth_at(&big, 16)), (Some(-0x2000), Some(0)));
+    }
 
     #[test]
     fn the_frame_view_pairs_slots() {

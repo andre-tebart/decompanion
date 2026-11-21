@@ -225,6 +225,10 @@ pub fn uses(root: &str, name: &str) -> Vec<(String, i64)> {
 /// literals and #include lines are left alone, and the occurrences at the (line, column) positions of `skip`.
 /// Returns (text, replacements).
 pub fn replace_words(text: &str, mapping: &BTreeMap<String, String>, skip: Option<&HashSet<(i64, i64)>>) -> (String, usize) {
+    // no name to replace: the text as it is (an empty alternation would match the empty word at every boundary)
+    if mapping.is_empty() {
+        return (text.to_string(), 0);
+    }
     let mut olds: Vec<&String> = mapping.keys().collect();
     olds.sort_by_key(|o| std::cmp::Reverse(o.len()));
     let pat = Regex::new(&format!(r"\b({})\b", olds.iter().map(|o| regex::escape(o)).collect::<Vec<_>>().join("|"))).unwrap();
@@ -622,6 +626,8 @@ void f(void)
         let skip: HashSet<(i64, i64)> = [(2, 5)].into_iter().collect();
         let (t, n) = replace_words("x\nint old; old = 1;\n", &m, Some(&skip));
         assert_eq!((t.as_str(), n), ("x\nint old; new = 1;\n", 1));
+        // nothing to rename (dcp unit split of a unit without placeholder names): the text as it is
+        assert_eq!(replace_words("int old;\n", &BTreeMap::new(), None), ("int old;\n".to_string(), 0));
     }
 
     #[test]

@@ -332,25 +332,19 @@ pub fn g_grade(ctx: &Ctx, db: &Connection, out: &mut Out) -> Result<()> {
         });
         // the reference census (refcheck::census): the objects one side refers to and the other never
         // does, whatever the alignment; no byte match only (equal bytes refer alike)
-        let census: Vec<crate::refcheck::CensusDiff> = if is_byte {
-            vec![]
-        } else {
-            let inp = h.census.get_or_init(|| crate::timing::phase("g.census", || {
-                let sites = &judged().1;
-                let (bound, unbound) = crate::equiv::bind(&f.obj.0, &f.code, &img, lo as u32, sites, &refs[i], &phi);
-                let data = img.read(lo as u32, h.o.code.max(0) as usize);
-                crate::refcheck::census_input(&f.obj.0, &f.code, &refs[i], &bound, unbound, &data, lo as u32, &img)
-            }));
-            crate::refcheck::census(inp, &phi)
+        let census_inp = (!is_byte).then(|| h.census.get_or_init(|| crate::timing::phase("g.census", || {
+            let sites = &judged().1;
+            let (bound, unbound) = crate::equiv::bind(&f.obj.0, &f.code, &img, lo as u32, sites, &refs[i], &phi);
+            let data = img.read(lo as u32, h.o.code.max(0) as usize);
+            crate::refcheck::census_input(&f.obj.0, &f.code, &refs[i], &bound, unbound, &data, lo as u32, &img)
+        })));
+        let census: Vec<crate::refcheck::CensusDiff> = census_inp.map(|inp| crate::refcheck::census(inp, &phi)).unwrap_or_default();
+        // no census difference: the alignment paired reordered code crosswise when both sides refer to both
+        // addresses; another offset of the same object is said as such (refcheck::lines_noted)
+        let lines = match census_inp {
+            Some(inp) if census.is_empty() => chk.lines_noted(&phi, lo as u32, unit, inp),
+            _ => chk.lines(&phi, lo as u32, unit),
         };
-        let mut lines = chk.lines(&phi, lo as u32, unit);
-        if !is_byte && census.is_empty() {
-            // the alignment paired reordered code crosswise: both sides refer to every object and literal either
-            // one names
-            for l in lines.iter_mut() {
-                l.push_str(" (crossed: both sides refer to both)");
-            }
-        }
         let rules: BTreeSet<&str> = chk.differs().map(|r| r.rule).collect();
         let rules = rules.into_iter().collect::<Vec<_>>().join(", ");
         // the failing lines name the first differences, the count names them all

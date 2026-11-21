@@ -60,10 +60,10 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
             }
             Ok(io.report("exceptions", &l, None, 0))
         }
-        Cmd::Findings(FindingsArgs { category, severity, json }) => {
+        Cmd::Findings(FindingsArgs { category, severity, json, function }) => {
             let p = refreshed(io, sel, None)?;
-            let l = crate::clicmd::findings_command(&p, category, severity.map(|s| s.as_str().to_string()), json)?;
-            Ok(io.report("findings", &l, None, 0))
+            let (l, e, c) = crate::clicmd::findings_command(&p, category, severity.map(|s| s.as_str().to_string()), json, function.as_deref())?;
+            Ok(io.report("findings", &l, e.as_deref(), c))
         }
         Cmd::Check(CheckArgs { strict, against }) => check(io, sel, strict, against),
         Cmd::Serve(ServeArgs { stop, status, foreground }) => Ok(crate::client::serve(io, sel.root.as_deref(), stop, status, foreground)),
@@ -208,6 +208,8 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         }
         Cmd::Asmdiff(AsmdiffArgs { name, regs, all, symbols, plain, changed, at, context, side, lines }) => {
             let (p, _) = build_target(io, sel, None, true, false)?;
+            // --context alone is --changed with that context (it printed the folded diff as if not given)
+            let changed = changed || (context.is_some() && at.is_none());
             let view = crate::matchcmd::View { changed, at, context, side, lines };
             let (l, e, c) = crate::matchcmd::asmdiff_command(&p, &name, regs, all, symbols, plain, view)?;
             Ok(io.report("asmdiff", &l, e.as_deref(), c))
@@ -315,9 +317,9 @@ pub fn dispatch(io: &mut Io, cli: Cli) -> Result<i32> {
         Cmd::Layout(LayoutArgs { sub }) => layout(io, sel, sub),
         Cmd::Build(BuildArgs { all_targets, force, units, variant }) => build(io, sel, all_targets, force, units, variant),
         Cmd::Unit(UnitArgs { sub }) => unit(io, sel, sub),
-        Cmd::Try(TryArgs { name, file, move_line, to, apply }) => {
+        Cmd::Try(TryArgs { name, file, move_line, to, apply, show }) => {
             let (p, _) = build_target(io, sel, None, true, false)?;
-            let (lines, status) = crate::variants::try_command(&p, &name, file.as_deref(), move_line, to.as_deref(), apply.as_deref())?;
+            let (lines, status) = crate::variants::try_command(&p, &name, file.as_deref(), move_line, to.as_deref(), apply.as_deref(), show.as_deref())?;
             Ok(io.report("try", &lines, None, status))
         }
         Cmd::Fn(FnArgs { key }) => {

@@ -413,6 +413,9 @@ pub struct FindingsArgs {
     pub severity: Option<Severity>,
     #[arg(long)]
     pub json: bool,
+    /// only the findings of this function (a name or an address): the ones in its code and the ones that name it
+    #[arg(value_name = "FUNCTION")]
+    pub function: Option<String>,
 }
 
 /// `Cmd::Check`'s arguments (its own type: clap builds and reads them in a function of their own).
@@ -552,7 +555,7 @@ pub struct AsmdiffArgs {
     /// only the lines around this address (the original's, or ours on a '-' line): --context lines each way
     #[arg(long, value_name = "ADDR")]
     pub at: Option<String>,
-    /// the lines around a difference (--changed, default 3) or an address (--at, default 20)
+    /// the lines around a difference (--changed, default 3; alone it implies --changed) or an address (--at, default 20)
     #[arg(long, value_name = "N")]
     pub context: Option<usize>,
     /// one side's listing alone, in its own order: ours or original (names with --symbols, renamed with --regs)
@@ -986,6 +989,10 @@ pub struct TryArgs {
     /// write this variant into the source instead of trying the variants
     #[arg(long, value_name = "LABEL")]
     pub apply: Option<String>,
+    /// print this variant's asmdiff against the original (its differing lines) from a compile apart: nothing is
+    /// written, no build needed
+    #[arg(long, value_name = "LABEL", conflicts_with = "apply")]
+    pub show: Option<String>,
 }
 
 /// `TargetCmd::List`'s arguments (its own type: clap builds and reads them in a function of their own).

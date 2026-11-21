@@ -318,21 +318,29 @@ impl Bench {
         (grade, by.iter().map(|(r, n)| if *n == 1 { r.to_string() } else { format!("{r} x{n}") }).collect::<Vec<_>>().join(", "))
     }
 
-    /// One function's distance from the original as `dcp grade` reads it: (differing instructions on both sides,
-    /// differing bytes with the size difference, the hunk classes).
-    pub(crate) fn distance(&self, o: &Obj, code: &FunctionCode, a: i64) -> (usize, usize, String) {
+    /// One function's distance from the original: (differing instructions on both sides, the bytes of the differing
+    /// instructions, the hunk classes, our code size less the original's). The bytes are counted on the aligned
+    /// listings (per differing run the longer side, the frames aligned as the instructions are): a positional count
+    /// took every byte after one instruction of another length as differing (one 3-byte for a 2-byte encoding read 91
+    /// bytes, and a worse variant ranked before it); a byte match has none, whatever the count.
+    pub(crate) fn distance(&self, o: &Obj, code: &FunctionCode, a: i64) -> (usize, usize, String, i64) {
         let img = &*self.img;
         let env = crate::diffclass::Env { img, range: (img.base as i64, img.end() as i64), fills: &self.fills, forms: &self.forms };
         let next = self.starts.get(self.starts.partition_point(|&x| x <= a)).copied().unwrap_or(img.end() as i64) as u32;
-        let c = crate::compare::compare(img, code, a as u32, self.relocs.as_deref(), next, &self.forms);
         let (cd, cm) = code.code();
         let size = crate::diffclass::code_size(&env, cd, cm, a as u32);
         let extent = self.walk.get(&a).map(|h| h - a).unwrap_or(size);
         let orig = crate::diffclass::original(&env, a as u32, extent, extent.max(next as i64 - a), self.align);
-        let n = size.min(orig.code);
-        let bytes = c.diffs.iter().filter(|&&k| (k as i64) < n).count() + (size - orig.code).unsigned_abs() as usize;
         let fc = crate::diffclass::FunctionCompare::new(&env, o, code, a as u32, &orig);
-        (fc.verdict.distance, bytes, fc.verdict.summary_without_branches())
+        let shapes = |l: &[crate::x86::Line]| -> Vec<crate::shape::Shape> { l.iter().map(|x| x.shape.clone()).collect() };
+        let texts = |l: &[crate::x86::Line]| -> Vec<String> { l.iter().map(|x| x.text.clone()).collect() };
+        let ops = match fc.verdict.frame {
+            Some(f) => crate::difflib::opcodes(&crate::shape::stack_mask(&shapes(&fc.la), f), &crate::shape::stack_mask(&shapes(&fc.lb), f)),
+            None => crate::difflib::opcodes(&texts(&fc.la), &texts(&fc.lb)),
+        };
+        let run = |l: &[crate::x86::Line], lo: usize, hi: usize| l[lo..hi].iter().map(|x| x.size as usize).sum::<usize>();
+        let bytes = ops.iter().filter(|o| o.0 != crate::difflib::Tag::Equal).map(|o| run(&fc.la, o.1, o.2).max(run(&fc.lb, o.3, o.4))).sum();
+        (fc.verdict.distance, bytes, fc.verdict.summary_without_branches(), size - orig.code)
     }
 }
 
@@ -1324,6 +1332,11 @@ pub(crate) fn code_key(o: &Obj, c: &FunctionCode) -> (Vec<u8>, Vec<(u32, String)
         if n.starts_with('.') {
             let own = s.is_some_and(|s| s.secnum as usize == c.secnum);
             return (*off, if own { format!("{n}+fn{:+#x}", addend as i64 - c.start as i64) } else { n });
+        }
+        // a label of the function's own code (a jump table's entry: `$L1234`): where it is, not its number (two
+        // switches whose tables send a case elsewhere are two codes: evt_Eval, a split `case 1: case 7:`)
+        if let Some(s) = s.filter(|s| n.starts_with('$') && s.secnum as usize == c.secnum) {
+            return (*off, format!("$L@fn{:+#x}", s.value as i64 + addend as i64 - c.start as i64));
         }
         let n = if n.starts_with('$') { n.trim_end_matches(|ch: char| ch.is_ascii_digit()).to_string() } else { n };
         (*off, if addend == 0 { n } else { format!("{n}+{addend:#x}") })

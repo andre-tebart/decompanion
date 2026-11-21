@@ -588,6 +588,33 @@ impl Check {
         self.firsts().into_iter().map(|r| line(r, phi, va, unit)).collect()
     }
 
+    /// `lines` of a function whose census is empty (every object and literal one side names, the other refers into
+    /// too), each with what the rest of the function says of it. A named reference (M8) is `(crossed: both sides
+    /// refer to both)` only when the original's function refers to our address somewhere and ours to the
+    /// original's: the alignment paired reordered code crosswise. Else the line names the address one side never
+    /// refers to: another element or field of the same object (seen: `txt_Ptrs[0x1c7c]` / `[0x1c7d]` against the
+    /// original's `[0x1c7b]` / `[0x1c7c]`, a shifted index that read as a swap). A literal's line is crossed: the
+    /// census found its bytes on the original's side.
+    pub fn lines_noted(&self, phi: &Phi, va: u32, unit: Option<&str>, inp: &CensusInput) -> Vec<String> {
+        self.firsts().into_iter().map(|r| {
+            let mut l = line(r, phi, va, unit);
+            if r.rule != "M8" {
+                l.push_str(CROSSED);
+                return l;
+            }
+            let ours: Vec<u32> = r.expect.iter().map(|e| (e + r.within) as u32).collect();
+            if !ours.iter().any(|a| inp.theirs.contains_key(a)) {
+                l.push_str(&format!(" (not crossed: the original's function never refers to {})", r.ours_addrs()));
+            } else if inp.fields.contains(&r.raw) {
+                l.push_str(CROSSED);
+            } else if inp.unbound == 0 {
+                // an unbound field of ours could be the one that refers to it: undecided, no note
+                l.push_str(&format!(" (not crossed: ours never refers to {:#x})", r.raw));
+            }
+            l
+        }).collect()
+    }
+
     /// One line per open reference (each symbol once).
     pub fn open_lines(&self, phi: &Phi, va: u32) -> Vec<String> {
         let mut seen = std::collections::HashSet::new();
@@ -600,6 +627,10 @@ impl Check {
         }).collect()
     }
 }
+
+/// The note of a difference the alignment made: the queues read it (queues::risk), a line without it is a meaning
+/// difference.
+pub const CROSSED: &str = " (crossed: both sides refer to both)";
 
 /// An address with the names φ gives it.
 fn named(phi: &Phi, a: u32) -> String {
@@ -1036,6 +1067,56 @@ mod tests {
         // a neighbour 4 bytes below is no reference into the object (g_Width / g_Height)
         let p = phi(&[]);
         assert_eq!(census_of(A, A, &p).iter().map(|c| (c.ours, c.name.as_str())).collect::<Vec<_>>(), [(true, "g_b")]);
+    }
+
+    /// The noted lines of our f against an original whose first two fields hold `a` and `b`.
+    fn noted(a: u32, b: u32, p: &Phi) -> Vec<String> {
+        let (obj, code) = ours();
+        let img = image(a, b, VA + 0x40);
+        let refs = Refs::new(&obj, &code, p);
+        let sites = sites_matched(&code, &img, VA);
+        let (bound, unbound) = crate::equiv::bind(&obj, &code, &img, VA, &sites, &refs, p);
+        let inp = census_input(&obj, &code, &refs, &bound, unbound, &img.read(VA, 0x17), VA, &img);
+        assert_eq!(census(&inp, p), []);
+        check(&obj, &code, &img, &sites, &refs, p).lines_noted(p, VA, None, &inp)
+    }
+
+    #[test]
+    fn crossed_is_both_sides_referring_to_both_addresses() {
+        // the loads swapped: each side refers to both addresses
+        let p = phi(&[]);
+        let got = noted(B, A, &p);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|l| l.ends_with(CROSSED)), "{got:?}");
+        // one object, the index shifted by an element (ours g_t[1] / g_t[2], the original's g_t[0] / g_t[1]): the
+        // census finds g_t on both sides, the addresses are not the same two
+        let (obj, code) = {
+            let code = [0xa1u8, 4, 0, 0, 0, 0x8b, 0x0d, 8, 0, 0, 0, 0xc3];
+            let relocs = [(1u32, 2u32, 6u16), (7, 2, 6)];
+            let syms = [(".text", 0, 1, 3), ("_f", 0, 1, 2), ("_g_t", 0, 0, 2)];
+            let obj = Obj::parse(&crate::coff::testlib::code_obj(&code, &relocs, &syms)).unwrap();
+            let code = obj.function_code(obj.function_index()["f"]);
+            (obj, code)
+        };
+        let mut t = vec![0xa1u8];
+        t.extend(A.to_le_bytes());
+        t.extend([0x8b, 0x0d]);
+        t.extend((A + 4).to_le_bytes());
+        t.push(0xc3);
+        t.resize(0x60, 0xcc);
+        let img = crate::pe::Image::parse(build_with(None, Some(&t))).unwrap();
+        let v = json!({"name": "g_t", "origin": "source", "size": 0x40});
+        let p = Phi::new(&[Rc::new(crate::store::Claim { id: 1, rule: Rc::from("L.src"), lo: A as i64, hi: A as i64 + 1, text: String::new(), value: v,
+                                                         support: crate::store::DECLARED, by: "t".into(), reason: None })], &[]);
+        let refs = Refs::new(&obj, &code, &p);
+        let sites = sites_matched(&code, &img, VA);
+        let (bound, unbound) = crate::equiv::bind(&obj, &code, &img, VA, &sites, &refs, &p);
+        let inp = census_input(&obj, &code, &refs, &bound, unbound, &img.read(VA, 0xc), VA, &img);
+        assert_eq!(census(&inp, &p), []);
+        let got = check(&obj, &code, &img, &sites, &refs, &p).lines_noted(&p, VA, None, &inp);
+        assert_eq!(got, [format!("M8 at +0x0: ours refers to g_t+0x4 ({:#x}), the original's field to {A:#x} (g_t) (not crossed: ours never refers to {A:#x})", A + 4),
+                         format!("M8 at +0x5: ours refers to g_t+0x8 ({:#x}), the original's field to {:#x} (g_t+0x4) (not crossed: the original's function \
+                                  never refers to {:#x})", A + 8, A + 4, A + 8)]);
     }
 
     /// `and eax, offset g_a + 0x10` uses an address as a number; `mov eax, offset g_a + 0x10` and `and eax, offset g_a`

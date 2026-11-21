@@ -180,6 +180,18 @@ pub fn parse(text: &str) -> std::result::Result<Vec<Variant>, String> {
     Ok(out)
 }
 
+/// For a block that does not apply: where its first old text absent from the function occurs in the rest of the
+/// unit's file (seen: blocks copied from a twin function, every one "occurs 0 times" without a hint), as file lines.
+pub fn elsewhere(file: &str, func: &str, edit: &Edit) -> String {
+    let Edit::Pairs(pairs) = edit else { return String::new() };
+    let Some((old, _, _)) = pairs.iter().find(|(old, _, _)| !old.is_empty() && !func.contains(old.as_str())) else { return String::new() };
+    let at: Vec<String> = file.match_indices(old.as_str()).take(4).map(|(i, _)| (file[..i].matches('\n').count() + 1).to_string()).collect();
+    if at.is_empty() {
+        return String::new();
+    }
+    format!("; the text occurs outside the function, at line {} of the file: another function's text?", at.join(", "))
+}
+
 /// The function's text with a variant applied (the text: its lines joined by \n), or why it does not apply.
 pub fn apply(func: &str, edit: &Edit) -> std::result::Result<String, String> {
     match edit {
@@ -333,19 +345,34 @@ fn variant_text(func: &str, edit: &Edit) -> std::result::Result<String, String> 
 }
 
 /// The variants that move the function's line `line` (a file line) before each line of `to` (file lines, `hi + 1`:
-/// after the line hi), its own place left out. `first`: the function's first file line, `n`: its line count.
-pub fn moves(line: i64, to: (i64, i64), first: i64, n: usize) -> std::result::Result<Vec<Variant>, String> {
-    let idx = |l: i64| -> Option<usize> { (l >= first && ((l - first) as usize) <= n).then(|| (l - first) as usize) };
-    let from = idx(line).filter(|&k| k < n).ok_or_else(|| format!("line {line} is not in the function (lines {first}..{})", first + n as i64 - 1))?;
+/// after the line hi), its own place left out. `first`: the function's first file line (its comment's); `body`: the
+/// lines of its body as indices from there, (the first line after its `{`, the line of its closing `}`). A line
+/// moves inside the body only: one put before the signature or the `{` compiled to noise rows (C2085). The labels
+/// hold no shell metacharacter (`L12->before-L11` unquoted was a redirection into a file `before-L11`).
+pub fn moves(line: i64, to: (i64, i64), first: i64, body: (usize, usize)) -> std::result::Result<Vec<Variant>, String> {
+    let idx = |l: i64| -> Option<usize> { (l >= first).then(|| (l - first) as usize) };
+    let lines = format!("the function's body is lines {}..{}", first + body.0 as i64, first + body.1 as i64 - 1);
+    let from = idx(line).filter(|&k| k >= body.0 && k < body.1).ok_or_else(|| format!("line {line} is not in the body: {lines}"))?;
     let mut out = vec![];
     for t in to.0..=to.1 {
-        let k = idx(t).ok_or_else(|| format!("line {t} is not in the function (lines {first}..{})", first + n as i64 - 1))?;
+        let k = idx(t).filter(|&k| k >= body.0 && k <= body.1)
+            .ok_or_else(|| format!("--to {}..{}: line {t} is not in the body: {lines} (--to {} is after the last)", to.0, to.1, first + body.1 as i64))?;
         if k == from || k == from + 1 {
             continue;
         }
-        out.push(Variant { label: format!("L{line}->before-L{t}"), edit: Edit::Move(from, k) });
+        out.push(Variant { label: format!("L{line}-before-L{t}"), edit: Edit::Move(from, k) });
     }
     Ok(out)
+}
+
+/// The body of a function's text as line indices: (the first line after the line that opens it, its last line: the
+/// closing `}`). The opening line: the first after the leading comment that ends with `{`.
+pub fn body_lines(func: &str) -> Option<(usize, usize)> {
+    let skip = leading_comment(func).map(|(end, _)| func[..end].matches('\n').count()).unwrap_or(0);
+    let lines: Vec<&str> = func.split('\n').collect();
+    let open = (skip..lines.len()).find(|&k| lines[k].trim_end().ends_with('{'))?;
+    let close = (open + 1..lines.len()).rev().find(|&k| lines[k].trim_start().starts_with('}'))?;
+    Some((open + 1, close))
 }
 
 /// A short hash of a compiled function's code key (tiebreak::code_key): FNV-1a, 8 hex digits.
@@ -391,7 +418,8 @@ struct Row {
 }
 
 /// `dcp try`: the lines and the exit status.
-pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Option<i64>, to: Option<&str>, apply_label: Option<&str>) -> Result<(Vec<String>, i32)> {
+pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Option<i64>, to: Option<&str>, apply_label: Option<&str>,
+                   show: Option<&str>) -> Result<(Vec<String>, i32)> {
     use crate::cliread::{fmt_addr, record, Tok};
     let s = |x: &str| Tok::S(x.to_string());
     let fail = |e: String| -> Result<(Vec<String>, i32)> { Ok((vec![record(&[("name", s(name)), ("error", s(&e))])], 1)) };
@@ -440,7 +468,8 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
             Some(r) => r,
             None => return fail("--move-line needs --to A..B (file lines)".into()),
         };
-        match moves(l, range, comment, hi - lo) {
+        let Some(body) = body_lines(&func) else { return fail(format!("{name}: no `{{` .. `}}` body in its lines {comment}..{end}")) };
+        match moves(l, range, comment, body) {
             Ok(v) => variants.extend(v),
             Err(e) => return fail(e),
         }
@@ -457,6 +486,28 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
             lines.extend(halved_literals(&func, &new).iter().map(|l| format!("warning: variant `{lb}` has the string {l} with one backslash ({HALVED})")));
         }
         return Ok((lines, 0));
+    }
+    // --show LABEL: the one variant compiled, its asmdiff against the original (the tree and the build as they are)
+    if let Some(lb) = show {
+        let Some(v) = variants.iter().find(|v| v.label == lb) else { return fail(format!("no variant `{lb}`")) };
+        let f = match variant_text(&func, &v.edit) {
+            Ok(f) => f,
+            Err(e) => return fail(format!("`{lb}` does not apply: {e}{}", elsewhere(&text, &func, &v.edit))),
+        };
+        let objs = crate::tiebreak::compile(p, &[crate::tiebreak::Job { unit: t, tag: "tshow".into(), prefix: String::new(), text: unit_text(&f) }])?;
+        let o = match objs.into_iter().next() {
+            Some(Ok(o)) => o,
+            Some(Err(e)) => return fail(format!("`{lb}` does not compile: {e}")),
+            None => return fail(format!("`{lb}` was not compiled")),
+        };
+        let Some(&j) = o.function_index().get(name) else { return fail(format!("{name} is not in the compiled unit")) };
+        let (g, _) = crate::tiebreak::Bench::of(p)?.grade_refs(&o, &o.function_code(j), a);
+        let (mut lines, error, status) = crate::matchcmd::asmdiff_of(p, name, &o, g)?;
+        if let Some(e) = error {
+            return fail(e);
+        }
+        lines.insert(0, format!("variant `{lb}` of {name}, compiled apart (nothing written): its asmdiff against the original"));
+        return Ok((lines, status));
     }
     // the control (the unit as it is) and the variants that apply, compiled together
     // a whole function compiled as --apply writes it: with the function's own address comment
@@ -485,7 +536,9 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
             return (Ok(x.2.clone()), Some(x.1.clone()));
         }
         let (g, refs) = bench.grade_refs(o, &c, a);
-        let (ins, bytes, hunks) = bench.distance(o, &c, a);
+        let (ins, bytes, hunks, size) = bench.distance(o, &c, a);
+        // our size against the original's, when they differ: a variant that reads closer by growing shows it
+        let hunks = if size == 0 { hunks } else { format!("{hunks}; size {size:+}") };
         // a reference that differs (a crossed field: M8) is in the grade, not in the instructions: named first
         let (g, hunks) = (g.to_string(), if refs.is_empty() { hunks } else { format!("references differ: {refs}; {hunks}") });
         let r = (g, ins, bytes, hunks, h.clone());
@@ -503,7 +556,7 @@ pub fn try_command(p: &Project, name: &str, file: Option<&str>, move_line: Optio
     table.insert(0, Row { label: "control".into(), outcome: c, same_as: None });
     for (k, v) in variants.iter().enumerate() {
         let (outcome, same_as) = match (&texts[k], job_of.get(&k)) {
-            (Err(e), _) => (Err(format!("does not apply: {e}")), None),
+            (Err(e), _) => (Err(format!("does not apply: {e}{}", elsewhere(&text, &func, &v.edit))), None),
             (Ok(_), Some(&j)) => measure(&v.label, &objs[j]),
             (Ok(_), None) => (Err("not compiled".into()), None),
         };
@@ -650,18 +703,31 @@ mod tests {
         assert_eq!(halved_literals(func, "void f(void)\n{\n    g(\"misc\\quickchat\");\n}"), ["\"misc\\\\quickchat\""]);
         // an old text simply absent: no such hint
         assert!(!apply(func, &Edit::Pairs(vec![("zz\\q".into(), "y".into(), Occ::Once)])).unwrap_err().contains("backslash"));
+        // an old text of another function of the file: its lines are named
+        let twin = Edit::Pairs(vec![("    h(2);".into(), "y".into(), Occ::Once)]);
+        assert_eq!(elsewhere("a\nb\n    h(2);\nc\n    h(2);\n", "void f(void)\n{\n}", &twin),
+                   "; the text occurs outside the function, at line 3, 5 of the file: another function's text?");
+        assert_eq!(elsewhere("a\n", "void f(void)\n{\n}", &twin), "");
     }
 
     #[test]
     fn a_line_moves_through_a_range() {
-        // lines 10..15: the function; line 12 moves before 11, (12, 13: its own place), before 14, 15, after 15
-        let v = moves(12, (11, 16), 10, 6).unwrap();
-        assert_eq!(v.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(), ["L12->before-L11", "L12->before-L14", "L12->before-L15", "L12->before-L16"]);
-        let func = "a\nb\nc\nd\ne\nf";
-        assert_eq!(apply(func, &v[0].edit).unwrap(), "a\nc\nb\nd\ne\nf");
-        assert_eq!(apply(func, &v[1].edit).unwrap(), "a\nb\nd\nc\ne\nf");
-        assert_eq!(apply(func, &v[3].edit).unwrap(), "a\nb\nd\ne\nf\nc");
-        assert!(moves(30, (11, 12), 10, 6).is_err());
+        // lines 8..16: the comment, the signature, `{` (10), the body 11..15, `}` (16); line 12 moves before 11,
+        // (12, 13: its own place), before 14, 15 and 16 (after the last)
+        let func = "/* c */\nvoid f(void)\n{\na\nb\nc\nd\ne\n}";
+        let body = body_lines(func).unwrap();
+        assert_eq!(body, (3, 8));
+        let v = moves(12, (11, 16), 8, body).unwrap();
+        assert_eq!(v.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(), ["L12-before-L11", "L12-before-L14", "L12-before-L15", "L12-before-L16"]);
+        assert_eq!(apply(func, &v[0].edit).unwrap(), "/* c */\nvoid f(void)\n{\nb\na\nc\nd\ne\n}");
+        assert_eq!(apply(func, &v[1].edit).unwrap(), "/* c */\nvoid f(void)\n{\na\nc\nb\nd\ne\n}");
+        assert_eq!(apply(func, &v[3].edit).unwrap(), "/* c */\nvoid f(void)\n{\na\nc\nd\ne\nb\n}");
+        assert!(moves(30, (11, 12), 8, body).is_err());
+        // a target above the body (the `{` line, the signature) or the `{` line as the line to move: an error that
+        // names the body's lines, no variant that compiles to noise
+        assert_eq!(moves(12, (9, 11), 8, body).unwrap_err(), "--to 9..11: line 9 is not in the body: the function's body is lines 11..15 (--to 16 is after the last)");
+        assert!(moves(10, (12, 13), 8, body).unwrap_err().starts_with("line 10 is not in the body"));
+        assert!(moves(12, (15, 17), 8, body).is_err());
     }
 
     /// A block may pick the occurrences of an old text the function has more than once (the same statement in both

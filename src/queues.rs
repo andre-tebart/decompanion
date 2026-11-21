@@ -270,7 +270,7 @@ pub const RISKS: [&str; 5] = ["concrete", "draft", "shape", "proved", "byte"];
 pub fn risk(r: &Row) -> &'static str {
     let failing: Vec<&str> = r.get("failing").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     let meaning = failing.iter().any(|l| {
-        let reference = ["M8 at", "M9 at", "M10 at"].iter().any(|m| l.contains(m)) && !l.contains("(crossed") && !l.contains("open:");
+        let reference = ["M8 at", "M9 at", "M10 at"].iter().any(|m| l.contains(m)) && !l.contains(crate::refcheck::CROSSED.trim_start()) && !l.contains("open:");
         reference || l.starts_with("census:") || l.starts_with("addrnum:")
     });
     match s(r, "code") {

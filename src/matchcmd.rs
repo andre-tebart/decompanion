@@ -272,7 +272,14 @@ fn tables_tokens(t: &crate::diffclass::Tables) -> String {
 fn ref_lines(r: &crate::asmcmd::Reading, shape: bool) -> Vec<String> {
     r.ref_lines.iter().map(|l| {
         let what = if l.starts_with("M8") { "ref" } else { "literal" };
-        let why = if shape { "the references cross: the proof shows the effects the same" } else { "a meaning difference: draft" };
+        // a crossed line says so itself (as dcp grade prints it): no meaning difference, draft for want of a proof
+        let why = if shape {
+            "the references cross: the proof shows the effects the same"
+        } else if l.ends_with(crate::refcheck::CROSSED) {
+            "no proof shows the effects the same: draft"
+        } else {
+            "a meaning difference: draft"
+        };
         format!("  {what}: {l} ({why})")
     }).collect()
 }
@@ -431,6 +438,24 @@ pub fn asmdiff_command(p: &crate::project::Project, name: &str, regs: Option<Str
         Ok(r) => r,
         Err(o) => return Ok(o),
     };
+    asmdiff_render(p, r, name, regs, all, plain, view)
+}
+
+/// `dcp try NAME .. --show LABEL`: asmdiff's differing lines of the function as a trial's object compiles it (no
+/// tree edit, no build), `grade` the trial's code grade for the head.
+pub fn asmdiff_of(p: &crate::project::Project, name: &str, obj: &crate::coff::Obj, grade: &str) -> Result<Out> {
+    let db = opened(p)?;
+    let Some(mut row) = crate::asmcmd::find_function(&db, name)? else { return Ok((vec![], Some(format!("no graded function {name}")), 1)) };
+    row["code"] = serde_json::Value::from(grade);
+    let r = match crate::asmcmd::reading_of(p, row, None, obj)? {
+        Ok(r) => r,
+        Err(why) => return Ok((vec![], Some(format!("{name}: {why}")), 1)),
+    };
+    asmdiff_render(p, r, name, None, false, false, View { changed: true, at: None, context: None, side: None, lines: false })
+}
+
+fn asmdiff_render(p: &crate::project::Project, r: crate::asmcmd::Reading, name: &str, regs: Option<String>, all: bool, plain: bool,
+                  view: View) -> Result<Out> {
     let mut a: Vec<String> = r.la.iter().map(|x| x.text.clone()).collect();
     let mut ka: Vec<Shape> = r.la.iter().map(|x| x.shape.clone()).collect();
     let kb: Vec<Shape> = r.lb.iter().map(|x| x.shape.clone()).collect();
@@ -599,7 +624,9 @@ pub fn frame_command(p: &crate::project::Project, name: &str) -> Result<Out> {
                 (Some(e), _) => Some(e),
                 (None, Some((c, n))) if 2 * n > total => Some(c),
                 (None, None) => Some(0),
-                _ => None,
+                // no majority: the uses are mostly elements and fields (`_bi$[esp+68]` is bi + 8: K holds the offset
+                // into the local), each at or above the base; the lowest is the base when it is one of VC6's two
+                (None, Some(_)) => votes.keys().next().copied().filter(|c| matches!(c, 0 | -4)),
             };
             match local_c {
                 Some(c) => syms.into_iter().map(|(sym, v)| (if sym < 0 { sym + c } else { sym - 4 }, v)).collect(),

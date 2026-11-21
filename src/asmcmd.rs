@@ -302,14 +302,24 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
     let db = p.store_path();
     let unit = row["unit"].as_str().unwrap_or("").to_string();
     let name = row["name"].as_str().unwrap_or("").to_string();
-    let a = row["addr"].as_i64().unwrap_or(0);
     let tus = crate::timing::phase("r.tus", || crate::compile::tu_rows(&db))?;
     let Some(t) = tus.get(&unit).filter(|t| t.ok) else { return Ok(Err(format!("unit {unit} has no object (dcp build)"))) };
     let root = p.root.to_string_lossy().into_owned();
     let obj = crate::timing::phase("r.obj", || std::fs::read(crate::compile::obj_path(&root, &t.obj_hash)).ok().and_then(|d| crate::coff::Obj::parse(&d).ok()));
-    let Some((obj, k)) = obj.and_then(|o| o.function_index().get(&name).copied().map(|k| (o, k))) else {
+    let Some(obj) = obj.filter(|o| o.function_index().contains_key(&name)) else {
         return Ok(Err(format!("the object of unit {unit} defines no {name}")));
     };
+    reading_of(p, row, names, &obj)
+}
+
+/// `reading` of the function as this object compiles it (the build's, or a trial's: `dcp try --show`), which
+/// defines it.
+pub fn reading_of(p: &Project, row: Value, names: Option<&crate::names::Names>, obj: &crate::coff::Obj) -> Result<Result<Reading, String>, Error> {
+    let db = p.store_path();
+    let unit = row["unit"].as_str().unwrap_or("").to_string();
+    let name = row["name"].as_str().unwrap_or("").to_string();
+    let a = row["addr"].as_i64().unwrap_or(0);
+    let Some(&k) = obj.function_index().get(&name) else { return Ok(Err(format!("the object of unit {unit} defines no {name}"))) };
     let code = obj.function_code(k);
     let img = crate::timing::phase("r.img", || crate::image(&p.target.path))?;
     let tc = crate::toolchain::Vc6;
@@ -436,7 +446,8 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
     let sites = crate::refcheck::sites_aligned(&code, &img, a as u32, &fc.la, &fc.lb);
     let refs_of = crate::refcheck::Refs::new(&obj, &code, phi);
     let refs = crate::refcheck::check(&obj, &code, &img, &sites, &refs_of, phi).settle_calls(&obj, &code, &refs_of, &data, a as u32);
-    let ref_lines = refs.lines(phi, a as u32, Some(&unit));
+    let mut ref_lines = refs.lines(phi, a as u32, Some(&unit));
+    let byte_equal = fc.la.len() == fc.lb.len() && fc.la.iter().zip(&fc.lb).all(|(x, y)| x.text == y.text);
     let open_lines = refs.open_lines(phi, a as u32);
     let outside = refs_of.outside.iter().map(|o| (a as u32 + o.off, o.line())).collect();
     let mut witness = None;
@@ -457,6 +468,11 @@ pub fn reading(p: &Project, row: Value, names: Option<&crate::names::Names>) -> 
         }
         let inp = crate::refcheck::census_input(&obj, &code, &refs_of, &ours, unbound, &data, a as u32, &img);
         census = crate::refcheck::census(&inp, phi).iter().map(|c| c.line()).collect();
+        // as G.grade notes them: crossed, or the address one side never refers to (no byte match only: equal bytes
+        // pair the sites exactly)
+        if census.is_empty() && !byte_equal {
+            ref_lines = refs.lines_noted(phi, a as u32, Some(&unit), &inp);
+        }
         let (diff, unbound) = crate::equiv::calls_differ(&ours, &data, a as u32);
         let named = |t: u32| phi.names_at(t as i64).into_iter().next().unwrap_or_else(|| format!("{t:#x}"));
         calls = (diff.into_iter().map(|(t, x, y)| (named(t), x, y)).collect(), unbound);
