@@ -233,10 +233,17 @@ work, however long.
   wrong, not the match, unless the match is no evidence at all (2.6). Find which side is: fix the
   header when its signature or type is the guess, or keep the original's spelling with `@original why` (the
   matched caller as evidence) when the original really called it that way. That spelling stays in the unit
-  that needs it, never in a shared header (two headers that disagree can never be included together: M5): a
-  cast macro in the unit's head next to the include (`#define d2_MoveObjS ((void (*)(short, short, int))d2_MoveObj)
-  /* @original main passes shorts */`), used at those calls. A fall is no way around a conflict (2.6 says when
-  one is right), and neither is a copied prototype or a local struct view. A conflict you cannot settle in the
+  that needs it, never in a shared header (two headers that disagree can never be included together: M5). The
+  original was plain C, not casts; prefer, in order: (1) one true prototype everywhere (re-read the definition:
+  an unread extra parameter, a folded stub of its own, varargs, a caller's variable of another type, e.g.
+  `short d = f(n);`); (2) a unit-local declaration with the type the unit's callers use, `@original why`
+  (header drift: `tr.c` defines `int util_Random(..)`, its callers' units declare `unsigned short
+  util_Random(unsigned short n);`), without including a header that declares it differently; (3) a K&R
+  declaration `T f();` when the callers push promoted ints; (4) a cast macro only when VC6 rejects 1-3 (C2371,
+  one unit reads two types). Data likewise: a unit-local `extern` of the type the unit reads before a view
+  macro. A declaration-set tie-break that such a change moves is accepted, never compensated; a real fall only
+  when the new form is obviously the more likely original, listed in the commit message. Otherwise a fall is
+  no way around a conflict (2.6 says when one is right), and neither is a copied struct view. A conflict you cannot settle in the
   session: leave it, add `Open: head: include/<x>.h, <symbol> unsettled (<why>)` to the
   unit's lead comment, and leave M7 open for the calls it blocks.
 - `extern GAPDATA name[]` (`__declspec(align(1)) unsigned char`) is for the unnamed gap blocks only

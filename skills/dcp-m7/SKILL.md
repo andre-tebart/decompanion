@@ -28,10 +28,33 @@ Hard rules
 - The sources are the state: address comments, `include/<unit>.h`, the unit's lead comment (`Open:` lines,
   rewritten, never appended to). No notes files, no session log.
 - One prototype per function, in its owner's header `include/<owner>.h` (the unit that defines it), spelled as
-  the definition. Never write a second prototype in a unit or another header; never a local K&R declaration.
-- No grade may fall: `dcp check` fails on M1. A byte-matched caller is evidence of what the original declared:
-  when a prototype changes its bytes, the prototype (or our call) is wrong, not the match, except for a
-  declaration-set tie-break (section 5).
+  the definition. Where the original's callers really saw another declaration, follow **Spelling a
+  disagreement** below (a unit-local declaration or a K&R declaration may be the original's; a cast macro is
+  the last resort).
+- A byte-matched caller is evidence of what the original declared: when a prototype changes its bytes, the
+  prototype (or our call) is usually wrong, not the match. Exceptions: a declaration-set tie-break (section 5)
+  is accepted as it falls, never compensated; a real fall is accepted only when the new form is obviously the
+  more likely original source (one true prototype replacing contradictory casts), listed in the commit message
+  (function, grade before -> after, why).
+
+### Spelling a disagreement (the original was plain C, not casts)
+When the original's callers disagree with the definition, the source was almost never a cast. In this order:
+1. **One true prototype everywhere.** Re-read the definition against the original first: it is often our
+   guess. Typical true forms: an unread extra parameter the callers push, a stub of its own that LINK folded
+   (/OPT:ICF) into the callee (unlinked, below its callers), varargs, a wider/narrower type than we guessed, a
+   caller's variable of another type (`short d = f(n);` reads 16 bits from an int return without a cast).
+2. **A unit-local declaration** (header drift: the unit saw an older or other declaration): the unit declares
+   the function with the type its callers use, `@original why` with the byte-matched callers as evidence, and
+   does not include a header that declares it differently. Example: `tr.c` defines `int util_Random(..)`, 36
+   units declare `unsigned short util_Random(unsigned short n);`.
+3. **A K&R declaration** `T f();` (no prototype in scope) when the callers push promoted ints (`movsx` /
+   `movzx` + 32-bit push) or the definition itself is K&R. Mark the declaration `T f();  /* @original why */`:
+   `dcp lint` exempts the calls that see a marked K&R declaration (no M7 line; `dcp exceptions` lists it), an
+   unmarked one stays an M7 line. Likewise M5 exempts a marked unit-local declaration (2.).
+4. **A cast macro** only when VC6 rejects 1-3 (C2371: one unit reads two different types). Say so in its
+   `@original`.
+The same order holds for data: a global read as another type is a unit-local `extern` of that type before it
+is a view macro.
 - Never write an address of the original into code; reference symbols by name.
 - Never move a function within or between units, never change a function's meaning without the original's
   instructions as evidence.
@@ -102,12 +125,11 @@ moved (build's summary, `dcp check`'s M1 lines, the trial's `fn=` lines) is a ca
   - **The original's pushes agree with the prototype**, our call only compiled because there was none: fix the
     call (also a bug fix when it changes what is passed).
   - **The original's pushes disagree with the definition's prototype, consistently across this unit's
-    byte-matched callers**: the original TU was compiled against another declaration. Keep the header as it is;
-    add a cast macro in the unit's head next to the include, with the evidence:
-    `#define net_SendKeyI ((int (*)(int, char *))net_SendKey)  /* @original: the callers here push the key
-    as an int and read the return (byte-matched net_QueueOrder) */`, and use it at those calls (the suffix
-    names the difference: `I` int, `S` short, `K` K&R, `H` handle / result kept). Never a second prototype,
-    never in a shared header.
+    byte-matched callers**: first check the definition is not the guess (1. of **Spelling a disagreement**);
+    otherwise the original TU was compiled against another declaration. Keep the owner header as it is and give
+    the unit that declaration (2. or 3. there): `int net_SendKey(int key, char *s);  /* @original why: the
+    callers here push the key as an int and read the return (byte-matched net_QueueOrder) */`. A cast macro
+    only as 4. there. Never in a shared header.
   - **The header is the guess** (the definition was drafted from the header, the original's definition reads
     its parameters otherwise: `dcp disasm` of the callee): fix the definition and the header together, and read
     every caller in every unit (`dcp refs NAME`).

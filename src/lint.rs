@@ -712,7 +712,12 @@ fn by_spelling(ds: &[&Decl]) -> String {
     groups.iter().map(|(sp, g)| format!("`{sp}` at {}", locs_of(g))).collect::<Vec<_>>().join("; ")
 }
 
-/// lint._cast_view: the cast macro that gives a unit its own view of a symbol.
+/// The advice for a unit's own view of a symbol (the original was plain C: header drift, not casts): a
+/// declaration of the unit's, marked, which M5 exempts; a K&R one when the calls push promoted arguments.
+const OWN_VIEW: &str = "a unit's own view is a declaration in its head region with `@original why` (header drift: exempt), the unit \
+including no header that declares it otherwise, or a K&R declaration `T name();` when its calls push promoted arguments";
+
+/// lint._cast_view: the cast macro that gives a unit its own view of a symbol (the last resort).
 fn cast_view(d: &Decl) -> Option<String> {
     let s = d.spelling();
     let k = name_at(&s, &d.name)?;
@@ -847,10 +852,11 @@ pub fn lint_cross(ad: &AllDecls, diags: Vec<Diag>, root: &str) -> Result<Vec<Str
         if let Some(&m) = marked.first() {
             let view = cast_view(&every[m]);
             let sp = if rd.proto.is_empty() { format!("{rs};") } else { rd.proto.clone() };
-            s += &format!(" / the @original spelling is in a header ({}): a header repeats the definition's spelling `{sp}` (unit {unit}); a unit's own view goes in its head region as a cast macro",
-                          every[m].where_());
+            s += &format!(" / the @original spelling is in a header ({}): a header repeats the definition's spelling `{sp}` (unit {unit}); {}",
+                          every[m].where_(), OWN_VIEW);
+            s += &format!(": `{};  /* @original why */`", every[m].spelling());
             if let Some(view) = view {
-                s += &format!(": `{view} /* @original why */`");
+                s += &format!("; a cast macro only when VC6 rejects that (C2371: one unit reads two types): `{view} /* @original why */`");
             }
         }
         out.push(s);
@@ -904,7 +910,8 @@ pub fn lint_cross(ad: &AllDecls, diags: Vec<Diag>, root: &str) -> Result<Vec<Str
                 let sp = if r.proto.is_empty() { format!("{};", r.spelling()) } else { r.proto.clone() };
                 h += &format!("a header repeats the definition's spelling `{sp}` (unit {}), ", r.file.split('/').nth(1).unwrap_or(""));
             }
-            h += "a unit's own view goes in its head region as a cast macro (`#define name_X ((T (*)(..))name) /* @original why */`)";
+            h += OWN_VIEW;
+            h += " (`T name(..);  /* @original why */`); a cast macro only when VC6 rejects that (C2371: one unit reads two types)";
             hint = Some(h);
         }
         pairs.entry(name.unwrap_or_else(|| "?".to_string())).or_default().push((g, hint));
@@ -984,7 +991,9 @@ pub fn lint_cross(ad: &AllDecls, diags: Vec<Diag>, root: &str) -> Result<Vec<Str
 
 /// The M6 lines (a unit's errors) and M7 calls (file, line, `callee() at line N` / `callee (undeclared) at
 /// line N`) of the units' diagnostics (each unit's list as JSON text), a group with an exempt line left out
-/// (lint.lint's loop; lint.call_of).
+/// (lint.lint's loop; lint.call_of). A call through a K&R declaration has a note at the declaration it sees
+/// (clang.rs): a marked declaration (`T f();  /* @original why */`, the original's form) exempts its calls, and
+/// `dcp exceptions` lists the marker.
 pub fn lint_units(diags: Vec<Vec<Diag>>, root: &str) -> Result<(Vec<String>, Vec<(String, i64, String)>)> {
     let mut lines = Lines { root: std::path::PathBuf::from(root), memo: HashMap::new() };
     let (mut errors, mut calls) = (vec![], vec![]);
@@ -1015,4 +1024,38 @@ pub fn lint_units(diags: Vec<Vec<Diag>>, root: &str) -> Result<(Vec<String>, Vec
         }
     }
     Ok((errors, calls))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diag(file: &str, line: i64, kind: &str, msg: &str, flag: &str) -> Diag {
+        Diag { file: file.into(), line, kind: kind.into(), msg: msg.into(), flag: flag.into(), name: Some("mv".into()) }
+    }
+
+    /// M7: a call through a K&R declaration is a finding unless the declaration it sees (the note clang.rs adds)
+    /// or the call's own line carries a marker.
+    #[test]
+    fn m7_marked_knr_declaration_exempts_its_calls() {
+        let root = crate::testkit::scratch("lint-m7");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("include")).unwrap();
+        std::fs::write(root.join("include/d2.h"), "void mv();\n").unwrap();
+        std::fs::write(root.join("src/a.c"), "void f(void)\n{\n    void mv();  /* @original pushes promoted ints */\n    mv(1, 2);\n}\n").unwrap();
+        let call = |file: &str, line: i64, decl: Option<(&str, i64)>| {
+            let mut g = vec![diag(file, line, "warning", "passing arguments to 'mv' without a prototype is deprecated", "-Wdeprecated-non-prototype")];
+            if let Some((f, l)) = decl {
+                g.push(diag(f, l, "note", "'mv' declared without a prototype here", ""));
+            }
+            g
+        };
+        let r = root.to_string_lossy();
+        let (_, calls) = lint_units(vec![call("src/a.c", 4, Some(("src/a.c", 3)))], &r).unwrap();
+        assert!(calls.is_empty(), "{calls:?}");
+        let (_, calls) = lint_units(vec![call("src/a.c", 4, Some(("include/d2.h", 1)))], &r).unwrap();
+        assert_eq!(calls, [("src/a.c".to_string(), 4, "mv() at line 4".to_string())]);
+        let (_, calls) = lint_units(vec![call("src/a.c", 4, None)], &r).unwrap();
+        assert_eq!(calls.len(), 1);
+    }
 }

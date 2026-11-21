@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::LazyLock;
 
-const VERSION: &str = "7";
+const VERSION: &str = "8";
 const CPARSE_VERSION: &str = "4";
 
 fn canonical(v: &Value) -> String {

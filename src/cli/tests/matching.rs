@@ -429,6 +429,13 @@ fn lint_consistency_and_exemption() {
     assert!(out.contains("M7 consistency: helper() at line 7"), "{out}");
     unit(&t, "net", &[head, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter + helper(1.5f);  /* @original the original passes a double */\n}\n"]);
     assert!(dcp(&t, &["lint"]).1.contains("m7=0"));
+    // the K&R declaration the call sees carries the marker (the original's form): its calls are exempt
+    let marked = "int counter = 0x1234;  /* 0x10002000 */\nint helper();  /* @original no prototype: the calls push promoted ints */\n";
+    unit(&t, "net", &[marked, "/* 0x10001020, reads the counter */\nint get(void)\n{\n    return counter + helper(1.5f);\n}\n"]);
+    assert!(dcp(&t, &["lint"]).1.contains("m7=0"));
+    let block = "/* 0x10001020, reads the counter */\nint get(void)\n{\n    int helper();  /* @original */\n    return counter + helper(1.5f);\n}\n";
+    unit(&t, "net", &[head, block]);
+    assert!(dcp(&t, &["lint"]).1.contains("m7=0"));
     // a conflict across units: two prototypes of one function
     unit(&t, "log", &["long helper(int x);\n", "/* 0x10001030, logs */\nvoid log3(void)\n{\n}\n"]);
     let (code, out) = dcp(&t, &["lint"]);
@@ -485,7 +492,8 @@ fn lint_m5_per_symbol() {
     assert!(cnt.contains("disagree=1 `GAPDATA counter[]` at src/log.c:2; agree=1 include/b.h:2"), "{cnt}");
     write(&t, "include/a.h", "long get(void);  /* @original why */\n");
     let (_, out) = dcp(&t, &["lint"]);
-    assert!(out.contains("the @original spelling is in a header (include/a.h:1): a header repeats the definition's spelling `int get(void);` (unit net); a unit's own view goes in its head region as a cast macro: `#define get_X ((long (*)(void))get) /* @original why */`"), "{out}");
+    assert!(out.contains("the @original spelling is in a header (include/a.h:1): a header repeats the definition's spelling `int get(void);` (unit net); a unit's own view is a declaration in its head region with `@original why` (header drift: exempt)"), "{out}");
+    assert!(out.contains(": `long get(void);  /* @original why */`; a cast macro only when VC6 rejects that (C2371: one unit reads two types): `#define get_X ((long (*)(void))get) /* @original why */`"), "{out}");
     write(&t, "include/a.h", "int get(void);\n");
     unit(&t, "log", &["extern int counter;\nlong get(void);  /* @original why */\nint log3(int a);\n", log3]);
     assert!(dcp(&t, &["lint"]).1.contains("m5=0"));

@@ -922,23 +922,40 @@ fn diagnostics_rs(a: &Api, t: &Tu, root: &str, text: &str, presumed: bool) -> Re
     let lmap = presumed.then(|| line_map(text, &t.path_s));
     let mut files: HashMap<String, (bool, String)> = HashMap::new();
     let mut out: Vec<CDiag> = vec![];
+    // a file and line as the diagnostics give them (relative to root; the main file's through its #line map)
+    let mut place = |f: &str, line: u32| -> (String, i64) {
+        let (is_main, fr) = files.entry(f.to_string()).or_insert_with(|| (resolve(f) == main, rel(&rootr, root, f))).clone();
+        if is_main {
+            if let Some(lm) = &lmap {
+                let (mf, l) = locate(lm, line as usize);
+                return (rel(&rootr, root, &mf), l);
+            }
+        }
+        (fr, line as i64)
+    };
     let mut one = |d: P, kind: &str| -> Result<bool> {
         let loc = unsafe { (a.clang_getDiagnosticLocation)(d) };
         let (f, line, _) = expand(a, loc);
         let Some(f) = f else { return Ok(false) }; // no location (the command line)
-        let (is_main, fr) = files.entry(f.clone()).or_insert_with(|| (resolve(&f) == main, rel(&rootr, root, &f))).clone();
-        let (mut fr, mut line) = (fr, line as i64);
-        if is_main {
-            if let Some(lm) = &lmap {
-                let (mf, l) = locate(lm, line as usize);
-                fr = rel(&rootr, root, &mf);
-                line = l;
-            }
-        }
+        let (fr, line) = place(&f, line);
         let msg = take(a, unsafe { (a.clang_getDiagnosticSpelling)(d) });
         let flag = take(a, unsafe { (a.clang_getDiagnosticOption)(d, std::ptr::null_mut()) });
         let name = name_of(a, tu, &msg, loc);
-        out.push(CDiag { file: fr, line, kind: kind.to_string(), msg, flag, name });
+        // a call without a prototype (M7): a note at the declaration the call sees, so that the marker of its
+        // line (a K&R declaration `T f();  /* @original why */`) exempts the call's group as the call's own does
+        let decl = if flag == "-Wdeprecated-non-prototype" && msg.starts_with("passing arguments") {
+            let c = unsafe { (a.clang_getCursor)(tu, loc) };
+            let r = if is_null(a, c) { c } else { unsafe { (a.clang_getCursorReferenced)(c) } };
+            if !is_null(a, r) && unsafe { (a.clang_getCursorKind)(r) } == FUNCTION_DECL { expand(a, unsafe { (a.clang_getCursorLocation)(r) }) } else { (None, 0, 0) }
+        } else {
+            (None, 0, 0)
+        };
+        out.push(CDiag { file: fr, line, kind: kind.to_string(), msg, flag, name: name.clone() });
+        if let (Some(df), dline, _) = decl {
+            let (file, line) = place(&df, dline);
+            let msg = format!("'{}' declared without a prototype here", name.as_deref().unwrap_or("?"));
+            out.push(CDiag { file, line, kind: "note".into(), msg, flag: String::new(), name });
+        }
         Ok(true)
     };
     let diags = diag_list(a, tu);

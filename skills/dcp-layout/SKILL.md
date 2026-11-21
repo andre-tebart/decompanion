@@ -119,8 +119,10 @@ What `dcp build` typically says about a fresh draft and what to do:
 - Never replace a compiling draft by a worse one to make the gate pass: a gate error that a worse draft makes go
   away is a tool bug; report it and leave the draft in place.
 - C89: declarations at the top of a block; no `//` comments in new code; no `bool`.
-- Never write a second prototype for a name: `dcp refs NAME` shows every declaration. A function of
-  another unit is declared by including that unit's header; an undrafted one by the K&R line `dcp draft` wrote.
+- Never write a second prototype for a name without evidence: `dcp refs NAME` shows every declaration. A
+  function of another unit is declared by including that unit's header; an undrafted one by the K&R line `dcp
+  draft` wrote. Where the original's callers really saw another declaration, a unit-local declaration (or a
+  K&R one) with `@original why` is the spelling, not a cast macro (see dcp-m7, "Spelling a disagreement").
 - A function of a known library (zlib announces itself by its version string, `1.1.3`; a CRT-like routine by
   its shape) is best written as that library's own source: it often byte-matches at once (zlib's adler32 did,
   where Ghidra's unrolled loop did not).
@@ -217,7 +219,8 @@ A helper the original inlined everywhere (so no address) stands in its unit's fi
 - The prototype of a function lives in its defining unit's header `include/<unit>.h` (`dcp draft` puts it
   there); other units include that header. Never write a second prototype elsewhere.
 - Never change other functions' bytes: no edits to types, macros or declarations another unit's matched code
-  depends on; add, do not change (an alias type, a second view, a cast macro local to the unit).
+  depends on; add, do not change (an alias type, a unit-local declaration; a cast or view macro only as the
+  last resort, see dcp-m7 "Spelling a disagreement").
 - Never rename struct fields or types in a layout session.
 
 ## 5. Wrap up (when the clock says over=yes)

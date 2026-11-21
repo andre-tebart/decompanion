@@ -133,10 +133,14 @@ Decide which side is wrong:
   the commit prefix is `data bug:` and its body has one line per fixed access: function, address, before,
   after (section 3.7).
 - **The original reads the same datum inconsistently** (two byte-matched users at different widths, signedness
-  or element sizes): the datum is one object, the second reading is the original's. Keep one view macro at the
-  unit that needs it, with the evidence: `#define NAME (*(T2 *)&datum)  /* 0xADDR, @original why: <user>
-  reads it as T2 (byte-matched) while <user> reads T */`. `dcp exceptions` lists the marker. Do not choose one
-  width for the object and cast the other site silently, and do not split the datum.
+  or element sizes): the datum is one object, the second reading is the original's. First check that our
+  type is not the guess (a field we typed short that is really an int, a record we typed wrong). The original
+  was plain C: most likely the reading unit declared the object with another type (header drift). Spell it
+  that way: a unit-local `extern T2 datum;` with the evidence, `/* 0xADDR, @original why: <user> reads it as
+  T2 (byte-matched) while <user> reads T */`, in a unit that does not include the conflicting declaration. A
+  view macro `#define NAME (*(T2 *)&datum)` only when VC6 rejects that (C2371: one unit reads two types).
+  `dcp exceptions` lists the marker. Do not choose one width for the object and cast the other site silently,
+  and do not split the datum.
 - A matched user that still matches after the change confirms the address (`M.data.site`). One that stops
   matching means a wrong address, type or owner: find which before you touch the access.
 

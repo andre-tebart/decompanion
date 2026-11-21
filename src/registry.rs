@@ -255,7 +255,7 @@ pub static RULES: &[RuleDef] = &[
     RuleDef {
         id: "M.lint", version: "2", max_support: REPRODUCED, phase: "M", loader: false,
         needs: &["L.src"], outputs: &[], inputs: &["lint", "src"],
-        doc: "The last `dcp lint` (clang as a C89 type checker with MS compatibility against the\ntoolchain's headers; `@original why` / `@vc6 why` on a line exempt it): M6 an error inside one unit, M5 a\ndeclaration conflict across units (the all-declarations unit), both errors; M7 a call through a K&R\ndeclaration or without a declaration, a warning (the consistency convention: G.grade lists the calls on the
+        doc: "The last `dcp lint` (clang as a C89 type checker with MS compatibility against the\ntoolchain's headers; `@original why` / `@vc6 why` on a line exempt it): M6 an error inside one unit, M5 a\ndeclaration conflict across units (the all-declarations unit; a unit's own declaration unlike the definition\nwith the marker is the original's header drift: exempt), both errors; M7 a call through a K&R declaration or\nwithout a declaration, a warning (a call whose K&R declaration in scope carries the marker is the original's\nform: exempt; `dcp exceptions` lists the markers) (the consistency convention: G.grade lists the calls on the
 function's experiment). Reported at the address\nof the function whose span holds the diagnostic's line (the image base when none does). A lint run whose units'\ntexts differ from today's units is stale: a warning, M.lint.stale (`dcp lint`; `dcp check` lints first). Native:\nnative/dcp_core/src/rules.rs m_lint.",
     },
     RuleDef {
